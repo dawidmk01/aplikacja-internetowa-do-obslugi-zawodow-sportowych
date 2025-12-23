@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+
+# Django
+db.sqlite3
+
+# Environment
+.env
+.env.*
+
+# PyCharm
+.idea/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
