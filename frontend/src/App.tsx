@@ -1,53 +1,28 @@
-import { useEffect, useState } from "react";
-
-type Tournament = {
-  id: number;
-  name: string;
-  discipline: string;
-};
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import TournamentList from "./pages/TournamentList";
+import TournamentDetail from "./pages/TournamentDetail";
+import Login from "./pages/Login";
+import Dashboard from "./pages/Dashboard";
+import ProtectedRoute from "./ProtectedRoute";
 
 function App() {
-  const [tournaments, setTournaments] = useState<Tournament[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetch("http://localhost:8000/api/tournaments/")
-      .then((res) => {
-        if (!res.ok) {
-          throw new Error("Błąd pobierania danych");
-        }
-        return res.json();
-      })
-      .then((data) => {
-        setTournaments(data);
-        setLoading(false);
-      })
-      .catch((err) => {
-        setError(err.message);
-        setLoading(false);
-      });
-  }, []);
-
-  if (loading) return <p>Ładowanie...</p>;
-  if (error) return <p>Błąd: {error}</p>;
-
   return (
-    <div style={{ padding: "2rem" }}>
-      <h1>Turnieje</h1>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<TournamentList />} />
+        <Route path="/tournaments/:id" element={<TournamentDetail />} />
 
-      {tournaments.length === 0 ? (
-        <p>Brak turniejów</p>
-      ) : (
-        <ul>
-          {tournaments.map((t) => (
-            <li key={t.id}>
-              <strong>{t.name}</strong> — {t.discipline}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+        <Route path="/login" element={<Login />} />
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <Dashboard />
+            </ProtectedRoute>
+          }
+        />
+      </Routes>
+    </BrowserRouter>
   );
 }
 
