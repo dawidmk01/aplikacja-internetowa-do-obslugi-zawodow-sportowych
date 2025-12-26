@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { apiFetch, clearTokens } from "../api";
 
 export default function Dashboard() {
@@ -16,7 +16,6 @@ export default function Dashboard() {
     apiFetch("/api/auth/me/")
       .then((res) => {
         if (res.status === 401) {
-          // refresh się nie udał albo brak refresh → wyloguj
           throw new Error("Sesja wygasła. Zaloguj się ponownie.");
         }
         if (!res.ok) {
@@ -38,6 +37,10 @@ export default function Dashboard() {
         <h1 style={{ margin: 0 }}>Panel</h1>
         <button onClick={logout}>Wyloguj</button>
       </div>
+
+      <nav style={{ margin: "1rem 0" }}>
+        <Link to="/my-tournaments">Moje turnieje</Link>
+      </nav>
 
       {error && <p style={{ color: "crimson" }}>{error}</p>}
 

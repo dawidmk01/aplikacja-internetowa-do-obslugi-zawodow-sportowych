@@ -3,6 +3,7 @@ import TournamentList from "./pages/TournamentList";
 import TournamentDetail from "./pages/TournamentDetail";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
+import MyTournaments from "./pages/MyTournaments";
 import ProtectedRoute from "./ProtectedRoute";
 
 function App() {
@@ -13,11 +14,21 @@ function App() {
         <Route path="/tournaments/:id" element={<TournamentDetail />} />
 
         <Route path="/login" element={<Login />} />
+
         <Route
           path="/dashboard"
           element={
             <ProtectedRoute>
               <Dashboard />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/my-tournaments"
+          element={
+            <ProtectedRoute>
+              <MyTournaments />
             </ProtectedRoute>
           }
         />
