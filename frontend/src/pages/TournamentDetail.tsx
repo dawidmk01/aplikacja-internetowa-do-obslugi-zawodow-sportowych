@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { apiFetch } from "../api";
+import { QRCodeCanvas } from "qrcode.react";
 import AddAssistantForm from "../components/AddAssistantForm";
 import AssistantsList from "../components/AssistantsList";
 
@@ -8,7 +9,6 @@ type Tournament = {
   id: number;
   name: string;
   discipline: string;
-  is_private: boolean;
   is_published: boolean;
   access_code: string | null;
   start_date: string | null;
@@ -30,9 +30,12 @@ export default function TournamentDetail() {
   // 👥 asystenci
   const [assistantsVersion, setAssistantsVersion] = useState(0);
 
-  // 🛠 organizer settings
+  // 🛠 ustawienia organizatora
   const [isPublished, setIsPublished] = useState(false);
   const [newAccessCode, setNewAccessCode] = useState("");
+
+  // 📱 QR canvas ref
+  const qrRef = useRef<HTMLCanvasElement | null>(null);
 
   const fetchTournament = () => {
     if (!id) return;
@@ -93,10 +96,7 @@ export default function TournamentDetail() {
           onChange={(e) => setAccessCode(e.target.value)}
         />
 
-        <button
-          style={{ marginLeft: "1rem" }}
-          onClick={fetchTournament}
-        >
+        <button style={{ marginLeft: "1rem" }} onClick={fetchTournament}>
           Wejdź
         </button>
 
@@ -111,6 +111,22 @@ export default function TournamentDetail() {
 
   const handleAssistantAdded = () => {
     setAssistantsVersion((v) => v + 1);
+  };
+
+  /* 🔗 LINK TURNIEJU (ŹRÓDŁO PRAWDY DLA QR) */
+  const tournamentLink =
+    `${window.location.origin}/tournaments/${tournament.id}` +
+    (tournament.access_code ? `?code=${tournament.access_code}` : "");
+
+  /* 📥 POBIERANIE QR JAKO PNG */
+  const downloadQrCode = () => {
+    if (!qrRef.current) return;
+
+    const pngUrl = qrRef.current.toDataURL("image/png");
+    const link = document.createElement("a");
+    link.href = pngUrl;
+    link.download = `turniej-${tournament.id}-qr.png`;
+    link.click();
   };
 
   /* 📡 ZAPIS USTAWIEŃ ORGANIZATORA */
@@ -187,6 +203,49 @@ export default function TournamentDetail() {
             onClick={saveVisibilitySettings}
           >
             Zapisz
+          </button>
+        </div>
+      )}
+
+      {/* 📱 QR CODE + LINK */}
+      {tournament.my_role === "ORGANIZER" && (
+        <div
+          style={{
+            border: "1px solid #ccc",
+            padding: "1rem",
+            marginBottom: "1.5rem",
+            maxWidth: "320px",
+          }}
+        >
+          <h3>QR code turnieju</h3>
+
+          <QRCodeCanvas
+            ref={qrRef}
+            value={tournamentLink}
+            size={200}
+            bgColor="#ffffff"
+            fgColor="#000000"
+          />
+
+          <p style={{ marginTop: "0.5rem", wordBreak: "break-all" }}>
+            {tournamentLink}
+          </p>
+
+          <button
+            style={{ marginTop: "0.5rem" }}
+            onClick={() => {
+              navigator.clipboard.writeText(tournamentLink);
+              alert("Link skopiowany do schowka");
+            }}
+          >
+            Kopiuj link
+          </button>
+
+          <button
+            style={{ marginTop: "0.5rem", marginLeft: "0.5rem" }}
+            onClick={downloadQrCode}
+          >
+            Pobierz QR
           </button>
         </div>
       )}
