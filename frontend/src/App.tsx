@@ -65,9 +65,7 @@ export default function App() {
         <Route
           path="/tournaments/:id"
           element={
-            <ProtectedRoute>
               <TournamentDetail />
-            </ProtectedRoute>
           }
         />
 
