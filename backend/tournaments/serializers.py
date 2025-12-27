@@ -13,6 +13,21 @@ class TournamentSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = ("organizer", "my_role")
 
+    def validate(self, attrs):
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            return attrs
+
+        instance = self.instance
+        if instance:
+            # tylko ORGANIZER może zmieniać pola dostępu
+            if instance.organizer_id != request.user.id:
+                attrs.pop("is_published", None)
+                attrs.pop("access_code", None)
+                attrs.pop("is_private", None)
+
+        return attrs
+
     def get_my_role(self, obj):
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
@@ -28,6 +43,7 @@ class TournamentSerializer(serializers.ModelSerializer):
             return TournamentMembership.Role.ASSISTANT
 
         return None
+
 
 
 class TournamentAssistantSerializer(serializers.ModelSerializer):

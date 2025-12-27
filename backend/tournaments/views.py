@@ -4,10 +4,10 @@ from django.shortcuts import get_object_or_404
 from rest_framework.generics import (
     ListCreateAPIView,
     ListAPIView,
-    RetrieveAPIView,
+    RetrieveUpdateAPIView,
 )
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -48,20 +48,48 @@ class MyTournamentListView(ListAPIView):
         ).distinct()
 
 
-class TournamentDetailView(RetrieveAPIView):
+class TournamentDetailView(RetrieveUpdateAPIView):
     """
-    Szczegóły turnieju – TYLKO dla ORGANIZER lub ASSISTANT.
-    Inni użytkownicy dostaną 404.
+    Szczegóły turnieju – dostęp przez link, z opcjonalnym kodem.
+    ORGANIZER / ASSISTANT → zawsze dostęp.
     """
+    queryset = Tournament.objects.all()
     serializer_class = TournamentSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]  # 🔑 KLUCZOWE
 
-    def get_queryset(self):
-        user = self.request.user
-        return Tournament.objects.filter(
-            Q(organizer=user) |
-            Q(memberships__user=user)
-        ).distinct()
+    def retrieve(self, request, *args, **kwargs):
+        tournament = self.get_object()
+        user = request.user if request.user.is_authenticated else None
+
+        # 1️⃣ ORGANIZER / ASSISTANT – pełny dostęp
+        if user and (
+            tournament.organizer_id == user.id or
+            TournamentMembership.objects.filter(
+                tournament=tournament,
+                user=user,
+                role=TournamentMembership.Role.ASSISTANT,
+            ).exists()
+        ):
+            return super().retrieve(request, *args, **kwargs)
+
+        # 2️⃣ NIEOPUBLIKOWANY → brak dostępu
+        if not tournament.is_published:
+            return Response(
+                {"detail": "Turniej nie jest dostępny."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # 3️⃣ WYMAGA KODU
+        if tournament.access_code:
+            code = request.query_params.get("code")
+            if code != tournament.access_code:
+                return Response(
+                    {"detail": "Wymagany poprawny kod dostępu."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        # 4️⃣ OK – dostęp przez link
+        return super().retrieve(request, *args, **kwargs)
 
 
 class TournamentAssistantListView(ListAPIView):

@@ -20,7 +20,7 @@ class Tournament(models.Model):
         related_name="organized_tournaments",
     )
 
-    is_private = models.BooleanField(default=True)
+    is_published = models.BooleanField(default=False)
     access_code = models.CharField(max_length=20, blank=True, null=True)
     start_date = models.DateField(blank=True, null=True)
     end_date = models.DateField(blank=True, null=True)

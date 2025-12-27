@@ -34,7 +34,7 @@ export default function Login() {
         localStorage.setItem("access", data.access);
         localStorage.setItem("refresh", data.refresh);
 
-        navigate("/dashboard");
+        navigate("/my-tournaments");
       } else {
         const res = await fetch("http://localhost:8000/api/auth/register/", {
           method: "POST",
