@@ -29,6 +29,7 @@ export default function NavBar({ username }: Props) {
         {username && (
           <>
             <Link to="/my-tournaments">Moje turnieje</Link>
+            <Link to="/find-tournament">Wyszukaj turniej</Link>
             <Link to="/tournaments/new">Utwórz turniej</Link>
           </>
         )}
