@@ -15,7 +15,7 @@ export default function MyTournaments() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    apiGet<Tournament[]>("/api/tournaments/")
+    apiGet<Tournament[]>("/api/tournaments/my/")
       .then(setItems)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));

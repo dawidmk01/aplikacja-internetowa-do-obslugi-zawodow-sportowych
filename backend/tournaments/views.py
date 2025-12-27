@@ -50,11 +50,18 @@ class MyTournamentListView(ListAPIView):
 
 class TournamentDetailView(RetrieveAPIView):
     """
-    Szczegóły jednego turnieju.
+    Szczegóły turnieju – TYLKO dla ORGANIZER lub ASSISTANT.
+    Inni użytkownicy dostaną 404.
     """
-    queryset = Tournament.objects.all()
     serializer_class = TournamentSerializer
     permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        return Tournament.objects.filter(
+            Q(organizer=user) |
+            Q(memberships__user=user)
+        ).distinct()
 
 
 class TournamentAssistantListView(ListAPIView):
@@ -89,8 +96,7 @@ class TournamentAssistantListView(ListAPIView):
 
 class AddAssistantView(APIView):
     """
-    Dodawanie ASSISTANTA do turnieju.
-    Dostęp: tylko ORGANIZER.
+    Dodawanie ASSISTANTA – tylko ORGANIZER.
     """
     permission_classes = [IsAuthenticated, IsTournamentOrganizer]
 
@@ -118,8 +124,7 @@ class AddAssistantView(APIView):
 
 class RemoveAssistantView(APIView):
     """
-    Usuwanie ASSISTANTA z turnieju.
-    Dostęp: tylko ORGANIZER.
+    Usuwanie ASSISTANTA – tylko ORGANIZER.
     """
     permission_classes = [IsAuthenticated, IsTournamentOrganizer]
 
