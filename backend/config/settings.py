@@ -162,3 +162,20 @@ SIMPLE_JWT = {
         days=int(os.getenv("DJANGO_REFRESH_TOKEN_DAYS", "7"))
     ),
 }
+
+# ---- EMAIL (Mailtrap - DEV) ----
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = os.getenv("MAILTRAP_HOST", "sandbox.smtp.mailtrap.io")
+EMAIL_PORT = int(os.getenv("MAILTRAP_PORT", "2525"))
+EMAIL_HOST_USER = os.getenv("MAILTRAP_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("MAILTRAP_PASSWORD", "")
+
+EMAIL_USE_TLS = False
+EMAIL_USE_SSL = False
+
+DEFAULT_FROM_EMAIL = "noreply@turnieje.local"
+
+FRONTEND_RESET_URL = os.getenv(
+    "FRONTEND_RESET_URL",
+    "http://localhost:5173/reset-password",
+)

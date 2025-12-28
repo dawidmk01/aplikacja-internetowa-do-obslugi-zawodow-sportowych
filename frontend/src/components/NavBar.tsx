@@ -1,18 +1,11 @@
-import { Link, useNavigate } from "react-router-dom";
-import { clearTokens } from "../api";
+import { Link } from "react-router-dom";
 
 type Props = {
   username: string | null;
+  onLogout: () => void;
 };
 
-export default function NavBar({ username }: Props) {
-  const navigate = useNavigate();
-
-  const logout = () => {
-    clearTokens();
-    navigate("/login", { replace: true });
-  };
-
+export default function NavBar({ username, onLogout }: Props) {
   return (
     <header
       style={{
@@ -25,7 +18,9 @@ export default function NavBar({ username }: Props) {
       }}
     >
       {/* LEWA STRONA – NAWIGACJA */}
-      <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+      <nav style={{ display: "flex", gap: 16 }}>
+        <Link to="/">Strona główna</Link>
+
         {username && (
           <>
             <Link to="/my-tournaments">Moje turnieje</Link>
@@ -33,21 +28,21 @@ export default function NavBar({ username }: Props) {
             <Link to="/tournaments/new">Utwórz turniej</Link>
           </>
         )}
-      </div>
+      </nav>
 
       {/* PRAWA STRONA – SESJA */}
       <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
         {!username ? (
           <>
             <Link to="/login">Zaloguj</Link>
-            <Link to="/login">Zarejestruj</Link>
+            <Link to="/login?mode=register">Zarejestruj</Link>
           </>
         ) : (
           <>
-            <span style={{ opacity: 0.9 }}>
+            <span>
               Zalogowany: <strong>{username}</strong>
             </span>
-            <button onClick={logout}>Wyloguj</button>
+            <button onClick={onLogout}>Wyloguj</button>
           </>
         )}
       </div>

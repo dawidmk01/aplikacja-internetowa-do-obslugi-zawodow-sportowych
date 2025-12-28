@@ -1,10 +1,19 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useNavigate, useSearchParams, Link } from "react-router-dom";
 
-export default function Login() {
+type Props = {
+  onLogin?: () => Promise<void>;
+};
+
+export default function Login({ onLogin }: Props) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const urlMode = searchParams.get("mode");
+
+  const [mode, setMode] = useState<"login" | "register">(
+    urlMode === "register" ? "register" : "login"
+  );
 
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
@@ -12,6 +21,18 @@ export default function Login() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMode(urlMode === "register" ? "register" : "login");
+  }, [urlMode]);
+
+  const translateLoginError = (msg?: string) => {
+    if (!msg) return "Błąd logowania.";
+    if (msg.includes("No active account")) {
+      return "Nieprawidłowy login lub hasło.";
+    }
+    return msg;
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -26,14 +47,16 @@ export default function Login() {
           body: JSON.stringify({ username, password }),
         });
 
+        const data = await res.json();
+
         if (!res.ok) {
-          throw new Error("Nieprawidłowy login lub hasło");
+          throw new Error(translateLoginError(data.detail));
         }
 
-        const data = await res.json();
         localStorage.setItem("access", data.access);
         localStorage.setItem("refresh", data.refresh);
 
+        await onLogin?.();
         navigate("/my-tournaments");
       } else {
         const res = await fetch("http://localhost:8000/api/auth/register/", {
@@ -42,13 +65,14 @@ export default function Login() {
           body: JSON.stringify({ username, email, password }),
         });
 
+        const data = await res.json();
+
         if (!res.ok) {
-          const data = await res.json();
           throw new Error(data.detail || "Błąd rejestracji");
         }
 
         alert("Konto utworzone. Możesz się zalogować.");
-        setMode("login");
+        navigate("/login");
         setPassword("");
       }
     } catch (e: any) {
@@ -108,19 +132,25 @@ export default function Login() {
         </button>
       </form>
 
+      {mode === "login" && (
+        <p style={{ marginTop: 12 }}>
+          <Link to="/forgot-password">Nie pamiętasz hasła?</Link>
+        </p>
+      )}
+
       <hr style={{ margin: "1.5rem 0" }} />
 
       {mode === "login" ? (
         <p>
           Nie masz konta?{" "}
-          <button onClick={() => setMode("register")}>
+          <button onClick={() => navigate("/login?mode=register")}>
             Zarejestruj się
           </button>
         </p>
       ) : (
         <p>
           Masz już konto?{" "}
-          <button onClick={() => setMode("login")}>
+          <button onClick={() => navigate("/login")}>
             Zaloguj się
           </button>
         </p>
@@ -128,3 +158,4 @@ export default function Login() {
     </div>
   );
 }
+
