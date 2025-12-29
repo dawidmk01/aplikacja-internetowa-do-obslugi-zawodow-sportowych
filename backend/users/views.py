@@ -122,7 +122,6 @@ class PasswordResetRequestView(APIView):
             status=status.HTTP_200_OK,
         )
 
-
 class PasswordResetConfirmView(APIView):
     """
     Ustawienie nowego hasła na podstawie tokenu.
@@ -139,12 +138,28 @@ class PasswordResetConfirmView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        token = get_object_or_404(PasswordResetToken, token=token_value)
+        try:
+            token = PasswordResetToken.objects.get(token=token_value)
+        except PasswordResetToken.DoesNotExist:
+            return Response(
+                {
+                    "detail": (
+                        "Link do resetu hasła jest nieprawidłowy, "
+                        "wygasł lub został już wykorzystany."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if not token.is_valid():
             token.delete()
             return Response(
-                {"detail": "Token wygasł."},
+                {
+                    "detail": (
+                        "Link do resetu hasła wygasł. "
+                        "Poproś o wygenerowanie nowego linku."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -152,9 +167,11 @@ class PasswordResetConfirmView(APIView):
         user.set_password(new_password)
         user.save()
 
+        # 🔐 jednorazowość linku
         token.delete()
 
         return Response(
-            {"detail": "Hasło zostało zmienione."},
+            {"detail": "Hasło zostało zmienione. Możesz się zalogować."},
             status=status.HTTP_200_OK,
         )
+

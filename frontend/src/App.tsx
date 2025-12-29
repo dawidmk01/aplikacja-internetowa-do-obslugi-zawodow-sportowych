@@ -4,6 +4,9 @@ import NavBar from "./components/NavBar";
 import { apiFetch, clearTokens } from "./api";
 
 import TournamentDetail from "./pages/TournamentDetail";
+import TournamentTeamsSetup from "./pages/TournamentTeamsSetup";
+import TournamentMatches from "./pages/TournamentMatches";
+
 import Login from "./pages/Login";
 import MyTournaments from "./pages/MyTournaments";
 import ProtectedRoute from "./ProtectedRoute";
@@ -16,7 +19,11 @@ import ResetPassword from "./pages/ResetPassword";
 export default function App() {
   const [username, setUsername] = useState<string | null>(null);
 
-  // 🔄 sprawdzenie aktualnego użytkownika
+  /**
+   * Pobranie informacji o aktualnie zalogowanym użytkowniku.
+   * Stan ten stanowi centralne źródło informacji o sesji użytkownika
+   * w aplikacji klienckiej.
+   */
   const loadMe = async () => {
     try {
       const res = await apiFetch("/api/auth/me/");
@@ -31,13 +38,19 @@ export default function App() {
     }
   };
 
-  // 🔓 WYLOGOWANIE – jedyne źródło prawdy
+  /**
+   * Wylogowanie użytkownika.
+   * Operacja usuwa tokeny uwierzytelniające oraz resetuje
+   * stan sesji po stronie aplikacji.
+   */
   const handleLogout = () => {
     clearTokens();
     setUsername(null);
   };
 
-  // ⏱️ pierwsze załadowanie użytkownika
+  /**
+   * Inicjalne sprawdzenie stanu sesji po uruchomieniu aplikacji.
+   */
   useEffect(() => {
     loadMe();
   }, []);
@@ -47,7 +60,7 @@ export default function App() {
       <NavBar username={username} onLogout={handleLogout} />
 
       <Routes>
-        {/* 🌐 Publiczne */}
+        {/* Widoki publiczne */}
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login onLogin={loadMe} />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
@@ -55,13 +68,13 @@ export default function App() {
         <Route path="/find-tournament" element={<FindTournament />} />
         <Route path="/tournaments/:id" element={<TournamentDetail />} />
 
-        {/* 🔁 Alias – zgodność wsteczna */}
+        {/* Zgodność wsteczna */}
         <Route
           path="/dashboard"
           element={<Navigate to="/my-tournaments" replace />}
         />
 
-        {/* 🔐 Tylko dla zalogowanych */}
+        {/* Widoki dostępne wyłącznie dla użytkowników zalogowanych */}
         <Route
           path="/my-tournaments"
           element={
@@ -80,7 +93,27 @@ export default function App() {
           }
         />
 
-        {/* 🚫 Fallback */}
+        {/* Drugi etap kreatora – konfiguracja uczestników */}
+        <Route
+          path="/tournaments/:id/teams"
+          element={
+            <ProtectedRoute>
+              <TournamentTeamsSetup />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* === WARIANT A: MECZE TURNIEJU === */}
+        <Route
+          path="/tournaments/:id/matches"
+          element={
+            <ProtectedRoute>
+              <TournamentMatches />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Przekierowanie dla nieobsługiwanych tras */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

@@ -1,4 +1,5 @@
 from django.urls import path
+
 from .views import (
     TournamentListView,
     TournamentDetailView,
@@ -6,16 +7,38 @@ from .views import (
     TournamentAssistantListView,
     AddAssistantView,
     RemoveAssistantView,
+    TournamentTeamSetupView,
+    TournamentTeamListView,
+    TournamentTeamUpdateView,
+    GenerateTournamentView,
+    TournamentMatchListView,
 )
 
 urlpatterns = [
-    path("tournaments/", TournamentListView.as_view(), name="tournament-list"),
-    path("tournaments/my/", MyTournamentListView.as_view(), name="my-tournaments"),
+    # ========================================================
+    # TURNIEJE – LISTA I SZCZEGÓŁY
+    # ========================================================
+
+    path(
+        "tournaments/",
+        TournamentListView.as_view(),
+        name="tournament-list",
+    ),
+    path(
+        "tournaments/my/",
+        MyTournamentListView.as_view(),
+        name="my-tournaments",
+    ),
     path(
         "tournaments/<int:pk>/",
         TournamentDetailView.as_view(),
         name="tournament-detail",
     ),
+
+    # ========================================================
+    # WSPÓŁORGANIZATORZY
+    # ========================================================
+
     path(
         "tournaments/<int:pk>/assistants/",
         AddAssistantView.as_view(),
@@ -30,5 +53,45 @@ urlpatterns = [
         "tournaments/<int:pk>/assistants/<int:user_id>/",
         RemoveAssistantView.as_view(),
         name="tournament-remove-assistant",
+    ),
+
+    # ========================================================
+    # UCZESTNICY TURNIEJU
+    # ========================================================
+
+    path(
+        "tournaments/<int:pk>/teams/setup/",
+        TournamentTeamSetupView.as_view(),
+        name="tournament-participants-setup",
+    ),
+    path(
+        "tournaments/<int:pk>/teams/",
+        TournamentTeamListView.as_view(),
+        name="tournament-participants-list",
+    ),
+    path(
+        "tournaments/<int:pk>/teams/<int:team_id>/",
+        TournamentTeamUpdateView.as_view(),
+        name="tournament-participant-update",
+    ),
+
+    # ========================================================
+    # GENEROWANIE ROZGRYWEK
+    # ========================================================
+
+    path(
+        "tournaments/<int:pk>/generate/",
+        GenerateTournamentView.as_view(),
+        name="tournament-generate",
+    ),
+
+    # ========================================================
+    # MECZE TURNIEJU
+    # ========================================================
+
+    path(
+        "tournaments/<int:pk>/matches/",
+        TournamentMatchListView.as_view(),
+        name="tournament-matches",
     ),
 ]
