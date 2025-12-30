@@ -292,27 +292,19 @@ class MatchSerializer(serializers.ModelSerializer):
         read_only=True,
     )
 
+    stage_type = serializers.CharField(
+        source="stage.stage_type",
+        read_only=True,
+    )
+
     class Meta:
         model = Match
         fields = (
             "id",
-            "tournament",
-            "stage",
-            "group",
             "round_number",
-            "home_team",
+            "stage_type",
             "home_team_name",
-            "away_team",
             "away_team_name",
             "home_score",
             "away_score",
-            "status",
-            "created_at",
-        )
-        read_only_fields = (
-            "id",
-            "tournament",
-            "stage",
-            "group",
-            "created_at",
         )

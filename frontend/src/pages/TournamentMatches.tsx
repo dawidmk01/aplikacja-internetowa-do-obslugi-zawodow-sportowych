@@ -9,11 +9,26 @@ import { apiFetch } from "../api";
 type Match = {
   id: number;
   round_number: number | null;
+  stage_type: "LEAGUE" | "KNOCKOUT";
   home_team_name: string;
   away_team_name: string;
   home_score: number | null;
   away_score: number | null;
 };
+
+// ============================================================
+// Nazewnictwo rund pucharowych
+// ============================================================
+
+function getKnockoutRoundLabel(matchesInRound: number): string {
+  const teams = matchesInRound * 2;
+
+  if (teams === 2) return "Finał";
+  if (teams === 4) return "Półfinał";
+  if (teams === 8) return "Ćwierćfinał";
+
+  return `1/${teams} finału`;
+}
 
 // ============================================================
 // Komponent
@@ -38,27 +53,23 @@ export default function TournamentMatches() {
         }
         return res.json();
       })
-      .then((data: Match[]) => {
-        setMatches(data);
-      })
+      .then((data: Match[]) => setMatches(data))
       .catch((err) => setError(err.message));
   }, [id]);
 
   // ----------------------------------------------------------
-  // Normalizacja: tylko mecze z kolejką
+  // Grupowanie meczów po numerze rundy
   // ----------------------------------------------------------
 
-  const matchesWithRound = matches.filter(
-    (m) => typeof m.round_number === "number"
-  );
-
-  const matchesByRound = matchesWithRound.reduce<Record<number, Match[]>>(
+  const matchesByRound = matches.reduce<Record<number, Match[]>>(
     (acc, match) => {
-      const round = match.round_number as number;
-      if (!acc[round]) {
-        acc[round] = [];
+      if (typeof match.round_number !== "number") return acc;
+
+      if (!acc[match.round_number]) {
+        acc[match.round_number] = [];
       }
-      acc[round].push(match);
+
+      acc[match.round_number].push(match);
       return acc;
     },
     {}
@@ -84,36 +95,46 @@ export default function TournamentMatches() {
     <div style={{ padding: "2rem", maxWidth: 800 }}>
       <h1>Mecze turnieju</h1>
 
-      {rounds.map((round) => (
-        <section key={round} style={{ marginBottom: "2rem" }}>
-          <h2>Kolejka {round}</h2>
+      {rounds.map((round) => {
+        const roundMatches = matchesByRound[round];
+        const stageType = roundMatches[0].stage_type;
 
-          {matchesByRound[round].map((match) => (
-            <div
-              key={match.id}
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr auto 1fr",
-                alignItems: "center",
-                padding: "0.5rem 0",
-                borderBottom: "1px solid #333",
-              }}
-            >
-              <strong style={{ textAlign: "right" }}>
-                {match.home_team_name}
-              </strong>
+        const title =
+          stageType === "KNOCKOUT"
+            ? getKnockoutRoundLabel(roundMatches.length)
+            : `Kolejka ${round}`;
 
-              <span style={{ padding: "0 1rem", opacity: 0.85 }}>
-                {match.home_score ?? "-"} : {match.away_score ?? "-"}
-              </span>
+        return (
+          <section key={round} style={{ marginBottom: "2rem" }}>
+            <h2>{title}</h2>
 
-              <strong style={{ textAlign: "left" }}>
-                {match.away_team_name}
-              </strong>
-            </div>
-          ))}
-        </section>
-      ))}
+            {roundMatches.map((match) => (
+              <div
+                key={match.id}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr auto 1fr",
+                  alignItems: "center",
+                  padding: "0.5rem 0",
+                  borderBottom: "1px solid #333",
+                }}
+              >
+                <strong style={{ textAlign: "right" }}>
+                  {match.home_team_name}
+                </strong>
+
+                <span style={{ padding: "0 1rem", opacity: 0.85 }}>
+                  {match.home_score ?? "-"} : {match.away_score ?? "-"}
+                </span>
+
+                <strong style={{ textAlign: "left" }}>
+                  {match.away_team_name}
+                </strong>
+              </div>
+            ))}
+          </section>
+        );
+      })}
     </div>
   );
 }

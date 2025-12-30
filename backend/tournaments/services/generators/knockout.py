@@ -75,8 +75,7 @@ def _validate_tournament_state(tournament: Tournament) -> None:
 def _get_active_teams(tournament: Tournament) -> List[Team]:
     teams = list(
         tournament.teams.filter(
-            is_active=True,
-            status=Team.Status.APPROVED,
+            is_active=True
         ).order_by("id")
     )
 
@@ -86,6 +85,7 @@ def _get_active_teams(tournament: Tournament) -> List[Team]:
         )
 
     return teams
+
 
 
 # ============================================================

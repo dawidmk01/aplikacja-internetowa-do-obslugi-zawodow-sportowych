@@ -32,7 +32,8 @@ from .serializers import (
 )
 from .permissions import IsTournamentOrganizer
 
-from .services.generators.league import generate_league_stage
+from tournaments.services.generators.league import generate_league_stage
+from tournaments.services.generators.knockout import generate_knockout_stage
 
 
 # ============================================================
@@ -40,9 +41,6 @@ from .services.generators.league import generate_league_stage
 # ============================================================
 
 def user_can_manage_tournament(user, tournament: Tournament) -> bool:
-    """
-    Sprawdza, czy użytkownik posiada uprawnienia do zarządzania turniejem.
-    """
     if not user or not user.is_authenticated:
         return False
 
@@ -60,9 +58,6 @@ def user_can_manage_tournament(user, tournament: Tournament) -> bool:
 # ============================================================
 
 class TournamentListView(ListCreateAPIView):
-    """
-    Lista turniejów oraz tworzenie nowego turnieju.
-    """
     queryset = Tournament.objects.all()
     serializer_class = TournamentSerializer
     permission_classes = [IsAuthenticated]
@@ -72,9 +67,6 @@ class TournamentListView(ListCreateAPIView):
 
 
 class MyTournamentListView(ListAPIView):
-    """
-    Turnieje, w których użytkownik jest organizatorem lub asystentem.
-    """
     serializer_class = TournamentSerializer
     permission_classes = [IsAuthenticated]
 
@@ -91,9 +83,6 @@ class MyTournamentListView(ListAPIView):
 # ============================================================
 
 class TournamentDetailView(RetrieveUpdateAPIView):
-    """
-    Szczegóły turnieju (odczyt publiczny, edycja prywatna).
-    """
     queryset = Tournament.objects.all()
     serializer_class = TournamentSerializer
 
@@ -224,13 +213,10 @@ class TournamentTeamUpdateView(APIView):
 
 
 # ============================================================
-# KONFIGURACJA STRUKTURY UCZESTNIKÓW (SETUP)
+# KONFIGURACJA UCZESTNIKÓW
 # ============================================================
 
 class TournamentTeamSetupView(APIView):
-    """
-    Konfiguracja struktury uczestników turnieju (etap DRAFT).
-    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -238,18 +224,13 @@ class TournamentTeamSetupView(APIView):
 
         if not user_can_manage_tournament(request.user, tournament):
             return Response(
-                {"detail": "Brak uprawnień do konfiguracji turnieju."},
+                {"detail": "Brak uprawnień."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
         if tournament.status != Tournament.Status.DRAFT:
             return Response(
-                {
-                    "detail": (
-                        "Nie można zmieniać struktury uczestników "
-                        "po wygenerowaniu rozgrywek."
-                    )
-                },
+                {"detail": "Nie można zmieniać uczestników po wygenerowaniu rozgrywek."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -286,10 +267,7 @@ class TournamentTeamSetupView(APIView):
         )
 
         return Response(
-            {
-                "detail": "Konfiguracja struktury uczestników została zapisana.",
-                "participants_count": participants_count,
-            },
+            {"detail": "Uczestnicy zostali utworzeni."},
             status=status.HTTP_200_OK,
         )
 
@@ -305,6 +283,13 @@ class GenerateTournamentView(APIView):
         tournament = get_object_or_404(Tournament, pk=pk)
         self.check_object_permissions(request, tournament)
 
+        # 🔒 BLOKADA WIELOKROTNEGO GENEROWANIA
+        if tournament.status != Tournament.Status.DRAFT:
+            return Response(
+                {"detail": "Rozgrywki zostały już wygenerowane."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         serializer = GenerateTournamentSerializer(
             data=request.data,
             context={"tournament": tournament},
@@ -313,11 +298,12 @@ class GenerateTournamentView(APIView):
 
         if tournament.tournament_format == Tournament.TournamentFormat.LEAGUE:
             generate_league_stage(tournament)
-        else:
-            return Response(
-                {"detail": "Brak generatora dla wybranego formatu turnieju."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+
+        elif tournament.tournament_format == Tournament.TournamentFormat.CUP:
+            generate_knockout_stage(tournament)
+
+        tournament.status = Tournament.Status.CONFIGURED
+        tournament.save(update_fields=["status"])
 
         return Response(
             {"detail": "Rozgrywki zostały wygenerowane."},
@@ -330,9 +316,6 @@ class GenerateTournamentView(APIView):
 # ============================================================
 
 class TournamentMatchListView(ListAPIView):
-    """
-    Lista meczów turnieju (read-only).
-    """
     serializer_class = MatchSerializer
     permission_classes = [IsAuthenticated]
 
@@ -343,7 +326,8 @@ class TournamentMatchListView(ListAPIView):
             return Match.objects.none()
 
         return (
-            Match.objects.filter(tournament=tournament)
+            Match.objects
+            .filter(tournament=tournament)
             .select_related("home_team", "away_team", "stage")
             .order_by("round_number", "id")
         )
