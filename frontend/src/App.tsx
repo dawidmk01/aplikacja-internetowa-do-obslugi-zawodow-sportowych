@@ -1,29 +1,48 @@
 import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+
 import NavBar from "./components/NavBar";
 import { apiFetch, clearTokens } from "./api";
 
-import TournamentDetail from "./pages/TournamentDetail";
-import TournamentTeamsSetup from "./pages/TournamentTeamsSetup";
-import TournamentMatches from "./pages/TournamentMatches";
-
-import Login from "./pages/Login";
-import MyTournaments from "./pages/MyTournaments";
-import ProtectedRoute from "./ProtectedRoute";
-import CreateTournament from "./pages/CreateTournament";
-import FindTournament from "./pages/FindTournament";
+/* ===== STRONY PUBLICZNE ===== */
 import Home from "./pages/Home";
+import Login from "./pages/Login";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
+import FindTournament from "./pages/FindTournament";
+
+/* ===== STREFA ZALOGOWANA ===== */
+import ProtectedRoute from "./ProtectedRoute";
+import MyTournaments from "./pages/MyTournaments";
+import CreateTournament from "./pages/CreateTournament";
+
+/* ===== NOWY FLOW TURNIEJU ===== */
+import TournamentSetup from "./pages/TournamentSetup";     // krok 2
+import TournamentTeams from "./pages/TournamentTeams";     // krok 3
+import TournamentDetail from "./pages/TournamentDetail";   // podgląd
+import TournamentMatches from "./pages/TournamentMatches"; // mecze
+
+/**
+ * ARCHITEKTURA ROUTINGU
+ * ====================
+ *
+ * NOWY PRZEPŁYW:
+ * 1️⃣ /tournaments/new
+ * 2️⃣ /tournaments/:id/setup
+ * 3️⃣ /tournaments/:id/teams
+ * 4️⃣ /tournaments/:id
+ * 5️⃣ /tournaments/:id/matches
+ *
+ * Stare widoki są USUNIĘTE z routingu.
+ */
 
 export default function App() {
   const [username, setUsername] = useState<string | null>(null);
 
-  /**
-   * Pobranie informacji o aktualnie zalogowanym użytkowniku.
-   * Stan ten stanowi centralne źródło informacji o sesji użytkownika
-   * w aplikacji klienckiej.
-   */
+  /* =========================
+     SESJA UŻYTKOWNIKA
+     ========================= */
+
   const loadMe = async () => {
     try {
       const res = await apiFetch("/api/auth/me/");
@@ -38,19 +57,11 @@ export default function App() {
     }
   };
 
-  /**
-   * Wylogowanie użytkownika.
-   * Operacja usuwa tokeny uwierzytelniające oraz resetuje
-   * stan sesji po stronie aplikacji.
-   */
   const handleLogout = () => {
     clearTokens();
     setUsername(null);
   };
 
-  /**
-   * Inicjalne sprawdzenie stanu sesji po uruchomieniu aplikacji.
-   */
   useEffect(() => {
     loadMe();
   }, []);
@@ -60,21 +71,18 @@ export default function App() {
       <NavBar username={username} onLogout={handleLogout} />
 
       <Routes>
-        {/* Widoki publiczne */}
+        {/* =========================
+            PUBLICZNE
+           ========================= */}
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login onLogin={loadMe} />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/find-tournament" element={<FindTournament />} />
-        <Route path="/tournaments/:id" element={<TournamentDetail />} />
 
-        {/* Zgodność wsteczna */}
-        <Route
-          path="/dashboard"
-          element={<Navigate to="/my-tournaments" replace />}
-        />
-
-        {/* Widoki dostępne wyłącznie dla użytkowników zalogowanych */}
+        {/* =========================
+            STREFA ZALOGOWANA
+           ========================= */}
         <Route
           path="/my-tournaments"
           element={
@@ -84,6 +92,9 @@ export default function App() {
           }
         />
 
+        {/* =========================
+            KROK 1 – UTWORZENIE
+           ========================= */}
         <Route
           path="/tournaments/new"
           element={
@@ -93,17 +104,38 @@ export default function App() {
           }
         />
 
-        {/* Drugi etap kreatora – konfiguracja uczestników */}
+        {/* =========================
+            KROK 2 – KONFIGURACJA
+           ========================= */}
         <Route
-          path="/tournaments/:id/teams"
+          path="/tournaments/:id/setup"
           element={
             <ProtectedRoute>
-              <TournamentTeamsSetup />
+              <TournamentSetup />
             </ProtectedRoute>
           }
         />
 
-        {/* === WARIANT A: MECZE TURNIEJU === */}
+        {/* =========================
+            KROK 3 – DRUŻYNY
+           ========================= */}
+        <Route
+          path="/tournaments/:id/teams"
+          element={
+            <ProtectedRoute>
+              <TournamentTeams />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* =========================
+            PODGLĄD TURNIEJU
+           ========================= */}
+        <Route path="/tournaments/:id" element={<TournamentDetail />} />
+
+        {/* =========================
+            MECZE
+           ========================= */}
         <Route
           path="/tournaments/:id/matches"
           element={
@@ -113,7 +145,9 @@ export default function App() {
           }
         />
 
-        {/* Przekierowanie dla nieobsługiwanych tras */}
+        {/* =========================
+            FALLBACK
+           ========================= */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

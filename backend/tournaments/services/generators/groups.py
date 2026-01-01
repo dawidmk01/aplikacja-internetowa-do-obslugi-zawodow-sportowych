@@ -1,134 +1,189 @@
 """
-Generator rozgrywek pucharowych (KO – single elimination).
+Generator fazy grupowej turnieju (dla formatu MIXED).
 
-Moduł odpowiada za:
-- utworzenie etapu pucharowego,
-- wyznaczenie najbliższej potęgi 2,
-- obsługę wolnych losów (bye),
-- wygenerowanie pierwszej rundy drabinki.
+Odpowiada za:
+- podział uczestników na grupy,
+- generowanie kolejek round-robin w ramach każdej grupy,
+- obsługę 1 lub 2 meczów pomiędzy każdą parą (rewanże),
+- przypisanie grup WYŁĄCZNIE do meczów (Match.group).
 
-Generator tworzy WYŁĄCZNIE pierwszą rundę.
-Kolejne rundy są generowane dynamicznie na podstawie wyników.
+NIE odpowiada za:
+- awanse z grup,
+- fazę pucharową.
 """
 
-import math
-from typing import List
+from typing import List, Tuple, Optional
+from django.db import transaction
 
-from tournaments.models import Tournament, Stage, Match, Team
+from tournaments.models import Tournament, Stage, Group, Match, Team
 
 
 # ============================================================
 # API PUBLICZNE
 # ============================================================
 
-def generate_knockout_stage(tournament: Tournament) -> Stage:
+@transaction.atomic
+def generate_group_stage(tournament: Tournament) -> Stage:
     """
-    Generuje fazę pucharową turnieju (KO).
+    Generuje fazę grupową turnieju (format MIXED).
     """
-    _validate_tournament_state(tournament)
+    _validate_tournament(tournament)
 
     teams = _get_active_teams(tournament)
+    cfg = tournament.format_config or {}
+
+    teams_per_group = int(cfg.get("teams_per_group", 4))
+    group_matches = int(cfg.get("group_matches", 1))  # 1 lub 2
+
+    if teams_per_group < 2:
+        raise ValueError("Grupa musi mieć co najmniej 2 uczestników.")
+
+    if group_matches not in (1, 2):
+        raise ValueError("group_matches musi wynosić 1 albo 2.")
 
     stage = Stage.objects.create(
         tournament=tournament,
-        stage_type=Stage.StageType.KNOCKOUT,
+        stage_type=Stage.StageType.GROUP,
         order=1,
     )
 
-    bracket_size = _next_power_of_two(len(teams))
-    byes_count = bracket_size - len(teams)
+    groups = _split_into_groups(stage, teams, teams_per_group)
 
-    seeded_teams = _apply_byes(teams, byes_count)
+    matches: list[Match] = []
 
-    _generate_first_round_matches(
-        tournament=tournament,
-        stage=stage,
-        teams=seeded_teams,
-    )
+    for group, group_teams in groups:
+        schedule = _round_robin_schedule(group_teams)
+        current_round = 1
+
+        for leg in range(group_matches):
+            for round_pairs in schedule:
+                for home, away in round_pairs:
+                    if leg == 1:
+                        home, away = away, home
+
+                    matches.append(
+                        Match(
+                            tournament=tournament,
+                            stage=stage,
+                            group=group,
+                            home_team=home,
+                            away_team=away,
+                            round_number=current_round,
+                            status=Match.Status.SCHEDULED,
+                        )
+                    )
+                current_round += 1
+
+    if not matches:
+        raise ValueError("Generator fazy grupowej nie utworzył żadnych meczów.")
+
+    Match.objects.bulk_create(matches)
+
+    tournament.status = Tournament.Status.CONFIGURED
+    tournament.save(update_fields=["status"])
 
     return stage
 
 
 # ============================================================
-# WALIDACJA
+# WALIDACJE
 # ============================================================
 
-def _validate_tournament_state(tournament: Tournament) -> None:
+def _validate_tournament(tournament: Tournament) -> None:
     if tournament.status != Tournament.Status.DRAFT:
         raise ValueError(
-            "Faza pucharowa może być generowana tylko dla turnieju w statusie DRAFT."
+            "Fazę grupową można generować tylko dla turnieju w statusie DRAFT."
         )
 
-    if tournament.tournament_format != Tournament.TournamentFormat.CUP:
+    if tournament.tournament_format != Tournament.TournamentFormat.MIXED:
         raise ValueError(
-            "Generator obsługuje wyłącznie format CUP."
+            "Generator fazy grupowej obsługuje wyłącznie format MIXED."
         )
 
 
 def _get_active_teams(tournament: Tournament) -> List[Team]:
     teams = list(
-        tournament.teams.filter(
-            is_active=True,
-        ).order_by("id")
+        tournament.teams.filter(is_active=True).order_by("id")
     )
 
     if len(teams) < 2:
         raise ValueError(
-            "Do wygenerowania fazy pucharowej wymaganych jest co najmniej dwóch uczestników."
+            "Faza grupowa wymaga co najmniej 2 aktywnych uczestników."
         )
 
     return teams
 
 
 # ============================================================
-# LOGIKA DRABINKI
+# LOGIKA GRUP
 # ============================================================
 
-def _next_power_of_two(n: int) -> int:
-    """
-    Zwraca najbliższą potęgę 2 większą lub równą n.
-    """
-    return 2 ** math.ceil(math.log2(n))
-
-
-def _apply_byes(teams: List[Team], byes_count: int) -> List[Team]:
-    """
-    Uzupełnia listę uczestników o wolne losy (bye).
-    """
-    if byes_count <= 0:
-        return teams
-
-    return teams + [None] * byes_count
-
-
-def _generate_first_round_matches(
-    tournament: Tournament,
+def _split_into_groups(
     stage: Stage,
     teams: List[Team],
-) -> None:
+    teams_per_group: int,
+) -> List[tuple[Group, List[Team]]]:
     """
-    Generuje mecze pierwszej rundy fazy pucharowej.
+    Dzieli zespoły na grupy.
+    Zwraca listę:
+    (Group, [Team, Team, ...])
     """
-    matches = []
-    round_number = 1
+    groups: list[tuple[Group, List[Team]]] = []
 
-    for i in range(0, len(teams), 2):
-        home = teams[i]
-        away = teams[i + 1]
+    index = 0
+    group_number = 1
 
-        # Wolny los – brak meczu
-        if home is None or away is None:
-            continue
-
-        matches.append(
-            Match(
-                tournament=tournament,
-                stage=stage,
-                home_team=home,
-                away_team=away,
-                round_number=round_number,
-                status=Match.Status.SCHEDULED,
-            )
+    while index < len(teams):
+        group = Group.objects.create(
+            stage=stage,
+            name=f"Grupa {group_number}",
         )
 
-    Match.objects.bulk_create(matches)
+        group_teams = teams[index : index + teams_per_group]
+        groups.append((group, group_teams))
+
+        index += teams_per_group
+        group_number += 1
+
+    return groups
+
+
+# ============================================================
+# ROUND-ROBIN (KOLEJKI W GRUPIE)
+# ============================================================
+
+def _round_robin_schedule(
+    teams: List[Team],
+) -> List[List[Tuple[Team, Team]]]:
+    """
+    Zwraca listę kolejek (round-robin).
+    Każda kolejka = lista par (home, away).
+    Obsługuje pauzy przy nieparzystej liczbie zespołów.
+    """
+    teams = teams[:]
+
+    if len(teams) % 2 == 1:
+        teams.append(None)
+
+    n = len(teams)
+    rounds = n - 1
+    half = n // 2
+
+    schedule: list[list[tuple[Team, Team]]] = []
+
+    for _ in range(rounds):
+        round_matches: list[tuple[Team, Team]] = []
+
+        for i in range(half):
+            t1 = teams[i]
+            t2 = teams[n - 1 - i]
+
+            if t1 is not None and t2 is not None:
+                round_matches.append((t1, t2))
+
+        schedule.append(round_matches)
+
+        # algorytm kołowy
+        teams = [teams[0]] + [teams[-1]] + teams[1:-1]
+
+    return schedule

@@ -1,45 +1,39 @@
 """
 Generator rozgrywek pucharowych (KO – single elimination).
 
-Moduł odpowiada za:
-- utworzenie etapu pucharowego,
-- wyznaczenie najbliższej potęgi 2,
-- obsługę wolnych losów (bye),
-- wygenerowanie pierwszej rundy drabinki.
+Obsługuje:
+- rundy 1- lub 2-meczowe (cup_matches),
+- wolne losy (bye),
+- poprawną numerację rund.
 
 Generator tworzy WYŁĄCZNIE pierwszą rundę.
-Kolejne rundy są generowane dynamicznie na podstawie wyników.
+Kolejne rundy są generowane dynamicznie po zakończeniu meczów.
 """
 
 import math
-from typing import List
+from typing import List, Optional
+from django.db import transaction
 
-from tournaments.models import (
-    Tournament,
-    Stage,
-    Match,
-    Team,
-)
+from tournaments.models import Tournament, Stage, Match, Team
 
 
 # ============================================================
 # API PUBLICZNE
 # ============================================================
 
+@transaction.atomic
 def generate_knockout_stage(tournament: Tournament) -> Stage:
     """
-    Generuje fazę pucharową turnieju (KO).
-
-    Zakłada:
-    - turniej w statusie DRAFT,
-    - zatwierdzonych uczestników,
-    - poprawną konfigurację domenową.
-
-    Zwraca utworzony obiekt Stage.
+    Generuje pierwszą rundę fazy pucharowej (KO).
     """
-    _validate_tournament_state(tournament)
+    _validate_tournament(tournament)
 
     teams = _get_active_teams(tournament)
+    cfg = tournament.format_config or {}
+
+    cup_matches = int(cfg.get("cup_matches", 1))
+    if cup_matches not in (1, 2):
+        raise ValueError("cup_matches musi wynosić 1 albo 2.")
 
     stage = Stage.objects.create(
         tournament=tournament,
@@ -52,40 +46,51 @@ def generate_knockout_stage(tournament: Tournament) -> Stage:
 
     seeded_teams = _apply_byes(teams, byes_count)
 
-    _generate_first_round_matches(
+    matches = _generate_first_round_matches(
         tournament=tournament,
         stage=stage,
         teams=seeded_teams,
+        matches_per_pair=cup_matches,
     )
+
+    if not matches:
+        raise ValueError("Generator pucharowy nie utworzył żadnych meczów.")
+
+    Match.objects.bulk_create(matches)
+
+    tournament.status = Tournament.Status.CONFIGURED
+    tournament.save(update_fields=["status"])
 
     return stage
 
 
 # ============================================================
-# WALIDACJA
+# WALIDACJE
 # ============================================================
 
-def _validate_tournament_state(tournament: Tournament) -> None:
+def _validate_tournament(tournament: Tournament) -> None:
     if tournament.status != Tournament.Status.DRAFT:
         raise ValueError(
             "Faza pucharowa może być generowana tylko dla turnieju w statusie DRAFT."
         )
 
+    if tournament.tournament_format != Tournament.TournamentFormat.CUP:
+        raise ValueError(
+            "Generator pucharowy obsługuje wyłącznie format CUP."
+        )
+
 
 def _get_active_teams(tournament: Tournament) -> List[Team]:
     teams = list(
-        tournament.teams.filter(
-            is_active=True
-        ).order_by("id")
+        tournament.teams.filter(is_active=True).order_by("id")
     )
 
     if len(teams) < 2:
         raise ValueError(
-            "Do wygenerowania fazy pucharowej wymaganych jest co najmniej dwóch uczestników."
+            "Do wygenerowania fazy pucharowej wymaganych jest co najmniej dwóch aktywnych uczestników."
         )
 
     return teams
-
 
 
 # ============================================================
@@ -94,17 +99,17 @@ def _get_active_teams(tournament: Tournament) -> List[Team]:
 
 def _next_power_of_two(n: int) -> int:
     """
-    Zwraca najbliższą potęgę 2 większą lub równą n.
+    Zwraca najbliższą potęgę 2 ≥ n.
     """
     return 2 ** math.ceil(math.log2(n))
 
 
-def _apply_byes(teams: List[Team], byes_count: int) -> List[Team]:
+def _apply_byes(
+    teams: List[Team],
+    byes_count: int,
+) -> List[Optional[Team]]:
     """
-    Uzupełnia listę uczestników o wolne losy (bye).
-
-    Wolne losy są reprezentowane przez None i obsługiwane
-    podczas generowania meczów.
+    Dodaje wolne losy (bye) jako None.
     """
     if byes_count <= 0:
         return teams
@@ -115,35 +120,39 @@ def _apply_byes(teams: List[Team], byes_count: int) -> List[Team]:
 def _generate_first_round_matches(
     tournament: Tournament,
     stage: Stage,
-    teams: List[Team],
-) -> None:
+    teams: List[Optional[Team]],
+    matches_per_pair: int,
+) -> list[Match]:
     """
-    Generuje mecze pierwszej rundy fazy pucharowej.
+    Generuje pierwszą rundę fazy pucharowej.
 
-    Każda para (team vs team) tworzy mecz.
-    Jeżeli występuje bye (None), mecz nie jest tworzony,
-    a awans następuje automatycznie w kolejnej rundzie.
+    Dla każdej pary:
+    - tworzy 1 lub 2 mecze,
+    - przy bye (None) nie tworzy meczu.
     """
-    matches = []
+    matches: list[Match] = []
     round_number = 1
 
     for i in range(0, len(teams), 2):
         home = teams[i]
         away = teams[i + 1]
 
-        # Wolny los – brak meczu
+        # wolny los
         if home is None or away is None:
             continue
 
-        matches.append(
-            Match(
-                tournament=tournament,
-                stage=stage,
-                home_team=home,
-                away_team=away,
-                round_number=round_number,
-                status=Match.Status.SCHEDULED,
-            )
-        )
+        for m in range(matches_per_pair):
+            h, a = (home, away) if m == 0 else (away, home)
 
-    Match.objects.bulk_create(matches)
+            matches.append(
+                Match(
+                    tournament=tournament,
+                    stage=stage,
+                    home_team=h,
+                    away_team=a,
+                    round_number=round_number,
+                    status=Match.Status.SCHEDULED,
+                )
+            )
+
+    return matches

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { apiFetch } from "../api";
 
 // ============================================================
@@ -36,26 +36,64 @@ function getKnockoutRoundLabel(matchesInRound: number): string {
 
 export default function TournamentMatches() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+
   const [matches, setMatches] = useState<Match[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // ----------------------------------------------------------
   // Pobranie meczów
   // ----------------------------------------------------------
 
-  useEffect(() => {
+  const loadMatches = async () => {
     if (!id) return;
 
-    apiFetch(`/api/tournaments/${id}/matches/`)
-      .then((res) => {
-        if (!res.ok) {
-          throw new Error("Nie udało się pobrać meczów.");
-        }
-        return res.json();
-      })
-      .then((data: Match[]) => setMatches(data))
-      .catch((err) => setError(err.message));
+    const res = await apiFetch(`/api/tournaments/${id}/matches/`);
+    if (!res.ok) {
+      throw new Error("Nie udało się pobrać meczów.");
+    }
+
+    const data: Match[] = await res.json();
+    setMatches(data);
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    loadMatches()
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // ----------------------------------------------------------
+  // Generowanie rozgrywek
+  // ----------------------------------------------------------
+
+  const generateMatches = async () => {
+    if (!id || busy) return;
+
+    try {
+      setBusy(true);
+      setError(null);
+
+      const res = await apiFetch(`/api/tournaments/${id}/generate/`, {
+        method: "POST",
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || "Nie udało się wygenerować rozgrywek.");
+      }
+
+      await loadMatches();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   // ----------------------------------------------------------
   // Grupowanie meczów po numerze rundy
@@ -83,17 +121,37 @@ export default function TournamentMatches() {
   // Render
   // ----------------------------------------------------------
 
+  if (loading) {
+    return <p>Ładowanie…</p>;
+  }
+
   if (error) {
     return <p style={{ color: "crimson" }}>{error}</p>;
   }
 
   if (!matches.length) {
-    return <p>Brak wygenerowanych meczów.</p>;
+    return (
+      <div style={{ padding: "2rem" }}>
+        <h1>Mecze turnieju</h1>
+
+        <p>Brak wygenerowanych meczów.</p>
+
+        <div style={{ marginTop: "1.5rem", display: "flex", gap: "1rem" }}>
+          <button onClick={() => navigate(-1)}>← Wróć</button>
+
+          <button onClick={generateMatches} disabled={busy}>
+            {busy ? "Generowanie…" : "Generuj rozgrywki"}
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div style={{ padding: "2rem", maxWidth: 800 }}>
       <h1>Mecze turnieju</h1>
+
+      <button onClick={() => navigate(-1)}>← Wróć</button>
 
       {rounds.map((round) => {
         const roundMatches = matchesByRound[round];

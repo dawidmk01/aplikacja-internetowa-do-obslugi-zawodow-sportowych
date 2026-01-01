@@ -12,6 +12,8 @@ from .views import (
     TournamentTeamUpdateView,
     GenerateTournamentView,
     TournamentMatchListView,
+    ArchiveTournamentView,
+    UnarchiveTournamentView,
 )
 
 urlpatterns = [
@@ -33,6 +35,21 @@ urlpatterns = [
         "tournaments/<int:pk>/",
         TournamentDetailView.as_view(),
         name="tournament-detail",
+    ),
+
+    # ========================================================
+    # ARCHIWIZACJA
+    # ========================================================
+
+    path(
+        "tournaments/<int:pk>/archive/",
+        ArchiveTournamentView.as_view(),
+        name="tournament-archive",
+    ),
+    path(
+        "tournaments/<int:pk>/unarchive/",
+        UnarchiveTournamentView.as_view(),
+        name="tournament-unarchive",
     ),
 
     # ========================================================
@@ -93,5 +110,10 @@ urlpatterns = [
         "tournaments/<int:pk>/matches/",
         TournamentMatchListView.as_view(),
         name="tournament-matches",
+    ),
+
+    path(
+        "tournaments/<int:pk>/generate/",
+        GenerateTournamentView.as_view(),
     ),
 ]

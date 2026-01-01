@@ -20,6 +20,7 @@ from .models import (
     TournamentMembership,
     Team,
     Match,
+    Stage
 )
 from .serializers import (
     TournamentSerializer,
@@ -58,6 +59,9 @@ def user_can_manage_tournament(user, tournament: Tournament) -> bool:
 # ============================================================
 
 class TournamentListView(ListCreateAPIView):
+    """
+    Lista turniejów (publiczna) + tworzenie nowego turnieju.
+    """
     queryset = Tournament.objects.all()
     serializer_class = TournamentSerializer
     permission_classes = [IsAuthenticated]
@@ -67,6 +71,9 @@ class TournamentListView(ListCreateAPIView):
 
 
 class MyTournamentListView(ListAPIView):
+    """
+    Turnieje, w których użytkownik jest organizatorem lub asystentem.
+    """
     serializer_class = TournamentSerializer
     permission_classes = [IsAuthenticated]
 
@@ -83,6 +90,11 @@ class MyTournamentListView(ListAPIView):
 # ============================================================
 
 class TournamentDetailView(RetrieveUpdateAPIView):
+    """
+    Szczegóły turnieju:
+    - GET: dostęp publiczny (jeśli opublikowany)
+    - PATCH/PUT: tylko organizator
+    """
     queryset = Tournament.objects.all()
     serializer_class = TournamentSerializer
 
@@ -95,15 +107,18 @@ class TournamentDetailView(RetrieveUpdateAPIView):
         tournament = self.get_object()
         user = request.user if request.user.is_authenticated else None
 
+        # organizator / asystent zawsze widzi
         if user and user_can_manage_tournament(user, tournament):
             return super().retrieve(request, *args, **kwargs)
 
+        # widz – tylko jeśli opublikowany
         if not tournament.is_published:
             return Response(
                 {"detail": "Turniej nie jest dostępny."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        # kod dostępu
         if tournament.access_code:
             if request.query_params.get("code") != tournament.access_code:
                 return Response(
@@ -124,6 +139,7 @@ class TournamentAssistantListView(ListAPIView):
 
     def get_queryset(self):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
+
         if not user_can_manage_tournament(self.request.user, tournament):
             return TournamentMembership.objects.none()
 
@@ -180,6 +196,7 @@ class TournamentTeamListView(ListAPIView):
 
     def get_queryset(self):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
+
         if not user_can_manage_tournament(self.request.user, tournament):
             return Team.objects.none()
 
@@ -213,26 +230,24 @@ class TournamentTeamUpdateView(APIView):
 
 
 # ============================================================
-# KONFIGURACJA UCZESTNIKÓW
+# KONFIGURACJA UCZESTNIKÓW (SETUP)
 # ============================================================
 
+from django.db import transaction
+
 class TournamentTeamSetupView(APIView):
+    """
+    Tworzenie / dostosowanie listy uczestników.
+    Jeśli turniej ma już wygenerowane rozgrywki, zmiana liczby uczestników resetuje turniej (usuwa mecze/etapy).
+    """
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def post(self, request, pk):
         tournament = get_object_or_404(Tournament, pk=pk)
 
         if not user_can_manage_tournament(request.user, tournament):
-            return Response(
-                {"detail": "Brak uprawnień."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        if tournament.status != Tournament.Status.DRAFT:
-            return Response(
-                {"detail": "Nie można zmieniać uczestników po wygenerowaniu rozgrywek."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = TournamentSerializer(
             tournament,
@@ -241,14 +256,29 @@ class TournamentTeamSetupView(APIView):
             context={"request": request},
         )
         serializer.is_valid(raise_exception=True)
+
+        requested_count = serializer.validated_data.get("participants_count", tournament.participants_count)
+        if not isinstance(requested_count, int) or requested_count < 2:
+            return Response({"detail": "participants_count musi być liczbą >= 2."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Jeśli turniej nie jest w DRAFT -> reset rozgrywek
+        reset_done = False
+        if tournament.status != Tournament.Status.DRAFT:
+            Match.objects.filter(tournament=tournament).delete()
+            Stage.objects.filter(tournament=tournament).delete()
+            tournament.status = Tournament.Status.DRAFT
+            tournament.save(update_fields=["status"])
+            reset_done = True
+
+        # Aktualizujemy turniej (m.in. participants_count)
         serializer.save()
 
-        Team.objects.filter(tournament=tournament).delete()
-
-        participants_count = serializer.validated_data.get(
-            "participants_count",
-            tournament.participants_count,
-        )
+        # Dostosowanie drużyn bez kasowania nazw:
+        # - aktywujemy pierwsze N drużyn
+        # - pozostałe dezaktywujemy
+        # - jeśli brakuje, tworzymy kolejne
+        all_teams = list(tournament.teams.order_by("id"))
+        existing = len(all_teams)
 
         name_prefix = (
             "Zawodnik"
@@ -256,20 +286,36 @@ class TournamentTeamSetupView(APIView):
             else "Drużyna"
         )
 
-        Team.objects.bulk_create(
-            [
-                Team(
-                    tournament=tournament,
-                    name=f"{name_prefix} {i + 1}",
-                )
-                for i in range(participants_count)
-            ]
-        )
+        # jeśli brakuje rekordów Team -> tworzymy brakujące
+        if existing < requested_count:
+            Team.objects.bulk_create(
+                [
+                    Team(
+                        tournament=tournament,
+                        name=f"{name_prefix} {i}",
+                        is_active=True,
+                    )
+                    for i in range(existing + 1, requested_count + 1)
+                ]
+            )
+            all_teams = list(tournament.teams.order_by("id"))
 
-        return Response(
-            {"detail": "Uczestnicy zostali utworzeni."},
-            status=status.HTTP_200_OK,
-        )
+        # aktywuj pierwsze requested_count, resztę dezaktywuj
+        changed = []
+        for idx, team in enumerate(all_teams):
+            should_be_active = idx < requested_count
+            if team.is_active != should_be_active:
+                team.is_active = should_be_active
+                changed.append(team)
+
+        if changed:
+            Team.objects.bulk_update(changed, ["is_active"])
+
+        detail = "Uczestnicy zostali zaktualizowani."
+        if reset_done:
+            detail = "Uczestnicy zostali zaktualizowani. Turniej został zresetowany (mecze i etapy usunięte)."
+
+        return Response({"detail": detail}, status=status.HTTP_200_OK)
 
 
 # ============================================================
@@ -283,7 +329,6 @@ class GenerateTournamentView(APIView):
         tournament = get_object_or_404(Tournament, pk=pk)
         self.check_object_permissions(request, tournament)
 
-        # 🔒 BLOKADA WIELOKROTNEGO GENEROWANIA
         if tournament.status != Tournament.Status.DRAFT:
             return Response(
                 {"detail": "Rozgrywki zostały już wygenerowane."},
@@ -296,14 +341,22 @@ class GenerateTournamentView(APIView):
         )
         serializer.is_valid(raise_exception=True)
 
-        if tournament.tournament_format == Tournament.TournamentFormat.LEAGUE:
-            generate_league_stage(tournament)
+        try:
+            if tournament.tournament_format == Tournament.TournamentFormat.LEAGUE:
+                generate_league_stage(tournament)
 
-        elif tournament.tournament_format == Tournament.TournamentFormat.CUP:
-            generate_knockout_stage(tournament)
+            elif tournament.tournament_format == Tournament.TournamentFormat.CUP:
+                generate_knockout_stage(tournament)
 
-        tournament.status = Tournament.Status.CONFIGURED
-        tournament.save(update_fields=["status"])
+            elif tournament.tournament_format == Tournament.TournamentFormat.MIXED:
+                from tournaments.services.generators.groups import generate_group_stage
+                generate_group_stage(tournament)
+
+        except ValueError as e:
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response(
             {"detail": "Rozgrywki zostały wygenerowane."},
@@ -316,6 +369,9 @@ class GenerateTournamentView(APIView):
 # ============================================================
 
 class TournamentMatchListView(ListAPIView):
+    """
+    Lista meczów turnieju (organizator / asystent).
+    """
     serializer_class = MatchSerializer
     permission_classes = [IsAuthenticated]
 
@@ -330,4 +386,63 @@ class TournamentMatchListView(ListAPIView):
             .filter(tournament=tournament)
             .select_related("home_team", "away_team", "stage")
             .order_by("round_number", "id")
+        )
+
+# ============================================================
+# ARCHIWIZACJA TURNIEJU
+# ============================================================
+
+class ArchiveTournamentView(APIView):
+    """
+    Przeniesienie turnieju do archiwum.
+    Technicznie: ustawienie statusu FINISHED oraz cofnięcie publikacji.
+    """
+    permission_classes = [IsAuthenticated, IsTournamentOrganizer]
+
+    def post(self, request, pk):
+        tournament = get_object_or_404(Tournament, pk=pk)
+        self.check_object_permissions(request, tournament)
+
+        if tournament.status == Tournament.Status.FINISHED:
+            return Response(
+                {"detail": "Turniej jest już zarchiwizowany."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        tournament.status = Tournament.Status.FINISHED
+        tournament.is_published = False
+        tournament.save(update_fields=["status", "is_published"])
+
+        return Response(
+            {"detail": "Turniej został przeniesiony do archiwum."},
+            status=status.HTTP_200_OK,
+        )
+
+# ============================================================
+# COFNIĘCIE ARCHIWIZACJI TURNIEJU
+# ============================================================
+
+class UnarchiveTournamentView(APIView):
+    """
+    Przywrócenie turnieju z archiwum.
+    Technicznie: FINISHED → CONFIGURED (bez automatycznej publikacji).
+    """
+    permission_classes = [IsAuthenticated, IsTournamentOrganizer]
+
+    def post(self, request, pk):
+        tournament = get_object_or_404(Tournament, pk=pk)
+        self.check_object_permissions(request, tournament)
+
+        if tournament.status != Tournament.Status.FINISHED:
+            return Response(
+                {"detail": "Turniej nie znajduje się w archiwum."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        tournament.status = Tournament.Status.CONFIGURED
+        tournament.save(update_fields=["status"])
+
+        return Response(
+            {"detail": "Turniej został przywrócony z archiwum."},
+            status=status.HTTP_200_OK,
         )

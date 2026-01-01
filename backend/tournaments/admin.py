@@ -13,7 +13,7 @@ from .models import (
 class TeamInline(admin.TabularInline):
     model = Team
     extra = 0
-    fields = ("name", "status", "is_active")
+    fields = ("name", "is_active")
     show_change_link = True
 
 

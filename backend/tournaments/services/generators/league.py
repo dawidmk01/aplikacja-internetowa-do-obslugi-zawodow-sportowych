@@ -2,23 +2,23 @@
 Generator rozgrywek ligowych (round-robin z kolejkami).
 
 Obsługuje:
-- jedną rundę (każdy z każdym, jeden mecz),
-- dwie rundy (rewanże – zmiana gospodarza),
-- numerację kolejek,
-- parzystą i nieparzystą liczbę uczestników.
+- jedną lub dwie rundy ligi (league_legs = 1 | 2),
+- numerację kolejek (round_number),
+- parzystą i nieparzystą liczbę uczestników (pauzy),
+- pełną atomowość operacji.
 
-Frontend otrzymuje gotowe dane do prezentacji (round_number).
+Frontend steruje liczbą rund przez:
+format_config["league_legs"] = 1 | 2
 """
 
 from typing import List, Tuple, Optional
-
 from django.db import transaction
 
 from tournaments.models import Tournament, Stage, Match, Team
 
 
 # ============================================================
-# API GŁÓWNE
+# API PUBLICZNE
 # ============================================================
 
 @transaction.atomic
@@ -28,10 +28,11 @@ def generate_league_stage(tournament: Tournament) -> Stage:
     """
     _validate_tournament(tournament)
 
-    teams = _get_approved_teams(tournament)
+    teams = _get_active_teams(tournament)
+    league_legs = tournament.get_league_legs()
 
-    # 1 = bez rewanżu, 2 = z rewanżem
-    legs = tournament.get_league_legs()
+    if league_legs not in (1, 2):
+        raise ValueError("league_legs musi wynosić 1 albo 2.")
 
     stage = Stage.objects.create(
         tournament=tournament,
@@ -39,15 +40,15 @@ def generate_league_stage(tournament: Tournament) -> Stage:
         order=1,
     )
 
-    base_schedule = _round_robin_schedule(teams)
+    schedule = _round_robin_schedule(teams)
 
     matches: list[Match] = []
     current_round = 1
 
-    for leg in range(legs):
-        for round_pairs in base_schedule:
+    for leg in range(league_legs):
+        for round_pairs in schedule:
             for home, away in round_pairs:
-                # rewanż → zmiana gospodarza
+                # druga runda = rewanż (zamiana gospodarza)
                 if leg == 1:
                     home, away = away, home
 
@@ -55,17 +56,20 @@ def generate_league_stage(tournament: Tournament) -> Stage:
                     Match(
                         tournament=tournament,
                         stage=stage,
-                        round_number=current_round,
                         home_team=home,
                         away_team=away,
+                        round_number=current_round,
                         status=Match.Status.SCHEDULED,
                     )
                 )
+
             current_round += 1
+
+    if not matches:
+        raise ValueError("Generator ligi nie utworzył żadnych meczów.")
 
     Match.objects.bulk_create(matches)
 
-    # zmiana statusu turnieju
     tournament.status = Tournament.Status.CONFIGURED
     tournament.save(update_fields=["status"])
 
@@ -84,39 +88,41 @@ def _validate_tournament(tournament: Tournament) -> None:
 
     if tournament.tournament_format != Tournament.TournamentFormat.LEAGUE:
         raise ValueError(
-            "Generator obsługuje wyłącznie format LEAGUE."
+            "Generator ligi obsługuje wyłącznie format LEAGUE."
         )
 
 
-def _get_approved_teams(tournament: Tournament) -> List[Team]:
+def _get_active_teams(tournament: Tournament) -> List[Team]:
     teams = list(
-        tournament.teams.filter(
-            is_active=True,
-        ).order_by("id")
+        tournament.teams.filter(is_active=True).order_by("id")
     )
 
     if len(teams) < 2:
         raise ValueError(
-            "Liga wymaga co najmniej 2 zatwierdzonych uczestników."
+            "Liga wymaga co najmniej 2 aktywnych uczestników."
         )
 
     return teams
 
 
 # ============================================================
-# ALGORYTM ROUND-ROBIN (KOLEJKI)
+# ROUND-ROBIN (KOLEJKI)
 # ============================================================
 
 def _round_robin_schedule(
     teams: List[Team],
 ) -> List[List[Tuple[Team, Team]]]:
     """
-    Zwraca listę kolejek.
+    Zwraca listę kolejek round-robin.
+
     Każda kolejka = lista par (home, away).
+
+    Przy nieparzystej liczbie zespołów:
+    - jedna pauza w każdej kolejce,
+    - brak pustych meczów.
     """
     teams = teams[:]
 
-    # nieparzysta liczba zespołów → pauza
     if len(teams) % 2 == 1:
         teams.append(None)
 
@@ -127,7 +133,7 @@ def _round_robin_schedule(
     schedule: list[list[tuple[Team, Team]]] = []
 
     for _ in range(rounds):
-        round_matches = []
+        round_matches: list[tuple[Team, Team]] = []
 
         for i in range(half):
             t1 = teams[i]

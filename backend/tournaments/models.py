@@ -20,16 +20,12 @@ class Tournament(models.Model):
     """
     Model reprezentujący turniej sportowy.
 
-    Kluczowe pola konfiguracyjne:
-    - competition_type: TEAM / INDIVIDUAL
-    - tournament_format: LEAGUE / CUP / MIXED
-    - participants_count: liczba slotów startowych (niekoniecznie zatwierdzonych uczestników)
-    - format_config: JSON z dodatkowymi parametrami formatu (np. liczba "legs" w lidze)
-    - entry_mode: tryb dodawania uczestników
-    - status: cykl życia turnieju (DRAFT -> CONFIGURED -> RUNNING -> FINISHED)
+    Cykl życia:
+    - status: DRAFT → CONFIGURED → RUNNING → FINISHED
+    - is_archived: logiczne archiwum (ukrycie z głównych list)
     """
 
-    # ===== Słowniki wartości domenowych =====
+    # ===== Słowniki domenowe =====
 
     class Discipline(models.TextChoices):
         FOOTBALL = "football", "Piłka nożna"
@@ -58,15 +54,20 @@ class Tournament(models.Model):
         RUNNING = "RUNNING", "W trakcie"
         FINISHED = "FINISHED", "Zakończony"
 
-    # ===== Stałe konfiguracyjne dla format_config =====
+    # ===== Stałe formatów =====
+
 
     FORMATCFG_LEAGUE_LEGS_KEY = "league_legs"
-    DEFAULT_LEAGUE_LEGS = 1  # 1 = bez rewanżu, 2 = z rewanżem
+    DEFAULT_LEAGUE_LEGS = 1
 
-    # ===== Dane identyfikacyjne =====
+    # ===== Dane podstawowe =====
 
     name = models.CharField(max_length=255)
-    discipline = models.CharField(max_length=50, choices=Discipline.choices)
+
+    discipline = models.CharField(
+        max_length=50,
+        choices=Discipline.choices,
+    )
 
     organizer = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -74,7 +75,7 @@ class Tournament(models.Model):
         related_name="organized_tournaments",
     )
 
-    # ===== Konfiguracja rozgrywek =====
+    # ===== Konfiguracja =====
 
     competition_type = models.CharField(
         max_length=16,
@@ -89,16 +90,8 @@ class Tournament(models.Model):
     )
 
     participants_count = models.PositiveIntegerField(default=2)
-    """
-    Planowana liczba slotów turniejowych (nie liczba faktycznych uczestników).
-    """
 
     format_config = models.JSONField(default=dict, blank=True)
-    """
-    Szczegółowa konfiguracja formatu.
-    Dla ligi używamy m.in. klucza:
-    - format_config["league_legs"] = 1 lub 2
-    """
 
     entry_mode = models.CharField(
         max_length=32,
@@ -112,9 +105,16 @@ class Tournament(models.Model):
         default=Status.DRAFT,
     )
 
-    # ===== Dostępność =====
+    # ===== Widoczność / dostęp =====
 
     is_published = models.BooleanField(default=False)
+
+    is_archived = models.BooleanField(
+        default=False,
+        help_text="Logiczne archiwum – turniej ukryty na głównych listach",
+        db_index=True,
+    )
+
     access_code = models.CharField(max_length=20, blank=True, null=True)
 
     # ===== Ramy czasowe =====
@@ -126,15 +126,21 @@ class Tournament(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
 
-    # ===== Reguły domenowe / helpery =====
+    # ========================================================
+    # REGUŁY DOMENOWE
+    # ========================================================
 
     @staticmethod
     def infer_default_competition_type(discipline: str) -> str:
+        """
+        Domyślny typ rywalizacji zależny od dyscypliny.
+        """
         if discipline in (
             Tournament.Discipline.TENNIS,
             Tournament.Discipline.WRESTLING,
         ):
             return Tournament.CompetitionType.INDIVIDUAL
+
         return Tournament.CompetitionType.TEAM
 
     @staticmethod
@@ -147,45 +153,38 @@ class Tournament(models.Model):
 
     def get_league_legs(self) -> int:
         """
-        Zwraca liczbę "legs" w rozgrywkach ligowych:
-        - 1 = każdy z każdym raz
-        - 2 = każdy z każdym + rewanż (odwrócenie gospodarza)
+        Liczba rund ligowych:
+        1 = bez rewanżu
+        2 = z rewanżem
         """
-        raw = (self.format_config or {}).get(self.FORMATCFG_LEAGUE_LEGS_KEY, self.DEFAULT_LEAGUE_LEGS)
+        raw = (self.format_config or {}).get(
+            self.FORMATCFG_LEAGUE_LEGS_KEY,
+            self.DEFAULT_LEAGUE_LEGS,
+        )
+
         try:
             legs = int(raw)
         except (TypeError, ValueError):
-            legs = self.DEFAULT_LEAGUE_LEGS
+            return self.DEFAULT_LEAGUE_LEGS
 
-        if legs not in (1, 2):
-            legs = self.DEFAULT_LEAGUE_LEGS
-        return legs
+        return legs if legs in (1, 2) else self.DEFAULT_LEAGUE_LEGS
 
     def set_league_legs(self, legs: int) -> None:
-        """
-        Ustawia liczbę "legs" w lidze w format_config.
-        Wartości dopuszczalne: 1 lub 2.
-        """
         legs = int(legs)
         if legs not in (1, 2):
-            raise ValueError("league_legs musi wynosić 1 albo 2.")
+            raise ValueError("league_legs musi wynosić 1 albo 2")
+
         cfg = dict(self.format_config or {})
         cfg[self.FORMATCFG_LEAGUE_LEGS_KEY] = legs
         self.format_config = cfg
 
     def __str__(self) -> str:
         return self.name
-
-
 # ============================================================
 # ROLE ORGANIZACYJNE
 # ============================================================
 
 class TournamentMembership(models.Model):
-    """
-    Relacja użytkownik–turniej dla ról organizacyjnych.
-    """
-
     class Role(models.TextChoices):
         ASSISTANT = "ASSISTANT", "Asystent"
 
@@ -194,11 +193,13 @@ class TournamentMembership(models.Model):
         on_delete=models.CASCADE,
         related_name="memberships",
     )
+
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="tournament_memberships",
     )
+
     role = models.CharField(
         max_length=20,
         choices=Role.choices,
@@ -217,14 +218,10 @@ class TournamentMembership(models.Model):
 
 
 # ============================================================
-# DYWIZJE / KATEGORIE
+# DYWIZJE
 # ============================================================
 
 class Division(models.Model):
-    """
-    Kategoria rozgrywek w obrębie turnieju (np. wagowa).
-    """
-
     tournament = models.ForeignKey(
         Tournament,
         on_delete=models.CASCADE,
@@ -247,14 +244,10 @@ class Division(models.Model):
 
 
 # ============================================================
-# UCZESTNICY (DRUŻYNY / ZAWODNICY)
+# UCZESTNICY
 # ============================================================
 
 class Team(models.Model):
-    """
-    Jednostka startowa turnieju (drużyna lub zawodnik).
-    """
-
     tournament = models.ForeignKey(
         Tournament,
         on_delete=models.CASCADE,
@@ -271,22 +264,17 @@ class Team(models.Model):
 
     name = models.CharField(max_length=255)
     is_active = models.BooleanField(default=True)
-
     created_at = models.DateTimeField(auto_now_add=True)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.name
 
 
 # ============================================================
-# ETAPY TURNIEJU
+# ETAPY
 # ============================================================
 
 class Stage(models.Model):
-    """
-    Etap turnieju (liga, grupy, puchar).
-    """
-
     class StageType(models.TextChoices):
         LEAGUE = "LEAGUE", "Liga"
         GROUP = "GROUP", "Faza grupowa"
@@ -306,11 +294,7 @@ class Stage(models.Model):
         null=True,
     )
 
-    stage_type = models.CharField(
-        max_length=20,
-        choices=StageType.choices,
-    )
-
+    stage_type = models.CharField(max_length=20, choices=StageType.choices)
     order = models.PositiveIntegerField()
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -326,10 +310,6 @@ class Stage(models.Model):
 # ============================================================
 
 class Group(models.Model):
-    """
-    Grupa w ramach etapu grupowego.
-    """
-
     stage = models.ForeignKey(
         Stage,
         on_delete=models.CASCADE,
@@ -355,14 +335,6 @@ class Group(models.Model):
 # ============================================================
 
 class Match(models.Model):
-    """
-    Pojedyncze spotkanie turniejowe.
-
-    round_number:
-    - w lidze odpowiada numerowi kolejki (1..N),
-    - w pucharze może oznaczać rundę, ale może być też null, jeśli trzymasz to inaczej.
-    """
-
     class Status(models.TextChoices):
         SCHEDULED = "SCHEDULED", "Zaplanowany"
         FINISHED = "FINISHED", "Zakończony"
@@ -392,6 +364,7 @@ class Match(models.Model):
         on_delete=models.CASCADE,
         related_name="home_matches",
     )
+
     away_team = models.ForeignKey(
         Team,
         on_delete=models.CASCADE,
