@@ -25,25 +25,35 @@ class TeamInline(admin.TabularInline):
 class MatchInline(admin.TabularInline):
     model = Match
     extra = 0
+
     fields = (
         "stage",
         "group",
         "round_number",
         "home_team",
         "away_team",
+
+        # ===== WYNIKI =====
+        "home_score",
+        "away_score",
+
+        # ===== HARMONOGRAM =====
         "scheduled_date",
         "scheduled_time",
         "location",
+
+        # ===== STATUS =====
         "status",
     )
+
     readonly_fields = (
         "stage",
         "group",
         "round_number",
         "home_team",
         "away_team",
-        "status",
     )
+
     show_change_link = True
 
 
@@ -62,12 +72,17 @@ class TournamentAdmin(admin.ModelAdmin):
         "start_date",
         "end_date",
     )
+
     list_filter = (
         "discipline",
         "tournament_format",
         "status",
         "is_published",
     )
+
     search_fields = ("name",)
 
-    inlines = [TeamInline, MatchInline]
+    inlines = [
+        TeamInline,
+        MatchInline,
+    ]

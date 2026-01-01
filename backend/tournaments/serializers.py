@@ -282,6 +282,7 @@ class GenerateTournamentSerializer(serializers.Serializer):
 # MECZE
 # ============================================================
 
+
 class MatchSerializer(serializers.ModelSerializer):
     home_team_name = serializers.CharField(
         source="home_team.name",
@@ -297,50 +298,54 @@ class MatchSerializer(serializers.ModelSerializer):
         read_only=True,
     )
 
-    # ===== Harmonogram meczu (opcjonalny) =====
-    scheduled_date = serializers.DateField(
-        required=False,
-        allow_null=True,
-    )
-    scheduled_time = serializers.TimeField(
-        required=False,
-        allow_null=True,
-    )
-    location = serializers.CharField(
-        required=False,
-        allow_blank=True,
-        allow_null=True,
+    stage_id = serializers.IntegerField(
+        source="stage.id",
+        read_only=True,
     )
 
     class Meta:
         model = Match
         fields = (
             "id",
-            "round_number",
+            "stage_id",
             "stage_type",
+            "round_number",
             "home_team_name",
             "away_team_name",
             "home_score",
             "away_score",
+            "status",
             "scheduled_date",
             "scheduled_time",
             "location",
         )
 
-    # ============================================================
-    # HARMONOGRAM MECZU – UPDATE
-    # ============================================================
 
-    class MatchScheduleUpdateSerializer(serializers.ModelSerializer):
-        """
-        Serializer do edycji harmonogramu pojedynczego meczu.
-        Używany wyłącznie do PATCH /api/matches/:id/
-        """
+class MatchScheduleUpdateSerializer(serializers.ModelSerializer):
+    """
+    Serializer do edycji harmonogramu pojedynczego meczu.
+    PATCH /api/matches/:id/
+    """
 
-        class Meta:
-            model = Match
-            fields = (
-                "scheduled_date",
-                "scheduled_time",
-                "location",
-            )
+    class Meta:
+        model = Match
+        fields = (
+            "scheduled_date",
+            "scheduled_time",
+            "location",
+        )
+
+
+class MatchResultUpdateSerializer(serializers.ModelSerializer):
+    """
+    Serializer do wprowadzania wyniku meczu.
+    PATCH /api/matches/:id/result/
+    """
+
+    class Meta:
+        model = Match
+        fields = (
+            "home_score",
+            "away_score",
+            "status",
+        )

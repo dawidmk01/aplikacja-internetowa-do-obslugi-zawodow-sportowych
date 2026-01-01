@@ -2,16 +2,19 @@
 Generator rozgrywek pucharowych (KO – single elimination).
 
 Obsługuje:
-- rundy 1- lub 2-meczowe (cup_matches),
-- wolne losy (bye),
-- poprawną numerację rund.
+- generowanie pierwszej rundy,
+- wolne losy (BYE) w pierwszej rundzie,
+- dynamiczne generowanie kolejnych rund po zatwierdzeniu etapu.
 
-Generator tworzy WYŁĄCZNIE pierwszą rundę.
-Kolejne rundy są generowane dynamicznie po zakończeniu meczów.
+Zasady domenowe:
+- BYE jest cechą RUNDY, nie zawodnika,
+- BYE może wystąpić tylko wtedy, gdy liczba zawodników jest nieparzysta,
+- liczba zawodników zawsze maleje aż do jednego zwycięzcy.
 """
 
 import math
 from typing import List, Optional
+
 from django.db import transaction
 
 from tournaments.models import Tournament, Stage, Match, Team
@@ -24,8 +27,9 @@ from tournaments.models import Tournament, Stage, Match, Team
 @transaction.atomic
 def generate_knockout_stage(tournament: Tournament) -> Stage:
     """
-    Generuje pierwszą rundę fazy pucharowej (KO).
+    Generuje PIERWSZY etap fazy pucharowej (KO).
     """
+
     _validate_tournament(tournament)
 
     teams = _get_active_teams(tournament)
@@ -39,6 +43,7 @@ def generate_knockout_stage(tournament: Tournament) -> Stage:
         tournament=tournament,
         stage_type=Stage.StageType.KNOCKOUT,
         order=1,
+        status=Stage.Status.OPEN,
     )
 
     bracket_size = _next_power_of_two(len(teams))
@@ -64,6 +69,86 @@ def generate_knockout_stage(tournament: Tournament) -> Stage:
     return stage
 
 
+@transaction.atomic
+def generate_next_knockout_stage(stage: Stage) -> Stage:
+    """
+    Generuje KOLEJNY etap fazy pucharowej na podstawie
+    zwycięzców poprzedniego etapu.
+
+    Obsługuje BYE w sposób domenowo poprawny.
+    """
+
+    if stage.status != Stage.Status.OPEN:
+        raise ValueError("Etap został już zamknięty.")
+
+    matches = stage.matches.all()
+
+    # 1. wszystkie mecze muszą być zakończone
+    if matches.exclude(status=Match.Status.FINISHED).exists():
+        raise ValueError("Nie wszystkie mecze etapu są zakończone.")
+
+    # 2. zbieramy zwycięzców
+    winners: List[Team] = []
+    for match in matches:
+        if not match.winner:
+            raise ValueError("Brak zwycięzcy meczu w fazie pucharowej.")
+        winners.append(match.winner)
+
+    # 3. zamykamy bieżący etap
+    stage.status = Stage.Status.CLOSED
+    stage.save(update_fields=["status"])
+
+    # 4. jeden zwycięzca → KONIEC TURNIEJU
+    if len(winners) == 1:
+        tournament = stage.tournament
+        tournament.status = Tournament.Status.FINISHED
+        tournament.save(update_fields=["status"])
+        return stage
+
+    # 5. tworzymy nowy etap
+    next_stage = Stage.objects.create(
+        tournament=stage.tournament,
+        stage_type=Stage.StageType.KNOCKOUT,
+        order=stage.order + 1,
+        status=Stage.Status.OPEN,
+    )
+
+    # 6. obsługa BYE (maksymalnie jeden)
+
+    bye_team: Optional[Team] = None
+    if len(winners) % 2 == 1:
+        bye_team = winners.pop()
+
+        Match.objects.create(
+            tournament=stage.tournament,
+            stage=next_stage,
+            home_team=bye_team,
+            away_team=bye_team,  # technicznie, ale bez gry
+            round_number=1,
+            status=Match.Status.FINISHED,
+            winner=bye_team,
+        )
+
+    # 7. parowanie pozostałych
+    for i in range(0, len(winners), 2):
+        Match.objects.create(
+            tournament=stage.tournament,
+            stage=next_stage,
+            home_team=winners[i],
+            away_team=winners[i + 1],
+            round_number=1,
+            status=Match.Status.SCHEDULED,
+        )
+
+    # 8. BYE nie jest meczem – zawodnik zostanie uwzględniony
+    #    przy generowaniu KOLEJNEJ rundy (po zatwierdzeniu etapu)
+    if bye_team:
+        # BYE nie tworzy rekordu Match
+        pass
+
+    return next_stage
+
+
 # ============================================================
 # WALIDACJE
 # ============================================================
@@ -87,19 +172,19 @@ def _get_active_teams(tournament: Tournament) -> List[Team]:
 
     if len(teams) < 2:
         raise ValueError(
-            "Do wygenerowania fazy pucharowej wymaganych jest co najmniej dwóch aktywnych uczestników."
+            "Do wygenerowania fazy pucharowej wymaganych jest co najmniej dwóch uczestników."
         )
 
     return teams
 
 
 # ============================================================
-# LOGIKA DRABINKI
+# LOGIKA DRABINKI – RUNDA 1
 # ============================================================
 
 def _next_power_of_two(n: int) -> int:
     """
-    Zwraca najbliższą potęgę 2 ≥ n.
+    Zwraca najmniejszą potęgę 2 ≥ n.
     """
     return 2 ** math.ceil(math.log2(n))
 
@@ -109,7 +194,7 @@ def _apply_byes(
     byes_count: int,
 ) -> List[Optional[Team]]:
     """
-    Dodaje wolne losy (bye) jako None.
+    Dodaje BYE jako None – tylko w pierwszej rundzie.
     """
     if byes_count <= 0:
         return teams
@@ -122,22 +207,19 @@ def _generate_first_round_matches(
     stage: Stage,
     teams: List[Optional[Team]],
     matches_per_pair: int,
-) -> list[Match]:
+) -> List[Match]:
     """
-    Generuje pierwszą rundę fazy pucharowej.
+    Generuje mecze pierwszej rundy KO.
+    """
 
-    Dla każdej pary:
-    - tworzy 1 lub 2 mecze,
-    - przy bye (None) nie tworzy meczu.
-    """
-    matches: list[Match] = []
+    matches: List[Match] = []
     round_number = 1
 
     for i in range(0, len(teams), 2):
         home = teams[i]
         away = teams[i + 1]
 
-        # wolny los
+        # BYE → brak meczu
         if home is None or away is None:
             continue
 

@@ -22,7 +22,6 @@ class Tournament(models.Model):
 
     Cykl życia:
     - status: DRAFT → CONFIGURED → RUNNING → FINISHED
-    - is_archived: logiczne archiwum (ukrycie z głównych list)
     """
 
     # ===== Słowniki domenowe =====
@@ -54,8 +53,7 @@ class Tournament(models.Model):
         RUNNING = "RUNNING", "W trakcie"
         FINISHED = "FINISHED", "Zakończony"
 
-    # ===== Stałe formatów =====
-
+    # ===== Stałe konfiguracji =====
 
     FORMATCFG_LEAGUE_LEGS_KEY = "league_legs"
     DEFAULT_LEAGUE_LEGS = 1
@@ -111,19 +109,13 @@ class Tournament(models.Model):
 
     is_archived = models.BooleanField(
         default=False,
-        help_text="Logiczne archiwum – turniej ukryty na głównych listach",
         db_index=True,
+        help_text="Logiczne archiwum – turniej ukryty na głównych listach",
     )
 
     access_code = models.CharField(max_length=20, blank=True, null=True)
 
-    # ===== Ramy czasowe =====
-
-    start_date = models.DateField(blank=True, null=True)
-    end_date = models.DateField(blank=True, null=True)
-
-
-    # ===== Harmonogram turnieju (opcjonalny) =====
+    # ===== Harmonogram turnieju (OPCJONALNY) =====
 
     start_date = models.DateField(
         blank=True,
@@ -143,28 +135,6 @@ class Tournament(models.Model):
         null=True,
         help_text="Ogólna lokalizacja turnieju (opcjonalna)",
     )
-
-    # ===== Harmonogram turnieju (opcjonalny) =====
-
-    start_date = models.DateField(
-        blank=True,
-        null=True,
-        help_text="Data rozpoczęcia turnieju (opcjonalna)",
-    )
-
-    end_date = models.DateField(
-        blank=True,
-        null=True,
-        help_text="Data zakończenia turnieju (opcjonalna)",
-    )
-
-    location = models.CharField(
-        max_length=255,
-        blank=True,
-        null=True,
-        help_text="Ogólna lokalizacja turnieju (opcjonalna)",
-    )
-
 
     # ===== Metadane =====
 
@@ -176,15 +146,11 @@ class Tournament(models.Model):
 
     @staticmethod
     def infer_default_competition_type(discipline: str) -> str:
-        """
-        Domyślny typ rywalizacji zależny od dyscypliny.
-        """
         if discipline in (
             Tournament.Discipline.TENNIS,
             Tournament.Discipline.WRESTLING,
         ):
             return Tournament.CompetitionType.INDIVIDUAL
-
         return Tournament.CompetitionType.TEAM
 
     @staticmethod
@@ -196,34 +162,27 @@ class Tournament(models.Model):
         }
 
     def get_league_legs(self) -> int:
-        """
-        Liczba rund ligowych:
-        1 = bez rewanżu
-        2 = z rewanżem
-        """
         raw = (self.format_config or {}).get(
             self.FORMATCFG_LEAGUE_LEGS_KEY,
             self.DEFAULT_LEAGUE_LEGS,
         )
-
         try:
-            legs = int(raw)
+            value = int(raw)
         except (TypeError, ValueError):
             return self.DEFAULT_LEAGUE_LEGS
-
-        return legs if legs in (1, 2) else self.DEFAULT_LEAGUE_LEGS
+        return value if value in (1, 2) else self.DEFAULT_LEAGUE_LEGS
 
     def set_league_legs(self, legs: int) -> None:
-        legs = int(legs)
         if legs not in (1, 2):
             raise ValueError("league_legs musi wynosić 1 albo 2")
-
         cfg = dict(self.format_config or {})
         cfg[self.FORMATCFG_LEAGUE_LEGS_KEY] = legs
         self.format_config = cfg
 
     def __str__(self) -> str:
         return self.name
+
+
 # ============================================================
 # ROLE ORGANIZACYJNE
 # ============================================================
@@ -313,7 +272,6 @@ class Team(models.Model):
     def __str__(self) -> str:
         return self.name
 
-
 # ============================================================
 # ETAPY
 # ============================================================
@@ -323,6 +281,10 @@ class Stage(models.Model):
         LEAGUE = "LEAGUE", "Liga"
         GROUP = "GROUP", "Faza grupowa"
         KNOCKOUT = "KNOCKOUT", "Puchar (KO)"
+
+    class Status(models.TextChoices):
+        OPEN = "OPEN", "Otwarty"
+        CLOSED = "CLOSED", "Zamknięty"
 
     tournament = models.ForeignKey(
         Tournament,
@@ -338,7 +300,17 @@ class Stage(models.Model):
         null=True,
     )
 
-    stage_type = models.CharField(max_length=20, choices=StageType.choices)
+    stage_type = models.CharField(
+        max_length=20,
+        choices=StageType.choices,
+    )
+
+    status = models.CharField(
+        max_length=10,
+        choices=Status.choices,
+        default=Status.OPEN,
+    )
+
     order = models.PositiveIntegerField()
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -374,6 +346,7 @@ class Group(models.Model):
         return f"{self.name} ({self.stage})"
 
 
+
 # ============================================================
 # MECZE
 # ============================================================
@@ -382,8 +355,6 @@ class Match(models.Model):
     class Status(models.TextChoices):
         SCHEDULED = "SCHEDULED", "Zaplanowany"
         FINISHED = "FINISHED", "Zakończony"
-
-    # ===== Relacje domenowe =====
 
     tournament = models.ForeignKey(
         Tournament,
@@ -418,26 +389,24 @@ class Match(models.Model):
         related_name="away_matches",
     )
 
-    # ===== Wynik =====
+    # ===== WYNIK =====
+    home_score = models.PositiveIntegerField(default=0)
+    away_score = models.PositiveIntegerField(default=0)
 
-    home_score = models.PositiveIntegerField(
+    winner = models.ForeignKey(
+        Team,
+        on_delete=models.SET_NULL,
+        related_name="won_matches",
         blank=True,
         null=True,
+        help_text="Zwycięzca meczu (wymagany w KO)",
     )
-    away_score = models.PositiveIntegerField(
-        blank=True,
-        null=True,
-    )
-
-    # ===== Status meczu =====
 
     status = models.CharField(
         max_length=20,
         choices=Status.choices,
         default=Status.SCHEDULED,
     )
-
-    # ===== Struktura rozgrywek =====
 
     round_number = models.PositiveIntegerField(
         blank=True,
@@ -448,32 +417,11 @@ class Match(models.Model):
 
     # ===== Harmonogram meczu (OPCJONALNY) =====
 
-    scheduled_date = models.DateField(
-        blank=True,
-        null=True,
-        help_text="Data rozegrania meczu (opcjonalna)",
-    )
-
-    scheduled_time = models.TimeField(
-        blank=True,
-        null=True,
-        help_text="Godzina rozpoczęcia meczu (opcjonalna)",
-    )
-
-    location = models.CharField(
-        max_length=255,
-        blank=True,
-        null=True,
-        help_text="Lokalizacja meczu (opcjonalna)",
-    )
-
-    # ===== Metadane =====
+    scheduled_date = models.DateField(blank=True, null=True)
+    scheduled_time = models.TimeField(blank=True, null=True)
+    location = models.CharField(max_length=255, blank=True, null=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
-
-    # ========================================================
-    # REGUŁY INTEGRALNOŚCI
-    # ========================================================
 
     class Meta:
         constraints = [

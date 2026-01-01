@@ -191,9 +191,23 @@ export default function TournamentSchedule() {
         </div>
       ))}
 
-      <div style={{ marginTop: "2rem" }}>
+      <div style={{ marginTop: "2rem", display: "flex", gap: "1rem" }}>
         <button onClick={() => navigate(-1)}>← Wróć</button>
+
+        <button
+          onClick={() => navigate(`/tournaments/${id}/results`)}
+          style={{
+            background: "#1e90ff",
+            color: "#fff",
+            padding: "0.5rem 1rem",
+            borderRadius: 6,
+            border: "none",
+          }}
+        >
+          Przejdź do wprowadzania wyników →
+        </button>
       </div>
+
 
       {message && <p>{message}</p>}
     </div>

@@ -15,6 +15,8 @@ from .views import (
     ArchiveTournamentView,
     UnarchiveTournamentView,
     MatchScheduleUpdateView,
+    MatchResultUpdateView,
+    ConfirmStageView,
 )
 
 urlpatterns = [
@@ -122,4 +124,21 @@ urlpatterns = [
         MatchScheduleUpdateView.as_view(),
         name="match-schedule-update",
     ),
+
+    # ========================================================
+    # MECZE – WYNIK (PATCH)
+    # ========================================================
+
+    path(
+        "matches/<int:pk>/result/",
+        MatchResultUpdateView.as_view(),
+        name="match-result-update",
+    ),
+
+    path(
+        "stages/<int:pk>/confirm/",
+        ConfirmStageView.as_view(),
+        name="stage-confirm",
+    ),
+
 ]

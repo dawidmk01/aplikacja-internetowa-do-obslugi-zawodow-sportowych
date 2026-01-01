@@ -17,13 +17,14 @@ import MyTournaments from "./pages/MyTournaments";
 import CreateTournament from "./pages/CreateTournament";
 
 /* ===== FLOW TURNIEJU ===== */
-import TournamentSetup from "./pages/TournamentSetup";        // krok 2
-import TournamentTeams from "./pages/TournamentTeams";        // krok 3
-import TournamentMatches from "./pages/TournamentMatches";    // krok 4
-import TournamentSchedule from "./pages/TournamentSchedule";  // krok 5
+import TournamentSetup from "./pages/TournamentSetup";          // krok 2
+import TournamentTeams from "./pages/TournamentTeams";          // krok 3
+import TournamentMatches from "./pages/TournamentMatches";      // krok 4
+import TournamentSchedule from "./pages/TournamentSchedule";    // krok 5
+import TournamentResults from "./pages/TournamentResults";      // krok 6 ✅
 
 /* ===== WIDOKI POZA FLOW ===== */
-import TournamentDetail from "./pages/TournamentDetail";      // PODGLĄD (nie etap)
+import TournamentDetail from "./pages/TournamentDetail";        // podgląd
 
 /**
  * ARCHITEKTURA ROUTINGU
@@ -35,9 +36,10 @@ import TournamentDetail from "./pages/TournamentDetail";      // PODGLĄD (nie e
  * 3️⃣ /tournaments/:id/teams
  * 4️⃣ /tournaments/:id/matches
  * 5️⃣ /tournaments/:id/schedule
+ * 6️⃣ /tournaments/:id/results
  *
  * /tournaments/:id
- * → widok szczegółów (POZA flow, dostępny np. z "Moje turnieje")
+ * → widok szczegółów (POZA flow)
  */
 
 export default function App() {
@@ -140,12 +142,22 @@ export default function App() {
           }
         />
 
-        {/* KROK 5 – HARMONOGRAM (opcjonalny) */}
+        {/* KROK 5 – HARMONOGRAM (OPCJONALNY) */}
         <Route
           path="/tournaments/:id/schedule"
           element={
             <ProtectedRoute>
               <TournamentSchedule />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* KROK 6 – WPROWADZANIE WYNIKÓW */}
+        <Route
+          path="/tournaments/:id/results"
+          element={
+            <ProtectedRoute>
+              <TournamentResults />
             </ProtectedRoute>
           }
         />
