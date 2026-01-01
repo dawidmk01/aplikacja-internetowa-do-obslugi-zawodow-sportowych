@@ -297,6 +297,21 @@ class MatchSerializer(serializers.ModelSerializer):
         read_only=True,
     )
 
+    # ===== Harmonogram meczu (opcjonalny) =====
+    scheduled_date = serializers.DateField(
+        required=False,
+        allow_null=True,
+    )
+    scheduled_time = serializers.TimeField(
+        required=False,
+        allow_null=True,
+    )
+    location = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+    )
+
     class Meta:
         model = Match
         fields = (
@@ -307,4 +322,25 @@ class MatchSerializer(serializers.ModelSerializer):
             "away_team_name",
             "home_score",
             "away_score",
+            "scheduled_date",
+            "scheduled_time",
+            "location",
         )
+
+    # ============================================================
+    # HARMONOGRAM MECZU – UPDATE
+    # ============================================================
+
+    class MatchScheduleUpdateSerializer(serializers.ModelSerializer):
+        """
+        Serializer do edycji harmonogramu pojedynczego meczu.
+        Używany wyłącznie do PATCH /api/matches/:id/
+        """
+
+        class Meta:
+            model = Match
+            fields = (
+                "scheduled_date",
+                "scheduled_time",
+                "location",
+            )

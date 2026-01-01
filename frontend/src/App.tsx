@@ -16,24 +16,28 @@ import ProtectedRoute from "./ProtectedRoute";
 import MyTournaments from "./pages/MyTournaments";
 import CreateTournament from "./pages/CreateTournament";
 
-/* ===== NOWY FLOW TURNIEJU ===== */
-import TournamentSetup from "./pages/TournamentSetup";     // krok 2
-import TournamentTeams from "./pages/TournamentTeams";     // krok 3
-import TournamentDetail from "./pages/TournamentDetail";   // podgląd
-import TournamentMatches from "./pages/TournamentMatches"; // mecze
+/* ===== FLOW TURNIEJU ===== */
+import TournamentSetup from "./pages/TournamentSetup";        // krok 2
+import TournamentTeams from "./pages/TournamentTeams";        // krok 3
+import TournamentMatches from "./pages/TournamentMatches";    // krok 4
+import TournamentSchedule from "./pages/TournamentSchedule";  // krok 5
+
+/* ===== WIDOKI POZA FLOW ===== */
+import TournamentDetail from "./pages/TournamentDetail";      // PODGLĄD (nie etap)
 
 /**
  * ARCHITEKTURA ROUTINGU
  * ====================
  *
- * NOWY PRZEPŁYW:
+ * FLOW TWORZENIA TURNIEJU:
  * 1️⃣ /tournaments/new
  * 2️⃣ /tournaments/:id/setup
  * 3️⃣ /tournaments/:id/teams
- * 4️⃣ /tournaments/:id
- * 5️⃣ /tournaments/:id/matches
+ * 4️⃣ /tournaments/:id/matches
+ * 5️⃣ /tournaments/:id/schedule
  *
- * Stare widoki są USUNIĘTE z routingu.
+ * /tournaments/:id
+ * → widok szczegółów (POZA flow, dostępny np. z "Moje turnieje")
  */
 
 export default function App() {
@@ -93,8 +97,10 @@ export default function App() {
         />
 
         {/* =========================
-            KROK 1 – UTWORZENIE
+            FLOW TWORZENIA TURNIEJU
            ========================= */}
+
+        {/* KROK 1 – UTWORZENIE */}
         <Route
           path="/tournaments/new"
           element={
@@ -104,9 +110,7 @@ export default function App() {
           }
         />
 
-        {/* =========================
-            KROK 2 – KONFIGURACJA
-           ========================= */}
+        {/* KROK 2 – KONFIGURACJA */}
         <Route
           path="/tournaments/:id/setup"
           element={
@@ -116,9 +120,7 @@ export default function App() {
           }
         />
 
-        {/* =========================
-            KROK 3 – DRUŻYNY
-           ========================= */}
+        {/* KROK 3 – UCZESTNICY */}
         <Route
           path="/tournaments/:id/teams"
           element={
@@ -128,14 +130,7 @@ export default function App() {
           }
         />
 
-        {/* =========================
-            PODGLĄD TURNIEJU
-           ========================= */}
-        <Route path="/tournaments/:id" element={<TournamentDetail />} />
-
-        {/* =========================
-            MECZE
-           ========================= */}
+        {/* KROK 4 – GENEROWANIE MECZÓW */}
         <Route
           path="/tournaments/:id/matches"
           element={
@@ -144,6 +139,23 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+
+        {/* KROK 5 – HARMONOGRAM (opcjonalny) */}
+        <Route
+          path="/tournaments/:id/schedule"
+          element={
+            <ProtectedRoute>
+              <TournamentSchedule />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* =========================
+            WIDOKI POZA FLOW
+           ========================= */}
+
+        {/* SZCZEGÓŁY TURNIEJU */}
+        <Route path="/tournaments/:id" element={<TournamentDetail />} />
 
         {/* =========================
             FALLBACK

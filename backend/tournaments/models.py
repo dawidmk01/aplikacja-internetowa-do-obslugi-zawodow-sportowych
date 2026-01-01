@@ -122,6 +122,50 @@ class Tournament(models.Model):
     start_date = models.DateField(blank=True, null=True)
     end_date = models.DateField(blank=True, null=True)
 
+
+    # ===== Harmonogram turnieju (opcjonalny) =====
+
+    start_date = models.DateField(
+        blank=True,
+        null=True,
+        help_text="Data rozpoczęcia turnieju (opcjonalna)",
+    )
+
+    end_date = models.DateField(
+        blank=True,
+        null=True,
+        help_text="Data zakończenia turnieju (opcjonalna)",
+    )
+
+    location = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Ogólna lokalizacja turnieju (opcjonalna)",
+    )
+
+    # ===== Harmonogram turnieju (opcjonalny) =====
+
+    start_date = models.DateField(
+        blank=True,
+        null=True,
+        help_text="Data rozpoczęcia turnieju (opcjonalna)",
+    )
+
+    end_date = models.DateField(
+        blank=True,
+        null=True,
+        help_text="Data zakończenia turnieju (opcjonalna)",
+    )
+
+    location = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Ogólna lokalizacja turnieju (opcjonalna)",
+    )
+
+
     # ===== Metadane =====
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -339,6 +383,8 @@ class Match(models.Model):
         SCHEDULED = "SCHEDULED", "Zaplanowany"
         FINISHED = "FINISHED", "Zakończony"
 
+    # ===== Relacje domenowe =====
+
     tournament = models.ForeignKey(
         Tournament,
         on_delete=models.CASCADE,
@@ -357,6 +403,7 @@ class Match(models.Model):
         related_name="matches",
         blank=True,
         null=True,
+        help_text="Grupa (tylko dla fazy grupowej)",
     )
 
     home_team = models.ForeignKey(
@@ -371,8 +418,18 @@ class Match(models.Model):
         related_name="away_matches",
     )
 
-    home_score = models.PositiveIntegerField(blank=True, null=True)
-    away_score = models.PositiveIntegerField(blank=True, null=True)
+    # ===== Wynik =====
+
+    home_score = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+    )
+    away_score = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+    )
+
+    # ===== Status meczu =====
 
     status = models.CharField(
         max_length=20,
@@ -380,8 +437,43 @@ class Match(models.Model):
         default=Status.SCHEDULED,
     )
 
-    round_number = models.PositiveIntegerField(blank=True, null=True, db_index=True)
+    # ===== Struktura rozgrywek =====
+
+    round_number = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        db_index=True,
+        help_text="Numer kolejki / rundy",
+    )
+
+    # ===== Harmonogram meczu (OPCJONALNY) =====
+
+    scheduled_date = models.DateField(
+        blank=True,
+        null=True,
+        help_text="Data rozegrania meczu (opcjonalna)",
+    )
+
+    scheduled_time = models.TimeField(
+        blank=True,
+        null=True,
+        help_text="Godzina rozpoczęcia meczu (opcjonalna)",
+    )
+
+    location = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Lokalizacja meczu (opcjonalna)",
+    )
+
+    # ===== Metadane =====
+
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # ========================================================
+    # REGUŁY INTEGRALNOŚCI
+    # ========================================================
 
     class Meta:
         constraints = [
@@ -390,6 +482,7 @@ class Match(models.Model):
                 name="home_team_not_equal_away_team",
             )
         ]
+        ordering = ["round_number", "id"]
 
     def __str__(self) -> str:
         return f"{self.home_team} vs {self.away_team}"

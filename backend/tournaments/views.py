@@ -446,3 +446,59 @@ class UnarchiveTournamentView(APIView):
             {"detail": "Turniej został przywrócony z archiwum."},
             status=status.HTTP_200_OK,
         )
+
+# ============================================================
+# HARMONOGRAM MECZU
+# ============================================================
+
+class MatchScheduleUpdateView(RetrieveUpdateAPIView):
+    """
+    Edycja harmonogramu pojedynczego meczu.
+    Umożliwia ustawienie:
+    - daty,
+    - godziny,
+    - lokalizacji.
+
+    Nie pozwala na zmianę drużyn, rund ani wyników.
+    """
+    queryset = Match.objects.all()
+    serializer_class = MatchSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        """
+        Użytkownik może edytować tylko mecze turniejów,
+        którymi zarządza (organizator / asystent).
+        """
+        user = self.request.user
+
+        return Match.objects.filter(
+            Q(tournament__organizer=user)
+            | Q(tournament__memberships__user=user)
+        ).distinct()
+
+    def update(self, request, *args, **kwargs):
+        """
+        Ograniczamy aktualizację WYŁĄCZNIE do pól harmonogramu.
+        """
+        allowed_fields = {
+            "scheduled_date",
+            "scheduled_time",
+            "location",
+        }
+
+        data = {
+            key: value
+            for key, value in request.data.items()
+            if key in allowed_fields
+        }
+
+        serializer = self.get_serializer(
+            self.get_object(),
+            data=data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        return Response(serializer.data, status=status.HTTP_200_OK)

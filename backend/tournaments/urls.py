@@ -14,6 +14,7 @@ from .views import (
     TournamentMatchListView,
     ArchiveTournamentView,
     UnarchiveTournamentView,
+    MatchScheduleUpdateView,
 )
 
 urlpatterns = [
@@ -103,7 +104,7 @@ urlpatterns = [
     ),
 
     # ========================================================
-    # MECZE TURNIEJU
+    # MECZE TURNIEJU (LISTA)
     # ========================================================
 
     path(
@@ -112,8 +113,13 @@ urlpatterns = [
         name="tournament-matches",
     ),
 
+    # ========================================================
+    # MECZE – HARMONOGRAM (PATCH)
+    # ========================================================
+
     path(
-        "tournaments/<int:pk>/generate/",
-        GenerateTournamentView.as_view(),
+        "matches/<int:pk>/",
+        MatchScheduleUpdateView.as_view(),
+        name="match-schedule-update",
     ),
 ]

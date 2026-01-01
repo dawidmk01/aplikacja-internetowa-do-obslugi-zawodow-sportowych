@@ -3,6 +3,7 @@ from django.contrib import admin
 from .models import (
     Tournament,
     Team,
+    Match,
 )
 
 
@@ -14,6 +15,35 @@ class TeamInline(admin.TabularInline):
     model = Team
     extra = 0
     fields = ("name", "is_active")
+    show_change_link = True
+
+
+# ============================================================
+# INLINE: MECZE TURNIEJU
+# ============================================================
+
+class MatchInline(admin.TabularInline):
+    model = Match
+    extra = 0
+    fields = (
+        "stage",
+        "group",
+        "round_number",
+        "home_team",
+        "away_team",
+        "scheduled_date",
+        "scheduled_time",
+        "location",
+        "status",
+    )
+    readonly_fields = (
+        "stage",
+        "group",
+        "round_number",
+        "home_team",
+        "away_team",
+        "status",
+    )
     show_change_link = True
 
 
@@ -40,4 +70,4 @@ class TournamentAdmin(admin.ModelAdmin):
     )
     search_fields = ("name",)
 
-    inlines = [TeamInline]
+    inlines = [TeamInline, MatchInline]

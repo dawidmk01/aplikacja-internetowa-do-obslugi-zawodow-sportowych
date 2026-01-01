@@ -96,7 +96,7 @@ export default function TournamentMatches() {
   };
 
   // ----------------------------------------------------------
-  // Grupowanie meczów po numerze rundy
+  // Grupowanie po rundach
   // ----------------------------------------------------------
 
   const matchesByRound = matches.reduce<Record<number, Match[]>>(
@@ -129,6 +129,7 @@ export default function TournamentMatches() {
     return <p style={{ color: "crimson" }}>{error}</p>;
   }
 
+  // ===== BRAK MECZÓW =====
   if (!matches.length) {
     return (
       <div style={{ padding: "2rem" }}>
@@ -147,11 +148,10 @@ export default function TournamentMatches() {
     );
   }
 
+  // ===== MECZE ISTNIEJĄ =====
   return (
     <div style={{ padding: "2rem", maxWidth: 800 }}>
       <h1>Mecze turnieju</h1>
-
-      <button onClick={() => navigate(-1)}>← Wróć</button>
 
       {rounds.map((round) => {
         const roundMatches = matchesByRound[round];
@@ -193,6 +193,17 @@ export default function TournamentMatches() {
           </section>
         );
       })}
+
+      {/* =========================
+          NAWIGACJA ETAPOWA
+         ========================= */}
+      <div style={{ marginTop: "2rem", display: "flex", gap: "1rem" }}>
+        <button onClick={() => navigate(-1)}>← Wróć</button>
+
+        <button onClick={() => navigate(`/tournaments/${id}/schedule`)}>
+          Dalej: harmonogram →
+        </button>
+      </div>
     </div>
   );
 }
