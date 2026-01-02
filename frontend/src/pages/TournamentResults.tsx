@@ -8,7 +8,10 @@ import { apiFetch } from "../api";
 
 type TournamentDTO = {
   id: number;
+  name?: string;
   discipline: string;
+  tournament_format?: "LEAGUE" | "CUP" | "MIXED";
+  participants_count?: number;
   status: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
 };
 
@@ -17,8 +20,9 @@ type MatchDTO = {
   stage_id: number;
   stage_type: "LEAGUE" | "KNOCKOUT" | "GROUP";
   status: "SCHEDULED" | "FINISHED";
+  round_number: number | null;
   home_team_name: string;
-  away_team_name: string | null; // w KO może być BYE (null albo "BYE" zależnie od serializera)
+  away_team_name: string | null; // (awaryjnie) gdyby BYE było serializowane jako null
   home_score: number | null;
   away_score: number | null;
 };
@@ -27,16 +31,81 @@ type MatchDTO = {
    Helpers
    ============================================================ */
 
-function stageTitle(stageType: MatchDTO["stage_type"], stageIndex1Based: number) {
-  if (stageType === "KNOCKOUT") return `Etap pucharowy – runda ${stageIndex1Based}`;
-  if (stageType === "GROUP") return `Faza grupowa – etap ${stageIndex1Based}`;
-  return `Liga – etap ${stageIndex1Based}`;
+function nextPowerOfTwo(n: number): number {
+  if (n <= 1) return 1;
+  return 2 ** Math.ceil(Math.log2(n));
 }
 
-function safeNumberFromInput(v: string): number | null {
-  if (v.trim() === "") return null;
-  if (!/^\d+$/.test(v)) return null;
-  const n = Number(v);
+function knockoutRoundLabelFromTeams(teams: number): string {
+  if (teams === 2) return "Finał";
+  if (teams === 4) return "Półfinał";
+  if (teams === 8) return "Ćwierćfinał";
+  return `1/${teams} finału`;
+}
+
+/**
+ * KO: nazwa rundy z uwzględnieniem BYE w 1. etapie.
+ * - standardowo teams = matches*2
+ * - jeśli w 1. etapie KO była nieparzysta liczba uczestników, to bracket = nextPow2(participantsCount)
+ *   i etykieta powinna wynikać z bracketu, a nie z liczby meczów (bo przy BYE meczów jest mniej).
+ */
+function knockoutStageTitle(
+  stageMatches: MatchDTO[],
+  stageIndex1Based: number,
+  tournamentParticipantsCount?: number
+): string {
+  const matchesCount = stageMatches.length;
+
+  // klasyczne przypadki
+  if (matchesCount === 1) return "Finał";
+  if (matchesCount === 2) return "Półfinał";
+  if (matchesCount === 4) return "Ćwierćfinał";
+
+  // 1. etap KO + możliwe BYE: bierzemy z participants_count (jeśli mamy)
+  if (stageIndex1Based === 1 && typeof tournamentParticipantsCount === "number") {
+    const bracket = nextPowerOfTwo(tournamentParticipantsCount);
+    return knockoutRoundLabelFromTeams(bracket);
+  }
+
+  // fallback:
+  // jeśli liczba meczów nie pasuje do klasyki, zakładamy teams = nextPow2(matches*2 (+1 jeśli wygląda na BYE))
+  const approxTeams = matchesCount * 2;
+  // jeśli ktoś miał BYE i nie mamy participants_count, to nieparzystość zwykle objawia się „za małą liczbą meczów”
+  // więc próbujemy +1 i dopiero potęga 2
+  const bracketGuess = nextPowerOfTwo(approxTeams + 1);
+  return knockoutRoundLabelFromTeams(bracketGuess);
+}
+
+function stageHeaderTitle(
+  stageType: MatchDTO["stage_type"],
+  stageMatches: MatchDTO[],
+  stageIndex1Based: number,
+  tournament: TournamentDTO
+): string {
+  if (stageType === "KNOCKOUT") {
+    return `Puchar: ${knockoutStageTitle(
+      stageMatches,
+      stageIndex1Based,
+      tournament.participants_count
+    )}`;
+  }
+
+  if (stageType === "GROUP") {
+    return `Faza grupowa — etap ${stageIndex1Based}`;
+  }
+
+  return `Liga — etap ${stageIndex1Based}`;
+}
+
+function scoreToInputValue(score: number | null): string {
+  return score === null || typeof score === "undefined" ? "" : String(score);
+}
+
+function inputValueToScore(v: string): number | null {
+  const s = v.trim();
+  if (s === "") return null;
+  if (!/^\d+$/.test(s)) return null;
+  const n = Number(s);
   if (!Number.isFinite(n) || n < 0) return null;
   return n;
 }
@@ -52,7 +121,7 @@ export default function TournamentResults() {
   const [tournament, setTournament] = useState<TournamentDTO | null>(null);
   const [matches, setMatches] = useState<MatchDTO[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
+  const [busyMatchId, setBusyMatchId] = useState<number | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   /* ============================================================
@@ -73,6 +142,19 @@ export default function TournamentResults() {
     const data = await res.json();
     setMatches(data);
     return data;
+  };
+
+  const updateMatchScore = async (matchId: number, home: number | null, away: number | null) => {
+    const res = await apiFetch(`/api/matches/${matchId}/result/`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ home_score: home, away_score: away }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.detail || "Nie udało się zapisać wyniku.");
+    }
   };
 
   /* ============================================================
@@ -105,122 +187,76 @@ export default function TournamentResults() {
 
   /* ============================================================
      Grupowanie po etapach (stage_id)
+     - stabilnie sortujemy po stage_id rosnąco (w praktyce odpowiada kolejności tworzenia)
      ============================================================ */
 
   const stages = useMemo(() => {
     const map = new Map<number, MatchDTO[]>();
+
     for (const m of matches) {
       const arr = map.get(m.stage_id) ?? [];
       arr.push(m);
       map.set(m.stage_id, arr);
     }
 
-    // sort: po stage_id rosnąco (w praktyce OK jako kolejność etapów)
     const entries = Array.from(map.entries()).sort((a, b) => a[0] - b[0]);
 
-    // w każdym etapie możesz sobie sortować mecze, np. po id
-    for (const [, arr] of entries) arr.sort((a, b) => a.id - b.id);
+    // sort wewnątrz etapu
+    for (const [, arr] of entries) {
+      arr.sort((a, b) => {
+        const ra = a.round_number ?? 0;
+        const rb = b.round_number ?? 0;
+        if (ra !== rb) return ra - rb;
+        return a.id - b.id;
+      });
+    }
 
     return entries;
   }, [matches]);
 
-  const lastStageId = useMemo(() => {
-    if (!stages.length) return null;
-    return stages[stages.length - 1][0];
-  }, [stages]);
-
   /* ============================================================
-     Zapis wyniku (jak TournamentTeams)
-     - wynik jest edytowalny zawsze
-     - przy błędzie: pokazujemy komunikat i reload
-     - po sukcesie: reload (żeby od razu mieć status FINISHED i ewentualny rollback etapów)
+     Zapis na blur (styl TournamentTeams)
+     - zawsze edytowalne
+     - po zapisie: reload matches + tournament (żeby zobaczyć auto-generację/rollback)
      ============================================================ */
 
-  const updateMatchScore = async (matchId: number, home: number | null, away: number | null) => {
-    const res = await apiFetch(`/api/matches/${matchId}/result/`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ home_score: home, away_score: away }),
-    });
+  const saveOnBlur = async (match: MatchDTO) => {
+    const home = match.home_score;
+    const away = match.away_score;
 
-    if (!res.ok) {
-      const data = await res.json().catch(() => null);
-      throw new Error(data?.detail || "Nie udało się zapisać wyniku.");
+    // jeśli ktoś wpisze śmieci, nie zapisujemy — cofamy stan do serwera
+    // (tu powinno się zdarzać rzadko, bo input type=number)
+    if (home !== null && home < 0) {
+      setMessage("Wynik nie został zapisany (wartość ujemna).");
+      await loadMatches().catch(() => null);
+      return;
     }
-  };
-
-  const onBlurSave = async (match: MatchDTO, homeInput: string, awayInput: string) => {
-    // Jeśli user zostawił pola tak jak były – nie wysyłamy
-    const homeParsed = safeNumberFromInput(homeInput);
-    const awayParsed = safeNumberFromInput(awayInput);
-
-    // Warunek „nie wysyłaj, jeśli nadal brak sensownej wartości”
-    // (ale: jeśli oba są liczbą 0 i user tak chce, to jest sensowna wartość)
-    if (homeParsed === null || awayParsed === null) {
-      // nic nie zapisujemy, przywracamy stan serwera
-      setMessage("Wynik nie został zapisany (uzupełnij oba pola liczbami ≥ 0).");
+    if (away !== null && away < 0) {
+      setMessage("Wynik nie został zapisany (wartość ujemna).");
       await loadMatches().catch(() => null);
       return;
     }
 
-    // Optimistic: już masz wpisane w state, więc tylko zapisujemy w backendzie
+    // BYE / brak przeciwnika – nie zapisujemy wyniku
+    if (!match.away_team_name) return;
+
     try {
+      setBusyMatchId(match.id);
       setMessage(null);
-      await updateMatchScore(match.id, homeParsed, awayParsed);
 
-      // po zapisie odświeżamy mecze:
-      // - status FINISHED wchodzi od razu
-      // - jeżeli backend cofnął kolejne etapy, zobaczysz to bez refresh
-      await loadMatches();
+      await updateMatchScore(match.id, home, away);
 
-      // turniej też może zmienić status (np. z FINISHED -> RUNNING po rollbacku)
-      await loadTournament().catch(() => null);
+      // po zapisie odświeżamy:
+      // - status meczu (FINISHED/SCHEDULED)
+      // - ewentualne rollbacki i nowe etapy
+      await Promise.all([loadMatches(), loadTournament().catch(() => null)]);
 
       setMessage("Wynik zapisany.");
     } catch (e: any) {
       setMessage(e.message);
       await loadMatches().catch(() => null);
-    }
-  };
-
-  /* ============================================================
-     Potwierdzenie etapu (tylko ostatni etap)
-     ============================================================ */
-
-  const confirmStage = async (stageId: number) => {
-    if (!id) return;
-
-    const ok = window.confirm(
-      "Czy na pewno chcesz zakończyć ten etap?\n" +
-        "Jeżeli to KO, system spróbuje wygenerować kolejny etap.\n" +
-        "Jeżeli to był finał, turniej zostanie zakończony."
-    );
-    if (!ok) return;
-
-    try {
-      setBusy(true);
-      setMessage(null);
-
-      const res = await apiFetch(`/api/stages/${stageId}/confirm/`, {
-        method: "POST",
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.detail || "Nie udało się zatwierdzić etapu.");
-      }
-
-      // po confirm zawsze odświeżamy stan
-      await Promise.all([loadTournament(), loadMatches()]);
-
-      const goSchedule = window.confirm(
-        "Etap został zakończony.\nCzy chcesz przejść do ustawiania harmonogramu?"
-      );
-      if (goSchedule) navigate(`/tournaments/${id}/schedule`);
-    } catch (e: any) {
-      setMessage(e.message);
     } finally {
-      setBusy(false);
+      setBusyMatchId(null);
     }
   };
 
@@ -242,26 +278,49 @@ export default function TournamentResults() {
   }
 
   return (
-    <div style={{ padding: "2rem", maxWidth: 900 }}>
+    <div style={{ padding: "2rem", maxWidth: 980 }}>
       <h1>Wprowadzanie wyników</h1>
 
       <section style={{ opacity: 0.85, marginBottom: "1rem" }}>
+        {tournament.name && (
+          <div>
+            <strong>Turniej:</strong> {tournament.name}
+          </div>
+        )}
         <div>
-          <strong>Status turnieju:</strong> {tournament.status}
+          <strong>Status:</strong> {tournament.status}
         </div>
         <div style={{ marginTop: "0.25rem" }}>
           Wynik zapisuje się po opuszczeniu pola (onBlur). Wyniki można edytować w dowolnym momencie.
         </div>
         <div style={{ marginTop: "0.25rem" }}>
-          Jeśli istnieją już kolejne etapy, zmiana wyniku w starszym etapie cofnie wygenerowane etapy (backend).
+          Jeśli zmienisz wynik w etapie wcześniejszym i zmieni się zwycięzca, backend cofnie późniejsze etapy i wygeneruje je ponownie.
         </div>
       </section>
 
       {stages.map(([stageId, stageMatches], idx) => {
-        const title = stageTitle(stageMatches[0].stage_type, idx + 1);
+        const stageIndex1Based = idx + 1;
+        const stageType = stageMatches[0]?.stage_type;
 
-        const allFinished = stageMatches.every((m) => m.status === "FINISHED");
-        const isLastStage = stageId === lastStageId;
+        const header = stageHeaderTitle(stageType, stageMatches, stageIndex1Based, tournament);
+
+        const isKnockout = stageType === "KNOCKOUT";
+        const isLeagueOrGroup = stageType === "LEAGUE" || stageType === "GROUP";
+
+        // podział na kolejki w lidze/grupach
+        const roundsMap = new Map<number, MatchDTO[]>();
+        if (isLeagueOrGroup) {
+          for (const m of stageMatches) {
+            const r = typeof m.round_number === "number" ? m.round_number : 0;
+            const arr = roundsMap.get(r) ?? [];
+            arr.push(m);
+            roundsMap.set(r, arr);
+          }
+        }
+
+        const rounds = isLeagueOrGroup
+          ? Array.from(roundsMap.keys()).sort((a, b) => a - b)
+          : [];
 
         return (
           <section
@@ -272,109 +331,161 @@ export default function TournamentResults() {
               borderTop: "1px solid #333",
             }}
           >
-            <h2 style={{ marginBottom: "0.75rem" }}>{title}</h2>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
+              <h2 style={{ marginBottom: "0.75rem" }}>{header}</h2>
+              <div style={{ opacity: 0.6, paddingTop: "0.35rem" }}>
+                stage_id: {stageId}
+              </div>
+            </div>
 
-            {stageMatches.map((match) => {
-              const awayName = match.away_team_name ?? "BYE";
+            {/* KO: lista meczów */}
+            {isKnockout &&
+              stageMatches.map((match) => {
+                const awayName = match.away_team_name ?? "BYE";
+                const isBye = match.away_team_name === null;
 
-              return (
-                <div
-                  key={match.id}
-                  style={{
-                    borderBottom: "1px solid #333",
-                    padding: "1rem 0",
-                  }}
-                >
-                  <strong>
-                    {match.home_team_name} vs {awayName}
-                  </strong>
-
+                return (
                   <div
+                    key={match.id}
                     style={{
-                      display: "flex",
-                      gap: "0.5rem",
-                      marginTop: "0.5rem",
-                      alignItems: "center",
+                      borderBottom: "1px solid #333",
+                      padding: "1rem 0",
                     }}
                   >
-                    <input
-                      type="number"
-                      min={0}
-                      defaultValue={match.home_score ?? 0}
-                      onBlur={(e) => {
-                        const homeVal = e.currentTarget.value;
-                        const awayEl = document.getElementById(
-                          `away-${match.id}`
-                        ) as HTMLInputElement | null;
-                        const awayVal = awayEl ? awayEl.value : String(match.away_score ?? 0);
+                    <strong>
+                      {match.home_team_name} vs {awayName}
+                    </strong>
 
-                        // Optimistic UI: na bieżąco odzwierciedlamy w state
-                        setMatches((prev) =>
-                          prev.map((m) =>
-                            m.id === match.id
-                              ? { ...m, home_score: Number(homeVal), away_score: Number(awayVal) }
-                              : m
-                          )
-                        );
-
-                        onBlurSave(match, homeVal, awayVal);
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: "0.5rem",
+                        marginTop: "0.5rem",
+                        alignItems: "center",
                       }}
-                    />
+                    >
+                      <input
+                        type="number"
+                        min={0}
+                        value={scoreToInputValue(match.home_score)}
+                        disabled={isBye || busyMatchId === match.id}
+                        onChange={(e) => {
+                          const v = inputValueToScore(e.target.value);
+                          setMatches((prev) =>
+                            prev.map((m) => (m.id === match.id ? { ...m, home_score: v } : m))
+                          );
+                        }}
+                        onBlur={() => saveOnBlur(match)}
+                      />
 
-                    <span>:</span>
+                      <span>:</span>
 
-                    <input
-                      id={`away-${match.id}`}
-                      type="number"
-                      min={0}
-                      defaultValue={match.away_score ?? 0}
-                      onBlur={(e) => {
-                        const awayVal = e.currentTarget.value;
-                        const homeEl = document.getElementById(
-                          `home-${match.id}`
-                        ) as HTMLInputElement | null;
-                        const homeVal = homeEl ? homeEl.value : String(match.home_score ?? 0);
+                      <input
+                        type="number"
+                        min={0}
+                        value={scoreToInputValue(match.away_score)}
+                        disabled={isBye || busyMatchId === match.id}
+                        onChange={(e) => {
+                          const v = inputValueToScore(e.target.value);
+                          setMatches((prev) =>
+                            prev.map((m) => (m.id === match.id ? { ...m, away_score: v } : m))
+                          );
+                        }}
+                        onBlur={() => saveOnBlur(match)}
+                      />
 
-                        setMatches((prev) =>
-                          prev.map((m) =>
-                            m.id === match.id
-                              ? { ...m, home_score: Number(homeVal), away_score: Number(awayVal) }
-                              : m
-                          )
-                        );
+                      {busyMatchId === match.id && <span style={{ opacity: 0.7 }}>Zapisywanie…</span>}
+                    </div>
 
-                        onBlurSave(match, homeVal, awayVal);
-                      }}
-                    />
-                    {/* pomocnicze id do odczytu pary */}
-                    <input id={`home-${match.id}`} type="hidden" value={match.home_score ?? 0} readOnly />
+                    <div style={{ marginTop: "0.35rem", opacity: 0.8 }}>
+                      Status meczu: {match.status === "FINISHED" ? "Zakończony" : "W trakcie / niepełny wynik"}
+                    </div>
                   </div>
+                );
+              })}
 
-                  <div style={{ marginTop: "0.35rem", opacity: 0.8 }}>
-                    Status meczu: {match.status === "FINISHED" ? "Zakończony" : "Zaplanowany"}
+            {/* LEAGUE/GROUP: kolejki */}
+            {isLeagueOrGroup &&
+              rounds.map((roundNo) => {
+                const roundMatches = roundsMap.get(roundNo) ?? [];
+                const roundTitle =
+                  stageType === "LEAGUE" ? `Kolejka ${roundNo}` : `Runda ${roundNo}`;
+
+                return (
+                  <div key={roundNo} style={{ marginBottom: "1.25rem" }}>
+                    <h3 style={{ margin: "0.75rem 0" }}>{roundTitle}</h3>
+
+                    {roundMatches.map((match) => {
+                      const awayName = match.away_team_name ?? "—";
+                      const isBye = match.away_team_name === null;
+
+                      return (
+                        <div
+                          key={match.id}
+                          style={{
+                            borderBottom: "1px solid #333",
+                            padding: "1rem 0",
+                          }}
+                        >
+                          <strong>
+                            {match.home_team_name} vs {awayName}
+                          </strong>
+
+                          <div
+                            style={{
+                              display: "flex",
+                              gap: "0.5rem",
+                              marginTop: "0.5rem",
+                              alignItems: "center",
+                            }}
+                          >
+                            <input
+                              type="number"
+                              min={0}
+                              value={scoreToInputValue(match.home_score)}
+                              disabled={isBye || busyMatchId === match.id}
+                              onChange={(e) => {
+                                const v = inputValueToScore(e.target.value);
+                                setMatches((prev) =>
+                                  prev.map((m) => (m.id === match.id ? { ...m, home_score: v } : m))
+                                );
+                              }}
+                              onBlur={() => saveOnBlur(match)}
+                            />
+
+                            <span>:</span>
+
+                            <input
+                              type="number"
+                              min={0}
+                              value={scoreToInputValue(match.away_score)}
+                              disabled={isBye || busyMatchId === match.id}
+                              onChange={(e) => {
+                                const v = inputValueToScore(e.target.value);
+                                setMatches((prev) =>
+                                  prev.map((m) => (m.id === match.id ? { ...m, away_score: v } : m))
+                                );
+                              }}
+                              onBlur={() => saveOnBlur(match)}
+                            />
+
+                            {busyMatchId === match.id && <span style={{ opacity: 0.7 }}>Zapisywanie…</span>}
+                          </div>
+
+                          <div style={{ marginTop: "0.35rem", opacity: 0.8 }}>
+                            Status meczu: {match.status === "FINISHED" ? "Zakończony" : "W trakcie / niepełny wynik"}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                </div>
-              );
-            })}
-
-            {isLastStage && tournament.status !== "FINISHED" && (
-              <div style={{ marginTop: "1rem" }}>
-                <button onClick={() => confirmStage(stageId)} disabled={!allFinished || busy}>
-                  {busy ? "Zamykanie etapu…" : "Zatwierdź etap"}
-                </button>
-
-                {!allFinished && (
-                  <p style={{ opacity: 0.6, marginTop: "0.5rem" }}>
-                    Aby zatwierdzić etap, wszystkie mecze w tym etapie muszą mieć status „Zakończony”.
-                  </p>
-                )}
-              </div>
-            )}
+                );
+              })}
           </section>
         );
       })}
 
-      <div style={{ marginTop: "2rem", display: "flex", gap: "1rem" }}>
+      <div style={{ marginTop: "2rem", display: "flex", gap: "1rem", flexWrap: "wrap" }}>
         <button onClick={() => navigate(-1)}>← Wróć</button>
         <button onClick={() => navigate(`/tournaments/${id}/matches`)}>Podgląd rozgrywek →</button>
         <button onClick={() => navigate(`/tournaments/${id}/schedule`)}>Harmonogram →</button>

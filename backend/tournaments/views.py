@@ -1,47 +1,54 @@
+from __future__ import annotations
+
 # ============================================================
 # IMPORTY
 # ============================================================
+
+from typing import Optional
 
 from django.db import transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 
+from rest_framework import status
 from rest_framework.generics import (
-    ListCreateAPIView,
     ListAPIView,
+    ListCreateAPIView,
     RetrieveUpdateAPIView,
 )
-from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework import status
-
-from .models import (
-    Tournament,
-    TournamentMembership,
-    Team,
-    Match,
-    Stage,
-)
-from .serializers import (
-    TournamentSerializer,
-    AddAssistantSerializer,
-    TournamentAssistantSerializer,
-    TeamSerializer,
-    TeamUpdateSerializer,
-    GenerateTournamentSerializer,
-    MatchSerializer,
-    MatchResultUpdateSerializer,
-)
-from .permissions import IsTournamentOrganizer
+from rest_framework.views import APIView
 
 from tournaments.services.generators.league import generate_league_stage
-from tournaments.services.generators.knockout import generate_knockout_stage
+from tournaments.services.generators.knockout import (
+    generate_knockout_stage,
+    generate_next_knockout_stage,
+)
 from tournaments.services.match_result import MatchResultService
+
+from .models import (
+    Match,
+    Stage,
+    Team,
+    Tournament,
+    TournamentMembership,
+)
+from .permissions import IsTournamentOrganizer
+from .serializers import (
+    AddAssistantSerializer,
+    GenerateTournamentSerializer,
+    MatchResultUpdateSerializer,
+    MatchSerializer,
+    TeamSerializer,
+    TeamUpdateSerializer,
+    TournamentAssistantSerializer,
+    TournamentSerializer,
+)
 
 
 # ============================================================
-# FUNKCJE POMOCNICZE
+# FUNKCJE POMOCNICZE – UPRAWNIENIA
 # ============================================================
 
 def user_can_manage_tournament(user, tournament: Tournament) -> bool:
@@ -55,6 +62,169 @@ def user_can_manage_tournament(user, tournament: Tournament) -> bool:
         user=user,
         role=TournamentMembership.Role.ASSISTANT,
     ).exists()
+
+
+# ============================================================
+# FUNKCJE POMOCNICZE – KO (ROLLBACK / PROPAGACJA)
+# ============================================================
+
+def _knockout_downstream_stages(tournament: Tournament, after_order: int):
+    """
+    Zwraca kolejne etapy KO po danym etapie (po order).
+    """
+    return Stage.objects.filter(
+        tournament=tournament,
+        stage_type=Stage.StageType.KNOCKOUT,
+        order__gt=after_order,
+    ).order_by("order")
+
+
+def _knockout_downstream_has_results(tournament: Tournament, after_order: int) -> bool:
+    """
+    Sprawdza, czy w kolejnych etapach KO istnieją jakiekolwiek wyniki
+    (czyli realne dane, których nie wolno "cicho" nadpisać).
+    """
+    qs = Match.objects.filter(
+        tournament=tournament,
+        stage__stage_type=Stage.StageType.KNOCKOUT,
+        stage__order__gt=after_order,
+    )
+    return qs.filter(
+        Q(status=Match.Status.FINISHED)
+        | Q(home_score__isnull=False)
+        | Q(away_score__isnull=False)
+        | Q(winner__isnull=False)
+    ).exists()
+
+
+def _soft_propagate_knockout_winner_change(
+    tournament: Tournament,
+    after_order: int,
+    old_team_id: Optional[int],
+    new_team: Optional[Team],
+) -> None:
+    """
+    Soft-propagacja (bez kasowania etapów):
+    - tylko jeśli downstream KO nie ma wyników.
+    - podmieniamy wystąpienia starej drużyny na nową w meczach KO "w przyszłości".
+    """
+    if not old_team_id:
+        return
+    if new_team is None:
+        # Zwycięzca został "wyczyszczony" (np. remis/niekompletne).
+        # Bezpieczniej jest w takim wypadku zrobić hard rollback,
+        # ale tę decyzję podejmuje warstwa wyżej.
+        return
+
+    downstream_matches = Match.objects.filter(
+        tournament=tournament,
+        stage__stage_type=Stage.StageType.KNOCKOUT,
+        stage__order__gt=after_order,
+    ).select_related("stage")
+
+    # Podmieniamy home/away tam, gdzie występuje stara drużyna.
+    to_update = []
+    for m in downstream_matches:
+        changed = False
+
+        if m.home_team_id == old_team_id:
+            m.home_team = new_team
+            changed = True
+
+        if m.away_team_id == old_team_id:
+            m.away_team = new_team
+            changed = True
+
+        if not changed:
+            continue
+
+        # Ochrona przed złamaniem constraintu home != away
+        if m.home_team_id == m.away_team_id:
+            # W razie kolizji lepiej nie próbować naprawiać "na siłę".
+            raise ValueError("Kolizja w KO: po podmianie drużyn mecz stał się home==away.")
+
+        # Downstream i tak jest bez wyników, więc czyścimy ewentualne pola.
+        m.home_score = None
+        m.away_score = None
+        m.winner = None
+        m.status = Match.Status.SCHEDULED
+
+        to_update.append(m)
+
+    if to_update:
+        Match.objects.bulk_update(
+            to_update,
+            ["home_team", "away_team", "home_score", "away_score", "winner", "status"],
+        )
+
+    # Re-open downstream stages (żeby auto-progres mógł działać spójnie)
+    Stage.objects.filter(
+        tournament=tournament,
+        stage_type=Stage.StageType.KNOCKOUT,
+        order__gt=after_order,
+    ).exclude(status=Stage.Status.OPEN).update(status=Stage.Status.OPEN)
+
+    # Jeśli turniej był zakończony (FINISHED), a my zmieniamy drabinkę,
+    # to trzeba go logicznie "odkończyć".
+    if tournament.status == Tournament.Status.FINISHED:
+        tournament.status = Tournament.Status.CONFIGURED
+        tournament.save(update_fields=["status"])
+
+
+def rollback_knockout_after_stage(stage: Stage) -> int:
+    """
+    Hard rollback KO:
+    - usuwa wszystkie KO etapy po wskazanym etapie (order > stage.order),
+    - usuwa ich mecze,
+    - koryguje status turnieju (jeśli był FINISHED).
+    Zwraca liczbę usuniętych etapów.
+    """
+    tournament = stage.tournament
+    downstream_stages = _knockout_downstream_stages(tournament, stage.order)
+
+    if not downstream_stages.exists():
+        return 0
+
+    # usuwamy mecze downstream, potem etapy
+    Match.objects.filter(stage__in=downstream_stages).delete()
+    deleted_count = downstream_stages.count()
+    downstream_stages.delete()
+
+    if tournament.status == Tournament.Status.FINISHED:
+        tournament.status = Tournament.Status.CONFIGURED
+        tournament.save(update_fields=["status"])
+
+    return deleted_count
+
+
+def _try_auto_advance_knockout(stage: Stage) -> None:
+    """
+    Auto-progres KO:
+    - jeśli etap KO ma komplet rozstrzygniętych meczów (FINISHED + winner),
+      i nie ma jeszcze następnego etapu KO,
+      generujemy kolejny etap.
+    """
+    tournament = stage.tournament
+
+    # jeśli już istnieje downstream KO, nie generujemy ponownie
+    if _knockout_downstream_stages(tournament, stage.order).exists():
+        return
+
+    matches = list(stage.matches.all())
+
+    if not matches:
+        return
+
+    # musi być pełne rozstrzygnięcie
+    if any(m.status != Match.Status.FINISHED or not m.winner_id for m in matches):
+        return
+
+    # generator wymaga OPEN – urealniamy status
+    if stage.status != Stage.Status.OPEN:
+        stage.status = Stage.Status.OPEN
+        stage.save(update_fields=["status"])
+
+    generate_next_knockout_stage(stage)
 
 
 # ============================================================
@@ -77,8 +247,7 @@ class MyTournamentListView(ListAPIView):
     def get_queryset(self):
         user = self.request.user
         return Tournament.objects.filter(
-            Q(organizer=user) |
-            Q(memberships__user=user)
+            Q(organizer=user) | Q(memberships__user=user)
         ).distinct()
 
 
@@ -117,8 +286,9 @@ class TournamentDetailView(RetrieveUpdateAPIView):
 
         return super().retrieve(request, *args, **kwargs)
 
+
 # ============================================================
-# ARCHIWIZACJA TURNIEJU
+# ARCHIWIZACJA / COFNIĘCIE ARCHIWIZACJI
 # ============================================================
 
 class ArchiveTournamentView(APIView):
@@ -146,11 +316,6 @@ class ArchiveTournamentView(APIView):
             {"detail": "Turniej został zarchiwizowany."},
             status=status.HTTP_200_OK,
         )
-
-
-# ============================================================
-# COFNIĘCIE ARCHIWIZACJI
-# ============================================================
 
 
 class UnarchiveTournamentView(APIView):
@@ -407,7 +572,7 @@ class TournamentMatchListView(ListAPIView):
             Match.objects
             .filter(tournament=tournament)
             .select_related("home_team", "away_team", "stage")
-            .order_by("round_number", "id")
+            .order_by("stage__order", "round_number", "id")
         )
 
 
@@ -423,28 +588,15 @@ class MatchScheduleUpdateView(RetrieveUpdateAPIView):
     def get_queryset(self):
         user = self.request.user
         return Match.objects.filter(
-            Q(tournament__organizer=user)
-            | Q(tournament__memberships__user=user)
+            Q(tournament__organizer=user) | Q(tournament__memberships__user=user)
         ).distinct()
 
     def update(self, request, *args, **kwargs):
-        allowed_fields = {
-            "scheduled_date",
-            "scheduled_time",
-            "location",
-        }
+        allowed_fields = {"scheduled_date", "scheduled_time", "location"}
 
-        data = {
-            key: value
-            for key, value in request.data.items()
-            if key in allowed_fields
-        }
+        data = {k: v for k, v in request.data.items() if k in allowed_fields}
 
-        serializer = self.get_serializer(
-            self.get_object(),
-            data=data,
-            partial=True,
-        )
+        serializer = self.get_serializer(self.get_object(), data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
 
@@ -456,52 +608,72 @@ class MatchScheduleUpdateView(RetrieveUpdateAPIView):
 # ============================================================
 
 class MatchResultUpdateView(RetrieveUpdateAPIView):
-    queryset = Match.objects.all()
     serializer_class = MatchResultUpdateSerializer
     permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        user = self.request.user
+        return Match.objects.filter(
+            Q(tournament__organizer=user) | Q(tournament__memberships__user=user)
+        ).select_related("stage", "tournament").distinct()
+
+    @transaction.atomic
     def update(self, request, *args, **kwargs):
         match = self.get_object()
         stage = match.stage
+        tournament = match.tournament
 
-        serializer = self.get_serializer(
-            match,
-            data=request.data,
-            partial=True,
-        )
+        old_winner_id = match.winner_id  # klucz do rollbacku
+
+        serializer = self.get_serializer(match, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
 
         match = serializer.save()
 
-        try:
-            MatchResultService.apply_result(match)
-        except ValueError as e:
-            return Response(
-                {"detail": str(e)},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # Ustal status/winner deterministycznie (bez rzucania dla stanów przejściowych)
+        MatchResultService.apply_result(match)
 
-        # 🔥 JEŚLI TO KO → COFAMY KOLEJNE ETAPY
-        if stage.stage_type == Stage.StageType.KNOCKOUT:
-            rollback_knockout_after_stage(stage)
+        new_winner_id = match.winner_id
 
-        return Response(
-            MatchSerializer(match).data,
-            status=status.HTTP_200_OK,
-        )
+        # KO: rollback / propagacja TYLKO gdy zmienił się zwycięzca
+        if stage.stage_type == Stage.StageType.KNOCKOUT and old_winner_id != new_winner_id:
+            # jeśli nie ma downstream – nic nie robimy
+            if _knockout_downstream_stages(tournament, stage.order).exists():
+                if _knockout_downstream_has_results(tournament, stage.order):
+                    # downstream ma wyniki -> hard rollback
+                    rollback_knockout_after_stage(stage)
+                else:
+                    # downstream bez wyników -> soft propagacja
+                    new_team = Team.objects.filter(pk=new_winner_id).first() if new_winner_id else None
+                    try:
+                        _soft_propagate_knockout_winner_change(
+                            tournament=tournament,
+                            after_order=stage.order,
+                            old_team_id=old_winner_id,
+                            new_team=new_team,
+                        )
+                    except ValueError:
+                        # jeżeli soft update powoduje kolizję, robimy hard rollback
+                        rollback_knockout_after_stage(stage)
 
-from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework import status
+        # Auto-progres KO: jeśli etap jest kompletny i nie ma jeszcze następnego etapu -> generujemy
+        if stage.stage_type == Stage.StageType.KNOCKOUT and tournament.status != Tournament.Status.FINISHED:
+            _try_auto_advance_knockout(stage)
 
-from tournaments.models import Stage
-from tournaments.services.generators.knockout import generate_next_knockout_stage
+        return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
 
+
+# ============================================================
+# (Opcjonalne) ZATWIERDZANIE ETAPU KO – zostawione dla kompatybilności
+# ============================================================
 
 class ConfirmStageView(APIView):
+    """
+    Jeśli przechodzisz na pełne auto-generowanie, docelowo ten endpoint możesz usunąć.
+    """
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def post(self, request, pk):
         stage = get_object_or_404(Stage, pk=pk)
         tournament = stage.tournament
@@ -518,18 +690,10 @@ class ConfirmStageView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # generator wymaga OPEN
         if stage.status != Stage.Status.OPEN:
-            return Response(
-                {"detail": "Etap został już zatwierdzony."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # 🔴 BLOKADA PO FINALE
-        if tournament.status == Tournament.Status.FINISHED:
-            return Response(
-                {"detail": "Turniej został już zakończony."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            stage.status = Stage.Status.OPEN
+            stage.save(update_fields=["status"])
 
         try:
             generate_next_knockout_stage(stage)

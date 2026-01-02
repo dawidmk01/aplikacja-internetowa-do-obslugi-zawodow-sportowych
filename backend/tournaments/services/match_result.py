@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from typing import Optional, TYPE_CHECKING
+
 from tournaments.models import Match, Stage
+
+if TYPE_CHECKING:
+    from tournaments.models import Team
 
 
 class MatchResultService:
@@ -8,14 +13,14 @@ class MatchResultService:
     Serwis domenowy odpowiedzialny za zastosowanie wyniku meczu.
 
     Odpowiedzialności:
-    - walidacja poprawności wyniku,
-    - ustawienie statusu meczu,
-    - wyznaczenie zwycięzcy (jeśli dotyczy).
+    - ocena, czy wynik jest kompletny,
+    - wyznaczenie zwycięzcy (jeśli to możliwe),
+    - ustawienie statusu meczu.
 
-    Serwis NIE:
-    - generuje kolejnych etapów,
-    - nie modyfikuje struktury turnieju,
-    - nie komunikuje się z API.
+    Założenie projektowe (pod auto-generowanie etapów):
+    - Serwis NIE rzuca błędów za "stan przejściowy" (np. remis w KO).
+      Taki stan oznacza po prostu: mecz nie jest rozstrzygnięty,
+      więc ma status SCHEDULED i winner=None.
     """
 
     # ========================================================
@@ -25,15 +30,23 @@ class MatchResultService:
     @staticmethod
     def apply_result(match: Match) -> None:
         """
-        Analizuje wynik meczu i stosuje odpowiednią logikę
-        zależną od typu etapu turnieju.
+        Analizuje wynik meczu i aktualizuje:
+        - winner
+        - status
 
-        - Liga / grupa → remis dozwolony
-        - Puchar (KO) → remis niedozwolony
+        Zasady:
+        - Liga / grupa: remis dozwolony -> FINISHED (winner może być None)
+        - KO: remis niedozwolony -> mecz pozostaje SCHEDULED (winner=None)
+        - Wynik niekompletny -> SCHEDULED (winner=None)
         """
 
-        # Brak kompletnego wyniku → brak akcji
+        # Wynik niekompletny -> cofamy rozstrzygnięcie
         if not MatchResultService._is_result_complete(match):
+            MatchResultService._set_state(
+                match=match,
+                winner=None,
+                status=Match.Status.SCHEDULED,
+            )
             return
 
         stage_type = match.stage.stage_type
@@ -46,10 +59,7 @@ class MatchResultService:
             MatchResultService._apply_knockout(match)
             return
 
-        # Zabezpieczenie na przyszłość
-        raise ValueError(
-            f"Nieobsługiwany typ etapu turnieju: {stage_type}"
-        )
+        raise ValueError(f"Nieobsługiwany typ etapu turnieju: {stage_type}")
 
     # ========================================================
     # WALIDACJE
@@ -57,13 +67,7 @@ class MatchResultService:
 
     @staticmethod
     def _is_result_complete(match: Match) -> bool:
-        """
-        Sprawdza, czy wynik meczu jest kompletny.
-        """
-        return (
-            match.home_score is not None
-            and match.away_score is not None
-        )
+        return match.home_score is not None and match.away_score is not None
 
     # ========================================================
     # LOGIKA: LIGA / GRUPA
@@ -71,69 +75,63 @@ class MatchResultService:
 
     @staticmethod
     def _apply_league_or_group(match: Match) -> None:
-        """
-        Zastosowanie wyniku w lidze lub fazie grupowej.
-        Remis jest dozwolony.
-        """
+        winner: Optional["Team"]
 
         if match.home_score > match.away_score:
             winner = match.home_team
         elif match.away_score > match.home_score:
             winner = match.away_team
         else:
-            winner = None  # remis
+            winner = None  # remis dozwolony
 
-        MatchResultService._finalize_match(
+        MatchResultService._set_state(
             match=match,
             winner=winner,
+            status=Match.Status.FINISHED,
         )
 
     # ========================================================
-    # LOGIKA: PUCHAR (KO)
+    # LOGIKA: KO
     # ========================================================
 
     @staticmethod
     def _apply_knockout(match: Match) -> None:
-        """
-        Zastosowanie wyniku w fazie pucharowej.
-        Remis jest niedozwolony.
-        """
-
+        # Remis w KO -> nie błąd HTTP, tylko "mecz nierozstrzygnięty"
         if match.home_score == match.away_score:
-            raise ValueError(
-                "Remis w fazie pucharowej jest niedozwolony."
+            MatchResultService._set_state(
+                match=match,
+                winner=None,
+                status=Match.Status.SCHEDULED,
             )
+            return
 
-        winner = (
-            match.home_team
-            if match.home_score > match.away_score
-            else match.away_team
-        )
+        winner: "Team" = match.home_team if match.home_score > match.away_score else match.away_team
 
-        MatchResultService._finalize_match(
+        MatchResultService._set_state(
             match=match,
             winner=winner,
+            status=Match.Status.FINISHED,
         )
 
     # ========================================================
-    # FINALIZACJA MECZU
+    # ZAPIS STANU
     # ========================================================
 
     @staticmethod
-    def _finalize_match(match: Match, winner) -> None:
+    def _set_state(match: Match, *, winner: Optional["Team"], status: str) -> None:
         """
-        Kończy mecz:
-        - ustawia zwycięzcę,
-        - ustawia status FINISHED,
-        - zapisuje zmiany atomowo.
+        Ustawia stan meczu minimalną liczbą zapisów.
         """
+        update_fields: list[str] = []
 
-        match.winner = winner
-        match.status = Match.Status.FINISHED
+        new_winner_id = winner.id if winner else None
+        if match.winner_id != new_winner_id:
+            match.winner = winner
+            update_fields.append("winner")
 
-        match.save(
-            update_fields=[
-                "winner",
-                "status",
-            ]
-        )
+        if match.status != status:
+            match.status = status
+            update_fields.append("status")
+
+        if update_fields:
+            match.save(update_fields=update_fields)

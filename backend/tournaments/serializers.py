@@ -33,10 +33,6 @@ class TournamentSerializer(serializers.ModelSerializer):
             "my_role",
         )
 
-    # --------------------------------------------------------
-    # WALIDACJE PÓL
-    # --------------------------------------------------------
-
     def validate_tournament_format(self, value):
         discipline = (
             self.initial_data.get("discipline")
@@ -58,18 +54,15 @@ class TournamentSerializer(serializers.ModelSerializer):
             )
         return value
 
-    # --------------------------------------------------------
-    # WALIDACJA GLOBALNA
-    # --------------------------------------------------------
-
     def validate(self, attrs):
         request = self.context.get("request")
         instance = self.instance
 
+        # bez kontekstu request/instance nie blokujemy niczego
         if not request or not request.user.is_authenticated or not instance:
             return attrs
 
-        # Blokada edycji po wygenerowaniu rozgrywek
+        # Blokada edycji po wygenerowaniu rozgrywek – nie dopuszczamy zmian kluczowej konfiguracji
         if instance.status != Tournament.Status.DRAFT:
             for field in (
                 "discipline",
@@ -104,43 +97,22 @@ class TournamentSerializer(serializers.ModelSerializer):
                 attrs.pop(field, None)
 
         # Walidacja formatu mieszanego
-        tournament_format = attrs.get(
-            "tournament_format", instance.tournament_format
-        )
-        participants_count = attrs.get(
-            "participants_count", instance.participants_count
-        )
+        tournament_format = attrs.get("tournament_format", instance.tournament_format)
+        participants_count = attrs.get("participants_count", instance.participants_count)
 
-        if (
-            tournament_format == Tournament.TournamentFormat.MIXED
-            and participants_count < 4
-        ):
+        if tournament_format == Tournament.TournamentFormat.MIXED and participants_count < 4:
             raise serializers.ValidationError(
-                {
-                    "participants_count": (
-                        "Format mieszany wymaga co najmniej 4 uczestników."
-                    )
-                }
+                {"participants_count": "Format mieszany wymaga co najmniej 4 uczestników."}
             )
 
         return attrs
 
-    # --------------------------------------------------------
-    # CREATE
-    # --------------------------------------------------------
-
     def create(self, validated_data):
         if "competition_type" not in validated_data:
             validated_data["competition_type"] = (
-                Tournament.infer_default_competition_type(
-                    validated_data.get("discipline")
-                )
+                Tournament.infer_default_competition_type(validated_data.get("discipline"))
             )
         return super().create(validated_data)
-
-    # --------------------------------------------------------
-    # ROLA UŻYTKOWNIKA
-    # --------------------------------------------------------
 
     def get_my_role(self, obj):
         request = self.context.get("request")
@@ -238,25 +210,26 @@ class TeamSerializer(serializers.ModelSerializer):
 
     def validate_name(self, value):
         if not value or not value.strip():
-            raise serializers.ValidationError(
-                "Nazwa nie może być pusta."
-            )
+            raise serializers.ValidationError("Nazwa nie może być pusta.")
         return value.strip()
-
 
 
 class TeamUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Team
-        fields = (
-            "name",
-        )
+        fields = ("name",)
+
+    def validate_name(self, value):
+        if value is None:
+            return value
+        if not value.strip():
+            raise serializers.ValidationError("Nazwa nie może być pusta.")
+        return value.strip()
 
 
 # ============================================================
 # GENEROWANIE ROZGRYWEK
 # ============================================================
-
 
 class GenerateTournamentSerializer(serializers.Serializer):
     def validate(self, attrs):
@@ -268,7 +241,6 @@ class GenerateTournamentSerializer(serializers.Serializer):
             )
 
         teams_count = tournament.teams.filter(is_active=True).count()
-
         if teams_count < 2:
             raise serializers.ValidationError(
                 "Turniej musi mieć co najmniej 2 uczestników."
@@ -277,31 +249,16 @@ class GenerateTournamentSerializer(serializers.Serializer):
         return attrs
 
 
-
 # ============================================================
 # MECZE
 # ============================================================
 
-
 class MatchSerializer(serializers.ModelSerializer):
-    home_team_name = serializers.CharField(
-        source="home_team.name",
-        read_only=True,
-    )
-    away_team_name = serializers.CharField(
-        source="away_team.name",
-        read_only=True,
-    )
+    home_team_name = serializers.CharField(source="home_team.name", read_only=True)
+    away_team_name = serializers.CharField(source="away_team.name", read_only=True)
 
-    stage_type = serializers.CharField(
-        source="stage.stage_type",
-        read_only=True,
-    )
-
-    stage_id = serializers.IntegerField(
-        source="stage.id",
-        read_only=True,
-    )
+    stage_type = serializers.CharField(source="stage.stage_type", read_only=True)
+    stage_id = serializers.IntegerField(source="stage.id", read_only=True)
 
     class Meta:
         model = Match
@@ -340,7 +297,27 @@ class MatchResultUpdateSerializer(serializers.ModelSerializer):
     """
     Serializer do wprowadzania wyniku meczu.
     PATCH /api/matches/:id/result/
+
+    Cel:
+    - akceptować częściowe wpisy (np. tylko home_score),
+    - akceptować 0 jako poprawną wartość,
+    - pozwolić na czyszczenie (null),
+    - nie pozwalać klientowi ustawiać statusu (status liczy backend).
     """
+
+    home_score = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=0,
+    )
+    away_score = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=0,
+    )
+
+    # status jest sterowany przez backend (MatchResultService)
+    status = serializers.CharField(read_only=True)
 
     class Meta:
         model = Match
@@ -349,3 +326,24 @@ class MatchResultUpdateSerializer(serializers.ModelSerializer):
             "away_score",
             "status",
         )
+
+    def validate(self, attrs):
+        """
+        Nie blokujemy edycji w KO na etapie wpisywania „po jednej stronie”.
+        Twarda logika (kiedy FINISHED, kiedy winner) należy do MatchResultService.
+
+        Tu pilnujemy jedynie:
+        - brak wartości ujemnych (min_value=0),
+        - spójna obsługa nulli (czyszczenie wyniku).
+        """
+        # Prospective values = instance + incoming
+        instance: Match = self.instance
+        home = attrs.get("home_score", instance.home_score)
+        away = attrs.get("away_score", instance.away_score)
+
+        # Pozwalamy na:
+        # - oba None (wyczyszczenie),
+        # - jedno None (wpisywanie etapami),
+        # - oba liczby (pełny wynik).
+        # KO-remisu nie walidujemy tutaj — to decyzja serwisu domenowego.
+        return attrs
