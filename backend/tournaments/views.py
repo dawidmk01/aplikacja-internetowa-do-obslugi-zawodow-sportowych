@@ -37,6 +37,7 @@ from .permissions import IsTournamentOrganizer
 
 from tournaments.services.generators.league import generate_league_stage
 from tournaments.services.generators.knockout import generate_knockout_stage
+from tournaments.services.match_result import MatchResultService
 
 
 # ============================================================
@@ -454,8 +455,6 @@ class MatchScheduleUpdateView(RetrieveUpdateAPIView):
 # WYNIK MECZU
 # ============================================================
 
-from tournaments.services.match_result import MatchResultService
-
 class MatchResultUpdateView(RetrieveUpdateAPIView):
     queryset = Match.objects.all()
     serializer_class = MatchResultUpdateSerializer
@@ -463,6 +462,7 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
 
     def update(self, request, *args, **kwargs):
         match = self.get_object()
+        stage = match.stage
 
         serializer = self.get_serializer(
             match,
@@ -473,7 +473,6 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
 
         match = serializer.save()
 
-        # 🔴 KLUCZOWE: zastosowanie logiki domenowej
         try:
             MatchResultService.apply_result(match)
         except ValueError as e:
@@ -482,12 +481,14 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # 🔥 JEŚLI TO KO → COFAMY KOLEJNE ETAPY
+        if stage.stage_type == Stage.StageType.KNOCKOUT:
+            rollback_knockout_after_stage(stage)
+
         return Response(
             MatchSerializer(match).data,
             status=status.HTTP_200_OK,
         )
-
-
 
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
@@ -503,6 +504,32 @@ class ConfirmStageView(APIView):
 
     def post(self, request, pk):
         stage = get_object_or_404(Stage, pk=pk)
+        tournament = stage.tournament
+
+        if not user_can_manage_tournament(request.user, tournament):
+            return Response(
+                {"detail": "Brak uprawnień."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if stage.stage_type != Stage.StageType.KNOCKOUT:
+            return Response(
+                {"detail": "Zatwierdzanie obsługiwane jest tylko dla etapu KO."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if stage.status != Stage.Status.OPEN:
+            return Response(
+                {"detail": "Etap został już zatwierdzony."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 🔴 BLOKADA PO FINALE
+        if tournament.status == Tournament.Status.FINISHED:
+            return Response(
+                {"detail": "Turniej został już zakończony."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             generate_next_knockout_stage(stage)
