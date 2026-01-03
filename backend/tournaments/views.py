@@ -4,18 +4,14 @@ from __future__ import annotations
 # IMPORTY
 # ============================================================
 
-from typing import Optional
+from typing import Optional, Tuple
 
 from django.db import transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 
 from rest_framework import status
-from rest_framework.generics import (
-    ListAPIView,
-    ListCreateAPIView,
-    RetrieveUpdateAPIView,
-)
+from rest_framework.generics import ListAPIView, ListCreateAPIView, RetrieveUpdateAPIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -27,13 +23,7 @@ from tournaments.services.generators.knockout import (
 )
 from tournaments.services.match_result import MatchResultService
 
-from .models import (
-    Match,
-    Stage,
-    Team,
-    Tournament,
-    TournamentMembership,
-)
+from .models import Match, Stage, Team, Tournament, TournamentMembership
 from .permissions import IsTournamentOrganizer
 from .serializers import (
     AddAssistantSerializer,
@@ -65,13 +55,91 @@ def user_can_manage_tournament(user, tournament: Tournament) -> bool:
 
 
 # ============================================================
+# FUNKCJE POMOCNICZE – KO (KONFIG + KLUCZE PAR)
+# ============================================================
+
+def _get_cup_matches(tournament: Tournament) -> int:
+    """
+    Liczba meczów na parę w KO.
+    Wspierane: 1 lub 2. Inne wartości -> 1.
+    """
+    cfg = tournament.format_config or {}
+    raw = cfg.get("cup_matches", 1)
+
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        n = 1
+
+    return n if n in (1, 2) else 1
+
+
+def _pair_key_ids(home_id: int, away_id: int) -> Tuple[int, int]:
+    return (home_id, away_id) if home_id < away_id else (away_id, home_id)
+
+
+def _sync_two_leg_pair_winner_if_possible(stage: Stage, tournament: Tournament, match: Match) -> None:
+    """
+    Dla cup_matches=2:
+    - jeśli para ma 2 mecze i oba są FINISHED, liczymy agregat bramek,
+    - jeśli agregat rozstrzyga -> ustawiamy winner na OBU meczach pary (spójnie),
+    - jeśli agregat remisowy -> czyścimy winner na OBU meczach (żeby nie dało się awansować).
+    """
+    if _get_cup_matches(tournament) != 2:
+        return
+
+    key = _pair_key_ids(match.home_team_id, match.away_team_id)
+
+    group = list(
+        Match.objects.filter(stage=stage)
+        .only("id", "status", "winner_id", "home_team_id", "away_team_id", "home_score", "away_score")
+    )
+    group = [m for m in group if _pair_key_ids(m.home_team_id, m.away_team_id) == key]
+
+    # BYE/walkower w Twoim generatorze ma tylko 1 mecz w parze — nie liczymy agregatu.
+    if len(group) == 1:
+        return
+
+    # Muszą być dokładnie 2 mecze.
+    if len(group) != 2:
+        return
+
+    # Oba muszą być FINISHED.
+    if any(m.status != Match.Status.FINISHED for m in group):
+        return
+
+    goals: dict[int, int] = {}
+
+    for m in group:
+        hs = int(m.home_score or 0)
+        a_s = int(m.away_score or 0)
+        goals[m.home_team_id] = goals.get(m.home_team_id, 0) + hs
+        goals[m.away_team_id] = goals.get(m.away_team_id, 0) + a_s
+
+    team_ids = list({group[0].home_team_id, group[0].away_team_id})
+    if len(team_ids) != 2:
+        return
+
+    t1, t2 = team_ids[0], team_ids[1]
+    g1, g2 = goals.get(t1, 0), goals.get(t2, 0)
+
+    ids = [group[0].id, group[1].id]
+
+    if g1 == g2:
+        # Brak rozstrzygnięcia agregatem -> czyścimy zwycięzców, żeby KO nie awansowało "przypadkiem".
+        Match.objects.filter(id__in=ids).update(winner=None)
+        return
+
+    winner_id = t1 if g1 > g2 else t2
+    Match.objects.filter(id__in=ids).update(winner_id=winner_id)
+
+
+# ============================================================
 # FUNKCJE POMOCNICZE – KO (ROLLBACK / PROPAGACJA)
 # ============================================================
 
 def _knockout_downstream_stages(tournament: Tournament, after_order: int):
-    """
-    Zwraca kolejne etapy KO po danym etapie (po order).
-    """
+    """Zwraca kolejne etapy KO po danym etapie (po order)."""
     return Stage.objects.filter(
         tournament=tournament,
         stage_type=Stage.StageType.KNOCKOUT,
@@ -82,7 +150,7 @@ def _knockout_downstream_stages(tournament: Tournament, after_order: int):
 def _knockout_downstream_has_results(tournament: Tournament, after_order: int) -> bool:
     """
     Sprawdza, czy w kolejnych etapach KO istnieją jakiekolwiek wyniki
-    (czyli realne dane, których nie wolno "cicho" nadpisać).
+    (czyli dane, których nie wolno "cicho" nadpisać).
     """
     qs = Match.objects.filter(
         tournament=tournament,
@@ -105,15 +173,12 @@ def _soft_propagate_knockout_winner_change(
 ) -> None:
     """
     Soft-propagacja (bez kasowania etapów):
-    - tylko jeśli downstream KO nie ma wyników.
-    - podmieniamy wystąpienia starej drużyny na nową w meczach KO "w przyszłości".
+    - tylko jeśli downstream KO nie ma wyników,
+    - podmieniamy wystąpienia starej drużyny na nową w przyszłych meczach KO.
     """
     if not old_team_id:
         return
     if new_team is None:
-        # Zwycięzca został "wyczyszczony" (np. remis/niekompletne).
-        # Bezpieczniej jest w takim wypadku zrobić hard rollback,
-        # ale tę decyzję podejmuje warstwa wyżej.
         return
 
     downstream_matches = Match.objects.filter(
@@ -122,7 +187,6 @@ def _soft_propagate_knockout_winner_change(
         stage__order__gt=after_order,
     ).select_related("stage")
 
-    # Podmieniamy home/away tam, gdzie występuje stara drużyna.
     to_update = []
     for m in downstream_matches:
         changed = False
@@ -130,7 +194,6 @@ def _soft_propagate_knockout_winner_change(
         if m.home_team_id == old_team_id:
             m.home_team = new_team
             changed = True
-
         if m.away_team_id == old_team_id:
             m.away_team = new_team
             changed = True
@@ -138,12 +201,9 @@ def _soft_propagate_knockout_winner_change(
         if not changed:
             continue
 
-        # Ochrona przed złamaniem constraintu home != away
         if m.home_team_id == m.away_team_id:
-            # W razie kolizji lepiej nie próbować naprawiać "na siłę".
             raise ValueError("Kolizja w KO: po podmianie drużyn mecz stał się home==away.")
 
-        # Downstream i tak jest bez wyników, więc czyścimy ewentualne pola.
         m.home_score = None
         m.away_score = None
         m.winner = None
@@ -157,15 +217,12 @@ def _soft_propagate_knockout_winner_change(
             ["home_team", "away_team", "home_score", "away_score", "winner", "status"],
         )
 
-    # Re-open downstream stages (żeby auto-progres mógł działać spójnie)
     Stage.objects.filter(
         tournament=tournament,
         stage_type=Stage.StageType.KNOCKOUT,
         order__gt=after_order,
     ).exclude(status=Stage.Status.OPEN).update(status=Stage.Status.OPEN)
 
-    # Jeśli turniej był zakończony (FINISHED), a my zmieniamy drabinkę,
-    # to trzeba go logicznie "odkończyć".
     if tournament.status == Tournament.Status.FINISHED:
         tournament.status = Tournament.Status.CONFIGURED
         tournament.save(update_fields=["status"])
@@ -185,7 +242,6 @@ def rollback_knockout_after_stage(stage: Stage) -> int:
     if not downstream_stages.exists():
         return 0
 
-    # usuwamy mecze downstream, potem etapy
     Match.objects.filter(stage__in=downstream_stages).delete()
     deleted_count = downstream_stages.count()
     downstream_stages.delete()
@@ -203,28 +259,31 @@ def _try_auto_advance_knockout(stage: Stage) -> None:
     - jeśli etap KO ma komplet rozstrzygniętych meczów (FINISHED + winner),
       i nie ma jeszcze następnego etapu KO,
       generujemy kolejny etap.
+
+    Ważne: generator może rzucić ValueError (np. niespójni zwycięzcy w dwumeczu).
+    To NIE może robić 500.
     """
     tournament = stage.tournament
 
-    # jeśli już istnieje downstream KO, nie generujemy ponownie
     if _knockout_downstream_stages(tournament, stage.order).exists():
         return
 
     matches = list(stage.matches.all())
-
     if not matches:
         return
 
-    # musi być pełne rozstrzygnięcie
     if any(m.status != Match.Status.FINISHED or not m.winner_id for m in matches):
         return
 
-    # generator wymaga OPEN – urealniamy status
     if stage.status != Stage.Status.OPEN:
         stage.status = Stage.Status.OPEN
         stage.save(update_fields=["status"])
 
-    generate_next_knockout_stage(stage)
+    try:
+        generate_next_knockout_stage(stage)
+    except ValueError:
+        # Nie generujemy i nie wywalamy serwera.
+        return
 
 
 # ============================================================
@@ -292,10 +351,7 @@ class TournamentDetailView(RetrieveUpdateAPIView):
 # ============================================================
 
 class ArchiveTournamentView(APIView):
-    """
-    Przeniesienie turnieju do archiwum.
-    Status -> FINISHED oraz cofnięcie publikacji.
-    """
+    """Przeniesienie turnieju do archiwum: Status -> FINISHED oraz cofnięcie publikacji."""
     permission_classes = [IsAuthenticated, IsTournamentOrganizer]
 
     def post(self, request, pk):
@@ -312,17 +368,11 @@ class ArchiveTournamentView(APIView):
         tournament.is_published = False
         tournament.save(update_fields=["status", "is_published"])
 
-        return Response(
-            {"detail": "Turniej został zarchiwizowany."},
-            status=status.HTTP_200_OK,
-        )
+        return Response({"detail": "Turniej został zarchiwizowany."}, status=status.HTTP_200_OK)
 
 
 class UnarchiveTournamentView(APIView):
-    """
-    Przywrócenie turnieju z archiwum.
-    FINISHED -> CONFIGURED
-    """
+    """Przywrócenie turnieju z archiwum: FINISHED -> CONFIGURED"""
     permission_classes = [IsAuthenticated, IsTournamentOrganizer]
 
     def post(self, request, pk):
@@ -338,10 +388,7 @@ class UnarchiveTournamentView(APIView):
         tournament.status = Tournament.Status.CONFIGURED
         tournament.save(update_fields=["status"])
 
-        return Response(
-            {"detail": "Turniej został przywrócony z archiwum."},
-            status=status.HTTP_200_OK,
-        )
+        return Response({"detail": "Turniej został przywrócony z archiwum."}, status=status.HTTP_200_OK)
 
 
 # ============================================================
@@ -354,13 +401,9 @@ class TournamentAssistantListView(ListAPIView):
 
     def get_queryset(self):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
-
         if not user_can_manage_tournament(self.request.user, tournament):
             return TournamentMembership.objects.none()
-
-        return tournament.memberships.filter(
-            role=TournamentMembership.Role.ASSISTANT
-        )
+        return tournament.memberships.filter(role=TournamentMembership.Role.ASSISTANT)
 
 
 class AddAssistantView(APIView):
@@ -411,10 +454,8 @@ class TournamentTeamListView(ListAPIView):
 
     def get_queryset(self):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
-
         if not user_can_manage_tournament(self.request.user, tournament):
             return Team.objects.none()
-
         return tournament.teams.filter(is_active=True).order_by("id")
 
 
@@ -423,19 +464,10 @@ class TournamentTeamUpdateView(APIView):
 
     def patch(self, request, pk, team_id):
         tournament = get_object_or_404(Tournament, pk=pk)
-
         if not user_can_manage_tournament(request.user, tournament):
-            return Response(
-                {"detail": "Brak uprawnień."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
 
-        team = get_object_or_404(
-            Team,
-            pk=team_id,
-            tournament=tournament,
-            is_active=True,
-        )
+        team = get_object_or_404(Team, pk=team_id, tournament=tournament, is_active=True)
 
         serializer = TeamUpdateSerializer(team, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
@@ -456,10 +488,7 @@ class TournamentTeamSetupView(APIView):
         tournament = get_object_or_404(Tournament, pk=pk)
 
         if not user_can_manage_tournament(request.user, tournament):
-            return Response(
-                {"detail": "Brak uprawnień."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = TournamentSerializer(
             tournament,
@@ -496,11 +525,7 @@ class TournamentTeamSetupView(APIView):
         if existing < requested_count:
             Team.objects.bulk_create(
                 [
-                    Team(
-                        tournament=tournament,
-                        name=f"{name_prefix} {i}",
-                        is_active=True,
-                    )
+                    Team(tournament=tournament, name=f"{name_prefix} {i}", is_active=True)
                     for i in range(existing + 1, requested_count + 1)
                 ]
             )
@@ -548,10 +573,7 @@ class GenerateTournamentView(APIView):
             from tournaments.services.generators.groups import generate_group_stage
             generate_group_stage(tournament)
 
-        return Response(
-            {"detail": "Rozgrywki zostały wygenerowane."},
-            status=status.HTTP_200_OK,
-        )
+        return Response({"detail": "Rozgrywki zostały wygenerowane."}, status=status.HTTP_200_OK)
 
 
 # ============================================================
@@ -564,13 +586,11 @@ class TournamentMatchListView(ListAPIView):
 
     def get_queryset(self):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
-
         if not user_can_manage_tournament(self.request.user, tournament):
             return Match.objects.none()
 
         return (
-            Match.objects
-            .filter(tournament=tournament)
+            Match.objects.filter(tournament=tournament)
             .select_related("home_team", "away_team", "stage")
             .order_by("stage__order", "round_number", "id")
         )
@@ -593,7 +613,6 @@ class MatchScheduleUpdateView(RetrieveUpdateAPIView):
 
     def update(self, request, *args, **kwargs):
         allowed_fields = {"scheduled_date", "scheduled_time", "location"}
-
         data = {k: v for k, v in request.data.items() if k in allowed_fields}
 
         serializer = self.get_serializer(self.get_object(), data=data, partial=True)
@@ -604,7 +623,7 @@ class MatchScheduleUpdateView(RetrieveUpdateAPIView):
 
 
 # ============================================================
-# WYNIK MECZU
+# WYNIK MECZU (PATCH /result/)
 # ============================================================
 
 class MatchResultUpdateView(RetrieveUpdateAPIView):
@@ -613,9 +632,13 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        return Match.objects.filter(
-            Q(tournament__organizer=user) | Q(tournament__memberships__user=user)
-        ).select_related("stage", "tournament").distinct()
+        return (
+            Match.objects.filter(
+                Q(tournament__organizer=user) | Q(tournament__memberships__user=user)
+            )
+            .select_related("stage", "tournament")
+            .distinct()
+        )
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
@@ -623,27 +646,38 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
         stage = match.stage
         tournament = match.tournament
 
-        old_winner_id = match.winner_id  # klucz do rollbacku
+        old_winner_id = match.winner_id
+        old_status = match.status
 
         serializer = self.get_serializer(match, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-
         match = serializer.save()
 
-        # Ustal status/winner deterministycznie (bez rzucania dla stanów przejściowych)
-        MatchResultService.apply_result(match)
+        # Ustal status/winner deterministycznie (ale nie chcemy przypadkiem wymuszać FINISHED tutaj).
+        try:
+            MatchResultService.apply_result(match)
+        except Exception:
+            # jeżeli serwis rzuca (np. KO + remis), to nie wywalamy PATCH-a
+            pass
+
+        # Jeżeli serwis ustawił FINISHED, a wcześniej nie było FINISHED – cofamy status.
+        if old_status != Match.Status.FINISHED and match.status == Match.Status.FINISHED:
+            match.status = old_status
+            match.save(update_fields=["status"])
+
+        # cup_matches=2: jeśli oba mecze pary są FINISHED, zsynchronizuj zwycięzcę agregatem
+        if stage.stage_type == Stage.StageType.KNOCKOUT and _get_cup_matches(tournament) == 2:
+            _sync_two_leg_pair_winner_if_possible(stage, tournament, match)
+            match.refresh_from_db(fields=["winner_id"])
 
         new_winner_id = match.winner_id
 
         # KO: rollback / propagacja TYLKO gdy zmienił się zwycięzca
         if stage.stage_type == Stage.StageType.KNOCKOUT and old_winner_id != new_winner_id:
-            # jeśli nie ma downstream – nic nie robimy
             if _knockout_downstream_stages(tournament, stage.order).exists():
                 if _knockout_downstream_has_results(tournament, stage.order):
-                    # downstream ma wyniki -> hard rollback
                     rollback_knockout_after_stage(stage)
                 else:
-                    # downstream bez wyników -> soft propagacja
                     new_team = Team.objects.filter(pk=new_winner_id).first() if new_winner_id else None
                     try:
                         _soft_propagate_knockout_winner_change(
@@ -653,10 +687,9 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
                             new_team=new_team,
                         )
                     except ValueError:
-                        # jeżeli soft update powoduje kolizję, robimy hard rollback
                         rollback_knockout_after_stage(stage)
 
-        # Auto-progres KO: jeśli etap jest kompletny i nie ma jeszcze następnego etapu -> generujemy
+        # Auto-progres KO (bez 500)
         if stage.stage_type == Stage.StageType.KNOCKOUT and tournament.status != Tournament.Status.FINISHED:
             _try_auto_advance_knockout(stage)
 
@@ -664,25 +697,111 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
 
 
 # ============================================================
-# (Opcjonalne) ZATWIERDZANIE ETAPU KO – zostawione dla kompatybilności
+# ZAKOŃCZENIE MECZU (POST /finish/)
 # ============================================================
 
-class ConfirmStageView(APIView):
+class FinishMatchView(APIView):
     """
-    Jeśli przechodzisz na pełne auto-generowanie, docelowo ten endpoint możesz usunąć.
+    POST /api/matches/<pk>/finish/  (albo <id>/finish/)
+    Jedyne miejsce, które logicznie ustawia FINISHED (idempotentnie).
     """
     permission_classes = [IsAuthenticated]
 
     @transaction.atomic
-    def post(self, request, pk):
-        stage = get_object_or_404(Stage, pk=pk)
+    def post(self, request, *args, **kwargs):
+        match_id = kwargs.get("pk") or kwargs.get("id")
+        if not match_id:
+            return Response({"detail": "Brak identyfikatora meczu."}, status=status.HTTP_400_BAD_REQUEST)
+
+        match = get_object_or_404(
+            Match.objects.select_related("stage", "tournament", "home_team", "away_team"),
+            pk=match_id,
+        )
+        tournament = match.tournament
+        stage = match.stage
+
+        if not user_can_manage_tournament(request.user, tournament):
+            return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
+
+        if match.status == Match.Status.FINISHED:
+            return Response({"detail": "Mecz jest już zakończony."}, status=status.HTTP_200_OK)
+
+        cup_matches = _get_cup_matches(tournament)
+
+        # ===============================
+        # LIGA / GRUPA
+        # ===============================
+        if stage.stage_type in (Stage.StageType.LEAGUE, Stage.StageType.GROUP):
+            match.status = Match.Status.FINISHED
+            match.save(update_fields=["status"])
+            return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
+
+        # ===============================
+        # KO
+        # ===============================
+        if stage.stage_type == Stage.StageType.KNOCKOUT:
+            # KO: nie kończymy „domyślnego” 0:0 bez dotknięcia wyniku
+            if not match.result_entered:
+                return Response(
+                    {"detail": "Nie można zakończyć meczu KO bez wprowadzenia wyniku."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Próbuj ustalić zwycięzcę z serwisu (jeśli serwis nie toleruje remisów KO, nie wywalamy endpointu).
+            try:
+                MatchResultService.apply_result(match)
+            except Exception:
+                pass
+
+            # cup_matches=1: remis zabroniony i winner musi istnieć
+            if cup_matches == 1:
+                if match.home_score == match.away_score:
+                    return Response(
+                        {"detail": "Nie można zakończyć meczu KO remisem (cup_matches=1)."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if not match.winner_id:
+                    return Response(
+                        {"detail": "Brak zwycięzcy — nie można zakończyć meczu KO."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            match.status = Match.Status.FINISHED
+            match.save(update_fields=["status"])
+
+            # cup_matches=2: po zakończeniu meczu spróbuj ustalić winner pary agregatem
+            if cup_matches == 2:
+                _sync_two_leg_pair_winner_if_possible(stage, tournament, match)
+
+            # Auto-progres KO (bez 500)
+            _try_auto_advance_knockout(stage)
+
+            return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
+
+        return Response({"detail": "Nieobsługiwany typ etapu."}, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ============================================================
+# ZATWIERDZANIE ETAPU KO (KOMPATYBILNOŚĆ)
+# ============================================================
+
+class ConfirmStageView(APIView):
+    """
+    Jeśli przechodzisz na pełne auto-generowanie, docelowo możesz to usunąć.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, *args, **kwargs):
+        stage_id = kwargs.get("pk") or kwargs.get("id")
+        if not stage_id:
+            return Response({"detail": "Brak identyfikatora etapu."}, status=status.HTTP_400_BAD_REQUEST)
+
+        stage = get_object_or_404(Stage, pk=stage_id)
         tournament = stage.tournament
 
         if not user_can_manage_tournament(request.user, tournament):
-            return Response(
-                {"detail": "Brak uprawnień."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
 
         if stage.stage_type != Stage.StageType.KNOCKOUT:
             return Response(
@@ -690,7 +809,6 @@ class ConfirmStageView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # generator wymaga OPEN
         if stage.status != Stage.Status.OPEN:
             stage.status = Stage.Status.OPEN
             stage.save(update_fields=["status"])
@@ -698,12 +816,6 @@ class ConfirmStageView(APIView):
         try:
             generate_next_knockout_stage(stage)
         except ValueError as e:
-            return Response(
-                {"detail": str(e)},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response(
-            {"detail": "Etap został zatwierdzony."},
-            status=status.HTTP_200_OK,
-        )
+        return Response({"detail": "Etap został zatwierdzony."}, status=status.HTTP_200_OK)

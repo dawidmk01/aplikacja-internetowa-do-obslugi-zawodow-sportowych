@@ -16,7 +16,8 @@ from .views import (
     UnarchiveTournamentView,
     MatchScheduleUpdateView,
     MatchResultUpdateView,
-    ConfirmStageView,
+    FinishMatchView,          # <<< NOWY, KLUCZOWY ENDPOINT
+    ConfirmStageView,         # (opcjonalny / legacy)
 )
 
 urlpatterns = [
@@ -116,7 +117,7 @@ urlpatterns = [
     ),
 
     # ========================================================
-    # MECZE – HARMONOGRAM (PATCH)
+    # MECZ – HARMONOGRAM (PATCH)
     # ========================================================
 
     path(
@@ -126,7 +127,7 @@ urlpatterns = [
     ),
 
     # ========================================================
-    # MECZE – WYNIK (PATCH)
+    # MECZ – WYNIK (PATCH)
     # ========================================================
 
     path(
@@ -135,10 +136,23 @@ urlpatterns = [
         name="match-result-update",
     ),
 
+    # ========================================================
+    # MECZ – ZAKOŃCZENIE (POST)  <<<< NAJWAŻNIEJSZE
+    # ========================================================
+
+
+    path(
+        "matches/<int:pk>/finish/",
+        FinishMatchView.as_view(),
+        name="match-finish",
+    ),
+    # ========================================================
+    # ETAP KO – LEGACY / OPCJONALNE
+    # ========================================================
+
     path(
         "stages/<int:pk>/confirm/",
         ConfirmStageView.as_view(),
         name="stage-confirm",
     ),
-
 ]

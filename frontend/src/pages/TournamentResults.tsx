@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { apiFetch } from "../api";
 
@@ -17,19 +17,39 @@ type TournamentDTO = {
 
 type MatchDTO = {
   id: number;
+
   stage_id: number;
+  stage_order: number; // <-- ważne: sort etapów po order, nie po ID
   stage_type: "LEAGUE" | "KNOCKOUT" | "GROUP";
-  status: "SCHEDULED" | "FINISHED";
+
+  status: "SCHEDULED" | "IN_PROGRESS" | "FINISHED"; // <-- brakowało IN_PROGRESS
   round_number: number | null;
+
   home_team_name: string;
-  away_team_name: string | null; // (awaryjnie) gdyby BYE było serializowane jako null
-  home_score: number | null;
-  away_score: number | null;
+  away_team_name: string;
+
+  home_score: number;
+  away_score: number;
 };
 
 /* ============================================================
-   Helpers
+   Helpers (BYE + KO nazwy)
    ============================================================ */
+
+function isByeName(name: string | null | undefined): boolean {
+  if (!name) return false;
+  const n = name.trim().toUpperCase();
+  return (
+    n === "BYE" ||
+    n.includes("SYSTEM_BYE") ||
+    n === "__SYSTEM_BYE__" ||
+    n.includes("__SYSTEM_BYE__")
+  );
+}
+
+function isByeMatch(m: MatchDTO): boolean {
+  return isByeName(m.home_team_name) || isByeName(m.away_team_name);
+}
 
 function nextPowerOfTwo(n: number): number {
   if (n <= 1) return 1;
@@ -40,74 +60,64 @@ function knockoutRoundLabelFromTeams(teams: number): string {
   if (teams === 2) return "Finał";
   if (teams === 4) return "Półfinał";
   if (teams === 8) return "Ćwierćfinał";
-  return `1/${teams} finału`;
+  return `1/${teams / 2} finału`;
 }
 
-/**
- * KO: nazwa rundy z uwzględnieniem BYE w 1. etapie.
- * - standardowo teams = matches*2
- * - jeśli w 1. etapie KO była nieparzysta liczba uczestników, to bracket = nextPow2(participantsCount)
- *   i etykieta powinna wynikać z bracketu, a nie z liczby meczów (bo przy BYE meczów jest mniej).
- */
 function knockoutStageTitle(
-  stageMatches: MatchDTO[],
+  stageMatchesAll: MatchDTO[],
   stageIndex1Based: number,
   tournamentParticipantsCount?: number
 ): string {
-  const matchesCount = stageMatches.length;
-
-  // klasyczne przypadki
-  if (matchesCount === 1) return "Finał";
-  if (matchesCount === 2) return "Półfinał";
-  if (matchesCount === 4) return "Ćwierćfinał";
-
-  // 1. etap KO + możliwe BYE: bierzemy z participants_count (jeśli mamy)
+  // Nazwa rundy ma wynikać z rozmiaru drabinki (BYE nie zaburza)
   if (stageIndex1Based === 1 && typeof tournamentParticipantsCount === "number") {
     const bracket = nextPowerOfTwo(tournamentParticipantsCount);
     return knockoutRoundLabelFromTeams(bracket);
   }
 
-  // fallback:
-  // jeśli liczba meczów nie pasuje do klasyki, zakładamy teams = nextPow2(matches*2 (+1 jeśli wygląda na BYE))
-  const approxTeams = matchesCount * 2;
-  // jeśli ktoś miał BYE i nie mamy participants_count, to nieparzystość zwykle objawia się „za małą liczbą meczów”
-  // więc próbujemy +1 i dopiero potęga 2
-  const bracketGuess = nextPowerOfTwo(approxTeams + 1);
+  // fallback – z liczby spotkań (bezpieczne jeśli brak BYE)
+  const nonBye = stageMatchesAll.filter((m) => !isByeMatch(m));
+  const teams = Math.max(2, nonBye.length * 2);
+  const bracketGuess = nextPowerOfTwo(teams);
   return knockoutRoundLabelFromTeams(bracketGuess);
 }
 
 function stageHeaderTitle(
   stageType: MatchDTO["stage_type"],
-  stageMatches: MatchDTO[],
+  stageMatchesAll: MatchDTO[],
   stageIndex1Based: number,
   tournament: TournamentDTO
 ): string {
   if (stageType === "KNOCKOUT") {
     return `Puchar: ${knockoutStageTitle(
-      stageMatches,
+      stageMatchesAll,
       stageIndex1Based,
       tournament.participants_count
     )}`;
   }
-
-  if (stageType === "GROUP") {
-    return `Faza grupowa — etap ${stageIndex1Based}`;
-  }
-
+  if (stageType === "GROUP") return `Faza grupowa — etap ${stageIndex1Based}`;
   return `Liga — etap ${stageIndex1Based}`;
 }
 
-function scoreToInputValue(score: number | null): string {
-  return score === null || typeof score === "undefined" ? "" : String(score);
+function scoreToInputValue(score: number): string {
+  return String(score);
 }
 
-function inputValueToScore(v: string): number | null {
+function inputValueToScore(v: string): number {
   const s = v.trim();
-  if (s === "") return null;
-  if (!/^\d+$/.test(s)) return null;
+  if (s === "") return 0; // backend i tak trzyma liczby (default=0)
+  if (!/^\d+$/.test(s)) return 0;
   const n = Number(s);
-  if (!Number.isFinite(n) || n < 0) return null;
+  if (!Number.isFinite(n) || n < 0) return 0;
   return n;
+}
+
+function decideWinnerSide(
+  stageType: MatchDTO["stage_type"],
+  h: number,
+  a: number
+): "HOME" | "AWAY" | "DRAW" {
+  if (h === a) return "DRAW";
+  return h > a ? "HOME" : "AWAY";
 }
 
 /* ============================================================
@@ -121,8 +131,19 @@ export default function TournamentResults() {
   const [tournament, setTournament] = useState<TournamentDTO | null>(null);
   const [matches, setMatches] = useState<MatchDTO[]>([]);
   const [loading, setLoading] = useState(true);
+
   const [busyMatchId, setBusyMatchId] = useState<number | null>(null);
+  const [busyGenerate, setBusyGenerate] = useState(false);
+
   const [message, setMessage] = useState<string | null>(null);
+
+  // UI: które mecze były realnie zapisane (edytowane) w tej sesji
+  const [edited, setEdited] = useState<Set<number>>(new Set());
+
+  // snapshot wyników z serwera – do wykrycia czy zmiana zmieni zwycięzcę
+  const initialScoreRef = useRef<
+    Map<number, { h: number; a: number; stage_type: MatchDTO["stage_type"] }>
+  >(new Map());
 
   /* ============================================================
      API
@@ -141,10 +162,31 @@ export default function TournamentResults() {
     if (!res.ok) throw new Error("Nie udało się pobrać meczów.");
     const data = await res.json();
     setMatches(data);
+
+    // snapshot do rollback-ostrzeżeń
+    const map = new Map<number, { h: number; a: number; stage_type: MatchDTO["stage_type"] }>();
+    for (const m of data) map.set(m.id, { h: m.home_score, a: m.away_score, stage_type: m.stage_type });
+    initialScoreRef.current = map;
+
     return data;
   };
 
-  const updateMatchScore = async (matchId: number, home: number | null, away: number | null) => {
+  const parseApiError = async (res: Response): Promise<string> => {
+    const data = await res.json().catch(() => null);
+
+    if (!data) return "Błąd żądania.";
+    if (typeof data?.detail === "string") return data.detail;
+
+    // serializer errors: {field: ["msg", ...]}
+    const firstKey = data && typeof data === "object" ? Object.keys(data)[0] : null;
+    if (firstKey && Array.isArray(data[firstKey]) && data[firstKey][0]) {
+      return String(data[firstKey][0]);
+    }
+
+    return "Błąd żądania.";
+  };
+
+  const updateMatchScore = async (matchId: number, home: number, away: number) => {
     const res = await apiFetch(`/api/matches/${matchId}/result/`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -152,9 +194,32 @@ export default function TournamentResults() {
     });
 
     if (!res.ok) {
-      const data = await res.json().catch(() => null);
-      throw new Error(data?.detail || "Nie udało się zapisać wyniku.");
+      throw new Error(await parseApiError(res));
     }
+  };
+
+  // To jest KLUCZ do zmiany statusu na FINISHED
+  const finishMatch = async (matchId: number) => {
+    const res = await apiFetch(`/api/matches/${matchId}/finish/`, { method: "POST" });
+    if (!res.ok) {
+      throw new Error(await parseApiError(res));
+    }
+  };
+
+  // Legacy / opcjonalnie: wymuszenie generowania (gdy auto-progres nie działa)
+  const generateNextStage = async (stageId: number) => {
+    if (!id) return;
+    setBusyGenerate(true);
+    setMessage(null);
+
+    const res = await apiFetch(`/api/stages/${stageId}/confirm/`, { method: "POST" });
+    if (!res.ok) {
+      setBusyGenerate(false);
+      throw new Error(await parseApiError(res));
+    }
+
+    await Promise.all([loadMatches(), loadTournament().catch(() => null)]);
+    setBusyGenerate(false);
   };
 
   /* ============================================================
@@ -186,22 +251,30 @@ export default function TournamentResults() {
   }, [id]);
 
   /* ============================================================
-     Grupowanie po etapach (stage_id)
-     - stabilnie sortujemy po stage_id rosnąco (w praktyce odpowiada kolejności tworzenia)
+     Grupowanie po etapach + filtrowanie BYE (widok wyników)
      ============================================================ */
 
   const stages = useMemo(() => {
-    const map = new Map<number, MatchDTO[]>();
+    // ukrywamy BYE na stronie wyników
+    const visible = matches.filter((m) => !isByeMatch(m));
 
-    for (const m of matches) {
+    // stage_id -> matches
+    const map = new Map<number, MatchDTO[]>();
+    for (const m of visible) {
       const arr = map.get(m.stage_id) ?? [];
       arr.push(m);
       map.set(m.stage_id, arr);
     }
 
-    const entries = Array.from(map.entries()).sort((a, b) => a[0] - b[0]);
+    // sort etapów po stage_order, dopiero potem stage_id
+    const entries = Array.from(map.entries()).sort((a, b) => {
+      const aOrder = a[1][0]?.stage_order ?? 0;
+      const bOrder = b[1][0]?.stage_order ?? 0;
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      return a[0] - b[0];
+    });
 
-    // sort wewnątrz etapu
+    // sort meczów w etapie po round_number, potem id
     for (const [, arr] of entries) {
       arr.sort((a, b) => {
         const ra = a.round_number ?? 0;
@@ -214,47 +287,135 @@ export default function TournamentResults() {
     return entries;
   }, [matches]);
 
+  const lastStageId = useMemo(() => {
+    if (!stages.length) return null;
+    return stages[stages.length - 1][0];
+  }, [stages]);
+
+  const allMatchesInLastStageFinished = useMemo(() => {
+    if (!lastStageId) return false;
+    const last = stages.find(([sid]) => sid === lastStageId);
+    if (!last) return false;
+    const [, ms] = last;
+    if (!ms.length) return false;
+    return ms.every((m) => m.status === "FINISHED");
+  }, [stages, lastStageId]);
+
   /* ============================================================
-     Zapis na blur (styl TournamentTeams)
-     - zawsze edytowalne
-     - po zapisie: reload matches + tournament (żeby zobaczyć auto-generację/rollback)
+     Statusy UI
      ============================================================ */
 
-  const saveOnBlur = async (match: MatchDTO) => {
-    const home = match.home_score;
-    const away = match.away_score;
+  function uiStatus(m: MatchDTO): "ZAPLANOWANY" | "W_TRAKCIE" | "ZAKONCZONY" {
+    if (m.status === "FINISHED") return "ZAKONCZONY";
+    if (m.status === "IN_PROGRESS") return "W_TRAKCIE";
+    return "ZAPLANOWANY";
+  }
 
-    // jeśli ktoś wpisze śmieci, nie zapisujemy — cofamy stan do serwera
-    // (tu powinno się zdarzać rzadko, bo input type=number)
-    if (home !== null && home < 0) {
-      setMessage("Wynik nie został zapisany (wartość ujemna).");
-      await loadMatches().catch(() => null);
-      return;
-    }
-    if (away !== null && away < 0) {
-      setMessage("Wynik nie został zapisany (wartość ujemna).");
-      await loadMatches().catch(() => null);
-      return;
-    }
+  function uiStatusLabel(s: ReturnType<typeof uiStatus>) {
+    if (s === "ZAPLANOWANY") return "Zaplanowany";
+    if (s === "W_TRAKCIE") return "W trakcie";
+    return "Zakończony";
+  }
 
-    // BYE / brak przeciwnika – nie zapisujemy wyniku
-    if (!match.away_team_name) return;
+  /* ============================================================
+     Zapis (onBlur) + ostrzeżenie o rollback (KO)
+     ============================================================ */
+
+  const saveOnBlur = async (matchId: number) => {
+    const match = matches.find((m) => m.id === matchId);
+    if (!match) return;
+
+    // Zmiana wyniku w meczu zakończonym w KO może wymusić rollback.
+    const snap = initialScoreRef.current.get(match.id);
+    const isFinished = match.status === "FINISHED";
+
+    if (isFinished && match.stage_type === "KNOCKOUT" && snap) {
+      const prevSide = decideWinnerSide(match.stage_type, snap.h, snap.a);
+      const newSide = decideWinnerSide(match.stage_type, match.home_score, match.away_score);
+
+      const changesWinner =
+        (prevSide === "HOME" || prevSide === "AWAY") &&
+        (newSide === "HOME" || newSide === "AWAY") &&
+        prevSide !== newSide;
+
+      if (changesWinner) {
+        const ok = window.confirm(
+          "Ta zmiana zmienia zwycięzcę meczu.\n" +
+            "Jeśli istnieje kolejny etap KO, może zostać cofnięty i wygenerowany ponownie.\n\n" +
+            "Czy na pewno chcesz zapisać zmianę?"
+        );
+        if (!ok) {
+          // revert do snapshotu serwera
+          setMatches((prev) =>
+            prev.map((m) => (m.id === match.id ? { ...m, home_score: snap.h, away_score: snap.a } : m))
+          );
+          setMessage("Zmiana anulowana.");
+          return;
+        }
+      }
+    }
 
     try {
       setBusyMatchId(match.id);
       setMessage(null);
 
-      await updateMatchScore(match.id, home, away);
+      await updateMatchScore(match.id, match.home_score, match.away_score);
 
-      // po zapisie odświeżamy:
-      // - status meczu (FINISHED/SCHEDULED)
-      // - ewentualne rollbacki i nowe etapy
       await Promise.all([loadMatches(), loadTournament().catch(() => null)]);
+
+      setEdited((prev) => {
+        const n = new Set(prev);
+        n.add(match.id);
+        return n;
+      });
 
       setMessage("Wynik zapisany.");
     } catch (e: any) {
       setMessage(e.message);
       await loadMatches().catch(() => null);
+    } finally {
+      setBusyMatchId(null);
+    }
+  };
+
+  /* ============================================================
+     Zakończenie meczu (POST /finish/) — to był brakujący element
+     ============================================================ */
+
+  const onFinishMatchClick = async (matchId: number) => {
+    const match = matches.find((m) => m.id === matchId);
+    if (!match) return;
+
+    // W UI blokujemy bezsensowne akcje
+    if (match.status === "FINISHED") {
+      setMessage("Ten mecz jest już zakończony.");
+      return;
+    }
+
+    // Dla czytelności UX: wymagamy wpisanego wyniku (obie wartości).
+    // W praktyce backend dla KO i tak tego pilnuje (result_entered + winner),
+    // ale tu dajemy szybki komunikat.
+    if (typeof match.home_score !== "number" || typeof match.away_score !== "number") {
+      setMessage("Aby zakończyć mecz, wpisz wynik.");
+      return;
+    }
+
+    if (match.stage_type === "KNOCKOUT" && match.home_score === match.away_score) {
+      setMessage("W KO remis jest niedozwolony — popraw wynik przed zakończeniem meczu.");
+      return;
+    }
+
+    try {
+      setBusyMatchId(match.id);
+      setMessage(null);
+
+      await finishMatch(match.id);
+
+      await Promise.all([loadMatches(), loadTournament().catch(() => null)]);
+
+      setMessage("Mecz zakończony.");
+    } catch (e: any) {
+      setMessage(e.message);
     } finally {
       setBusyMatchId(null);
     }
@@ -277,6 +438,16 @@ export default function TournamentResults() {
     );
   }
 
+  if (!stages.length) {
+    return (
+      <div style={{ padding: "2rem" }}>
+        <h1>Wprowadzanie wyników</h1>
+        <p>Brak meczów do wyświetlenia (BYE są ukryte).</p>
+        <button onClick={() => navigate(-1)}>← Wróć</button>
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: "2rem", maxWidth: 980 }}>
       <h1>Wprowadzanie wyników</h1>
@@ -287,14 +458,13 @@ export default function TournamentResults() {
             <strong>Turniej:</strong> {tournament.name}
           </div>
         )}
-        <div>
-          <strong>Status:</strong> {tournament.status}
-        </div>
+
         <div style={{ marginTop: "0.25rem" }}>
           Wynik zapisuje się po opuszczeniu pola (onBlur). Wyniki można edytować w dowolnym momencie.
         </div>
+
         <div style={{ marginTop: "0.25rem" }}>
-          Jeśli zmienisz wynik w etapie wcześniejszym i zmieni się zwycięzca, backend cofnie późniejsze etapy i wygeneruje je ponownie.
+          „Mecz zakończony” wysyła POST /api/matches/:id/finish/ i ustawia FINISHED w backendzie.
         </div>
       </section>
 
@@ -302,25 +472,11 @@ export default function TournamentResults() {
         const stageIndex1Based = idx + 1;
         const stageType = stageMatches[0]?.stage_type;
 
-        const header = stageHeaderTitle(stageType, stageMatches, stageIndex1Based, tournament);
+        // do tytułu KO użyj pełnych meczów etapu (także z BYE)
+        const allStageMatches = matches.filter((m) => m.stage_id === stageId);
 
-        const isKnockout = stageType === "KNOCKOUT";
-        const isLeagueOrGroup = stageType === "LEAGUE" || stageType === "GROUP";
-
-        // podział na kolejki w lidze/grupach
-        const roundsMap = new Map<number, MatchDTO[]>();
-        if (isLeagueOrGroup) {
-          for (const m of stageMatches) {
-            const r = typeof m.round_number === "number" ? m.round_number : 0;
-            const arr = roundsMap.get(r) ?? [];
-            arr.push(m);
-            roundsMap.set(r, arr);
-          }
-        }
-
-        const rounds = isLeagueOrGroup
-          ? Array.from(roundsMap.keys()).sort((a, b) => a - b)
-          : [];
+        const header = stageHeaderTitle(stageType, allStageMatches, stageIndex1Based, tournament);
+        const isLastStage = stageId === lastStageId;
 
         return (
           <section
@@ -331,164 +487,157 @@ export default function TournamentResults() {
               borderTop: "1px solid #333",
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
-              <h2 style={{ marginBottom: "0.75rem" }}>{header}</h2>
-              <div style={{ opacity: 0.6, paddingTop: "0.35rem" }}>
-                stage_id: {stageId}
-              </div>
-            </div>
+            <h2 style={{ marginBottom: "0.75rem" }}>{header}</h2>
 
-            {/* KO: lista meczów */}
-            {isKnockout &&
-              stageMatches.map((match) => {
-                const awayName = match.away_team_name ?? "BYE";
-                const isBye = match.away_team_name === null;
+            {stageMatches.map((match) => {
+              const status = uiStatus(match);
+              const isBusy = busyMatchId === match.id;
 
-                return (
-                  <div
-                    key={match.id}
-                    style={{
-                      borderBottom: "1px solid #333",
-                      padding: "1rem 0",
-                    }}
-                  >
+              const wasEdited = edited.has(match.id);
+              const isFinished = match.status === "FINISHED";
+
+              const bg = isFinished
+                ? "rgba(30, 144, 255, 0.10)"
+                : wasEdited
+                ? "rgba(46, 204, 113, 0.08)"
+                : "transparent";
+
+              const borderLeft = isFinished
+                ? "4px solid rgba(30,144,255,0.8)"
+                : wasEdited
+                ? "4px solid rgba(46,204,113,0.8)"
+                : "4px solid transparent";
+
+              return (
+                <div
+                  key={match.id}
+                  style={{
+                    borderBottom: "1px solid #333",
+                    padding: "1rem 0",
+                    background: bg,
+                    borderLeft,
+                    paddingLeft: "0.75rem",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
                     <strong>
-                      {match.home_team_name} vs {awayName}
+                      {match.home_team_name} vs {match.away_team_name ?? "—"}
                     </strong>
 
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: "0.5rem",
-                        marginTop: "0.5rem",
-                        alignItems: "center",
+                    <div style={{ opacity: 0.8 }}>{uiStatusLabel(status)}</div>
+                  </div>
+
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: "0.5rem",
+                      marginTop: "0.5rem",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <input
+                      type="number"
+                      min={0}
+                      value={scoreToInputValue(match.home_score)}
+                      disabled={isBusy}
+                      onChange={(e) => {
+                        const v = inputValueToScore(e.target.value);
+                        setMatches((prev) => prev.map((m) => (m.id === match.id ? { ...m, home_score: v } : m)));
                       }}
+                      onBlur={() => saveOnBlur(match.id)}
+                      style={{ width: 90 }}
+                    />
+
+                    <span>:</span>
+
+                    <input
+                      type="number"
+                      min={0}
+                      value={scoreToInputValue(match.away_score)}
+                      disabled={isBusy}
+                      onChange={(e) => {
+                        const v = inputValueToScore(e.target.value);
+                        setMatches((prev) => prev.map((m) => (m.id === match.id ? { ...m, away_score: v } : m)));
+                      }}
+                      onBlur={() => saveOnBlur(match.id)}
+                      style={{ width: 90 }}
+                    />
+
+                    {isBusy && <span style={{ opacity: 0.7 }}>Zapisywanie…</span>}
+
+                    <button
+                      onClick={() => onFinishMatchClick(match.id)}
+                      disabled={isBusy}
+                      style={{
+                        marginLeft: "0.5rem",
+                        padding: "0.45rem 0.75rem",
+                        borderRadius: 6,
+                        border: "1px solid #444",
+                        background: isFinished ? "rgba(30,144,255,0.25)" : "transparent",
+                        cursor: "pointer",
+                      }}
+                      title="Ustawia status FINISHED w backendzie (POST /api/matches/:id/finish/)."
                     >
-                      <input
-                        type="number"
-                        min={0}
-                        value={scoreToInputValue(match.home_score)}
-                        disabled={isBye || busyMatchId === match.id}
-                        onChange={(e) => {
-                          const v = inputValueToScore(e.target.value);
-                          setMatches((prev) =>
-                            prev.map((m) => (m.id === match.id ? { ...m, home_score: v } : m))
-                          );
-                        }}
-                        onBlur={() => saveOnBlur(match)}
-                      />
-
-                      <span>:</span>
-
-                      <input
-                        type="number"
-                        min={0}
-                        value={scoreToInputValue(match.away_score)}
-                        disabled={isBye || busyMatchId === match.id}
-                        onChange={(e) => {
-                          const v = inputValueToScore(e.target.value);
-                          setMatches((prev) =>
-                            prev.map((m) => (m.id === match.id ? { ...m, away_score: v } : m))
-                          );
-                        }}
-                        onBlur={() => saveOnBlur(match)}
-                      />
-
-                      {busyMatchId === match.id && <span style={{ opacity: 0.7 }}>Zapisywanie…</span>}
-                    </div>
-
-                    <div style={{ marginTop: "0.35rem", opacity: 0.8 }}>
-                      Status meczu: {match.status === "FINISHED" ? "Zakończony" : "W trakcie / niepełny wynik"}
-                    </div>
+                      Mecz zakończony
+                    </button>
                   </div>
-                );
-              })}
 
-            {/* LEAGUE/GROUP: kolejki */}
-            {isLeagueOrGroup &&
-              rounds.map((roundNo) => {
-                const roundMatches = roundsMap.get(roundNo) ?? [];
-                const roundTitle =
-                  stageType === "LEAGUE" ? `Kolejka ${roundNo}` : `Runda ${roundNo}`;
+                  {isFinished && (
+                    <div style={{ marginTop: "0.35rem", opacity: 0.75 }}>
+                      Mecz jest zakończony w backendzie. Edycja wyniku nadal możliwa, ale w KO zmiana zwycięzcy może cofnąć kolejne etapy.
+                    </div>
+                  )}
+                </div>
+              );
+            })}
 
-                return (
-                  <div key={roundNo} style={{ marginBottom: "1.25rem" }}>
-                    <h3 style={{ margin: "0.75rem 0" }}>{roundTitle}</h3>
+            {isLastStage && stageType === "KNOCKOUT" && (
+              <div style={{ marginTop: "1rem" }}>
+                <button
+                  disabled={!allMatchesInLastStageFinished || busyGenerate}
+                  onClick={() =>
+                    generateNextStage(stageId)
+                      .then(() => setMessage("Następny etap wygenerowany."))
+                      .catch((e: any) => setMessage(e.message))
+                  }
+                  style={{
+                    padding: "0.6rem 1rem",
+                    borderRadius: 6,
+                    border: "1px solid #444",
+                    opacity: allMatchesInLastStageFinished ? 1 : 0.5,
+                    cursor: allMatchesInLastStageFinished ? "pointer" : "not-allowed",
+                  }}
+                  title={
+                    allMatchesInLastStageFinished
+                      ? "Wymuś generowanie kolejnego etapu (legacy). Jeśli auto-progres działa, nie musisz tego używać."
+                      : "Aby wygenerować kolejny etap, wszystkie mecze w tym etapie muszą mieć status FINISHED."
+                  }
+                >
+                  {busyGenerate ? "Generowanie…" : "Generuj następny etap"}
+                </button>
 
-                    {roundMatches.map((match) => {
-                      const awayName = match.away_team_name ?? "—";
-                      const isBye = match.away_team_name === null;
-
-                      return (
-                        <div
-                          key={match.id}
-                          style={{
-                            borderBottom: "1px solid #333",
-                            padding: "1rem 0",
-                          }}
-                        >
-                          <strong>
-                            {match.home_team_name} vs {awayName}
-                          </strong>
-
-                          <div
-                            style={{
-                              display: "flex",
-                              gap: "0.5rem",
-                              marginTop: "0.5rem",
-                              alignItems: "center",
-                            }}
-                          >
-                            <input
-                              type="number"
-                              min={0}
-                              value={scoreToInputValue(match.home_score)}
-                              disabled={isBye || busyMatchId === match.id}
-                              onChange={(e) => {
-                                const v = inputValueToScore(e.target.value);
-                                setMatches((prev) =>
-                                  prev.map((m) => (m.id === match.id ? { ...m, home_score: v } : m))
-                                );
-                              }}
-                              onBlur={() => saveOnBlur(match)}
-                            />
-
-                            <span>:</span>
-
-                            <input
-                              type="number"
-                              min={0}
-                              value={scoreToInputValue(match.away_score)}
-                              disabled={isBye || busyMatchId === match.id}
-                              onChange={(e) => {
-                                const v = inputValueToScore(e.target.value);
-                                setMatches((prev) =>
-                                  prev.map((m) => (m.id === match.id ? { ...m, away_score: v } : m))
-                                );
-                              }}
-                              onBlur={() => saveOnBlur(match)}
-                            />
-
-                            {busyMatchId === match.id && <span style={{ opacity: 0.7 }}>Zapisywanie…</span>}
-                          </div>
-
-                          <div style={{ marginTop: "0.35rem", opacity: 0.8 }}>
-                            Status meczu: {match.status === "FINISHED" ? "Zakończony" : "W trakcie / niepełny wynik"}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })}
+                {!allMatchesInLastStageFinished && (
+                  <p style={{ marginTop: "0.5rem", opacity: 0.65 }}>
+                    Aby wygenerować następny etap, zakończ wszystkie mecze (przycisk „Mecz zakończony”).
+                  </p>
+                )}
+              </div>
+            )}
           </section>
         );
       })}
 
       <div style={{ marginTop: "2rem", display: "flex", gap: "1rem", flexWrap: "wrap" }}>
         <button onClick={() => navigate(-1)}>← Wróć</button>
-        <button onClick={() => navigate(`/tournaments/${id}/matches`)}>Podgląd rozgrywek →</button>
-        <button onClick={() => navigate(`/tournaments/${id}/schedule`)}>Harmonogram →</button>
+
+        <button onClick={() => navigate(`/tournaments/${id}/bracket`)}>
+          Tabela / drabinka pucharowa →
+        </button>
+
+        <button onClick={() => navigate(`/tournaments/${id}/schedule`)}>
+          Harmonogram (opcjonalnie) →
+        </button>
       </div>
 
       {message && <p style={{ marginTop: "1rem", opacity: 0.9 }}>{message}</p>}

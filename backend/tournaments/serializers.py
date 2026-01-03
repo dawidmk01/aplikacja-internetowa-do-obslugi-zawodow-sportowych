@@ -259,12 +259,16 @@ class MatchSerializer(serializers.ModelSerializer):
 
     stage_type = serializers.CharField(source="stage.stage_type", read_only=True)
     stage_id = serializers.IntegerField(source="stage.id", read_only=True)
+    stage_order = serializers.IntegerField(source="stage.order", read_only=True)
+
+    is_technical = serializers.SerializerMethodField()
 
     class Meta:
         model = Match
         fields = (
             "id",
             "stage_id",
+            "stage_order",
             "stage_type",
             "round_number",
             "home_team_name",
@@ -275,8 +279,93 @@ class MatchSerializer(serializers.ModelSerializer):
             "scheduled_date",
             "scheduled_time",
             "location",
+            "is_technical",
         )
 
+from rest_framework import serializers
+
+from tournaments.models import Match
+
+
+class MatchSerializer(serializers.ModelSerializer):
+    # ----------------------------
+    # Nazwy drużyn (bezpieczne na null)
+    # ----------------------------
+    home_team_name = serializers.SerializerMethodField()
+    away_team_name = serializers.SerializerMethodField()
+
+    # ----------------------------
+    # Etap (stage) – dane do grupowania i UI
+    # ----------------------------
+    stage_type = serializers.CharField(source="stage.stage_type", read_only=True)
+    stage_id = serializers.IntegerField(source="stage.id", read_only=True)
+    stage_order = serializers.IntegerField(source="stage.order", read_only=True)
+
+    # ----------------------------
+    # Techniczne mecze (BYE)
+    # ----------------------------
+    is_technical = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Match
+        fields = (
+            "id",
+            "stage_id",
+            "stage_order",
+            "stage_type",
+            "round_number",
+            "home_team_name",
+            "away_team_name",
+            "home_score",
+            "away_score",
+            "status",
+            "scheduled_date",
+            "scheduled_time",
+            "location",
+            "is_technical",
+        )
+
+    # ============================================================
+    # Helpers
+    # ============================================================
+
+    @staticmethod
+    def _team_name(team) -> str | None:
+        if not team:
+            return None
+        name = getattr(team, "name", None)
+        if name is None:
+            return None
+        return str(name)
+
+    @staticmethod
+    def _is_system_bye_team(team) -> bool:
+        """
+        U Ciebie BYE to techniczna drużyna o stałej nazwie "__SYSTEM_BYE__".
+        Trzymamy się tego kontraktu domenowego.
+        """
+        name = MatchSerializer._team_name(team)
+        if not name:
+            return False
+        return name.strip().upper() == "__SYSTEM_BYE__"
+
+    # ============================================================
+    # SerializerMethodField
+    # ============================================================
+
+    def get_home_team_name(self, obj: Match) -> str:
+        # frontend ma typ string, więc zwracamy string zawsze
+        return self._team_name(obj.home_team) or ""
+
+    def get_away_team_name(self, obj: Match) -> str | None:
+        # w UI czasem używasz null -> zostawiamy None, jeśli brak przeciwnika
+        return self._team_name(obj.away_team)
+
+    def get_is_technical(self, obj: Match) -> bool:
+        """
+        Mecz techniczny (BYE) = taki, w którym jedna ze stron to __SYSTEM_BYE__.
+        """
+        return self._is_system_bye_team(obj.home_team) or self._is_system_bye_team(obj.away_team)
 
 class MatchScheduleUpdateSerializer(serializers.ModelSerializer):
     """
@@ -292,58 +381,44 @@ class MatchScheduleUpdateSerializer(serializers.ModelSerializer):
             "location",
         )
 
-
 class MatchResultUpdateSerializer(serializers.ModelSerializer):
     """
-    Serializer do wprowadzania wyniku meczu.
     PATCH /api/matches/:id/result/
 
-    Cel:
-    - akceptować częściowe wpisy (np. tylko home_score),
-    - akceptować 0 jako poprawną wartość,
-    - pozwolić na czyszczenie (null),
-    - nie pozwalać klientowi ustawiać statusu (status liczy backend).
+    - 0 jest poprawne,
+    - pola nie mogą być null (bo w DB wynik jest zawsze liczbą),
+    - samo dotknięcie wyniku ustawia result_entered=True,
+    - status i winner liczy backend (MatchResultService).
     """
 
-    home_score = serializers.IntegerField(
-        required=False,
-        allow_null=True,
-        min_value=0,
-    )
-    away_score = serializers.IntegerField(
-        required=False,
-        allow_null=True,
-        min_value=0,
-    )
+    home_score = serializers.IntegerField(required=False, min_value=0)
+    away_score = serializers.IntegerField(required=False, min_value=0)
 
-    # status jest sterowany przez backend (MatchResultService)
     status = serializers.CharField(read_only=True)
 
     class Meta:
         model = Match
-        fields = (
-            "home_score",
-            "away_score",
-            "status",
-        )
+        fields = ("home_score", "away_score", "status")
 
-    def validate(self, attrs):
-        """
-        Nie blokujemy edycji w KO na etapie wpisywania „po jednej stronie”.
-        Twarda logika (kiedy FINISHED, kiedy winner) należy do MatchResultService.
+    def update(self, instance: Match, validated_data):
+        touched_score = ("home_score" in validated_data) or ("away_score" in validated_data)
+        if touched_score and not instance.result_entered:
+            instance.result_entered = True
 
-        Tu pilnujemy jedynie:
-        - brak wartości ujemnych (min_value=0),
-        - spójna obsługa nulli (czyszczenie wyniku).
-        """
-        # Prospective values = instance + incoming
-        instance: Match = self.instance
-        home = attrs.get("home_score", instance.home_score)
-        away = attrs.get("away_score", instance.away_score)
+        if "home_score" in validated_data:
+            instance.home_score = validated_data["home_score"]
+        if "away_score" in validated_data:
+            instance.away_score = validated_data["away_score"]
 
-        # Pozwalamy na:
-        # - oba None (wyczyszczenie),
-        # - jedno None (wpisywanie etapami),
-        # - oba liczby (pełny wynik).
-        # KO-remisu nie walidujemy tutaj — to decyzja serwisu domenowego.
-        return attrs
+        update_fields = []
+        if touched_score:
+            update_fields.append("result_entered")
+        if "home_score" in validated_data:
+            update_fields.append("home_score")
+        if "away_score" in validated_data:
+            update_fields.append("away_score")
+
+        if update_fields:
+            instance.save(update_fields=update_fields)
+
+        return instance

@@ -24,8 +24,6 @@ class Tournament(models.Model):
     - status: DRAFT → CONFIGURED → RUNNING → FINISHED
     """
 
-    # ===== Słowniki domenowe =====
-
     class Discipline(models.TextChoices):
         FOOTBALL = "football", "Piłka nożna"
         VOLLEYBALL = "volleyball", "Siatkówka"
@@ -53,12 +51,8 @@ class Tournament(models.Model):
         RUNNING = "RUNNING", "W trakcie"
         FINISHED = "FINISHED", "Zakończony"
 
-    # ===== Stałe konfiguracji =====
-
     FORMATCFG_LEAGUE_LEGS_KEY = "league_legs"
     DEFAULT_LEAGUE_LEGS = 1
-
-    # ===== Dane podstawowe =====
 
     name = models.CharField(max_length=255)
 
@@ -72,8 +66,6 @@ class Tournament(models.Model):
         on_delete=models.CASCADE,
         related_name="organized_tournaments",
     )
-
-    # ===== Konfiguracja =====
 
     competition_type = models.CharField(
         max_length=16,
@@ -103,8 +95,6 @@ class Tournament(models.Model):
         default=Status.DRAFT,
     )
 
-    # ===== Widoczność / dostęp =====
-
     is_published = models.BooleanField(default=False)
 
     is_archived = models.BooleanField(
@@ -115,41 +105,16 @@ class Tournament(models.Model):
 
     access_code = models.CharField(max_length=20, blank=True, null=True)
 
-    # ===== Harmonogram turnieju (OPCJONALNY) =====
-
-    start_date = models.DateField(
-        blank=True,
-        null=True,
-        help_text="Data rozpoczęcia turnieju (opcjonalna)",
-    )
-
-    end_date = models.DateField(
-        blank=True,
-        null=True,
-        help_text="Data zakończenia turnieju (opcjonalna)",
-    )
-
-    location = models.CharField(
-        max_length=255,
-        blank=True,
-        null=True,
-        help_text="Ogólna lokalizacja turnieju (opcjonalna)",
-    )
-
-    # ===== Metadane =====
+    # Harmonogram turnieju (opcjonalny)
+    start_date = models.DateField(blank=True, null=True)
+    end_date = models.DateField(blank=True, null=True)
+    location = models.CharField(max_length=255, blank=True, null=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
-    # ========================================================
-    # REGUŁY DOMENOWE
-    # ========================================================
-
     @staticmethod
     def infer_default_competition_type(discipline: str) -> str:
-        if discipline in (
-            Tournament.Discipline.TENNIS,
-            Tournament.Discipline.WRESTLING,
-        ):
+        if discipline in (Tournament.Discipline.TENNIS, Tournament.Discipline.WRESTLING):
             return Tournament.CompetitionType.INDIVIDUAL
         return Tournament.CompetitionType.TEAM
 
@@ -162,10 +127,7 @@ class Tournament(models.Model):
         }
 
     def get_league_legs(self) -> int:
-        raw = (self.format_config or {}).get(
-            self.FORMATCFG_LEAGUE_LEGS_KEY,
-            self.DEFAULT_LEAGUE_LEGS,
-        )
+        raw = (self.format_config or {}).get(self.FORMATCFG_LEAGUE_LEGS_KEY, self.DEFAULT_LEAGUE_LEGS)
         try:
             value = int(raw)
         except (TypeError, ValueError):
@@ -213,10 +175,7 @@ class TournamentMembership(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["tournament", "user"],
-                name="uniq_tournament_user",
-            )
+            models.UniqueConstraint(fields=["tournament", "user"], name="uniq_tournament_user")
         ]
 
 
@@ -271,6 +230,7 @@ class Team(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
 
 # ============================================================
 # ETAPY
@@ -336,15 +296,11 @@ class Group(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["stage", "name"],
-                name="uniq_stage_group_name",
-            )
+            models.UniqueConstraint(fields=["stage", "name"], name="uniq_stage_group_name")
         ]
 
     def __str__(self) -> str:
         return f"{self.name} ({self.stage})"
-
 
 
 # ============================================================
@@ -354,6 +310,7 @@ class Group(models.Model):
 class Match(models.Model):
     class Status(models.TextChoices):
         SCHEDULED = "SCHEDULED", "Zaplanowany"
+        IN_PROGRESS = "IN_PROGRESS", "W trakcie"
         FINISHED = "FINISHED", "Zakończony"
 
     tournament = models.ForeignKey(
@@ -390,8 +347,12 @@ class Match(models.Model):
     )
 
     # ===== WYNIK =====
+    # 0:0 jest zawsze w bazie, ale "czy użytkownik realnie wpisał wynik" trzymamy osobno.
     home_score = models.PositiveIntegerField(default=0)
     away_score = models.PositiveIntegerField(default=0)
+
+    # Czy wynik został faktycznie wprowadzony/edytowany przez użytkownika (UI -> IN_PROGRESS)
+    result_entered = models.BooleanField(default=False)
 
     winner = models.ForeignKey(
         Team,
@@ -415,8 +376,7 @@ class Match(models.Model):
         help_text="Numer kolejki / rundy",
     )
 
-    # ===== Harmonogram meczu (OPCJONALNY) =====
-
+    # Harmonogram meczu (opcjonalny)
     scheduled_date = models.DateField(blank=True, null=True)
     scheduled_time = models.TimeField(blank=True, null=True)
     location = models.CharField(max_length=255, blank=True, null=True)
