@@ -48,6 +48,8 @@ def generate_knockout_stage(tournament: Tournament) -> Stage:
 
     teams = _get_active_teams(tournament)
 
+    # Jeżeli turniej ma tylko 2 zespoły, to to jest "finał" od razu,
+    # ale nadal stosujemy ten sam mechanizm cup_matches.
     cup_matches = _get_cup_matches(tournament)
 
     stage = Stage.objects.create(
@@ -76,6 +78,7 @@ def generate_knockout_stage(tournament: Tournament) -> Stage:
         pairs=pairs,
         matches_per_pair=cup_matches,
         bye_team=bye_team,
+        round_number=1,
     )
 
     if len(teams) >= 2 and not matches:
@@ -92,10 +95,11 @@ def generate_knockout_stage(tournament: Tournament) -> Stage:
 @transaction.atomic
 def generate_next_knockout_stage(stage: Stage) -> Stage:
     """
-    Generuje KOLEJNY etap fazy pucharowej na podstawie zwycięzców
-    poprzedniego etapu (w tym walkowerów vs __SYSTEM_BYE__).
+    Generuje KOLEJNY etap fazy pucharowej na podstawie zwycięzców poprzedniego etapu.
 
-    Zamyka bieżący etap. Jeśli pozostaje jeden zwycięzca -> kończy turniej.
+    - Zamykamy bieżący etap.
+    - Jeśli pozostaje jeden zwycięzca -> kończymy turniej.
+    - W przeciwnym razie tworzymy nowy etap i generujemy mecze (1 lub 2 na parę).
     """
     if stage.stage_type != Stage.StageType.KNOCKOUT:
         raise ValueError("Ten generator obsługuje wyłącznie etap typu KNOCKOUT.")
@@ -109,7 +113,6 @@ def generate_next_knockout_stage(stage: Stage) -> Stage:
     matches = list(
         stage.matches.select_related("winner", "home_team", "away_team").all()
     )
-
     if not matches:
         raise ValueError("Brak meczów w etapie KO.")
 
@@ -117,7 +120,7 @@ def generate_next_knockout_stage(stage: Stage) -> Stage:
     if any(m.status != Match.Status.FINISHED for m in matches):
         raise ValueError("Nie wszystkie mecze etapu są zakończone.")
 
-    # 2) zwycięzcy z par (uwzględnia walkowery + cup_matches=2 przez agregat)
+    # 2) zwycięzcy z par (cup_matches=2 liczy agregat)
     advancers = _collect_pair_winners(matches, cup_matches=cup_matches)
 
     # 3) deterministycznie (i bez duplikatów)
@@ -149,26 +152,27 @@ def generate_next_knockout_stage(stage: Stage) -> Stage:
     )
 
     # 8) parowanie awansujących
-    created: List[Match] = []
+    pairs: List[Tuple[Team, Team]] = []
     for i in range(0, len(advancers), 2):
         home = advancers[i]
         away = advancers[i + 1]
-
         if home.id == away.id:
             raise ValueError("Błąd logiki KO: drużyna nie może grać sama ze sobą.")
+        pairs.append((home, away))
 
-        created.append(
-            Match(
-                tournament=tournament,
-                stage=next_stage,
-                home_team=home,
-                away_team=away,
-                round_number=1,
-                status=Match.Status.SCHEDULED,
-            )
-        )
-
+    # 9) NAJWAŻNIEJSZA POPRAWKA:
+    #    generujemy tyle meczów na parę, ile wynika z cup_matches (1 lub 2),
+    #    również w finale i w każdej następnej rundzie.
+    created = _build_matches_for_pairs(
+        tournament=tournament,
+        stage=next_stage,
+        pairs=pairs,
+        matches_per_pair=cup_matches,
+        bye_team=None,
+        round_number=1,
+    )
     Match.objects.bulk_create(created)
+
     return next_stage
 
 
@@ -195,7 +199,6 @@ def _validate_tournament(tournament: Tournament) -> None:
         raise ValueError(
             "Faza pucharowa może być generowana tylko dla turnieju w statusie DRAFT."
         )
-
     if tournament.tournament_format != Tournament.TournamentFormat.CUP:
         raise ValueError("Generator pucharowy obsługuje wyłącznie format CUP.")
 
@@ -214,7 +217,7 @@ def _get_or_create_bye_team(tournament: Tournament) -> Team:
     Techniczna drużyna do zapisu walkowerów (BYE) jako rekord Match.
 
     Wymagania:
-    - is_active=False (nie może się pojawić w UI jako uczestnik),
+    - is_active=False,
     - nazwa stała (BYE_TEAM_NAME).
     """
     team, _created = Team.objects.get_or_create(
@@ -222,11 +225,9 @@ def _get_or_create_bye_team(tournament: Tournament) -> Team:
         name=BYE_TEAM_NAME,
         defaults={"is_active": False},
     )
-
     if team.is_active:
         team.is_active = False
         team.save(update_fields=["is_active"])
-
     return team
 
 
@@ -235,7 +236,8 @@ def _get_or_create_bye_team(tournament: Tournament) -> Team:
 # ============================================================
 
 def _next_power_of_two(n: int) -> int:
-    """Zwraca najmniejszą potęgę 2 ≥ n."""
+    if n <= 1:
+        return 1
     return 2 ** math.ceil(math.log2(n))
 
 
@@ -244,12 +246,6 @@ def _build_first_round_pairs(
     byes_count: int,
     bye_team: Optional[Team],
 ) -> List[Tuple[Team, Team]]:
-    """
-    Buduje listę par dla pierwszej rundy tak, aby:
-    - powstała pełna runda drabinki: bracket_size/2 par,
-    - dokładnie 'byes_count' par było typu (team, __SYSTEM_BYE__),
-    - pozostałe pary były typu (team, team).
-    """
     if byes_count < 0:
         raise ValueError("byes_count nie może być ujemne.")
 
@@ -284,17 +280,16 @@ def _build_matches_for_pairs(
     pairs: Iterable[Tuple[Team, Team]],
     matches_per_pair: int,
     bye_team: Optional[Team],
+    round_number: int,
 ) -> List[Match]:
     """
     Tworzy rekordy Match dla par.
 
     - Dla (team, __SYSTEM_BYE__) tworzy 1 mecz walkowerowy FINISHED z winner=team.
-      (nie mnożymy walkowerów przez matches_per_pair – to tylko techniczny zapis BYE)
-    - Dla (team, team) tworzy matches_per_pair meczów (np. dwumecz).
+      (nie mnożymy walkowerów przez matches_per_pair)
+    - Dla (team, team) tworzy matches_per_pair meczów (np. dwumecz), z rewanżem (zamiana home/away).
     """
     matches: List[Match] = []
-    round_number = 1
-
     bye_id = bye_team.id if bye_team else None
 
     for home, away in pairs:
@@ -314,6 +309,9 @@ def _build_matches_for_pairs(
                 )
             )
             continue
+
+        if matches_per_pair not in (1, 2):
+            matches_per_pair = 1
 
         for leg in range(matches_per_pair):
             h, a = (home, away) if leg == 0 else (away, home)
@@ -336,10 +334,21 @@ def _build_matches_for_pairs(
 # ============================================================
 
 def _pair_key(m: Match) -> Tuple[int, int]:
-    """Klucz pary niezależny od gospodarza (dla cup_matches=2)."""
     a = m.home_team_id
     b = m.away_team_id
     return (a, b) if a < b else (b, a)
+
+
+def _team_from_group(group: List[Match], team_id: int) -> Team:
+    for m in group:
+        if m.home_team_id == team_id:
+            return m.home_team
+        if m.away_team_id == team_id:
+            return m.away_team
+        if m.winner_id == team_id and m.winner is not None:
+            return m.winner
+    # awaryjnie dociągamy z DB (rzadko)
+    return Team.objects.get(pk=team_id)
 
 
 def _collect_pair_winners(matches: List[Match], *, cup_matches: int) -> List[Team]:
@@ -347,14 +356,13 @@ def _collect_pair_winners(matches: List[Match], *, cup_matches: int) -> List[Tea
     Zwraca zwycięzców dla każdej pary drużyn w danym etapie KO.
 
     cup_matches=1:
-      - wymagany winner w każdym meczu pary
-      - brak remisów na poziomie pary (winner musi istnieć)
+      - wymagany winner w meczu
+      - brak remisów na poziomie meczu (winner musi istnieć)
 
     cup_matches=2 (dwumecz):
-      - NIE wymagamy winner w pojedynczym meczu
-      - wyliczamy zwycięzcę z AGREGATU bramek (suma z dwóch meczów)
-      - jeśli agregat remisowy -> błąd (brak mechanizmu dogrywki/karnych)
-      - jeśli wyliczymy zwycięzcę -> zapisujemy winner_id na obu meczach pary (spójność danych)
+      - winner w pojedynczym meczu NIE jest wymagany,
+      - liczymy zwycięzcę z AGREGATU bramek (suma z dwóch meczów),
+      - jeśli agregat remisowy -> błąd (trzeba doprecyzować zasady: dogrywka/karny/wybór zwycięzcy).
     """
     if cup_matches not in (1, 2):
         cup_matches = 1
@@ -366,6 +374,7 @@ def _collect_pair_winners(matches: List[Match], *, cup_matches: int) -> List[Tea
     winners: List[Team] = []
 
     for _, group in grouped.items():
+        # wszystkie mecze w parze muszą być FINISHED
         if any(m.status != Match.Status.FINISHED for m in group):
             raise ValueError("Nie wszystkie mecze pary są zakończone.")
 
@@ -377,6 +386,7 @@ def _collect_pair_winners(matches: List[Match], *, cup_matches: int) -> List[Tea
             continue
 
         if cup_matches == 1:
+            # historycznie możesz mieć 1 mecz na parę; jeśli pojawią się 2, muszą być spójne
             winner_ids = {m.winner_id for m in group}
             if None in winner_ids:
                 raise ValueError("Brak zwycięzcy meczu w fazie pucharowej (KO).")
@@ -386,13 +396,16 @@ def _collect_pair_winners(matches: List[Match], *, cup_matches: int) -> List[Tea
             continue
 
         # cup_matches == 2
-        # 1) jeżeli winner już jest ustawiony i spójny na obu meczach → bierzemy go
+        if len(group) != 2:
+            raise ValueError("Dwumecz wymaga dokładnie 2 meczów w parze.")
+
+        # 1) jeżeli winner już ustawiony i spójny na obu meczach → bierzemy go
         winner_ids_nonnull = {m.winner_id for m in group if m.winner_id is not None}
         if len(winner_ids_nonnull) == 1 and len(winner_ids_nonnull) == len(group):
             winners.append(group[0].winner)  # type: ignore[arg-type]
             continue
 
-        # 2) liczymy agregat bramek po ID drużyn
+        # 2) liczymy agregat bramek
         totals: dict[int, int] = {}
         team_ids: set[int] = set()
 
@@ -400,8 +413,11 @@ def _collect_pair_winners(matches: List[Match], *, cup_matches: int) -> List[Tea
             team_ids.add(m.home_team_id)
             team_ids.add(m.away_team_id)
 
-            totals[m.home_team_id] = totals.get(m.home_team_id, 0) + int(m.home_score or 0)
-            totals[m.away_team_id] = totals.get(m.away_team_id, 0) + int(m.away_score or 0)
+            if m.home_score is None or m.away_score is None:
+                raise ValueError("Dwumecz: brak pełnego wyniku w jednym z meczów pary.")
+
+            totals[m.home_team_id] = totals.get(m.home_team_id, 0) + int(m.home_score)
+            totals[m.away_team_id] = totals.get(m.away_team_id, 0) + int(m.away_score)
 
         if len(team_ids) != 2:
             raise ValueError("Błąd danych KO: para nie ma dokładnie 2 drużyn.")
@@ -412,33 +428,14 @@ def _collect_pair_winners(matches: List[Match], *, cup_matches: int) -> List[Tea
         if g1 == g2:
             raise ValueError(
                 "Dwumecz nie ma rozstrzygnięcia (remis w agregacie). "
-                "Wymagane jest dodatkowe rozstrzygnięcie (np. dogrywka/karny) w modelu."
+                "Wymagane jest dodatkowe rozstrzygnięcie (np. dogrywka/karny/wybór zwycięzcy)."
             )
 
         winner_id = t1 if g1 > g2 else t2
 
-        # mapujemy winner_id -> obiekt Team (mamy select_related home/away)
-        sample = group[0]
-        if sample.home_team_id == winner_id:
-            winner_team = sample.home_team
-        elif sample.away_team_id == winner_id:
-            winner_team = sample.away_team
-        else:
-            # awaryjnie: szukamy w grupie
-            winner_team = None
-            for m in group:
-                if m.home_team_id == winner_id:
-                    winner_team = m.home_team
-                    break
-                if m.away_team_id == winner_id:
-                    winner_team = m.away_team
-                    break
-            if winner_team is None:
-                raise ValueError("Nie udało się zmapować zwycięzcy dwumeczu do drużyny.")
-
         # 3) zapisujemy spójny winner na obu meczach pary
         Match.objects.filter(pk__in=[m.pk for m in group]).update(winner_id=winner_id)
 
-        winners.append(winner_team)
+        winners.append(_team_from_group(group, winner_id))
 
     return winners

@@ -21,7 +21,8 @@ import TournamentSetup from "./pages/TournamentSetup";          // krok 2
 import TournamentTeams from "./pages/TournamentTeams";          // krok 3
 import TournamentMatches from "./pages/TournamentMatches";      // krok 4
 import TournamentSchedule from "./pages/TournamentSchedule";    // krok 5
-import TournamentResults from "./pages/TournamentResults";      // krok 6 ✅
+import TournamentResults from "./pages/tournamentResults/TournamentResults.tsx";
+
 
 /* ===== WIDOKI POZA FLOW ===== */
 import TournamentDetail from "./pages/TournamentDetail";        // podgląd

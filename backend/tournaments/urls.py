@@ -1,158 +1,67 @@
 from django.urls import path
 
-from .views import (
+from .views.tournaments import (
     TournamentListView,
     TournamentDetailView,
     MyTournamentListView,
+    ArchiveTournamentView,
+    UnarchiveTournamentView,
+    GenerateTournamentView,
+)
+from .views.assistants import (
     TournamentAssistantListView,
     AddAssistantView,
     RemoveAssistantView,
+)
+from .views.teams import (
     TournamentTeamSetupView,
     TournamentTeamListView,
     TournamentTeamUpdateView,
-    GenerateTournamentView,
+)
+from .views.matches import (
     TournamentMatchListView,
-    ArchiveTournamentView,
-    UnarchiveTournamentView,
     MatchScheduleUpdateView,
     MatchResultUpdateView,
-    FinishMatchView,          # <<< NOWY, KLUCZOWY ENDPOINT
-    ConfirmStageView,         # (opcjonalny / legacy)
+    FinishMatchView,
 )
+from .views.stages import ConfirmStageView
+
 
 urlpatterns = [
-    # ========================================================
-    # TURNIEJE – LISTA I SZCZEGÓŁY
-    # ========================================================
+    # TURNIEJE
+    path("tournaments/", TournamentListView.as_view(), name="tournament-list"),
+    path("tournaments/my/", MyTournamentListView.as_view(), name="my-tournaments"),
+    path("tournaments/<int:pk>/", TournamentDetailView.as_view(), name="tournament-detail"),
 
-    path(
-        "tournaments/",
-        TournamentListView.as_view(),
-        name="tournament-list",
-    ),
-    path(
-        "tournaments/my/",
-        MyTournamentListView.as_view(),
-        name="my-tournaments",
-    ),
-    path(
-        "tournaments/<int:pk>/",
-        TournamentDetailView.as_view(),
-        name="tournament-detail",
-    ),
-
-    # ========================================================
     # ARCHIWIZACJA
-    # ========================================================
+    path("tournaments/<int:pk>/archive/", ArchiveTournamentView.as_view(), name="tournament-archive"),
+    path("tournaments/<int:pk>/unarchive/", UnarchiveTournamentView.as_view(), name="tournament-unarchive"),
 
-    path(
-        "tournaments/<int:pk>/archive/",
-        ArchiveTournamentView.as_view(),
-        name="tournament-archive",
-    ),
-    path(
-        "tournaments/<int:pk>/unarchive/",
-        UnarchiveTournamentView.as_view(),
-        name="tournament-unarchive",
-    ),
-
-    # ========================================================
     # WSPÓŁORGANIZATORZY
-    # ========================================================
+    path("tournaments/<int:pk>/assistants/", AddAssistantView.as_view(), name="tournament-add-assistant"),
+    path("tournaments/<int:pk>/assistants/list/", TournamentAssistantListView.as_view(), name="tournament-assistants-list"),
+    path("tournaments/<int:pk>/assistants/<int:user_id>/", RemoveAssistantView.as_view(), name="tournament-remove-assistant"),
 
-    path(
-        "tournaments/<int:pk>/assistants/",
-        AddAssistantView.as_view(),
-        name="tournament-add-assistant",
-    ),
-    path(
-        "tournaments/<int:pk>/assistants/list/",
-        TournamentAssistantListView.as_view(),
-        name="tournament-assistants-list",
-    ),
-    path(
-        "tournaments/<int:pk>/assistants/<int:user_id>/",
-        RemoveAssistantView.as_view(),
-        name="tournament-remove-assistant",
-    ),
+    # UCZESTNICY
+    path("tournaments/<int:pk>/teams/setup/", TournamentTeamSetupView.as_view(), name="tournament-participants-setup"),
+    path("tournaments/<int:pk>/teams/", TournamentTeamListView.as_view(), name="tournament-participants-list"),
+    path("tournaments/<int:pk>/teams/<int:team_id>/", TournamentTeamUpdateView.as_view(), name="tournament-participant-update"),
 
-    # ========================================================
-    # UCZESTNICY TURNIEJU
-    # ========================================================
+    # GENEROWANIE
+    path("tournaments/<int:pk>/generate/", GenerateTournamentView.as_view(), name="tournament-generate"),
 
-    path(
-        "tournaments/<int:pk>/teams/setup/",
-        TournamentTeamSetupView.as_view(),
-        name="tournament-participants-setup",
-    ),
-    path(
-        "tournaments/<int:pk>/teams/",
-        TournamentTeamListView.as_view(),
-        name="tournament-participants-list",
-    ),
-    path(
-        "tournaments/<int:pk>/teams/<int:team_id>/",
-        TournamentTeamUpdateView.as_view(),
-        name="tournament-participant-update",
-    ),
+    # MECZE (LISTA)
+    path("tournaments/<int:pk>/matches/", TournamentMatchListView.as_view(), name="tournament-matches"),
 
-    # ========================================================
-    # GENEROWANIE ROZGRYWEK
-    # ========================================================
+    # MECZ – HARMONOGRAM
+    path("matches/<int:pk>/", MatchScheduleUpdateView.as_view(), name="match-schedule-update"),
 
-    path(
-        "tournaments/<int:pk>/generate/",
-        GenerateTournamentView.as_view(),
-        name="tournament-generate",
-    ),
+    # MECZ – WYNIK
+    path("matches/<int:pk>/result/", MatchResultUpdateView.as_view(), name="match-result-update"),
 
-    # ========================================================
-    # MECZE TURNIEJU (LISTA)
-    # ========================================================
+    # MECZ – ZAKOŃCZENIE
+    path("matches/<int:pk>/finish/", FinishMatchView.as_view(), name="match-finish"),
 
-    path(
-        "tournaments/<int:pk>/matches/",
-        TournamentMatchListView.as_view(),
-        name="tournament-matches",
-    ),
-
-    # ========================================================
-    # MECZ – HARMONOGRAM (PATCH)
-    # ========================================================
-
-    path(
-        "matches/<int:pk>/",
-        MatchScheduleUpdateView.as_view(),
-        name="match-schedule-update",
-    ),
-
-    # ========================================================
-    # MECZ – WYNIK (PATCH)
-    # ========================================================
-
-    path(
-        "matches/<int:pk>/result/",
-        MatchResultUpdateView.as_view(),
-        name="match-result-update",
-    ),
-
-    # ========================================================
-    # MECZ – ZAKOŃCZENIE (POST)  <<<< NAJWAŻNIEJSZE
-    # ========================================================
-
-
-    path(
-        "matches/<int:pk>/finish/",
-        FinishMatchView.as_view(),
-        name="match-finish",
-    ),
-    # ========================================================
-    # ETAP KO – LEGACY / OPCJONALNE
-    # ========================================================
-
-    path(
-        "stages/<int:pk>/confirm/",
-        ConfirmStageView.as_view(),
-        name="stage-confirm",
-    ),
+    # ETAP KO – LEGACY
+    path("stages/<int:pk>/confirm/", ConfirmStageView.as_view(), name="stage-confirm"),
 ]

@@ -1,128 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { apiFetch } from "../api";
+import { apiFetch } from "../../api";
 
-/* ============================================================
-   Typy API
-   ============================================================ */
-
-type TournamentDTO = {
-  id: number;
-  name?: string;
-  discipline: string;
-  tournament_format?: "LEAGUE" | "CUP" | "MIXED";
-  participants_count?: number;
-  status: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
-};
-
-type MatchDTO = {
-  id: number;
-
-  stage_id: number;
-  stage_order: number; // <-- ważne: sort etapów po order, nie po ID
-  stage_type: "LEAGUE" | "KNOCKOUT" | "GROUP";
-
-  status: "SCHEDULED" | "IN_PROGRESS" | "FINISHED"; // <-- brakowało IN_PROGRESS
-  round_number: number | null;
-
-  home_team_name: string;
-  away_team_name: string;
-
-  home_score: number;
-  away_score: number;
-};
-
-/* ============================================================
-   Helpers (BYE + KO nazwy)
-   ============================================================ */
-
-function isByeName(name: string | null | undefined): boolean {
-  if (!name) return false;
-  const n = name.trim().toUpperCase();
-  return (
-    n === "BYE" ||
-    n.includes("SYSTEM_BYE") ||
-    n === "__SYSTEM_BYE__" ||
-    n.includes("__SYSTEM_BYE__")
-  );
-}
-
-function isByeMatch(m: MatchDTO): boolean {
-  return isByeName(m.home_team_name) || isByeName(m.away_team_name);
-}
-
-function nextPowerOfTwo(n: number): number {
-  if (n <= 1) return 1;
-  return 2 ** Math.ceil(Math.log2(n));
-}
-
-function knockoutRoundLabelFromTeams(teams: number): string {
-  if (teams === 2) return "Finał";
-  if (teams === 4) return "Półfinał";
-  if (teams === 8) return "Ćwierćfinał";
-  return `1/${teams / 2} finału`;
-}
-
-function knockoutStageTitle(
-  stageMatchesAll: MatchDTO[],
-  stageIndex1Based: number,
-  tournamentParticipantsCount?: number
-): string {
-  // Nazwa rundy ma wynikać z rozmiaru drabinki (BYE nie zaburza)
-  if (stageIndex1Based === 1 && typeof tournamentParticipantsCount === "number") {
-    const bracket = nextPowerOfTwo(tournamentParticipantsCount);
-    return knockoutRoundLabelFromTeams(bracket);
-  }
-
-  // fallback – z liczby spotkań (bezpieczne jeśli brak BYE)
-  const nonBye = stageMatchesAll.filter((m) => !isByeMatch(m));
-  const teams = Math.max(2, nonBye.length * 2);
-  const bracketGuess = nextPowerOfTwo(teams);
-  return knockoutRoundLabelFromTeams(bracketGuess);
-}
-
-function stageHeaderTitle(
-  stageType: MatchDTO["stage_type"],
-  stageMatchesAll: MatchDTO[],
-  stageIndex1Based: number,
-  tournament: TournamentDTO
-): string {
-  if (stageType === "KNOCKOUT") {
-    return `Puchar: ${knockoutStageTitle(
-      stageMatchesAll,
-      stageIndex1Based,
-      tournament.participants_count
-    )}`;
-  }
-  if (stageType === "GROUP") return `Faza grupowa — etap ${stageIndex1Based}`;
-  return `Liga — etap ${stageIndex1Based}`;
-}
-
-function scoreToInputValue(score: number): string {
-  return String(score);
-}
-
-function inputValueToScore(v: string): number {
-  const s = v.trim();
-  if (s === "") return 0; // backend i tak trzyma liczby (default=0)
-  if (!/^\d+$/.test(s)) return 0;
-  const n = Number(s);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return n;
-}
-
-function decideWinnerSide(
-  stageType: MatchDTO["stage_type"],
-  h: number,
-  a: number
-): "HOME" | "AWAY" | "DRAW" {
-  if (h === a) return "DRAW";
-  return h > a ? "HOME" : "AWAY";
-}
-
-/* ============================================================
-   Komponent
-   ============================================================ */
+import type { MatchDTO, TournamentDTO, WinnerSide } from "./tournamentResults.types";
+import {
+  decideWinnerSideFromScore,
+  getCupMatchesForStage,
+  groupVisibleMatchesByStage,
+  requiresWinnerPickForFinish,
+  scoreToInputValue,
+  inputValueToScore,
+  stageHeaderTitle,
+  isByeMatch,
+  canSendWinnerSide,
+  isKnockoutLike,
+} from "./tournamentResults.utils";
 
 export default function TournamentResults() {
   const { id } = useParams<{ id: string }>();
@@ -137,13 +29,14 @@ export default function TournamentResults() {
 
   const [message, setMessage] = useState<string | null>(null);
 
-  // UI: które mecze były realnie zapisane (edytowane) w tej sesji
+  // które mecze były realnie zapisane (edytowane) w tej sesji
   const [edited, setEdited] = useState<Set<number>>(new Set());
 
-  // snapshot wyników z serwera – do wykrycia czy zmiana zmieni zwycięzcę
-  const initialScoreRef = useRef<
-    Map<number, { h: number; a: number; stage_type: MatchDTO["stage_type"] }>
-  >(new Map());
+  // wybór zwycięzcy w KO przy remisie (cup_matches=1)
+  const [pickedWinner, setPickedWinner] = useState<Map<number, WinnerSide>>(new Map());
+
+  // snapshot wyników z serwera – do wykrycia czy zmiana zmieni „stronę wygrywającą”
+  const initialScoreRef = useRef<Map<number, { h: number; a: number; stage_type: MatchDTO["stage_type"] }>>(new Map());
 
   /* ============================================================
      API
@@ -163,7 +56,6 @@ export default function TournamentResults() {
     const data = await res.json();
     setMatches(data);
 
-    // snapshot do rollback-ostrzeżeń
     const map = new Map<number, { h: number; a: number; stage_type: MatchDTO["stage_type"] }>();
     for (const m of data) map.set(m.id, { h: m.home_score, a: m.away_score, stage_type: m.stage_type });
     initialScoreRef.current = map;
@@ -175,12 +67,11 @@ export default function TournamentResults() {
     const data = await res.json().catch(() => null);
 
     if (!data) return "Błąd żądania.";
-    if (typeof data?.detail === "string") return data.detail;
+    if (typeof (data as any)?.detail === "string") return (data as any).detail;
 
-    // serializer errors: {field: ["msg", ...]}
     const firstKey = data && typeof data === "object" ? Object.keys(data)[0] : null;
-    if (firstKey && Array.isArray(data[firstKey]) && data[firstKey][0]) {
-      return String(data[firstKey][0]);
+    if (firstKey && Array.isArray((data as any)[firstKey]) && (data as any)[firstKey][0]) {
+      return String((data as any)[firstKey][0]);
     }
 
     return "Błąd żądania.";
@@ -192,23 +83,26 @@ export default function TournamentResults() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ home_score: home, away_score: away }),
     });
-
-    if (!res.ok) {
-      throw new Error(await parseApiError(res));
-    }
+    if (!res.ok) throw new Error(await parseApiError(res));
   };
 
-  // To jest KLUCZ do zmiany statusu na FINISHED
-  const finishMatch = async (matchId: number) => {
-    const res = await apiFetch(`/api/matches/${matchId}/finish/`, { method: "POST" });
-    if (!res.ok) {
-      throw new Error(await parseApiError(res));
-    }
+  // finish może przyjąć payload z winner_side (tylko gdy potrzebne)
+  const finishMatch = async (matchId: number, winnerSide?: WinnerSide) => {
+    const body = winnerSide ? JSON.stringify({ winner_side: winnerSide }) : undefined;
+
+    const res = await apiFetch(`/api/matches/${matchId}/finish/`, {
+      method: "POST",
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body,
+    });
+
+    if (!res.ok) throw new Error(await parseApiError(res));
   };
 
-  // Legacy / opcjonalnie: wymuszenie generowania (gdy auto-progres nie działa)
+  // Legacy / opcjonalnie: wymuszenie generowania
   const generateNextStage = async (stageId: number) => {
     if (!id) return;
+
     setBusyGenerate(true);
     setMessage(null);
 
@@ -251,41 +145,10 @@ export default function TournamentResults() {
   }, [id]);
 
   /* ============================================================
-     Grupowanie po etapach + filtrowanie BYE (widok wyników)
+     Grupowanie po etapach + filtrowanie BYE
      ============================================================ */
 
-  const stages = useMemo(() => {
-    // ukrywamy BYE na stronie wyników
-    const visible = matches.filter((m) => !isByeMatch(m));
-
-    // stage_id -> matches
-    const map = new Map<number, MatchDTO[]>();
-    for (const m of visible) {
-      const arr = map.get(m.stage_id) ?? [];
-      arr.push(m);
-      map.set(m.stage_id, arr);
-    }
-
-    // sort etapów po stage_order, dopiero potem stage_id
-    const entries = Array.from(map.entries()).sort((a, b) => {
-      const aOrder = a[1][0]?.stage_order ?? 0;
-      const bOrder = b[1][0]?.stage_order ?? 0;
-      if (aOrder !== bOrder) return aOrder - bOrder;
-      return a[0] - b[0];
-    });
-
-    // sort meczów w etapie po round_number, potem id
-    for (const [, arr] of entries) {
-      arr.sort((a, b) => {
-        const ra = a.round_number ?? 0;
-        const rb = b.round_number ?? 0;
-        if (ra !== rb) return ra - rb;
-        return a.id - b.id;
-      });
-    }
-
-    return entries;
-  }, [matches]);
+  const stages = useMemo(() => groupVisibleMatchesByStage(matches), [matches]);
 
   const lastStageId = useMemo(() => {
     if (!stages.length) return null;
@@ -325,13 +188,13 @@ export default function TournamentResults() {
     const match = matches.find((m) => m.id === matchId);
     if (!match) return;
 
-    // Zmiana wyniku w meczu zakończonym w KO może wymusić rollback.
     const snap = initialScoreRef.current.get(match.id);
     const isFinished = match.status === "FINISHED";
 
-    if (isFinished && match.stage_type === "KNOCKOUT" && snap) {
-      const prevSide = decideWinnerSide(match.stage_type, snap.h, snap.a);
-      const newSide = decideWinnerSide(match.stage_type, match.home_score, match.away_score);
+    // ostrzeżenie rollback: dotyczy KO/THIRD_PLACE (bo też może być KO-like)
+    if (isFinished && isKnockoutLike(match.stage_type) && snap) {
+      const prevSide = decideWinnerSideFromScore(snap.h, snap.a);
+      const newSide = decideWinnerSideFromScore(match.home_score, match.away_score);
 
       const changesWinner =
         (prevSide === "HOME" || prevSide === "AWAY") &&
@@ -345,7 +208,6 @@ export default function TournamentResults() {
             "Czy na pewno chcesz zapisać zmianę?"
         );
         if (!ok) {
-          // revert do snapshotu serwera
           setMatches((prev) =>
             prev.map((m) => (m.id === match.id ? { ...m, home_score: snap.h, away_score: snap.a } : m))
           );
@@ -360,7 +222,6 @@ export default function TournamentResults() {
       setMessage(null);
 
       await updateMatchScore(match.id, match.home_score, match.away_score);
-
       await Promise.all([loadMatches(), loadTournament().catch(() => null)]);
 
       setEdited((prev) => {
@@ -379,29 +240,36 @@ export default function TournamentResults() {
   };
 
   /* ============================================================
-     Zakończenie meczu (POST /finish/) — to był brakujący element
+     Zakończenie meczu (POST /finish/)
      ============================================================ */
 
   const onFinishMatchClick = async (matchId: number) => {
     const match = matches.find((m) => m.id === matchId);
     if (!match) return;
 
-    // W UI blokujemy bezsensowne akcje
     if (match.status === "FINISHED") {
       setMessage("Ten mecz jest już zakończony.");
       return;
     }
 
-    // Dla czytelności UX: wymagamy wpisanego wyniku (obie wartości).
-    // W praktyce backend dla KO i tak tego pilnuje (result_entered + winner),
-    // ale tu dajemy szybki komunikat.
     if (typeof match.home_score !== "number" || typeof match.away_score !== "number") {
       setMessage("Aby zakończyć mecz, wpisz wynik.");
       return;
     }
 
-    if (match.stage_type === "KNOCKOUT" && match.home_score === match.away_score) {
-      setMessage("W KO remis jest niedozwolony — popraw wynik przed zakończeniem meczu.");
+    const cupMatches = getCupMatchesForStage(tournament, match.stage_order);
+    const picked = pickedWinner.get(match.id);
+
+    const verdict = canSendWinnerSide({
+      stageType: match.stage_type,
+      cupMatches,
+      homeScore: match.home_score,
+      awayScore: match.away_score,
+      picked,
+    });
+
+    if (!verdict.ok) {
+      setMessage(verdict.message ?? "Nie można zakończyć meczu.");
       return;
     }
 
@@ -409,10 +277,9 @@ export default function TournamentResults() {
       setBusyMatchId(match.id);
       setMessage(null);
 
-      await finishMatch(match.id);
+      await finishMatch(match.id, verdict.winnerSide);
 
       await Promise.all([loadMatches(), loadTournament().catch(() => null)]);
-
       setMessage("Mecz zakończony.");
     } catch (e: any) {
       setMessage(e.message);
@@ -466,16 +333,21 @@ export default function TournamentResults() {
         <div style={{ marginTop: "0.25rem" }}>
           „Mecz zakończony” wysyła POST /api/matches/:id/finish/ i ustawia FINISHED w backendzie.
         </div>
+
+        <div style={{ marginTop: "0.25rem" }}>
+          KO: przy <code>cup_matches=2</code> remis w pojedynczym meczu jest dozwolony. Przy <code>cup_matches=1</code>{" "}
+          remis jest dozwolony, ale wymaga wskazania zwycięzcy.
+        </div>
       </section>
 
-      {stages.map(([stageId, stageMatches], idx) => {
-        const stageIndex1Based = idx + 1;
+      {stages.map(([stageId, stageMatches]) => {
         const stageType = stageMatches[0]?.stage_type;
+        const stageOrder = stageMatches[0]?.stage_order ?? 1;
 
-        // do tytułu KO użyj pełnych meczów etapu (także z BYE)
+        // do informacji pomocniczych (np. jeśli kiedyś będziesz liczył coś po BYE)
         const allStageMatches = matches.filter((m) => m.stage_id === stageId);
+        const header = stageHeaderTitle(stageType, stageOrder, tournament);
 
-        const header = stageHeaderTitle(stageType, allStageMatches, stageIndex1Based, tournament);
         const isLastStage = stageId === lastStageId;
 
         return (
@@ -507,6 +379,24 @@ export default function TournamentResults() {
                 : wasEdited
                 ? "4px solid rgba(46,204,113,0.8)"
                 : "4px solid transparent";
+
+              const cupMatches = getCupMatchesForStage(tournament, match.stage_order);
+              const isKnockout = isKnockoutLike(match.stage_type);
+              const isDraw = match.home_score === match.away_score;
+
+              const needsWinnerPick = requiresWinnerPickForFinish({
+                stageType: match.stage_type,
+                cupMatches,
+                isFinished,
+                homeScore: match.home_score,
+                awayScore: match.away_score,
+              });
+
+              const selected = pickedWinner.get(match.id);
+
+              // (opcjonalnie) Jeśli backend zwraca mecze BYE, ale frontend je filtruje,
+              // warto zostawić tę kontrolę bezpieczeństwa:
+              if (isByeMatch(match)) return null;
 
               return (
                 <div
@@ -568,7 +458,7 @@ export default function TournamentResults() {
 
                     <button
                       onClick={() => onFinishMatchClick(match.id)}
-                      disabled={isBusy}
+                      disabled={isBusy || (needsWinnerPick && !selected)}
                       style={{
                         marginLeft: "0.5rem",
                         padding: "0.45rem 0.75rem",
@@ -576,6 +466,7 @@ export default function TournamentResults() {
                         border: "1px solid #444",
                         background: isFinished ? "rgba(30,144,255,0.25)" : "transparent",
                         cursor: "pointer",
+                        opacity: isBusy || (needsWinnerPick && !selected) ? 0.6 : 1,
                       }}
                       title="Ustawia status FINISHED w backendzie (POST /api/matches/:id/finish/)."
                     >
@@ -583,11 +474,64 @@ export default function TournamentResults() {
                     </button>
                   </div>
 
+                  {needsWinnerPick && (
+                    <div style={{ marginTop: "0.6rem", opacity: 0.9 }}>
+                      <div style={{ marginBottom: "0.35rem" }}>Remis w KO (1 mecz). Wybierz zwycięzcę:</div>
+
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", marginRight: "1rem" }}>
+                        <input
+                          type="radio"
+                          name={`winner_${match.id}`}
+                          checked={selected === "HOME"}
+                          onChange={() => {
+                            setPickedWinner((prev) => {
+                              const n = new Map(prev);
+                              n.set(match.id, "HOME");
+                              return n;
+                            });
+                          }}
+                        />
+                        {match.home_team_name}
+                      </label>
+
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}>
+                        <input
+                          type="radio"
+                          name={`winner_${match.id}`}
+                          checked={selected === "AWAY"}
+                          onChange={() => {
+                            setPickedWinner((prev) => {
+                              const n = new Map(prev);
+                              n.set(match.id, "AWAY");
+                              return n;
+                            });
+                          }}
+                        />
+                        {match.away_team_name}
+                      </label>
+                    </div>
+                  )}
+
                   {isFinished && (
                     <div style={{ marginTop: "0.35rem", opacity: 0.75 }}>
                       Mecz jest zakończony w backendzie. Edycja wyniku nadal możliwa, ale w KO zmiana zwycięzcy może cofnąć kolejne etapy.
                     </div>
                   )}
+
+                  {isKnockout && cupMatches === 2 && !isFinished && (
+                    <div style={{ marginTop: "0.35rem", opacity: 0.7 }}>
+                      Dwumecz: remis w tym meczu jest dozwolony. Zwycięzca pary wylicza się z agregatu po obu meczach.
+                    </div>
+                  )}
+
+                  {isKnockout && cupMatches === 1 && isDraw && !isFinished && (
+                    <div style={{ marginTop: "0.35rem", opacity: 0.7 }}>
+                      KO (1 mecz): remis dozwolony, ale wymaga wskazania zwycięzcy przed zakończeniem.
+                    </div>
+                  )}
+
+                  {/* zostawione na przyszłość, jeśli chcesz debugować per-etap */}
+                  {allStageMatches.length === 0 && null}
                 </div>
               );
             })}
@@ -630,14 +574,8 @@ export default function TournamentResults() {
 
       <div style={{ marginTop: "2rem", display: "flex", gap: "1rem", flexWrap: "wrap" }}>
         <button onClick={() => navigate(-1)}>← Wróć</button>
-
-        <button onClick={() => navigate(`/tournaments/${id}/bracket`)}>
-          Tabela / drabinka pucharowa →
-        </button>
-
-        <button onClick={() => navigate(`/tournaments/${id}/schedule`)}>
-          Harmonogram (opcjonalnie) →
-        </button>
+        <button onClick={() => navigate(`/tournaments/${id}/bracket`)}>Tabela / drabinka pucharowa →</button>
+        <button onClick={() => navigate(`/tournaments/${id}/schedule`)}>Harmonogram (opcjonalnie) →</button>
       </div>
 
       {message && <p style={{ marginTop: "1rem", opacity: 0.9 }}>{message}</p>}
