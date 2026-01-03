@@ -1,4 +1,4 @@
-import type { MatchDTO, MatchStageType, TournamentDTO, WinnerSide } from "./tournamentResults.types";
+import type { MatchDTO, MatchStageType, TournamentDTO } from "./tournamentResults.types";
 
 /* ============================================================
    BYE
@@ -15,7 +15,7 @@ export function isByeMatch(m: MatchDTO): boolean {
 }
 
 /* ============================================================
-   KO labels (oparte o participants_count + stage_order)
+   KO labels (participants_count + stage_order)
    ============================================================ */
 
 export function nextPowerOfTwo(n: number): number {
@@ -30,17 +30,12 @@ export function knockoutRoundLabelFromTeams(teams: number): string {
   return `1/${teams / 2} finału`;
 }
 
-/**
- * Kluczowa zmiana:
- * Tytuł rundy KO wyliczamy z rozmiaru drabinki (participants_count) oraz stage_order:
- * - bracket = nextPowerOfTwo(participants_count)
- * - teams_in_stage = bracket / 2^(stage_order-1)
- */
 export function knockoutStageTitleFromOrder(
   tournamentParticipantsCount: number | undefined,
   stageOrder: number
 ): string | null {
   if (typeof tournamentParticipantsCount !== "number" || tournamentParticipantsCount < 2) return null;
+
   const bracket = nextPowerOfTwo(tournamentParticipantsCount);
   const safeOrder = Math.max(1, stageOrder || 1);
 
@@ -50,11 +45,7 @@ export function knockoutStageTitleFromOrder(
   return knockoutRoundLabelFromTeams(teamsInStage);
 }
 
-export function stageHeaderTitle(
-  stageType: MatchStageType,
-  stageOrder: number,
-  tournament: TournamentDTO
-): string {
+export function stageHeaderTitle(stageType: MatchStageType, stageOrder: number, tournament: TournamentDTO): string {
   if (stageType === "THIRD_PLACE") return "Mecz o 3. miejsce";
 
   if (stageType === "KNOCKOUT") {
@@ -83,11 +74,6 @@ export function inputValueToScore(v: string): number {
   return n;
 }
 
-export function decideWinnerSideFromScore(h: number, a: number): "HOME" | "AWAY" | "DRAW" {
-  if (h === a) return "DRAW";
-  return h > a ? "HOME" : "AWAY";
-}
-
 /* ============================================================
    cup_matches (globalnie lub per stage_order)
    ============================================================ */
@@ -104,6 +90,33 @@ export function getCupMatchesForStage(tournament: TournamentDTO | null, stageOrd
   return 1;
 }
 
+export function isKnockoutLike(stageType: MatchStageType): boolean {
+  return stageType === "KNOCKOUT" || stageType === "THIRD_PLACE";
+}
+
+/**
+ * Reguły UI dla przycisku "Mecz zakończony":
+ * - KO (1 mecz): remis blokowany
+ * - KO (dwumecz): remis w meczu dozwolony (agregat waliduje backend po 2 meczu)
+ */
+export function canFinishMatchUI(args: {
+  stageType: MatchStageType;
+  cupMatches: 1 | 2;
+  homeScore: number;
+  awayScore: number;
+}): { ok: boolean; message?: string } {
+  const { stageType, cupMatches, homeScore, awayScore } = args;
+
+  if (!isKnockoutLike(stageType)) return { ok: true };
+
+  if (cupMatches === 1 && homeScore === awayScore) {
+    return { ok: false, message: "Mecz pucharowy (1 mecz) nie może zakończyć się remisem." };
+  }
+
+  // cup_matches=2: remis w meczu OK (agregat sprawdza backend)
+  return { ok: true };
+}
+
 /* ============================================================
    Grouping stages for view
    ============================================================ */
@@ -118,7 +131,6 @@ export function groupVisibleMatchesByStage(matches: MatchDTO[]): Array<[number, 
     map.set(m.stage_id, arr);
   }
 
-  // sort etapów po stage_order, potem stage_id
   const entries = Array.from(map.entries()).sort((a, b) => {
     const aOrder = a[1][0]?.stage_order ?? 0;
     const bOrder = b[1][0]?.stage_order ?? 0;
@@ -126,7 +138,6 @@ export function groupVisibleMatchesByStage(matches: MatchDTO[]): Array<[number, 
     return a[0] - b[0];
   });
 
-  // sort meczów w etapie po round_number, potem id
   for (const [, arr] of entries) {
     arr.sort((a, b) => {
       const ra = a.round_number ?? 0;
@@ -137,50 +148,4 @@ export function groupVisibleMatchesByStage(matches: MatchDTO[]): Array<[number, 
   }
 
   return entries;
-}
-
-export function isKnockoutLike(stageType: MatchStageType): boolean {
-  return stageType === "KNOCKOUT" || stageType === "THIRD_PLACE";
-}
-
-export function requiresWinnerPickForFinish(args: {
-  stageType: MatchStageType;
-  cupMatches: 1 | 2;
-  isFinished: boolean;
-  homeScore: number;
-  awayScore: number;
-}): boolean {
-  const { stageType, cupMatches, isFinished, homeScore, awayScore } = args;
-  if (isFinished) return false;
-  if (!isKnockoutLike(stageType)) return false;
-  if (cupMatches !== 1) return false;
-  return homeScore === awayScore;
-}
-
-export function canSendWinnerSide(args: {
-  stageType: MatchStageType;
-  cupMatches: 1 | 2;
-  homeScore: number;
-  awayScore: number;
-  picked?: WinnerSide;
-}): { ok: boolean; winnerSide?: WinnerSide; message?: string } {
-  const { stageType, cupMatches, homeScore, awayScore, picked } = args;
-
-  if (!isKnockoutLike(stageType)) return { ok: true };
-
-  // cup_matches=2: remis meczu dozwolony (para rozstrzyga agregat)
-  if (cupMatches === 2) return { ok: true };
-
-  // cup_matches=1: remis dozwolony, ale wymagamy wyboru zwycięzcy
-  if (homeScore === awayScore) {
-    if (!picked) {
-      return {
-        ok: false,
-        message: "W KO przy remisie (1 mecz) musisz wytypować zwycięzcę przed zakończeniem meczu.",
-      };
-    }
-    return { ok: true, winnerSide: picked };
-  }
-
-  return { ok: true };
 }

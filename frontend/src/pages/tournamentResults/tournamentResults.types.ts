@@ -32,5 +32,3 @@ export type MatchDTO = {
   home_score: number;
   away_score: number;
 };
-
-export type WinnerSide = "HOME" | "AWAY";

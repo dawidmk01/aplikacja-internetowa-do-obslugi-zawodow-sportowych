@@ -241,6 +241,7 @@ class Stage(models.Model):
         LEAGUE = "LEAGUE", "Liga"
         GROUP = "GROUP", "Faza grupowa"
         KNOCKOUT = "KNOCKOUT", "Puchar (KO)"
+        THIRD_PLACE = "THIRD_PLACE", "Mecz o 3. miejsce"  # <-- DODANE
 
     class Status(models.TextChoices):
         OPEN = "OPEN", "Otwarty"
