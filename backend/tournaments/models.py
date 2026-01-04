@@ -51,7 +51,8 @@ class Tournament(models.Model):
         RUNNING = "RUNNING", "W trakcie"
         FINISHED = "FINISHED", "Zakończony"
 
-    FORMATCFG_LEAGUE_LEGS_KEY = "league_legs"
+    # ZMIANA: Ujednolicenie klucza z Frontendem i bazą danych
+    FORMATCFG_LEAGUE_LEGS_KEY = "league_matches"
     DEFAULT_LEAGUE_LEGS = 1
 
     name = models.CharField(max_length=255)
@@ -127,6 +128,7 @@ class Tournament(models.Model):
         }
 
     def get_league_legs(self) -> int:
+        # Metoda teraz szuka klucza "league_matches"
         raw = (self.format_config or {}).get(self.FORMATCFG_LEAGUE_LEGS_KEY, self.DEFAULT_LEAGUE_LEGS)
         try:
             value = int(raw)
@@ -241,7 +243,7 @@ class Stage(models.Model):
         LEAGUE = "LEAGUE", "Liga"
         GROUP = "GROUP", "Faza grupowa"
         KNOCKOUT = "KNOCKOUT", "Puchar (KO)"
-        THIRD_PLACE = "THIRD_PLACE", "Mecz o 3. miejsce"  # <-- DODANE
+        THIRD_PLACE = "THIRD_PLACE", "Mecz o 3. miejsce"
 
     class Status(models.TextChoices):
         OPEN = "OPEN", "Otwarty"
@@ -348,11 +350,10 @@ class Match(models.Model):
     )
 
     # ===== WYNIK =====
-    # 0:0 jest zawsze w bazie, ale "czy użytkownik realnie wpisał wynik" trzymamy osobno.
     home_score = models.PositiveIntegerField(default=0)
     away_score = models.PositiveIntegerField(default=0)
 
-    # Czy wynik został faktycznie wprowadzony/edytowany przez użytkownika (UI -> IN_PROGRESS)
+    # Czy wynik został faktycznie wprowadzony/edytowany przez użytkownika
     result_entered = models.BooleanField(default=False)
 
     winner = models.ForeignKey(
