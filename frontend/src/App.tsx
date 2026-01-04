@@ -21,19 +21,19 @@ import TournamentSetup from "./pages/TournamentSetup";          // krok 2
 import TournamentTeams from "./pages/TournamentTeams";          // krok 3
 import TournamentMatches from "./pages/TournamentMatches";      // krok 4
 import TournamentSchedule from "./pages/TournamentSchedule";    // krok 5
-import TournamentResults from "./pages/tournamentResults/TournamentResults.tsx";
-
-
+import TournamentResults from "./pages/tournamentResults/TournamentResults";
 
 /* ===== WIDOKI POZA FLOW ===== */
-import TournamentDetail from "./pages/TournamentDetail";        // podgląd
+import TournamentDetail from "./pages/TournamentDetail";
 import TournamentStandings from "./pages/TournamentStandings";
+
 /**
  * ARCHITEKTURA ROUTINGU
  * ====================
  *
- * FLOW TWORZENIA TURNIEJU:
+ * FLOW TWORZENIA TURNIEJU (WIZARD):
  * 1️⃣ /tournaments/new
+ * 1️⃣ /tournaments/:id/edit   ← POWRÓT / EDYCJA
  * 2️⃣ /tournaments/:id/setup
  * 3️⃣ /tournaments/:id/teams
  * 4️⃣ /tournaments/:id/matches
@@ -114,6 +114,16 @@ export default function App() {
           }
         />
 
+        {/* KROK 1 (EDYCJA) – POWRÓT */}
+        <Route
+          path="/tournaments/:id/edit"
+          element={
+            <ProtectedRoute>
+              <CreateTournament />
+            </ProtectedRoute>
+          }
+        />
+
         {/* KROK 2 – KONFIGURACJA */}
         <Route
           path="/tournaments/:id/setup"
@@ -144,7 +154,7 @@ export default function App() {
           }
         />
 
-        {/* KROK 5 – HARMONOGRAM (OPCJONALNY) */}
+        {/* KROK 5 – HARMONOGRAM */}
         <Route
           path="/tournaments/:id/schedule"
           element={
@@ -153,7 +163,8 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-        {/* KROK 6 – WPROWADZANIE WYNIKÓW */}
+
+        {/* KROK 6 – WYNIKI */}
         <Route
           path="/tournaments/:id/results"
           element={
@@ -167,7 +178,6 @@ export default function App() {
             WIDOKI POZA FLOW
            ========================= */}
 
-        {/* TABELA / DRABINKA */}
         <Route
           path="/tournaments/:id/standings"
           element={
@@ -177,9 +187,7 @@ export default function App() {
           }
         />
 
-{/* SZCZEGÓŁY TURNIEJU */}
-<Route path="/tournaments/:id" element={<TournamentDetail />} />
-
+        <Route path="/tournaments/:id" element={<TournamentDetail />} />
 
         {/* =========================
             FALLBACK

@@ -8,7 +8,9 @@ User = get_user_model()
 
 class TournamentSerializer(serializers.ModelSerializer):
     """
-    Serializer konfiguracji turnieju.
+    - name: zawsze edytowalne
+    - discipline: po DRAFT zmiana tylko przez /change-discipline/
+    - setup: po DRAFT zmiana tylko przez /change-setup/ (reset rozgrywek)
     """
     my_role = serializers.SerializerMethodField()
 
@@ -47,21 +49,33 @@ class TournamentSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         instance = self.instance
 
-        # bez kontekstu request/instance nie blokujemy niczego
         if not request or not request.user.is_authenticated or not instance:
             return attrs
 
-        # Blokada edycji po wygenerowaniu rozgrywek – nie dopuszczamy zmian kluczowej konfiguracji
-        if instance.status != Tournament.Status.DRAFT:
-            for field in (
-                "discipline",
-                "competition_type",
-                "tournament_format",
-                "participants_count",
-                "format_config",
-                "entry_mode",
-            ):
-                attrs.pop(field, None)
+        # dyscyplina po DRAFT -> tylko change-discipline
+        if instance.status != Tournament.Status.DRAFT and "discipline" in attrs:
+            raise serializers.ValidationError(
+                {
+                    "discipline": (
+                        "Zmiana dyscypliny po konfiguracji turnieju wymaga resetu wyników. "
+                        "Użyj endpointu: POST /api/tournaments/<id>/change-discipline/"
+                    )
+                }
+            )
+
+        # setup po DRAFT -> tylko change-setup (reset rozgrywek, drużyny zostają)
+        if instance.status != Tournament.Status.DRAFT and any(
+            f in attrs for f in ("tournament_format", "participants_count", "format_config")
+        ):
+            raise serializers.ValidationError(
+                {
+                    "detail": (
+                        "Zmiana konfiguracji turnieju po wygenerowaniu rozgrywek wymaga "
+                        "usunięcia etapów i meczów (drużyny zostają). "
+                        "Użyj endpointu: POST /api/tournaments/<id>/change-setup/"
+                    )
+                }
+            )
 
         is_organizer = instance.organizer_id == request.user.id
         is_assistant = instance.memberships.filter(

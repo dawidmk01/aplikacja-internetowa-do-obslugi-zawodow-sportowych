@@ -24,6 +24,10 @@ class MatchSerializer(serializers.ModelSerializer):
     stage_id = serializers.IntegerField(source="stage.id", read_only=True)
     stage_order = serializers.IntegerField(source="stage.order", read_only=True)
 
+    # ===== Grupa (NOWE POLE) =====
+    # To pole jest kluczowe dla poprawnego wyświetlania kafelków w fazie grupowej (MIXED)
+    group_name = serializers.CharField(source="group.name", read_only=True, allow_null=True)
+
     # ===== Mecz techniczny (BYE) =====
     is_technical = serializers.SerializerMethodField()
 
@@ -34,6 +38,7 @@ class MatchSerializer(serializers.ModelSerializer):
             "stage_id",
             "stage_order",
             "stage_type",
+            "group_name",  # <--- Pamiętaj o dodaniu tutaj!
             "round_number",
             "home_team_id",
             "away_team_id",

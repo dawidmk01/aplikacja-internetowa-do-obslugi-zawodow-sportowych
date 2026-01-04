@@ -7,6 +7,8 @@ from .views.tournaments import (
     ArchiveTournamentView,
     UnarchiveTournamentView,
     GenerateTournamentView,
+    ChangeDisciplineView,
+    ChangeSetupView,   # <-- NOWE
 )
 from .views.assistants import (
     TournamentAssistantListView,
@@ -25,8 +27,6 @@ from .views.matches import (
     FinishMatchView,
 )
 from .views.stages import ConfirmStageView
-
-# ZMIANA: Importujemy tylko jeden, nowy widok
 from tournaments.views.standings import TournamentStandingsView
 
 
@@ -35,6 +35,20 @@ urlpatterns = [
     path("tournaments/", TournamentListView.as_view(), name="tournament-list"),
     path("tournaments/my/", MyTournamentListView.as_view(), name="my-tournaments"),
     path("tournaments/<int:pk>/", TournamentDetailView.as_view(), name="tournament-detail"),
+
+    # ZMIANA DYSCYPLINY
+    path(
+        "tournaments/<int:pk>/change-discipline/",
+        ChangeDisciplineView.as_view(),
+        name="tournament-change-discipline",
+    ),
+
+    # ZMIANA SETUP (format/config/liczba miejsc) – reset rozgrywek, drużyny zostają
+    path(
+        "tournaments/<int:pk>/change-setup/",
+        ChangeSetupView.as_view(),
+        name="tournament-change-setup",
+    ),
 
     # ARCHIWIZACJA
     path("tournaments/<int:pk>/archive/", ArchiveTournamentView.as_view(), name="tournament-archive"),
@@ -68,13 +82,6 @@ urlpatterns = [
     # ETAP KO – LEGACY
     path("stages/<int:pk>/confirm/", ConfirmStageView.as_view(), name="stage-confirm"),
 
-    # ============================================================
-    # STANDINGS (TABELA / DRABINKA)
-    # ============================================================
-    # Jeden endpoint obsługujący Ligę, Puchar i Mixed
-    path(
-        "tournaments/<int:pk>/standings/",
-        TournamentStandingsView.as_view(),
-        name="tournament-standings",
-    ),
+    # STANDINGS
+    path("tournaments/<int:pk>/standings/", TournamentStandingsView.as_view(), name="tournament-standings"),
 ]
