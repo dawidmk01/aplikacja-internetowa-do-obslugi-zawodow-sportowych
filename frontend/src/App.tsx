@@ -24,9 +24,10 @@ import TournamentSchedule from "./pages/TournamentSchedule";    // krok 5
 import TournamentResults from "./pages/tournamentResults/TournamentResults.tsx";
 
 
+
 /* ===== WIDOKI POZA FLOW ===== */
 import TournamentDetail from "./pages/TournamentDetail";        // podgląd
-
+import TournamentStandings from "./pages/TournamentStandings";
 /**
  * ARCHITEKTURA ROUTINGU
  * ====================
@@ -152,7 +153,6 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-
         {/* KROK 6 – WPROWADZANIE WYNIKÓW */}
         <Route
           path="/tournaments/:id/results"
@@ -167,8 +167,19 @@ export default function App() {
             WIDOKI POZA FLOW
            ========================= */}
 
-        {/* SZCZEGÓŁY TURNIEJU */}
-        <Route path="/tournaments/:id" element={<TournamentDetail />} />
+        {/* TABELA / DRABINKA */}
+        <Route
+          path="/tournaments/:id/standings"
+          element={
+            <ProtectedRoute>
+              <TournamentStandings />
+            </ProtectedRoute>
+          }
+        />
+
+{/* SZCZEGÓŁY TURNIEJU */}
+<Route path="/tournaments/:id" element={<TournamentDetail />} />
+
 
         {/* =========================
             FALLBACK

@@ -5,7 +5,6 @@ dla rozgrywek ligowych oraz faz grupowych.
 Tabela jest liczona dynamicznie na podstawie zakończonych meczów.
 """
 
-from collections import defaultdict
 from dataclasses import dataclass
 
 from tournaments.models import (
@@ -33,11 +32,8 @@ class StandingRow:
 
     goals_for: int = 0
     goals_against: int = 0
+    goal_difference: int = 0  # <-- KLUCZOWE: normalne pole
     points: int = 0
-
-    @property
-    def goal_difference(self) -> int:
-        return self.goals_for - self.goals_against
 
 
 # ============================================================
@@ -61,7 +57,11 @@ def compute_stage_standings(
     matches = _get_finished_matches(stage, group)
 
     for match in matches:
-        _apply_match_result(rows, match, tournament)
+        _apply_match_result(rows, match)
+
+    # WYLICZENIE RB NA KOŃCU
+    for row in rows.values():
+        row.goal_difference = row.goals_for - row.goals_against
 
     return _sort_rows(rows.values())
 
@@ -78,15 +78,10 @@ def _get_teams_for_context(
     """
     Zwraca listę uczestników dla ligi lub konkretnej grupy.
     """
-    qs = tournament.teams.filter(
-        is_active=True,
-        status=Team.Status.APPROVED,
-    )
+    qs = tournament.teams.filter(is_active=True)
 
     if group:
-        qs = qs.filter(
-            home_matches__group=group
-        ).distinct()
+        qs = qs.filter(home_matches__group=group).distinct()
 
     return list(qs)
 
@@ -114,19 +109,18 @@ def _get_finished_matches(
 # ============================================================
 
 def _initialize_rows(teams: list[Team]) -> dict[int, StandingRow]:
-    rows = {}
-    for team in teams:
-        rows[team.id] = StandingRow(
+    return {
+        team.id: StandingRow(
             team_id=team.id,
             team_name=team.name,
         )
-    return rows
+        for team in teams
+    }
 
 
 def _apply_match_result(
     rows: dict[int, StandingRow],
     match: Match,
-    tournament: Tournament,
 ) -> None:
     home = rows.get(match.home_team_id)
     away = rows.get(match.away_team_id)

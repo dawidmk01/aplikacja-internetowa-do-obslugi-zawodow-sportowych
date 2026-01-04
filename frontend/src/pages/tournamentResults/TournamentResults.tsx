@@ -460,7 +460,7 @@ export default function TournamentResults() {
 
       <div style={{ marginTop: "2rem", display: "flex", gap: "1rem", flexWrap: "wrap" }}>
         <button onClick={() => navigate(-1)}>← Wróć</button>
-        <button onClick={() => navigate(`/tournaments/${id}/bracket`)}>Tabela / drabinka pucharowa →</button>
+        <button onClick={() => navigate(`/tournaments/${id}/standings`)}>Tabela / drabinka pucharowa →</button>
         <button onClick={() => navigate(`/tournaments/${id}/schedule`)}>Harmonogram (opcjonalnie) →</button>
       </div>
 

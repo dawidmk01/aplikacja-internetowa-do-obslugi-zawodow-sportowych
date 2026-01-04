@@ -25,6 +25,9 @@ from .views.matches import (
     FinishMatchView,
 )
 from .views.stages import ConfirmStageView
+from tournaments.views.standings import TournamentKnockoutBracketView
+from tournaments.views.standings import TournamentLeagueTableView
+from tournaments.views.standings import TournamentLeagueStandingsView
 
 
 urlpatterns = [
@@ -64,4 +67,19 @@ urlpatterns = [
 
     # ETAP KO – LEGACY
     path("stages/<int:pk>/confirm/", ConfirmStageView.as_view(), name="stage-confirm"),
+    path("tournaments/<int:tournament_id>/bracket/", TournamentKnockoutBracketView.as_view()),
+# STANDINGS – LIGA
+    path(
+        "tournaments/<int:pk>/league-table/",
+        TournamentLeagueTableView.as_view(),
+        name="tournament-league-table",
+    ),
+# STANDINGS – LIGA / GRUPY
+    path(
+        "tournaments/<int:pk>/standings/",
+        TournamentLeagueStandingsView.as_view(),
+        name="tournament-standings",
+    ),
+
+
 ]
