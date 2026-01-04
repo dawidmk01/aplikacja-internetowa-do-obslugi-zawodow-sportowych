@@ -1,75 +1,153 @@
-# tournaments/standings/knockout_bracket.py
-from __future__ import annotations
-
-from dataclasses import dataclass
+from collections import defaultdict
 from typing import Any, Dict, List
-
 from tournaments.models import Match, Stage, Tournament
 
 
-def _round_label(team_count: int) -> str:
-    if team_count == 2:
-        return "Finał"
-    if team_count == 4:
-        return "Półfinał"
-    if team_count == 8:
-        return "Ćwierćfinał"
-    if team_count == 16:
-        return "1/8 finału"
-    return f"KO ({team_count} drużyn)"
-
-
-def get_knockout_bracket(tournament: Tournament) -> List[Dict[str, Any]]:
+def get_knockout_bracket(tournament: Tournament) -> Dict[str, Any]:
     """
-    Zwraca strukturę drabinki dla turnieju:
-    - etapy KNOCKOUT (kolejne rundy)
-    - etap THIRD_PLACE (jeśli istnieje)
+    Zwraca strukturę drabinki KO.
+    Grupuje dwumecze (mecze między tymi samymi drużynami w tej samej rundzie) w jeden obiekt.
+    Poprawiona obsługa dwumeczu o 3. miejsce.
     """
-    stages = list(
-        tournament.stages.filter(
-            stage_type__in=[Stage.StageType.KNOCKOUT, Stage.StageType.THIRD_PLACE]
-        ).order_by("order", "id")
+    matches = (
+        Match.objects
+        .filter(
+            stage__tournament=tournament,
+            stage__stage_type__in=[Stage.StageType.KNOCKOUT, Stage.StageType.THIRD_PLACE],
+        )
+        .select_related("home_team", "away_team", "stage")
+        .order_by("stage__order", "round_number", "id")
     )
 
-    result: List[Dict[str, Any]] = []
+    if not matches:
+        return {"rounds": [], "third_place": None}
 
-    for st in stages:
-        ms = list(
-            st.matches.select_related("home_team", "away_team", "winner")
-            .order_by("round_number", "id")
-        )
+    # 1. Rozdzielamy główną drabinkę od 3. miejsca
+    main_bracket_matches = []
 
-        if st.stage_type == Stage.StageType.THIRD_PLACE:
-            label = "Mecz o 3. miejsce"
+    # ZMIANA: Zamiast jednej zmiennej, używamy listy, aby obsłużyć dwumecz
+    third_place_matches = []
+
+    def is_third_place(stage_type):
+        return str(stage_type) == "THIRD_PLACE"
+
+    for m in matches:
+        if is_third_place(m.stage.stage_type):
+            third_place_matches.append(m)  # ZMIANA: append zamiast przypisania
         else:
-            team_ids = set()
-            for m in ms:
-                team_ids.add(m.home_team_id)
-                team_ids.add(m.away_team_id)
-            label = _round_label(len(team_ids))
+            main_bracket_matches.append(m)
 
-        result.append(
-            {
-                "stage_id": st.id,
-                "stage_type": st.stage_type,
-                "order": st.order,
-                "label": label,
-                "matches": [
-                    {
-                        "id": m.id,
-                        "round_number": m.round_number,
-                        "status": m.status,
-                        "home_team_id": m.home_team_id,
-                        "away_team_id": m.away_team_id,
-                        "home_team_name": m.home_team.name,
-                        "away_team_name": m.away_team.name,
-                        "home_score": m.home_score,
-                        "away_score": m.away_score,
-                        "winner_id": m.winner_id,
-                    }
-                    for m in ms
-                ],
-            }
-        )
+    # Serializujemy 3. miejsce
+    # Teraz przekazujemy całą listę meczów (może być 1 lub 2) do funkcji tworzącej pojedynek
+    tp_item = None
+    if third_place_matches:
+        tp_item = _create_duel_item(third_place_matches)
 
-    return result
+    # Jeśli nie ma głównej drabinki, zwracamy tylko 3 miejsce (rzadki case)
+    if not main_bracket_matches:
+        return {"rounds": [], "third_place": tp_item}
+
+    # 2. LOGIKA GRUPOWANIA W PARY (DUELS) DLA GŁÓWNEJ DRABINKI
+    grouped_duels = defaultdict(list)
+
+    for m in main_bracket_matches:
+        r_num = m.round_number or 1
+
+        if m.home_team_id and m.away_team_id:
+            teams_key = frozenset([m.home_team_id, m.away_team_id])
+        else:
+            teams_key = m.id
+
+        full_key = (m.stage.order, r_num, teams_key)
+        grouped_duels[full_key].append(m)
+
+    # 3. Przypisanie do Wirtualnych Rund
+    unique_rounds = set()
+    for (st_order, r_num, _), _ in grouped_duels.items():
+        unique_rounds.add((st_order, r_num))
+
+    sorted_rounds = sorted(list(unique_rounds))
+    key_to_virtual_round = {key: i + 1 for i, key in enumerate(sorted_rounds)}
+    max_virtual_round = len(sorted_rounds)
+
+    rounds_map = defaultdict(list)
+
+    sorted_duels_items = sorted(grouped_duels.items(), key=lambda x: x[1][0].id)
+
+    for (st_order, r_num, _), duel_matches in sorted_duels_items:
+        v_round = key_to_virtual_round[(st_order, r_num)]
+        duel_item = _create_duel_item(duel_matches)
+        rounds_map[v_round].append(duel_item)
+
+    # 4. Budowanie wyniku
+    bracket_rounds = []
+
+    for v_round in sorted(rounds_map.keys()):
+        duels = rounds_map[v_round]
+
+        diff = max_virtual_round - v_round
+        if diff == 0:
+            label = "Finał"
+        elif diff == 1:
+            label = "Półfinał"
+        elif diff == 2:
+            label = "Ćwierćfinał"
+        elif diff == 3:
+            label = "1/8 Finału"
+        else:
+            label = f"Runda {v_round}"
+
+        bracket_rounds.append({
+            "round_number": v_round,
+            "label": label,
+            "items": duels
+        })
+
+    return {
+        "rounds": bracket_rounds,
+        "third_place": tp_item
+    }
+
+
+def _create_duel_item(matches: List[Match]) -> Dict[str, Any]:
+    """Tworzy obiekt pojedynku zawierający 1 lub 2 mecze."""
+    if not matches:
+        return None
+
+    # Sortujemy po ID
+    matches.sort(key=lambda x: x.id)
+
+    m1 = matches[0]
+    m2 = matches[1] if len(matches) > 1 else None
+
+    base_data = {
+        "id": m1.id,
+        "status": m2.status if m2 else m1.status,
+        "home_team_id": m1.home_team_id,
+        "away_team_id": m1.away_team_id,
+        "home_team_name": m1.home_team.name if m1.home_team else "TBD",
+        "away_team_name": m1.away_team.name if m1.away_team else "TBD",
+        "winner_id": m1.winner_id if not m2 else _resolve_aggregate_winner(matches),
+
+        "score_leg1_home": m1.home_score,
+        "score_leg1_away": m1.away_score,
+
+        "is_two_legged": True if m2 else False
+    }
+
+    if m2:
+        # Obsługa odwrócenia gospodarzy w rewanżu
+        if m2.home_team_id == m1.away_team_id:
+            base_data["score_leg2_home"] = m2.away_score
+            base_data["score_leg2_away"] = m2.home_score
+        else:
+            base_data["score_leg2_home"] = m2.home_score
+            base_data["score_leg2_away"] = m2.away_score
+
+    return base_data
+
+
+def _resolve_aggregate_winner(matches):
+    if matches[-1].status == "FINISHED":
+        return matches[-1].winner_id
+    return None

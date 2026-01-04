@@ -1,117 +1,70 @@
+
 from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from tournaments.models import Tournament, Stage
+# POPRAWIONE IMPORTY (bez 'services'):
 from tournaments.standings.league_table import compute_stage_standings
-from tournaments.models import Match
+from tournaments.standings.knockout_bracket import get_knockout_bracket
 
-
-# ============================================================
-# LIGA / GRUPY – TABELA
-# ============================================================
-
-class TournamentLeagueTableView(APIView):
+class TournamentStandingsView(APIView):
     """
-    GET /api/tournaments/:id/league-table/
+    GET /api/tournaments/:id/standings/
+
+    Uniwersalny endpoint zwracający:
+    - 'table': dla Ligi i Mixed
+    - 'bracket': dla Pucharu i Mixed
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
 
-        if tournament.tournament_format == Tournament.TournamentFormat.CUP:
-            return Response(
-                {"detail": "Turniej pucharowy nie posiada tabeli ligowej."},
-                status=409,
-            )
+        response_data = {}
+        fmt = tournament.tournament_format
 
-        # ===== LIGA =====
-        if tournament.tournament_format == Tournament.TournamentFormat.LEAGUE:
-            stage = tournament.stages.filter(stage_type=Stage.StageType.LEAGUE).first()
-            if not stage:
-                return Response({"detail": "Brak etapu ligowego."}, status=404)
+        # ==========================================
+        # 1. OBSŁUGA TABELI LIGOWEJ (Liga / Mixed)
+        # ==========================================
+        if fmt in (Tournament.TournamentFormat.LEAGUE, Tournament.TournamentFormat.MIXED):
+            # A) Format LIGA
+            if fmt == Tournament.TournamentFormat.LEAGUE:
+                stage = tournament.stages.filter(stage_type=Stage.StageType.LEAGUE).first()
+                if stage:
+                    table = compute_stage_standings(tournament, stage)
+                    response_data["table"] = [row.__dict__ for row in table]
 
-            table = compute_stage_standings(tournament, stage)
-            return Response({
-                "type": "LEAGUE",
-                "table": [row.__dict__ for row in table],
-            })
+            # B) Format MIXED (Faza grupowa)
+            elif fmt == Tournament.TournamentFormat.MIXED:
+                stage = tournament.stages.filter(stage_type=Stage.StageType.GROUP).first()
+                if stage:
+                    # Tutaj logika zależy od tego, jak chcesz to wyświetlić na froncie.
+                    # Frontend, który dałem, obsługuje jedną tablicę 'table'.
+                    # Jeśli masz wiele grup, musimy to spłaszczyć lub dostosować frontend.
+                    # Na razie pobieramy tabelę dla pierwszej grupy lub łączymy (uproszczenie):
 
-        # ===== MIXED – GRUPY =====
-        stage = tournament.stages.filter(stage_type=Stage.StageType.GROUP).first()
-        if not stage:
-            return Response({"detail": "Brak fazy grupowej."}, status=404)
+                    # Wariant prosty: Pobierz wszystkie grupy i zwróć jako jedną listę (jeśli frontend to obsłuży)
+                    # lub zwróć strukturę specjalną.
+                    # Aby Twój obecny frontend działał bez zmian dla Mixed, zróbmy:
+                    groups_payload = []
+                    for group in stage.groups.all():
+                        t = compute_stage_standings(tournament, stage, group)
+                        # Dodajemy nazwę grupy do wiersza, żeby rozróżnić w tabeli
+                        for row in t:
+                            row_dict = row.__dict__
+                            row_dict['group_name'] = group.name
+                            groups_payload.append(row_dict)
 
-        groups_payload = []
-        for group in stage.groups.all():
-            table = compute_stage_standings(tournament, stage, group)
-            groups_payload.append({
-                "group_id": group.id,
-                "group_name": group.name,
-                "table": [row.__dict__ for row in table],
-            })
+                    response_data["table"] = groups_payload
 
-        return Response({
-            "type": "GROUP",
-            "groups": groups_payload,
-        })
+        # ==========================================
+        # 2. OBSŁUGA DRABINKI (Puchar / Mixed)
+        # ==========================================
+        if fmt in (Tournament.TournamentFormat.CUP, Tournament.TournamentFormat.MIXED):
+            # Używamy nowej funkcji z serwisu
+            bracket_data = get_knockout_bracket(tournament)
+            response_data["bracket"] = bracket_data
 
-
-# ============================================================
-# UNIWERSALNY ENDPOINT STANDINGS (alias)
-# ============================================================
-
-class TournamentLeagueStandingsView(TournamentLeagueTableView):
-    """
-    GET /api/tournaments/:id/standings/
-    Alias na league-table (dla frontendu).
-    """
-    pass
-
-
-# ============================================================
-# PUCHAR – DRABINKA
-# ============================================================
-
-class TournamentKnockoutBracketView(APIView):
-    """
-    GET /api/tournaments/:id/bracket/
-    """
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, tournament_id: int):
-        tournament = get_object_or_404(Tournament, pk=tournament_id)
-
-        if tournament.tournament_format != Tournament.TournamentFormat.CUP:
-            return Response(
-                {"detail": "Drabinka dostępna tylko dla turniejów pucharowych."},
-                status=409,
-            )
-
-        matches = (
-            Match.objects
-            .filter(tournament=tournament)
-            .select_related("stage", "home_team", "away_team")
-            .order_by("stage__order", "round_number", "id")
-        )
-
-        payload = []
-        for m in matches:
-            payload.append({
-                "id": m.id,
-                "stage_id": m.stage_id,
-                "stage_type": m.stage.stage_type,
-                "round_number": m.round_number,
-                "home_team": m.home_team.name,
-                "away_team": m.away_team.name,
-                "home_score": m.home_score,
-                "away_score": m.away_score,
-                "status": m.status,
-            })
-
-        return Response({
-            "tournament_id": tournament.id,
-            "bracket": payload,
-        })
+        return Response(response_data)
