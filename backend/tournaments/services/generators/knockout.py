@@ -23,10 +23,18 @@ def generate_knockout_stage(tournament: Tournament) -> Stage:
     teams = _get_active_teams(tournament)
     cup_matches = _get_cup_matches(tournament)
 
+    # =========================================================
+    # 🔧 POPRAWKA: Dynamiczne obliczanie kolejności (order)
+    # =========================================================
+    # W formacie MIXED istnieje już etap grupowy (np. order=1).
+    # Musimy sprawdzić ostatni order i dodać 1.
+    last_stage = Stage.objects.filter(tournament=tournament).order_by("-order").first()
+    new_order = (last_stage.order + 1) if last_stage else 1
+
     stage = Stage.objects.create(
         tournament=tournament,
         stage_type=Stage.StageType.KNOCKOUT,
-        order=1,
+        order=new_order,  # <-- Używamy wyliczonej wartości zamiast sztywnego "1"
         status=Stage.Status.OPEN,
     )
 
@@ -53,8 +61,12 @@ def generate_knockout_stage(tournament: Tournament) -> Stage:
 
     Match.objects.bulk_create(matches)
 
-    tournament.status = Tournament.Status.CONFIGURED
-    tournament.save(update_fields=["status"])
+    # Aktualizacja statusu
+    if tournament.status == Tournament.Status.DRAFT:
+        tournament.status = Tournament.Status.CONFIGURED
+        tournament.save(update_fields=["status"])
+    elif tournament.status == Tournament.Status.CONFIGURED:
+         pass
 
     return stage
 
@@ -200,10 +212,22 @@ def _get_cup_matches(tournament: Tournament) -> int:
 
 
 def _validate_tournament(tournament: Tournament) -> None:
-    if tournament.status != Tournament.Status.DRAFT:
-        raise ValueError("Faza pucharowa może być generowana tylko dla turnieju w statusie DRAFT.")
-    if tournament.tournament_format != Tournament.TournamentFormat.CUP:
-        raise ValueError("Generator pucharowy obsługuje wyłącznie format CUP.")
+    allowed_statuses = {
+        Tournament.Status.DRAFT,
+        Tournament.Status.CONFIGURED,
+        Tournament.Status.RUNNING
+    }
+    if tournament.status not in allowed_statuses:
+        raise ValueError(
+            "Faza pucharowa może być generowana tylko dla turnieju w statusie DRAFT, CONFIGURED lub RUNNING."
+        )
+
+    allowed_formats = {
+        Tournament.TournamentFormat.CUP,
+        Tournament.TournamentFormat.MIXED
+    }
+    if tournament.tournament_format not in allowed_formats:
+        raise ValueError("Generator pucharowy obsługuje wyłącznie format CUP lub MIXED.")
 
 
 def _get_active_teams(tournament: Tournament) -> List[Team]:
@@ -335,7 +359,6 @@ def _team_from_group(group: List[Match], team_id: int) -> Team:
 
 
 def _is_bye_match(group: List[Match]) -> bool:
-    # BYE rozpoznajemy po nazwie drużyny systemowej
     m = group[0]
     return (m.home_team and m.home_team.name == BYE_TEAM_NAME) or (m.away_team and m.away_team.name == BYE_TEAM_NAME)
 
@@ -354,14 +377,14 @@ def _collect_pair_winners(matches: List[Match], *, cup_matches: int) -> List[Tea
         if any(m.status != Match.Status.FINISHED for m in group):
             raise ValueError("Nie wszystkie mecze pary są zakończone.")
 
-        # BYE (tylko gdy faktycznie grał __SYSTEM_BYE__)
+        # BYE
         if len(group) == 1 and _is_bye_match(group):
             if not group[0].winner_id:
                 raise ValueError("Brak zwycięzcy walkoweru (BYE) w KO.")
             winners.append(group[0].winner)  # type: ignore[arg-type]
             continue
 
-        # cup_matches == 1: normalna para ma 1 mecz
+        # cup_matches == 1
         if cup_matches == 1:
             if len(group) != 1:
                 raise ValueError("KO (cup_matches=1) wymaga dokładnie 1 meczu w parze.")
@@ -405,10 +428,6 @@ def _collect_pair_winners(matches: List[Match], *, cup_matches: int) -> List[Tea
 
 
 def _collect_pair_losers(matches: List[Match], *, cup_matches: int) -> List[Team]:
-    """
-    Zwraca przegranych z każdej pary w etapie. Używane do meczu o 3 miejsce po półfinale.
-    Poprawka: przy cup_matches=1 normalna para ma len(group)==1 i NIE może być pomijana.
-    """
     grouped: DefaultDict[Tuple[int, int], List[Match]] = defaultdict(list)
     for m in matches:
         grouped[_pair_key(m)].append(m)
@@ -416,11 +435,9 @@ def _collect_pair_losers(matches: List[Match], *, cup_matches: int) -> List[Team
     losers: List[Team] = []
 
     for _, group in grouped.items():
-        # Pomijamy tylko realne BYE
         if len(group) == 1 and _is_bye_match(group):
             continue
 
-        # cup_matches=1 -> 1 mecz w parze
         if cup_matches == 1:
             if len(group) != 1:
                 raise ValueError("KO (cup_matches=1) wymaga dokładnie 1 meczu w parze (do loserów).")
@@ -436,7 +453,6 @@ def _collect_pair_losers(matches: List[Match], *, cup_matches: int) -> List[Team
             losers.append(_team_from_group(group, loser_id))
             continue
 
-        # cup_matches=2 -> 2 mecze
         if len(group) != 2:
             raise ValueError("Dwumecz wymaga dokładnie 2 meczów w parze (do loserów).")
 

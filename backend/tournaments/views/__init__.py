@@ -27,7 +27,7 @@ from .matches import (
 )
 
 from .stages import (
-    ConfirmStageView,
+    AdvanceFromGroupsView,
 )
 
 __all__ = [
@@ -38,19 +38,23 @@ __all__ = [
     "ArchiveTournamentView",
     "UnarchiveTournamentView",
     "GenerateTournamentView",
+
     # assistants
     "TournamentAssistantListView",
     "AddAssistantView",
     "RemoveAssistantView",
+
     # teams
     "TournamentTeamSetupView",
     "TournamentTeamListView",
     "TournamentTeamUpdateView",
+
     # matches
     "TournamentMatchListView",
     "MatchScheduleUpdateView",
     "MatchResultUpdateView",
     "FinishMatchView",
+
     # stages
-    "ConfirmStageView",
+    "AdvanceFromGroupsView",
 ]

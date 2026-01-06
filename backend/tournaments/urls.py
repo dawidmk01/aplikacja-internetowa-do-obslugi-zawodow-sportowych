@@ -8,7 +8,7 @@ from .views.tournaments import (
     UnarchiveTournamentView,
     GenerateTournamentView,
     ChangeDisciplineView,
-    ChangeSetupView,   # <-- NOWE
+    ChangeSetupView,
 )
 from .views.assistants import (
     TournamentAssistantListView,
@@ -26,7 +26,8 @@ from .views.matches import (
     MatchResultUpdateView,
     FinishMatchView,
 )
-from .views.stages import ConfirmStageView
+# Dodałem AdvanceFromGroupsView do importu tutaj:
+from .views.stages import AdvanceFromGroupsView
 from tournaments.views.standings import TournamentStandingsView
 
 
@@ -64,8 +65,15 @@ urlpatterns = [
     path("tournaments/<int:pk>/teams/", TournamentTeamListView.as_view(), name="tournament-participants-list"),
     path("tournaments/<int:pk>/teams/<int:team_id>/", TournamentTeamUpdateView.as_view(), name="tournament-participant-update"),
 
-    # GENEROWANIE
+    # GENEROWANIE (POCZĄTKOWE)
     path("tournaments/<int:pk>/generate/", GenerateTournamentView.as_view(), name="tournament-generate"),
+
+    # GENEROWANIE (GRUPY -> KO) [NOWE]
+    path(
+        "tournaments/<int:pk>/advance-from-groups/",
+        AdvanceFromGroupsView.as_view(),
+        name="tournament-advance-from-groups",
+    ),
 
     # MECZE (LISTA)
     path("tournaments/<int:pk>/matches/", TournamentMatchListView.as_view(), name="tournament-matches"),
@@ -78,9 +86,6 @@ urlpatterns = [
 
     # MECZ – ZAKOŃCZENIE
     path("matches/<int:pk>/finish/", FinishMatchView.as_view(), name="match-finish"),
-
-    # ETAP KO – LEGACY
-    path("stages/<int:pk>/confirm/", ConfirmStageView.as_view(), name="stage-confirm"),
 
     # STANDINGS
     path("tournaments/<int:pk>/standings/", TournamentStandingsView.as_view(), name="tournament-standings"),

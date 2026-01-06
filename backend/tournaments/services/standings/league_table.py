@@ -32,7 +32,7 @@ class StandingRow:
 
     goals_for: int = 0
     goals_against: int = 0
-    goal_difference: int = 0  # <-- KLUCZOWE: normalne pole
+    goal_difference: int = 0
     points: int = 0
 
 
@@ -76,14 +76,32 @@ def _get_teams_for_context(
     group: Group | None,
 ) -> list[Team]:
     """
-    Zwraca listę uczestników dla ligi lub konkretnej grupy.
+    Zwraca listę uczestników:
+    - liga: wszyscy aktywni uczestnicy turnieju
+    - grupa: uczestnicy, którzy występują w meczach tej grupy
     """
-    qs = tournament.teams.filter(is_active=True)
 
-    if group:
-        qs = qs.filter(home_matches__group=group).distinct()
+    if group is None:
+        return list(tournament.teams.filter(is_active=True))
 
-    return list(qs)
+    # DLA GRUPY: drużyny wynikają z meczów
+    team_ids = set(
+        Match.objects.filter(
+            stage=stage,
+            group=group,
+        ).values_list("home_team_id", flat=True)
+    ) | set(
+        Match.objects.filter(
+            stage=stage,
+            group=group,
+        ).values_list("away_team_id", flat=True)
+    )
+
+    return list(
+        Team.objects.filter(id__in=team_ids)
+    )
+
+
 
 
 def _get_finished_matches(

@@ -1,70 +1,80 @@
-
 from django.shortcuts import get_object_or_404
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
 
 from tournaments.models import Tournament, Stage
-# POPRAWIONE IMPORTY (bez 'services'):
-from tournaments.standings.league_table import compute_stage_standings
-from tournaments.standings.knockout_bracket import get_knockout_bracket
+from tournaments.services.standings.league_table import compute_stage_standings
+from tournaments.services.standings.knockout_bracket import get_knockout_bracket
+
 
 class TournamentStandingsView(APIView):
     """
     GET /api/tournaments/:id/standings/
 
-    Uniwersalny endpoint zwracający:
-    - 'table': dla Ligi i Mixed
-    - 'bracket': dla Pucharu i Mixed
+    Zwraca dane do widoku wyników w zależności od formatu:
+    - LEAGUE: klucz 'table' (jedna lista)
+    - MIXED:  klucz 'groups' (lista obiektów {group_name, table}) + 'bracket'
+    - CUP:    klucz 'bracket'
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
 
-        response_data = {}
+        # Używamy enumów z modelu, zakładając że tak są zdefiniowane.
+        # Jeśli masz je jako stringi ("LEAGUE", "CUP", "MIXED"), to też zadziała przy porównaniu.
         fmt = tournament.tournament_format
 
-        # ==========================================
-        # 1. OBSŁUGA TABELI LIGOWEJ (Liga / Mixed)
-        # ==========================================
-        if fmt in (Tournament.TournamentFormat.LEAGUE, Tournament.TournamentFormat.MIXED):
-            # A) Format LIGA
-            if fmt == Tournament.TournamentFormat.LEAGUE:
-                stage = tournament.stages.filter(stage_type=Stage.StageType.LEAGUE).first()
-                if stage:
-                    table = compute_stage_standings(tournament, stage)
-                    response_data["table"] = [row.__dict__ for row in table]
+        response_data = {}
 
-            # B) Format MIXED (Faza grupowa)
-            elif fmt == Tournament.TournamentFormat.MIXED:
-                stage = tournament.stages.filter(stage_type=Stage.StageType.GROUP).first()
-                if stage:
-                    # Tutaj logika zależy od tego, jak chcesz to wyświetlić na froncie.
-                    # Frontend, który dałem, obsługuje jedną tablicę 'table'.
-                    # Jeśli masz wiele grup, musimy to spłaszczyć lub dostosować frontend.
-                    # Na razie pobieramy tabelę dla pierwszej grupy lub łączymy (uproszczenie):
+        # =====================================================
+        # 1. FORMAT LIGA (Pojedyncza tabela)
+        # =====================================================
+        if fmt == Tournament.TournamentFormat.LEAGUE:
+            # Szukamy etapu ligowego
+            stage = tournament.stages.filter(stage_type=Stage.StageType.LEAGUE).first()
 
-                    # Wariant prosty: Pobierz wszystkie grupy i zwróć jako jedną listę (jeśli frontend to obsłuży)
-                    # lub zwróć strukturę specjalną.
-                    # Aby Twój obecny frontend działał bez zmian dla Mixed, zróbmy:
-                    groups_payload = []
-                    for group in stage.groups.all():
-                        t = compute_stage_standings(tournament, stage, group)
-                        # Dodajemy nazwę grupy do wiersza, żeby rozróżnić w tabeli
-                        for row in t:
-                            row_dict = row.__dict__
-                            row_dict['group_name'] = group.name
-                            groups_payload.append(row_dict)
+            if stage:
+                table = compute_stage_standings(tournament, stage)
+                # Serializacja obiektów StandingRow do słownika
+                response_data["table"] = [row.__dict__ for row in table]
 
-                    response_data["table"] = groups_payload
+        # =====================================================
+        # 2. FORMAT MIXED (Grupy - wiele tabel)
+        # =====================================================
+        elif fmt == Tournament.TournamentFormat.MIXED:
+            # Szukamy etapu grupowego
+            stage = tournament.stages.filter(stage_type=Stage.StageType.GROUP).first()
 
-        # ==========================================
-        # 2. OBSŁUGA DRABINKI (Puchar / Mixed)
-        # ==========================================
+            if stage:
+                groups_payload = []
+                # Iterujemy po grupach w kolejności (A, B, C...)
+                # Upewnij się, że w modelu Group masz pole 'order' lub sortuj po nazwie
+                groups = stage.groups.all().order_by('name')
+
+                for group in groups:
+                    # Obliczamy tabelę dla konkretnej grupy
+                    table = compute_stage_standings(tournament, stage, group=group)
+
+                    groups_payload.append({
+                        "group_id": group.id,
+                        "group_name": group.name,  # Np. "Grupa A"
+                        "table": [row.__dict__ for row in table]
+                    })
+
+                response_data["groups"] = groups_payload
+
+        # =====================================================
+        # 3. FORMAT PUCHAROWY ORAZ MIXED (Drabinka)
+        # =====================================================
+        # Drabinka występuje w czystym Pucharze oraz w Mixed (po grupach)
         if fmt in (Tournament.TournamentFormat.CUP, Tournament.TournamentFormat.MIXED):
-            # Używamy nowej funkcji z serwisu
+            # Serwis zwraca gotową strukturę { rounds: [...], third_place: ... }
             bracket_data = get_knockout_bracket(tournament)
-            response_data["bracket"] = bracket_data
+
+            # Dodajemy do odpowiedzi tylko jeśli są jakieś rundy
+            if bracket_data and bracket_data.get("rounds"):
+                response_data["bracket"] = bracket_data
 
         return Response(response_data)

@@ -1,3 +1,4 @@
+
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { apiFetch } from "../api";
@@ -11,12 +12,15 @@ type TournamentScheduleDTO = {
   start_date: string | null;
   end_date: string | null;
   location: string | null;
+  participants_count?: number; // Potrzebne do niektórych labeli, opcjonalnie
 };
 
 type MatchScheduleDTO = {
   id: number;
   stage_id: number;
-  stage_type: "LEAGUE" | "KNOCKOUT" | "GROUP";
+  stage_order: number;
+  stage_type: "LEAGUE" | "KNOCKOUT" | "GROUP" | "THIRD_PLACE";
+  group_name?: string | null;
   round_number: number | null;
 
   home_team_name: string;
@@ -28,41 +32,119 @@ type MatchScheduleDTO = {
 };
 
 /* =========================
-   Helpers
+   Helpers (Ujednolicone z resztą systemu)
    ========================= */
 
 function isByeTeamName(name: string | null | undefined): boolean {
-  if (!name) return true;
+  if (!name) return false;
   const n = name.trim().toUpperCase();
-  return n === "__SYSTEM_BYE__" || n.includes("SYSTEM_BYE") || n === "BYE" || n.includes(" BYE");
+  return (
+    n === "BYE" ||
+    n.includes("SYSTEM_BYE") ||
+    n === "__SYSTEM_BYE__" ||
+    n.includes("__SYSTEM_BYE__")
+  );
 }
 
 function isByeMatch(m: MatchScheduleDTO): boolean {
   return isByeTeamName(m.home_team_name) || isByeTeamName(m.away_team_name);
 }
 
-function nextPow2(n: number): number {
-  if (n <= 1) return 1;
-  let p = 1;
-  while (p < n) p *= 2;
-  return p;
+function normalizeName(name: string | null | undefined): string {
+  return (name ?? "").toString().trim();
 }
 
-function getKnockoutStageLabel(entrants: number): string {
-  // entrants = liczba drużyn w etapie KO (np. 8 => ćwierćfinał, 4 => półfinał)
-  if (entrants <= 2) return "Finał";
-  if (entrants === 4) return "Półfinał";
-  if (entrants === 8) return "Ćwierćfinał";
-
-  // 16 drużyn => 1/8 finału (bo 8 meczów)
-  const denom = entrants / 2;
-  return `1/${denom} finału`;
+function displayGroupName(originalName: string, index: number): string {
+  if (originalName && originalName.length <= 2 && originalName !== "—") return `Grupa ${originalName}`;
+  const letter = String.fromCharCode(65 + index); // 65 = 'A'
+  return `Grupa ${letter}`;
 }
 
-function stageTypeLabel(t: MatchScheduleDTO["stage_type"]): string {
-  if (t === "LEAGUE") return "Liga";
-  if (t === "GROUP") return "Faza grupowa";
-  return "Puchar (KO)";
+// --- Grupowanie ---
+
+function groupMatchesByGroup(matches: MatchScheduleDTO[]) {
+  const map = new Map<string, MatchScheduleDTO[]>();
+  for (const m of matches) {
+    const key = m.group_name ?? "—";
+    const arr = map.get(key) ?? [];
+    arr.push(m);
+    map.set(key, arr);
+  }
+  return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+function groupMatchesByRound(matches: MatchScheduleDTO[]) {
+  const map = new Map<number, MatchScheduleDTO[]>();
+  for (const m of matches) {
+    const round = m.round_number ?? 0;
+    const arr = map.get(round) ?? [];
+    arr.push(m);
+    map.set(round, arr);
+  }
+  return Array.from(map.entries()).sort((a, b) => a[0] - b[0]);
+}
+
+function groupVisibleMatchesByStage(matches: MatchScheduleDTO[]) {
+  const map = new Map<number, MatchScheduleDTO[]>();
+  for (const m of matches) {
+    const arr = map.get(m.stage_id) ?? [];
+    arr.push(m);
+    map.set(m.stage_id, arr);
+  }
+
+  const entries = Array.from(map.entries()).sort((a, b) => {
+    const aOrder = a[1][0]?.stage_order ?? 0;
+    const bOrder = b[1][0]?.stage_order ?? 0;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return a[0] - b[0];
+  });
+
+  // Sortowanie wewnątrz etapów (kolejki/ID)
+  for (const [, arr] of entries) {
+    arr.sort((a, b) => {
+      const ra = a.round_number ?? 0;
+      const rb = b.round_number ?? 0;
+      if (ra !== rb) return ra - rb;
+      return a.id - b.id;
+    });
+  }
+  return entries;
+}
+
+// --- KO Labels ---
+
+function countUniqueTeams(matches: MatchScheduleDTO[]): number {
+  const teams = new Set<string>();
+  for (const m of matches) {
+    if (m.home_team_name) teams.add(normalizeName(m.home_team_name));
+    if (m.away_team_name) teams.add(normalizeName(m.away_team_name));
+  }
+  return teams.size;
+}
+
+function resolveKoTitle(matches: MatchScheduleDTO[]): string {
+    const teamCount = countUniqueTeams(matches);
+
+    if (teamCount > 8 && teamCount <= 16) return "1/8 finału";
+    if (teamCount > 4 && teamCount <= 8) return "Ćwierćfinał";
+    if (teamCount > 2 && teamCount <= 4) return "Półfinał";
+    if (teamCount === 2) return "Finał";
+
+    if (teamCount > 16) return `1/${Math.floor(teamCount / 2)} finału`;
+
+    return "Faza pucharowa";
+}
+
+function stageHeaderTitle(
+  stageType: MatchScheduleDTO["stage_type"],
+  stageOrder: number,
+  matches: MatchScheduleDTO[]
+): string {
+  if (stageType === "THIRD_PLACE") return "Mecz o 3. miejsce";
+  if (stageType === "GROUP") return "Faza grupowa";
+  if (stageType === "LEAGUE") return "Liga";
+  if (stageType === "KNOCKOUT") return resolveKoTitle(matches);
+  return `Etap ${stageOrder}`;
 }
 
 /* =========================
@@ -97,13 +179,13 @@ export default function TournamentSchedule() {
     if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
     if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
 
-    // turniej ma więcej pól, ale my używamy tylko tych trzech
     const tData = await tRes.json();
     setTournament({
       id: tData.id,
       start_date: tData.start_date ?? null,
       end_date: tData.end_date ?? null,
       location: tData.location ?? null,
+      participants_count: tData.participants_count
     });
 
     const mData: MatchScheduleDTO[] = await mRes.json();
@@ -112,12 +194,10 @@ export default function TournamentSchedule() {
 
   useEffect(() => {
     loadData().catch((e: any) => setError(e.message));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   const saveTournament = async () => {
     if (!id || !tournament) return;
-
     setError(null);
     setMessage(null);
 
@@ -135,7 +215,6 @@ export default function TournamentSchedule() {
       const data = await res.json().catch(() => null);
       throw new Error(data?.detail || "Nie udało się zapisać danych turnieju.");
     }
-
     setMessage("Dane turnieju zapisane.");
   };
 
@@ -157,7 +236,6 @@ export default function TournamentSchedule() {
       const data = await res.json().catch(() => null);
       throw new Error(data?.detail || "Nie udało się zapisać danych meczu.");
     }
-
     setMessage("Zapisano.");
   };
 
@@ -165,162 +243,155 @@ export default function TournamentSchedule() {
      Widok: filtrowanie + grupowanie etapów
      ========================= */
 
-  const visibleMatches = useMemo(() => {
-    if (showBye) return matches;
-    return matches.filter((m) => !isByeMatch(m));
-  }, [matches, showBye]);
+  // Filtrujemy BYE globalnie (jeśli checkbox odznaczony)
+  // Ale potem grupujemy wszystkie mecze, żeby zachować strukturę
+  const stages = useMemo(() => {
+    // Najpierw grupujemy wszystko
+    const allStages = groupVisibleMatchesByStage(matches);
 
-  // liczba REALNYCH drużyn (bez BYE) — użyte do policzenia rozmiaru drabinki KO
-  const realTeamsCount = useMemo(() => {
-    const s = new Set<string>();
-    for (const m of matches) {
-      if (!isByeTeamName(m.home_team_name)) s.add(m.home_team_name);
-      if (!isByeTeamName(m.away_team_name)) s.add(m.away_team_name);
-    }
-    return s.size;
-  }, [matches]);
-
-  const bracketSize = useMemo(() => nextPow2(realTeamsCount), [realTeamsCount]);
-
-  const koSections = useMemo(() => {
-    const ko = matches.filter((m) => m.stage_type === "KNOCKOUT");
-    if (!ko.length) return [];
-
-    const byStage = new Map<number, MatchScheduleDTO[]>();
-    for (const m of ko) {
-      const arr = byStage.get(m.stage_id) ?? [];
-      arr.push(m);
-      byStage.set(m.stage_id, arr);
-    }
-
-    const stageIds = Array.from(byStage.keys()).sort((a, b) => a - b);
-
-    return stageIds.map((stageId, koIndex) => {
-      const allStageMatches = (byStage.get(stageId) ?? []).slice().sort((a, b) => a.id - b.id);
-      const stageMatchesForDisplay = showBye
-        ? allStageMatches
-        : allStageMatches.filter((m) => !isByeMatch(m));
-
-      // entrants: 8 -> ćwierćfinał, 4 -> półfinał, 2 -> finał
-      const entrants = Math.max(2, Math.floor(bracketSize / Math.pow(2, koIndex)));
-      const title = getKnockoutStageLabel(entrants);
-
-      return {
-        key: `ko-${stageId}`,
-        title,
-        matches: stageMatchesForDisplay,
-        stageId,
-      };
-    });
-  }, [matches, showBye, bracketSize]);
-
-  const otherSections = useMemo(() => {
-    const others = matches.filter((m) => m.stage_type !== "KNOCKOUT");
-    if (!others.length) return [];
-
-    // Grupujemy po (stage_type + round_number) żeby w lidze mieć „kolejki”
-    const byKey = new Map<string, { title: string; matches: MatchScheduleDTO[] }>();
-
-    for (const m of others) {
-      const r = typeof m.round_number === "number" ? m.round_number : 1;
-      const key = `${m.stage_type}-${r}`;
-      const title =
-        m.stage_type === "LEAGUE"
-          ? `Liga – kolejka ${r}`
-          : `Faza grupowa – kolejka ${r}`;
-
-      const bucket = byKey.get(key) ?? { title, matches: [] };
-      bucket.matches.push(m);
-      byKey.set(key, bucket);
-    }
-
-    const keysSorted = Array.from(byKey.keys()).sort((a, b) => a.localeCompare(b));
-
-    return keysSorted.map((k) => {
-      const bucket = byKey.get(k)!;
-      const ms = bucket.matches
-        .slice()
-        .sort((a, b) => (a.round_number ?? 0) - (b.round_number ?? 0) || a.id - b.id);
-
-      const display = showBye ? ms : ms.filter((m) => !isByeMatch(m));
-
-      return {
-        key: `other-${k}`,
-        title: bucket.title,
-        matches: display,
-      };
-    });
+    // Potem wewnątrz każdego etapu filtrujemy mecze BYE jeśli trzeba
+    return allStages.map(([stageId, stageMatches]) => {
+      const filtered = showBye ? stageMatches : stageMatches.filter(m => !isByeMatch(m));
+      return { stageId, matches: filtered, allMatches: stageMatches }; // allMatches potrzebne do resolveKoTitle
+    }).filter(s => s.matches.length > 0); // Ukrywamy puste etapy
   }, [matches, showBye]);
 
   /* =========================
-     Render
+     Render Helper Row
+     ========================= */
+  const renderMatchRow = (m: MatchScheduleDTO) => (
+    <div
+        key={m.id}
+        style={{
+            borderBottom: "1px solid #333",
+            padding: "0.75rem 0",
+            marginBottom: "0.25rem"
+        }}
+    >
+        <div style={{marginBottom: "0.5rem"}}>
+            <strong>{m.home_team_name}</strong> <span style={{opacity:0.6}}>vs</span> <strong>{m.away_team_name}</strong>
+        </div>
+
+        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+            <input
+            type="date"
+            value={m.scheduled_date ?? ""}
+            onChange={(e) =>
+                setMatches((prev) =>
+                prev.map((x) => x.id === m.id ? { ...x, scheduled_date: e.target.value || null } : x)
+                )
+            }
+            style={{padding: "0.3rem"}}
+            />
+
+            <input
+            type="time"
+            value={m.scheduled_time ?? ""}
+            onChange={(e) =>
+                setMatches((prev) =>
+                prev.map((x) => x.id === m.id ? { ...x, scheduled_time: e.target.value || null } : x)
+                )
+            }
+            style={{padding: "0.3rem"}}
+            />
+
+            <input
+            type="text"
+            placeholder="Lokalizacja"
+            value={m.location ?? ""}
+            onChange={(e) =>
+                setMatches((prev) =>
+                prev.map((x) => x.id === m.id ? { ...x, location: e.target.value || null } : x)
+                )
+            }
+            style={{padding: "0.3rem", width: "120px"}}
+            />
+
+            <button
+            onClick={() => saveMatch(m).catch((e: any) => setError(e.message))}
+            style={{
+                padding: "0.3rem 0.8rem",
+                border: "1px solid #555",
+                background: "rgba(255,255,255,0.1)",
+                color: "#fff",
+                cursor: "pointer",
+                borderRadius: "4px"
+            }}
+            >
+            Zapisz
+            </button>
+        </div>
+    </div>
+  );
+
+  /* =========================
+     Render Main
      ========================= */
 
-  if (!tournament) return <p>Ładowanie…</p>;
+  if (!tournament) return <p style={{padding: "2rem"}}>Ładowanie…</p>;
 
   return (
     <div style={{ padding: "2rem", maxWidth: 900 }}>
       <h1>Harmonogram i lokalizacja</h1>
 
-      <p style={{ opacity: 0.8 }}>
+      <p style={{ opacity: 0.8, marginBottom: "2rem" }}>
         Wszystkie pola są opcjonalne. Możesz uzupełnić dane ogólne turnieju
-        lub ustawić szczegóły tylko dla wybranych meczów.
+        lub ustawić szczegóły dla poszczególnych meczów.
       </p>
 
       {error && <p style={{ color: "crimson" }}>{error}</p>}
-      {message && <p style={{ opacity: 0.9 }}>{message}</p>}
+      {message && <div style={{
+          position: "fixed", bottom: "2rem", right: "2rem",
+          background: "#333", color: "#fff", padding: "1rem 2rem",
+          borderRadius: "8px", borderLeft: "5px solid #2ecc71", zIndex: 100
+      }}>{message}</div>}
 
-      {/* =========================
-         TURNIEJ
-         ========================= */}
+      {/* --- DANE OGÓLNE --- */}
+      <section style={{ marginBottom: "2rem", padding: "1rem", background: "rgba(255,255,255,0.02)", borderRadius: "8px" }}>
+        <h2 style={{marginTop: 0}}>Dane ogólne turnieju</h2>
+        <div style={{ display: "grid", gap: "1rem", maxWidth: 400 }}>
+            <div>
+                <label style={{display: "block", marginBottom: "0.25rem"}}>Data rozpoczęcia</label>
+                <input
+                type="date"
+                value={tournament.start_date ?? ""}
+                onChange={(e) => setTournament({ ...tournament, start_date: e.target.value || null })}
+                style={{width: "100%", padding: "0.4rem"}}
+                />
+            </div>
+            <div>
+                <label style={{display: "block", marginBottom: "0.25rem"}}>Data zakończenia</label>
+                <input
+                type="date"
+                value={tournament.end_date ?? ""}
+                onChange={(e) => setTournament({ ...tournament, end_date: e.target.value || null })}
+                style={{width: "100%", padding: "0.4rem"}}
+                />
+            </div>
+            <div>
+                <label style={{display: "block", marginBottom: "0.25rem"}}>Lokalizacja (domyślna)</label>
+                <input
+                type="text"
+                value={tournament.location ?? ""}
+                onChange={(e) => setTournament({ ...tournament, location: e.target.value || null })}
+                style={{width: "100%", padding: "0.4rem"}}
+                />
+            </div>
+            <button
+            onClick={() => saveTournament().catch((e: any) => setError(e.message))}
+            style={{padding: "0.6rem", cursor: "pointer", marginTop: "0.5rem", fontWeight: "bold"}}
+            >
+            Zapisz dane turnieju
+            </button>
+        </div>
+      </section>
 
-      <h2>Turniej</h2>
+      <hr style={{ borderColor: "#444", margin: "2rem 0" }} />
 
-      <div style={{ display: "grid", gap: "0.5rem", maxWidth: 400 }}>
-        <label>Data rozpoczęcia</label>
-        <input
-          type="date"
-          value={tournament.start_date ?? ""}
-          onChange={(e) =>
-            setTournament({ ...tournament, start_date: e.target.value || null })
-          }
-        />
-
-        <label>Data zakończenia</label>
-        <input
-          type="date"
-          value={tournament.end_date ?? ""}
-          onChange={(e) =>
-            setTournament({ ...tournament, end_date: e.target.value || null })
-          }
-        />
-
-        <label>Lokalizacja</label>
-        <input
-          type="text"
-          value={tournament.location ?? ""}
-          onChange={(e) =>
-            setTournament({ ...tournament, location: e.target.value || null })
-          }
-        />
-
-        <button
-          onClick={() => saveTournament().catch((e: any) => setError(e.message))}
-        >
-          Zapisz dane turnieju
-        </button>
-      </div>
-
-      <hr />
-
-      {/* =========================
-         MECZE
-         ========================= */}
-
-      <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginTop: "1rem" }}>
-        <h2 style={{ margin: 0 }}>Mecze</h2>
-
-        <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", opacity: 0.85 }}>
+      {/* --- LISTA MECZÓW --- */}
+      <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1rem" }}>
+        <h2 style={{ margin: 0 }}>Harmonogram meczów</h2>
+        <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", opacity: 0.85, cursor: "pointer", fontSize: "0.9em" }}>
           <input
             type="checkbox"
             checked={showBye}
@@ -330,191 +401,70 @@ export default function TournamentSchedule() {
         </label>
       </div>
 
-      {/* Pozostałe formaty (liga/grupy) */}
-      {otherSections.map((section) => (
-        <section key={section.key} style={{ marginTop: "1.25rem" }}>
-          <h3 style={{ marginBottom: "0.5rem" }}>{section.title}</h3>
+      {stages.map((s) => {
+          const stageType = s.matches[0]?.stage_type;
+          const stageOrder = s.matches[0]?.stage_order ?? 1;
+          // Używamy wszystkich meczów etapu do wyliczenia tytułu KO (żeby liczba drużyn się zgadzała nawet jak ukryjemy BYE)
+          const header = stageHeaderTitle(stageType, stageOrder, s.allMatches);
 
-          {section.matches.length === 0 ? (
-            <p style={{ opacity: 0.7 }}>Brak meczów do wyświetlenia.</p>
-          ) : (
-            section.matches.map((m) => (
-              <div
-                key={m.id}
-                style={{
-                  borderBottom: "1px solid #333",
-                  padding: "0.75rem 0",
-                }}
-              >
-                <strong>
-                  {m.home_team_name} vs {m.away_team_name}
-                </strong>
+          return (
+            <section key={s.stageId} style={{ marginTop: "2rem" }}>
+                <h3 style={{ borderBottom: "2px solid #444", paddingBottom: "0.5rem", marginBottom: "1rem", color: "#eee" }}>
+                    {header}
+                </h3>
 
-                <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
-                  <input
-                    type="date"
-                    value={m.scheduled_date ?? ""}
-                    onChange={(e) =>
-                      setMatches((prev) =>
-                        prev.map((x) =>
-                          x.id === m.id
-                            ? { ...x, scheduled_date: e.target.value || null }
-                            : x
-                        )
-                      )
-                    }
-                  />
+                {/* --- LAYOUT GRUPOWY --- */}
+                {stageType === "GROUP" ? (
+                    groupMatchesByGroup(s.matches).map(([groupName, groupMatches], idx) => (
+                        <div key={groupName} style={{ marginBottom: "1.5rem", paddingLeft: "1rem", borderLeft: "2px solid #333" }}>
+                            <h4 style={{ color: "#aaa", margin: "0.5rem 0" }}>{displayGroupName(groupName, idx)}</h4>
+                            {groupMatchesByRound(groupMatches).map(([round, roundMatches]) => (
+                                <div key={round} style={{ marginBottom: "1rem" }}>
+                                    <div style={{ fontSize: "0.8rem", textTransform: "uppercase", opacity: 0.6, letterSpacing: "1px", marginBottom: "0.25rem" }}>
+                                        Kolejka {round}
+                                    </div>
+                                    {roundMatches.map(m => renderMatchRow(m))}
+                                </div>
+                            ))}
+                        </div>
+                    ))
+                ) : stageType === "LEAGUE" ? (
+                    /* --- LAYOUT LIGOWY --- */
+                    groupMatchesByRound(s.matches).map(([round, roundMatches]) => (
+                        <div key={round} style={{ marginBottom: "1.5rem" }}>
+                            <h4 style={{ margin: "0.5rem 0", fontSize: "0.9rem", textTransform: "uppercase", opacity: 0.6, letterSpacing: "1px", borderBottom:"1px solid #333", paddingBottom:"0.25rem" }}>
+                                Kolejka {round}
+                            </h4>
+                            {roundMatches.map(m => renderMatchRow(m))}
+                        </div>
+                    ))
+                ) : (
+                    /* --- LAYOUT PUCHAROWY --- */
+                    <div>
+                        {s.matches.map(m => renderMatchRow(m))}
+                    </div>
+                )}
+            </section>
+          );
+      })}
 
-                  <input
-                    type="time"
-                    value={m.scheduled_time ?? ""}
-                    onChange={(e) =>
-                      setMatches((prev) =>
-                        prev.map((x) =>
-                          x.id === m.id
-                            ? { ...x, scheduled_time: e.target.value || null }
-                            : x
-                        )
-                      )
-                    }
-                  />
-
-                  <input
-                    type="text"
-                    placeholder="Lokalizacja"
-                    value={m.location ?? ""}
-                    onChange={(e) =>
-                      setMatches((prev) =>
-                        prev.map((x) =>
-                          x.id === m.id
-                            ? { ...x, location: e.target.value || null }
-                            : x
-                        )
-                      )
-                    }
-                  />
-
-                  <button
-                    onClick={() => saveMatch(m).catch((e: any) => setError(e.message))}
-                  >
-                    Zapisz
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
-        </section>
-      ))}
-
-      {/* KO po etapach */}
-      {koSections.map((section) => (
-        <section key={section.key} style={{ marginTop: "1.25rem" }}>
-          <h3 style={{ marginBottom: "0.5rem" }}>{section.title}</h3>
-
-          {section.matches.length === 0 ? (
-            <p style={{ opacity: 0.7 }}>
-              Brak meczów do wyświetlenia (etap zawiera tylko BYE).
-            </p>
-          ) : (
-            section.matches.map((m) => (
-              <div
-                key={m.id}
-                style={{
-                  borderBottom: "1px solid #333",
-                  padding: "0.75rem 0",
-                }}
-              >
-                <strong>
-                  {m.home_team_name} vs {m.away_team_name}
-                </strong>
-
-                <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
-                  <input
-                    type="date"
-                    value={m.scheduled_date ?? ""}
-                    onChange={(e) =>
-                      setMatches((prev) =>
-                        prev.map((x) =>
-                          x.id === m.id
-                            ? { ...x, scheduled_date: e.target.value || null }
-                            : x
-                        )
-                      )
-                    }
-                  />
-
-                  <input
-                    type="time"
-                    value={m.scheduled_time ?? ""}
-                    onChange={(e) =>
-                      setMatches((prev) =>
-                        prev.map((x) =>
-                          x.id === m.id
-                            ? { ...x, scheduled_time: e.target.value || null }
-                            : x
-                        )
-                      )
-                    }
-                  />
-
-                  <input
-                    type="text"
-                    placeholder="Lokalizacja"
-                    value={m.location ?? ""}
-                    onChange={(e) =>
-                      setMatches((prev) =>
-                        prev.map((x) =>
-                          x.id === m.id
-                            ? { ...x, location: e.target.value || null }
-                            : x
-                        )
-                      )
-                    }
-                  />
-
-                  <button
-                    onClick={() => saveMatch(m).catch((e: any) => setError(e.message))}
-                  >
-                    Zapisz
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
-        </section>
-      ))}
-
-      <div style={{ marginTop: "2rem", display: "flex", gap: "1rem" }}>
-        <button onClick={() => navigate(-1)}>← Wróć</button>
-
+      <div style={{ marginTop: "3rem", display: "flex", gap: "1rem" }}>
+        <button onClick={() => navigate(-1)} style={{padding: "0.6rem 1.2rem", cursor: "pointer"}}>← Wróć</button>
         <button
           onClick={() => navigate(`/tournaments/${id}/results`)}
           style={{
-            background: "#1e90ff",
+            background: "#2980b9",
             color: "#fff",
-            padding: "0.5rem 1rem",
+            padding: "0.6rem 1.2rem",
             borderRadius: 6,
             border: "none",
+            cursor: "pointer",
+            fontWeight: "bold"
           }}
         >
           Przejdź do wprowadzania wyników →
         </button>
       </div>
-
-      <p style={{ marginTop: "1rem", opacity: 0.7 }}>
-        {matches.length > 0 && (
-          <>
-            <span>
-              Wykryty format etapów:{" "}
-              <strong>{Array.from(new Set(matches.map((m) => stageTypeLabel(m.stage_type)))).join(", ")}</strong>
-            </span>
-            <br />
-            <span>
-              Liczba drużyn (bez BYE): <strong>{realTeamsCount}</strong>, rozmiar drabinki KO: <strong>{bracketSize}</strong>
-            </span>
-          </>
-        )}
-      </p>
     </div>
   );
 }

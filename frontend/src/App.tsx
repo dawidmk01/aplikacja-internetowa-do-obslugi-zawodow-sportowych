@@ -16,33 +16,20 @@ import ProtectedRoute from "./ProtectedRoute";
 import MyTournaments from "./pages/MyTournaments";
 import CreateTournament from "./pages/CreateTournament";
 
+/* ===== LAYOUTY ===== */
+// Dodajemy nowy import layoutu zgodnie ze screenem
+import TournamentLayout from "./layouts/TournamentLayout";
+
 /* ===== FLOW TURNIEJU ===== */
 import TournamentSetup from "./pages/TournamentSetup";          // krok 2
 import TournamentTeams from "./pages/TournamentTeams";          // krok 3
 import TournamentMatches from "./pages/TournamentMatches";      // krok 4
 import TournamentSchedule from "./pages/TournamentSchedule";    // krok 5
-import TournamentResults from "./pages/tournamentResults/TournamentResults";
+import TournamentResults from "./pages/TournamentResults.tsx";
 
 /* ===== WIDOKI POZA FLOW ===== */
 import TournamentDetail from "./pages/TournamentDetail";
 import TournamentStandings from "./pages/TournamentStandings";
-
-/**
- * ARCHITEKTURA ROUTINGU
- * ====================
- *
- * FLOW TWORZENIA TURNIEJU (WIZARD):
- * 1️⃣ /tournaments/new
- * 1️⃣ /tournaments/:id/edit   ← POWRÓT / EDYCJA
- * 2️⃣ /tournaments/:id/setup
- * 3️⃣ /tournaments/:id/teams
- * 4️⃣ /tournaments/:id/matches
- * 5️⃣ /tournaments/:id/schedule
- * 6️⃣ /tournaments/:id/results
- *
- * /tournaments/:id
- * → widok szczegółów (POZA flow)
- */
 
 export default function App() {
   const [username, setUsername] = useState<string | null>(null);
@@ -101,10 +88,9 @@ export default function App() {
         />
 
         {/* =========================
-            FLOW TWORZENIA TURNIEJU
+            TWORZENIE NOWEGO TURNIEJU (KROK 1)
+            To zostaje osobno, bo nie ma jeszcze ID
            ========================= */}
-
-        {/* KROK 1 – UTWORZENIE */}
         <Route
           path="/tournaments/new"
           element={
@@ -114,80 +100,44 @@ export default function App() {
           }
         />
 
-        {/* KROK 1 (EDYCJA) – POWRÓT */}
-        <Route
-          path="/tournaments/:id/edit"
-          element={
-            <ProtectedRoute>
-              <CreateTournament />
-            </ProtectedRoute>
-          }
-        />
-
-        {/* KROK 2 – KONFIGURACJA */}
-        <Route
-          path="/tournaments/:id/setup"
-          element={
-            <ProtectedRoute>
-              <TournamentSetup />
-            </ProtectedRoute>
-          }
-        />
-
-        {/* KROK 3 – UCZESTNICY */}
-        <Route
-          path="/tournaments/:id/teams"
-          element={
-            <ProtectedRoute>
-              <TournamentTeams />
-            </ProtectedRoute>
-          }
-        />
-
-        {/* KROK 4 – GENEROWANIE MECZÓW */}
-        <Route
-          path="/tournaments/:id/matches"
-          element={
-            <ProtectedRoute>
-              <TournamentMatches />
-            </ProtectedRoute>
-          }
-        />
-
-        {/* KROK 5 – HARMONOGRAM */}
-        <Route
-          path="/tournaments/:id/schedule"
-          element={
-            <ProtectedRoute>
-              <TournamentSchedule />
-            </ProtectedRoute>
-          }
-        />
-
-        {/* KROK 6 – WYNIKI */}
-        <Route
-          path="/tournaments/:id/results"
-          element={
-            <ProtectedRoute>
-              <TournamentResults />
-            </ProtectedRoute>
-          }
-        />
-
         {/* =========================
-            WIDOKI POZA FLOW
+            ZAGNIEŻDŻONY ROUTING TURNIEJU (MANAGEMENT)
+            Tutaj wszystkie podstrony dziedziczą TournamentLayout
            ========================= */}
-
         <Route
-          path="/tournaments/:id/standings"
+          path="/tournaments/:id"
           element={
             <ProtectedRoute>
-              <TournamentStandings />
+              <TournamentLayout />
             </ProtectedRoute>
           }
-        />
+        >
+          {/* Domyślny widok: /tournaments/123 -> Szczegóły turnieju */}
+          {/* UWAGA: Teraz ten widok jest chroniony i ma layout.
+              Jeśli ma być publiczny, trzeba by zmienić strukturę. */}
+          <Route index element={<TournamentDetail />} />
 
-        <Route path="/tournaments/:id" element={<TournamentDetail />} />
+          {/* KROK 1 (EDYCJA) */}
+          <Route path="edit" element={<CreateTournament />} />
+
+          {/* KROK 2 – KONFIGURACJA */}
+          <Route path="setup" element={<TournamentSetup />} />
+
+          {/* KROK 3 – UCZESTNICY */}
+          <Route path="teams" element={<TournamentTeams />} />
+
+          {/* KROK 4 – GENEROWANIE MECZÓW */}
+          <Route path="matches" element={<TournamentMatches />} />
+
+          {/* KROK 5 – HARMONOGRAM */}
+          <Route path="schedule" element={<TournamentSchedule />} />
+
+          {/* KROK 6 – WYNIKI */}
+          <Route path="results" element={<TournamentResults />} />
+
+          {/* TABELA / STANDINGS */}
+          <Route path="standings" element={<TournamentStandings />} />
+        </Route>
 
         {/* =========================
             FALLBACK

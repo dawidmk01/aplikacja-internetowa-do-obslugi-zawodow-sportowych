@@ -81,9 +81,18 @@ type BracketData = {
   third_place: BracketDuelItem | null;
 };
 
+// --- NOWE TYPY DLA GRUP (MIXED) ---
+
+type GroupStanding = {
+  group_id: number;
+  group_name: string;
+  table: StandingRow[];
+};
+
 type StandingsResponse = {
-  table?: StandingRow[]; // Dla ligi
-  bracket?: BracketData; // Dla pucharu
+  table?: StandingRow[];    // Dla ligi (pojedyncza tabela)
+  groups?: GroupStanding[]; // Dla formatu MIXED (wiele grup)
+  bracket?: BracketData;    // Dla pucharu / mixed (drabinka)
 };
 
 /* =========================
@@ -162,7 +171,7 @@ export default function TournamentStandings() {
             setTab("BRACKET");
         }
 
-        // 2. Pobierz standings (Bracket / Table)
+        // 2. Pobierz standings (Bracket / Table / Groups)
         const s = await apiFetch(`/api/tournaments/${id}/standings/`);
         if (s.ok) {
             setStandings(await s.json());
@@ -192,9 +201,14 @@ export default function TournamentStandings() {
   const isCup = tournament.tournament_format === "CUP";
   const isMixed = tournament.tournament_format === "MIXED";
 
-  const hasTableData = standings?.table && standings.table.length > 0;
-  // Sprawdzamy czy są rundy w drabince
-  const hasBracketData = standings?.bracket && (standings.bracket.rounds.length > 0);
+  // --- POPRAWIONA DETEKCJA DANYCH ---
+  const hasLeagueTable = (standings?.table?.length ?? 0) > 0;
+  const hasGroups = (standings?.groups?.length ?? 0) > 0;
+  // Czy mamy jakiekolwiek dane tabelaryczne (grupy lub liga)
+  const hasTableData = hasLeagueTable || hasGroups;
+
+  // Czy mamy dane drabinki
+  const hasBracketData = (standings?.bracket?.rounds?.length ?? 0) > 0;
 
   return (
     <div style={{ padding: "2rem", maxWidth: 1400 }}>
@@ -234,12 +248,34 @@ export default function TournamentStandings() {
         </div>
       )}
 
-      {/* --- WIDOK 1: TABELA LIGOWA --- */}
+      {/* --- WIDOK 1: TABELA (LIGA LUB GRUPY) --- */}
       {tab === "TABLE" && (
-          hasTableData ? (
+          hasGroups ? (
+            // Wariant: WIELE GRUP (MIXED)
+            <div>
+              {standings!.groups!.map((g) => (
+                <div key={g.group_id} style={{ marginBottom: "2.5rem" }}>
+                  <h3
+                    style={{
+                      marginBottom: "0.75rem",
+                      color: "#3498db",
+                      borderLeft: "4px solid #3498db",
+                      paddingLeft: "10px",
+                    }}
+                  >
+                    {g.group_name}
+                  </h3>
+
+                  <Table rows={g.table} matches={matches} />
+                </div>
+              ))}
+            </div>
+          ) : hasLeagueTable ? (
+            // Wariant: POJEDYNCZA LIGA
             <Table rows={standings!.table!} matches={matches} />
           ) : (
-            !isCup && <p>Brak danych tabeli ligowej.</p>
+            // Brak danych
+            !isCup && <p>Brak danych tabeli.</p>
           )
       )}
 
@@ -304,7 +340,12 @@ function Table({
 }) {
   return (
     <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "600px" }}>
+        <table style={{
+            width: "100%",
+            borderCollapse: "collapse",
+            minWidth: "600px",
+            color: "#ddd" // Kolor tekstu dla czytelności na ciemnym tle
+        }}>
         <thead>
             <tr style={{ borderBottom: "2px solid #444", textAlign: "left" }}>
             <th style={{ padding: "10px" }}>#</th>
@@ -320,8 +361,6 @@ function Table({
                 <td style={{ padding: "10px" }}>{i + 1}</td>
                 <td style={{ padding: "10px", fontWeight: "bold" }}>
                     {r.team_name}
-                    {/* Hack dla MIXED: jeśli nazwa grupy jest w danych, można ją tu wyświetlić */}
-                    {(r as any).group_name && <span style={{fontSize: "0.8em", color: "#888", marginLeft: "8px"}}>({(r as any).group_name})</span>}
                 </td>
                 <td>{r.played}</td><td>{r.wins}</td><td>{r.draws}</td><td>{r.losses}</td>
                 <td>{r.goals_for}</td><td>{r.goals_against}</td><td>{r.goal_difference}</td>
