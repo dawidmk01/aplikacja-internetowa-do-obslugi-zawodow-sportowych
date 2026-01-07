@@ -4,27 +4,28 @@ dla rozgrywek ligowych oraz faz grupowych.
 
 Tabela jest liczona dynamicznie na podstawie zakończonych meczów.
 
-Zaimplementowane kryteria rozstrzygania remisów ("złoty standard"):
+Zasady kolejności w tabeli zgodne z Uchwałą PZPN (Organ prowadzący rozgrywki) – § 16 ust. 3:
 1) punkty (overall)
-2) head-to-head (mini-tabela dla remisujących na punktach):
-   - punkty H2H
-   - bilans bramek H2H
-   - bramki strzelone H2H
-3) bilans ogólny (różnica bramek)
-4) bramki strzelone ogólnie
-5) stabilny fallback: nazwa, team_id
+2) przy równej liczbie punktów:
+   - punkty w bezpośrednich spotkaniach (H2H)*
+   - różnica bramek w bezpośrednich spotkaniach (H2H)*
+3) różnica bramek (overall)
+4) bramki zdobyte (overall)
+5) liczba zwycięstw (overall)
+6) liczba zwycięstw na wyjeździe (overall)
+7) stabilny fallback: nazwa, team_id
+
+* Kryteria H2H są stosowane wyłącznie, gdy zostały rozegrane wszystkie zaplanowane mecze
+  pomiędzy zainteresowanymi drużynami (tj. wszystkie ich bezpośrednie spotkania w danym etapie).
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Dict, Iterable, List, Tuple
 
-from tournaments.models import (
-    Tournament,
-    Stage,
-    Group,
-    Match,
-    Team,
-)
+from tournaments.models import Group, Match, Stage, Team, Tournament
 
 
 # ============================================================
@@ -40,6 +41,8 @@ class StandingRow:
     wins: int = 0
     draws: int = 0
     losses: int = 0
+
+    away_wins: int = 0  # wymagane do tie-breakera PZPN (większa liczba zwycięstw na wyjeździe)
 
     goals_for: int = 0
     goals_against: int = 0
@@ -65,22 +68,38 @@ def compute_stage_standings(
     teams = _get_teams_for_context(tournament, stage, group)
     rows = _initialize_rows(teams)
 
-    matches_qs = _get_finished_matches(stage, group)
-    matches = list(matches_qs)  # potrzebne do H2H (wielokrotne iteracje)
+    # Do tabeli liczą się wyłącznie mecze zakończone.
+    finished_matches_qs = _get_finished_matches(stage, group)
+    finished_matches = list(finished_matches_qs)
 
-    for match in matches:
+    for match in finished_matches:
         _apply_match_result(rows, match)
 
-    # WYLICZENIE RB NA KOŃCU
+    # RB wyliczana na końcu
     for row in rows.values():
         row.goal_difference = row.goals_for - row.goals_against
 
-    return _sort_rows(rows.values(), matches)
+    # Do walidacji warunku „wszystkie zaplanowane H2H rozegrane” potrzebne są także mecze niezakończone.
+    all_stage_matches = list(_get_all_matches(stage, group))
+
+    return _sort_rows(rows.values(), finished_matches, all_stage_matches)
 
 
 # ============================================================
 # POBIERANIE DANYCH
 # ============================================================
+
+def _is_bye_team_name(name: str | None) -> bool:
+    if not name:
+        return False
+    n = name.strip().upper()
+    return (
+        n == "BYE"
+        or "SYSTEM_BYE" in n
+        or n == "__SYSTEM_BYE__"
+        or "__SYSTEM_BYE__" in n
+    )
+
 
 def _get_teams_for_context(
     tournament: Tournament,
@@ -89,35 +108,47 @@ def _get_teams_for_context(
 ) -> list[Team]:
     """
     Zwraca listę uczestników:
-    - liga: wszyscy aktywni uczestnicy turnieju
-    - grupa: uczestnicy, którzy występują w meczach tej grupy
+    - liga: wszyscy aktywni uczestnicy turnieju (bez „BYE”)
+    - grupa: uczestnicy, którzy występują w meczach tej grupy (bez „BYE”)
     """
     if group is None:
-        return list(tournament.teams.filter(is_active=True))
+        return list(
+            tournament.teams.filter(is_active=True).exclude(name__iexact="BYE")
+        )
 
-    # DLA GRUPY: drużyny wynikają z meczów
     team_ids = set(
-        Match.objects.filter(stage=stage, group=group)
-        .values_list("home_team_id", flat=True)
+        Match.objects.filter(stage=stage, group=group).values_list("home_team_id", flat=True)
     ) | set(
-        Match.objects.filter(stage=stage, group=group)
-        .values_list("away_team_id", flat=True)
+        Match.objects.filter(stage=stage, group=group).values_list("away_team_id", flat=True)
     )
 
-    return list(Team.objects.filter(id__in=team_ids))
+    qs = Team.objects.filter(id__in=team_ids)
+
+    # Jeśli w systemie BYE jest osobnym rekordem Team – nie powinien pojawić się w tabeli.
+    qs = qs.exclude(name__iexact="BYE")
+
+    # Jeśli korzystasz z is_active dla BYE – warto utrzymać spójność również w grupach.
+    qs = qs.filter(is_active=True)
+
+    return list(qs)
 
 
-def _get_finished_matches(
-    stage: Stage,
-    group: Group | None,
-):
+def _get_finished_matches(stage: Stage, group: Group | None):
     """
     Zwraca zakończone mecze dla etapu lub grupy.
     """
-    qs = Match.objects.filter(
-        stage=stage,
-        status=Match.Status.FINISHED,
-    )
+    qs = Match.objects.filter(stage=stage, status=Match.Status.FINISHED)
+    if group:
+        qs = qs.filter(group=group)
+    return qs
+
+
+def _get_all_matches(stage: Stage, group: Group | None):
+    """
+    Zwraca wszystkie mecze dla etapu lub grupy (w tym niezakończone),
+    potrzebne do sprawdzenia warunku zastosowania H2H.
+    """
+    qs = Match.objects.filter(stage=stage)
     if group:
         qs = qs.filter(group=group)
     return qs
@@ -128,12 +159,14 @@ def _get_finished_matches(
 # ============================================================
 
 def _initialize_rows(teams: list[Team]) -> dict[int, StandingRow]:
+    # Ochrona przed „BYE” nawet jeśli przeszło przez QS.
+    filtered = [t for t in teams if not _is_bye_team_name(t.name)]
     return {
         team.id: StandingRow(
             team_id=team.id,
             team_name=team.name,
         )
-        for team in teams
+        for team in filtered
     }
 
 
@@ -147,20 +180,24 @@ def _apply_match_result(
     if not home or not away:
         return
 
+    hs = match.home_score or 0
+    aws = match.away_score or 0
+
     home.played += 1
     away.played += 1
 
-    home.goals_for += match.home_score
-    home.goals_against += match.away_score
-    away.goals_for += match.away_score
-    away.goals_against += match.home_score
+    home.goals_for += hs
+    home.goals_against += aws
+    away.goals_for += aws
+    away.goals_against += hs
 
-    if match.home_score > match.away_score:
+    if hs > aws:
         home.wins += 1
         away.losses += 1
         home.points += 3
-    elif match.home_score < match.away_score:
+    elif hs < aws:
         away.wins += 1
+        away.away_wins += 1  # zwycięstwo na wyjeździe
         home.losses += 1
         away.points += 3
     else:
@@ -171,73 +208,104 @@ def _apply_match_result(
 
 
 # --------------------------
-# HEAD-TO-HEAD (mini-tabela)
+# HEAD-TO-HEAD (H2H)
 # --------------------------
+
+def _all_h2h_matches_finished(
+    tied_team_ids: set[int],
+    all_stage_matches: List[Match],
+) -> bool:
+    """
+    Warunek z §16 ust.3 pkt 3:
+    H2H (lit. a-b) stosuje się wyłącznie, gdy zostały rozegrane wszystkie zaplanowane mecze
+    pomiędzy zainteresowanymi drużynami.
+
+    Implementacja:
+    - dla każdej pary drużyn w bloku remisowym musi istnieć co najmniej jeden mecz w etapie,
+    - oraz wszystkie mecze tej pary muszą mieć status FINISHED.
+    """
+    if len(tied_team_ids) < 2:
+        return False
+
+    pair_statuses: Dict[Tuple[int, int], List[str]] = {}
+
+    for m in all_stage_matches:
+        h = m.home_team_id
+        a = m.away_team_id
+        if h in tied_team_ids and a in tied_team_ids:
+            p = (min(h, a), max(h, a))
+            pair_statuses.setdefault(p, []).append(m.status)
+
+    for t1, t2 in combinations(sorted(tied_team_ids), 2):
+        p = (t1, t2)
+        statuses = pair_statuses.get(p)
+        if not statuses:
+            return False
+        if not all(s == Match.Status.FINISHED for s in statuses):
+            return False
+
+    return True
+
 
 def _compute_h2h_stats(
     tied_team_ids: set[int],
-    matches: List[Match],
-) -> Dict[int, Tuple[int, int, int]]:
+    finished_matches: List[Match],
+) -> Dict[int, Tuple[int, int]]:
     """
-    Zwraca statystyki H2H dla podzbioru drużyn (mini-tabela):
-    (punkty_h2h, gd_h2h, gf_h2h)
+    Statystyki H2H dla podzbioru drużyn (mini-tabela):
+    (punkty_h2h, gd_h2h)
     """
-    stats: Dict[int, List[int]] = {tid: [0, 0, 0] for tid in tied_team_ids}  # pts, gd, gf
+    # pts, gd
+    stats: Dict[int, List[int]] = {tid: [0, 0] for tid in tied_team_ids}
 
-    for m in matches:
+    for m in finished_matches:
         h = m.home_team_id
         a = m.away_team_id
         if h not in tied_team_ids or a not in tied_team_ids:
             continue
 
-        # gole w H2H
-        stats[h][2] += m.home_score
-        stats[a][2] += m.away_score
+        hs = m.home_score or 0
+        aws = m.away_score or 0
 
-        # różnica w H2H
-        stats[h][1] += (m.home_score - m.away_score)
-        stats[a][1] += (m.away_score - m.home_score)
+        # różnica bramek w H2H
+        stats[h][1] += (hs - aws)
+        stats[a][1] += (aws - hs)
 
         # punkty w H2H
-        if m.home_score > m.away_score:
+        if hs > aws:
             stats[h][0] += 3
-        elif m.home_score < m.away_score:
+        elif hs < aws:
             stats[a][0] += 3
         else:
             stats[h][0] += 1
             stats[a][0] += 1
 
-    return {tid: (v[0], v[1], v[2]) for tid, v in stats.items()}
+    return {tid: (v[0], v[1]) for tid, v in stats.items()}
 
 
-def _sort_rows(rows: Iterable[StandingRow], matches: List[Match]) -> List[StandingRow]:
+def _sort_rows(
+    rows: Iterable[StandingRow],
+    finished_matches: List[Match],
+    all_stage_matches: List[Match],
+) -> List[StandingRow]:
     """
-    Sortowanie tabeli:
-    1) punkty (overall)
-    2) head-to-head (dla remisujących na punktach):
-       - punkty H2H
-       - bilans H2H
-       - bramki H2H
-    3) różnica bramek (overall)
-    4) bramki strzelone (overall)
-    5) nazwa, team_id (stabilność)
+    Sortowanie tabeli zgodnie z §16 ust.3 (PZPN).
 
-    Uwaga: H2H stosujemy tylko w obrębie bloków z tym samym overall points.
+    Uwaga:
+    - blokowanie po „overall points” jest konieczne, bo H2H stosuje się wyłącznie w obrębie remisu punktowego,
+    - H2H jest używane tylko wtedy, gdy wszystkie bezpośrednie mecze w danym bloku zostały rozegrane.
     """
     rows_list = list(rows)
 
-    # 1) sort wstępny po punktach (żeby wyznaczyć bloki remisowe)
+    # Sort wstępny – wyłącznie po punktach, aby bloki remisowe były spójne.
     rows_list.sort(
         key=lambda r: (
             -r.points,
-            -r.goal_difference,
-            -r.goals_for,
             r.team_name.lower(),
             r.team_id,
         )
     )
 
-    # 2) znajdź bloki o tych samych punktach
     result: List[StandingRow] = []
     i = 0
     n = len(rows_list)
@@ -254,20 +322,37 @@ def _sort_rows(rows: Iterable[StandingRow], matches: List[Match]) -> List[Standi
             continue
 
         tied_ids = {r.team_id for r in block}
-        h2h = _compute_h2h_stats(tied_ids, matches)
 
-        # 3) sort blok po H2H; jeśli dalej remis, fallback po overall
-        block.sort(
-            key=lambda r: (
-                -h2h.get(r.team_id, (0, 0, 0))[0],  # pts_h2h
-                -h2h.get(r.team_id, (0, 0, 0))[1],  # gd_h2h
-                -h2h.get(r.team_id, (0, 0, 0))[2],  # gf_h2h
-                -r.goal_difference,                 # overall gd
-                -r.goals_for,                       # overall gf
-                r.team_name.lower(),
-                r.team_id,
+        use_h2h = _all_h2h_matches_finished(tied_ids, all_stage_matches)
+
+        if use_h2h:
+            h2h = _compute_h2h_stats(tied_ids, finished_matches)
+
+            block.sort(
+                key=lambda r: (
+                    -h2h.get(r.team_id, (0, 0))[0],   # H2H points
+                    -h2h.get(r.team_id, (0, 0))[1],   # H2H goal diff
+                    -r.goal_difference,               # overall GD
+                    -r.goals_for,                     # overall goals scored
+                    -r.wins,                          # overall wins
+                    -r.away_wins,                     # overall away wins
+                    r.team_name.lower(),
+                    r.team_id,
+                )
             )
-        )
+        else:
+            # Gdy H2H nie może być zastosowane (nie wszystkie bezpośrednie mecze rozegrane),
+            # przechodzimy od razu do kryteriów ogólnych.
+            block.sort(
+                key=lambda r: (
+                    -r.goal_difference,               # overall GD
+                    -r.goals_for,                     # overall goals scored
+                    -r.wins,                          # overall wins
+                    -r.away_wins,                     # overall away wins
+                    r.team_name.lower(),
+                    r.team_id,
+                )
+            )
 
         result.extend(block)
         i = j
