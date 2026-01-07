@@ -1,4 +1,8 @@
-export type FlowStepKey = "setup" | "teams" | "matches" | "schedule" | "results";
+export type FlowStepKey =
+  | "setup"
+  | "teams"
+  | "schedule"
+  | "results";
 
 export type FlowStep = {
   key: FlowStepKey;
@@ -21,12 +25,6 @@ export const FLOW_STEPS: FlowStep[] = [
     label: "Uczestnicy",
     path: (id) => `/tournaments/${id}/teams`,
     match: (p) => p.split("?")[0].endsWith("/teams"),
-  },
-  {
-    key: "matches",
-    label: "Mecze",
-    path: (id) => `/tournaments/${id}/matches`,
-    match: (p) => p.split("?")[0].endsWith("/matches"),
   },
   {
     key: "schedule",

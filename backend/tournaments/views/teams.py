@@ -9,8 +9,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from ..models import Match, Stage, Team, Tournament
+from ..models import Stage, Team, Tournament
 from ..serializers import TeamSerializer, TeamUpdateSerializer, TournamentSerializer
+from ..services.match_generation import ensure_matches_generated
 from ._helpers import user_can_manage_tournament
 
 
@@ -39,10 +40,22 @@ class TournamentTeamUpdateView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
-        return Response(TeamSerializer(team).data)
+        return Response(TeamSerializer(team).data, status=status.HTTP_200_OK)
 
 
 class TournamentTeamSetupView(APIView):
+    """
+    Endpoint: POST /api/tournaments/<id>/teams/setup/
+
+    Cel:
+    - Ustawić faktyczną liczbę aktywnych Team (to jest źródło prawdy).
+    - Jeżeli liczba aktywnych Team się zmienia -> UPGRADE rozgrywek:
+      reset Stage/Match + regeneracja (ensure_matches_generated).
+
+    Wejście:
+    - Preferowane: {"teams_count": <int>}
+    - Tymczasowo akceptowane: {"participants_count": <int>} (dla zgodności FE)
+    """
     permission_classes = [IsAuthenticated]
 
     @transaction.atomic
@@ -52,37 +65,40 @@ class TournamentTeamSetupView(APIView):
         if not user_can_manage_tournament(request.user, tournament):
             return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
 
-        # walidujemy PATCH-em turnieju tylko participants_count (reszta i tak jest blokowana przez serializer)
-        serializer = TournamentSerializer(
-            tournament,
-            data=request.data,
-            partial=True,
-            context={"request": request},
-        )
-        serializer.is_valid(raise_exception=True)
+        # Bezpieczniej: nie pozwalaj grzebać w składzie, gdy turniej trwa albo jest zarchiwizowany.
+        if tournament.status in (Tournament.Status.RUNNING, Tournament.Status.FINISHED):
+            return Response(
+                {
+                    "detail": (
+                        "Nie można zmieniać liczby uczestników, gdy turniej jest w trakcie "
+                        "lub zarchiwizowany. Zresetuj/odarchiwizuj turniej i spróbuj ponownie."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        requested_count = serializer.validated_data.get(
-            "participants_count",
-            tournament.participants_count,
-        )
+        # 1) Wejściowy count (nowy klucz: teams_count)
+        raw_count = request.data.get("teams_count", None)
+        if raw_count is None:
+            # kompatybilność z wcześniejszym FE
+            raw_count = request.data.get("participants_count", None)
 
-        # Bezpiecznik
+        try:
+            requested_count = int(raw_count)
+        except (TypeError, ValueError):
+            return Response({"detail": "Nieprawidłowa liczba uczestników."}, status=status.HTTP_400_BAD_REQUEST)
+
         if requested_count < 2:
-            return Response({"detail": "Liczba uczestników musi wynosić co najmniej 2."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Liczba uczestników musi wynosić co najmniej 2."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        reset_done = False
-        if tournament.status != Tournament.Status.DRAFT:
-            # UWAGA: u Ciebie Match ma FK tournament i FK stage, więc najbezpieczniej kasować po tournament
-            Match.objects.filter(tournament=tournament).delete()
-            Stage.objects.filter(tournament=tournament).delete()
-            tournament.status = Tournament.Status.DRAFT
-            tournament.save(update_fields=["status"])
-            reset_done = True
+        # 2) Stan przed zmianą (czy istnieje struktura / ile aktywnych)
+        active_before = Team.objects.filter(tournament=tournament, is_active=True).count()
+        had_structure = Stage.objects.filter(tournament=tournament).exists()
 
-        # zapisujemy participants_count w turnieju
-        serializer.save()
-
-        # pobierz WSZYSTKIE teamy (aktywne i nieaktywne), żeby móc reaktywować przy zwiększeniu
+        # 3) Uzupełnij rekordy Team do requested_count (nie kasujemy nazw)
         all_teams = list(tournament.teams.order_by("id"))
         existing_total = len(all_teams)
 
@@ -92,7 +108,6 @@ class TournamentTeamSetupView(APIView):
             else "Drużyna"
         )
 
-        # jeżeli brakuje rekordów, dobijamy nowe
         if existing_total < requested_count:
             Team.objects.bulk_create(
                 [
@@ -102,7 +117,7 @@ class TournamentTeamSetupView(APIView):
             )
             all_teams = list(tournament.teams.order_by("id"))
 
-        # ustaw aktywność dokładnie pod requested_count
+        # 4) Ustaw aktywność dokładnie pod requested_count
         changed = []
         for idx, team in enumerate(all_teams):
             should_be_active = idx < requested_count
@@ -113,11 +128,36 @@ class TournamentTeamSetupView(APIView):
         if changed:
             Team.objects.bulk_update(changed, ["is_active"])
 
+        active_after = Team.objects.filter(tournament=tournament, is_active=True).count()
+
+        # 5) Upgrade rozgrywek tylko wtedy, gdy:
+        # - zmieniła się liczba aktywnych, LUB
+        # - nie ma struktury (np. świeży turniej), a mamy min. 2 aktywnych.
+        count_changed = active_after != active_before
+        should_upgrade = (active_after >= 2) and (count_changed or not had_structure)
+
+        reset_done = False
+        if should_upgrade and tournament.status != Tournament.Status.DRAFT:
+            # Nie kasujemy tu Stage/Match ręcznie – robi to ensure_matches_generated.
+            tournament.status = Tournament.Status.DRAFT
+            tournament.save(update_fields=["status"])
+            reset_done = True
+
+        if should_upgrade:
+            ensure_matches_generated(tournament)
+            # Po wygenerowaniu struktury uznajemy turniej za skonfigurowany
+            if tournament.status == Tournament.Status.DRAFT:
+                tournament.status = Tournament.Status.CONFIGURED
+                tournament.save(update_fields=["status"])
+
         detail = "Uczestnicy zostali zaktualizowani."
         if reset_done:
-            detail += " Turniej został zresetowany."
+            detail += " Rozgrywki zostały przebudowane (upgrade)."
+        elif should_upgrade:
+            detail += " Rozgrywki zostały wygenerowane."
+        else:
+            detail += " (Bez przebudowy rozgrywek.)"
 
-        # KLUCZOWE: zwróć od razu aktualny turniej i listę aktywnych teamów (bez dodatkowych GET w FE)
         active_teams = tournament.teams.filter(is_active=True).order_by("id")
         return Response(
             {
@@ -125,6 +165,8 @@ class TournamentTeamSetupView(APIView):
                 "reset_done": reset_done,
                 "tournament": TournamentSerializer(tournament, context={"request": request}).data,
                 "teams": TeamSerializer(active_teams, many=True).data,
+                "teams_count": active_after,
+                "upgraded": should_upgrade,
             },
             status=status.HTTP_200_OK,
         )

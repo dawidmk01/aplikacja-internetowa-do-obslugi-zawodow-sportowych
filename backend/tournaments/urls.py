@@ -6,7 +6,6 @@ from .views.tournaments import (
     MyTournamentListView,
     ArchiveTournamentView,
     UnarchiveTournamentView,
-    GenerateTournamentView,
     ChangeDisciplineView,
     ChangeSetupView,
 )
@@ -26,7 +25,6 @@ from .views.matches import (
     MatchResultUpdateView,
     FinishMatchView,
 )
-# Dodałem AdvanceFromGroupsView do importu tutaj:
 from .views.stages import AdvanceFromGroupsView
 from tournaments.views.standings import TournamentStandingsView
 
@@ -44,7 +42,7 @@ urlpatterns = [
         name="tournament-change-discipline",
     ),
 
-    # ZMIANA SETUP (format/config/liczba miejsc) – reset rozgrywek, drużyny zostają
+    # ZMIANA SETUP (format/config)
     path(
         "tournaments/<int:pk>/change-setup/",
         ChangeSetupView.as_view(),
@@ -65,26 +63,17 @@ urlpatterns = [
     path("tournaments/<int:pk>/teams/", TournamentTeamListView.as_view(), name="tournament-participants-list"),
     path("tournaments/<int:pk>/teams/<int:team_id>/", TournamentTeamUpdateView.as_view(), name="tournament-participant-update"),
 
-    # GENEROWANIE (POCZĄTKOWE)
-    path("tournaments/<int:pk>/generate/", GenerateTournamentView.as_view(), name="tournament-generate"),
-
-    # GENEROWANIE (GRUPY -> KO) [NOWE]
+    # GRUPY → KO
     path(
         "tournaments/<int:pk>/advance-from-groups/",
         AdvanceFromGroupsView.as_view(),
         name="tournament-advance-from-groups",
     ),
 
-    # MECZE (LISTA)
+    # MECZE
     path("tournaments/<int:pk>/matches/", TournamentMatchListView.as_view(), name="tournament-matches"),
-
-    # MECZ – HARMONOGRAM
     path("matches/<int:pk>/", MatchScheduleUpdateView.as_view(), name="match-schedule-update"),
-
-    # MECZ – WYNIK
     path("matches/<int:pk>/result/", MatchResultUpdateView.as_view(), name="match-result-update"),
-
-    # MECZ – ZAKOŃCZENIE
     path("matches/<int:pk>/finish/", FinishMatchView.as_view(), name="match-finish"),
 
     # STANDINGS

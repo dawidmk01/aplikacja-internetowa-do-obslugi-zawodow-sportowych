@@ -26,7 +26,6 @@ import { TournamentFlowGuardProvider } from "./flow/TournamentFlowGuardContext";
 
 /* ===== FLOW TURNIEJU ===== */
 import TournamentTeams from "./pages/TournamentTeams";
-import TournamentMatches from "./pages/TournamentMatches";
 import TournamentSchedule from "./pages/TournamentSchedule";
 import TournamentResults from "./pages/TournamentResults";
 
@@ -129,7 +128,6 @@ export default function App() {
 
           {/* POZOSTAŁE KROKI */}
           <Route path="teams" element={<TournamentTeams />} />
-          <Route path="matches" element={<TournamentMatches />} />
           <Route path="schedule" element={<TournamentSchedule />} />
           <Route path="results" element={<TournamentResults />} />
 

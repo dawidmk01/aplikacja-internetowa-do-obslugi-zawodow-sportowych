@@ -4,14 +4,16 @@ import { apiFetch } from "../api";
 
 type Team = { id: number; name: string };
 type TournamentFormat = "LEAGUE" | "CUP" | "MIXED";
+type TournamentStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
 
 type TournamentDTO = {
   id: number;
   name: string;
   tournament_format: TournamentFormat;
-  participants_count: number;
-  format_config: Record<string, any>;
-  status: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
+  format_config?: Record<string, any>;
+  status: TournamentStatus;
+  // backend może zwracać dodatkowe pola (np. organizer, my_role itd.)
+  [key: string]: any;
 };
 
 type SetupTeamsResponse = {
@@ -35,15 +37,15 @@ export default function TournamentTeams() {
   const loadTournament = async (): Promise<TournamentDTO> => {
     const res = await apiFetch(`/api/tournaments/${id}/`);
     if (!res.ok) throw new Error("Nie udało się pobrać turnieju.");
-    const data = await res.json();
+    const data: TournamentDTO = await res.json();
     setTournament(data);
     return data;
   };
 
   const loadTeams = async (): Promise<Team[]> => {
     const res = await apiFetch(`/api/tournaments/${id}/teams/`);
-    if (!res.ok) throw new Error("Nie udało się pobrać drużyn.");
-    const data = await res.json();
+    if (!res.ok) throw new Error("Nie udało się pobrać uczestników.");
+    const data: Team[] = await res.json();
     setTeams(data);
     return data;
   };
@@ -57,7 +59,7 @@ export default function TournamentTeams() {
 
     if (!res.ok) {
       const data = await res.json().catch(() => null);
-      throw new Error(data?.detail || "Nie udało się zaktualizować liczby drużyn.");
+      throw new Error(data?.detail || "Nie udało się zaktualizować liczby uczestników.");
     }
 
     const data: SetupTeamsResponse = await res.json();
@@ -68,6 +70,7 @@ export default function TournamentTeams() {
 
   useEffect(() => {
     if (!id) return;
+
     let mounted = true;
 
     const init = async () => {
@@ -75,15 +78,8 @@ export default function TournamentTeams() {
         setMessage(null);
         setLoading(true);
 
-        const t = await loadTournament();
-        let currentTeams = await loadTeams();
-
-        if (mounted && t.status === "DRAFT" && currentTeams.length === 0) {
-          setBusy(true);
-          await setupTeams(t.participants_count);
-          currentTeams = await loadTeams();
-          setMessage("Utworzono listę uczestników.");
-        }
+        await loadTournament();
+        await loadTeams();
       } catch (e: any) {
         if (mounted) setMessage(e.message || "Błąd ładowania danych.");
       } finally {
@@ -94,75 +90,37 @@ export default function TournamentTeams() {
         }
       }
     };
+
     init();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [id]);
 
-  const needsResync = useMemo(() => {
-    if (!tournament) return false;
-    // Ignorujemy stan początkowy (pusta lista w DRAFT nie jest błędem synchronizacji)
-    if (teams.length === 0 && tournament.status === "DRAFT") {
-      return false;
-    }
-    return teams.length !== tournament.participants_count;
-  }, [tournament, teams.length]);
-
-  const rollbackCount = useMemo(() => Math.max(2, teams.length), [teams.length]);
+  const currentCount = useMemo(() => Math.max(2, teams.length), [teams.length]);
 
   const confirmIfResetMayHappen = (): boolean => {
     if (!tournament) return false;
     if (tournament.status === "DRAFT") return true;
+
     return window.confirm(
-      "Zmiana liczby uczestników może wymagać cofnięcia rozgrywek.\nKontynuować?"
+      "Zmiana liczby uczestników spowoduje reset rozgrywek (etapy i mecze).\nKontynuować?"
     );
   };
 
-  const applyConfigCount = async () => {
-    if (!tournament || busy || inFlightRef.current) return;
-    if (!confirmIfResetMayHappen()) return;
-
-    try {
-      inFlightRef.current = true;
-      setBusy(true);
-      setMessage(null);
-      const resp = await setupTeams(tournament.participants_count);
-      setMessage(resp.detail || "Dopasowano listę do konfiguracji.");
-    } catch (e: any) {
-      setMessage(e.message || "Nie udało się dopasować listy.");
-    } finally {
-      setBusy(false);
-      inFlightRef.current = false;
-    }
-  };
-
-  const cancelConfigChange = async () => {
-    if (!tournament || busy || inFlightRef.current) return;
-    if (!confirmIfResetMayHappen()) return;
-
-    try {
-      inFlightRef.current = true;
-      setBusy(true);
-      setMessage(null);
-      const resp = await setupTeams(rollbackCount);
-      setMessage(resp.detail || "Anulowano zmianę.");
-    } catch (e: any) {
-      setMessage(e.message || "Nie udało się anulować.");
-    } finally {
-      setBusy(false);
-      inFlightRef.current = false;
-    }
-  };
-
   const changeTeamsCount = async (delta: number) => {
-    if (!tournament || busy || needsResync || inFlightRef.current) return;
-    const next = tournament.participants_count + delta;
+    if (!tournament || busy || inFlightRef.current) return;
+
+    const next = currentCount + delta;
     if (next < 2) return;
+
     if (!confirmIfResetMayHappen()) return;
 
     try {
       inFlightRef.current = true;
       setBusy(true);
       setMessage(null);
+
       const resp = await setupTeams(next);
       setMessage(resp.detail || "Zmieniono liczbę uczestników.");
     } catch (e: any) {
@@ -179,6 +137,7 @@ export default function TournamentTeams() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     });
+
     if (!res.ok) {
       const data = await res.json().catch(() => null);
       throw new Error(data?.detail || "Nie udało się zapisać nazwy.");
@@ -189,10 +148,13 @@ export default function TournamentTeams() {
   if (!tournament) return null;
 
   const formatLabel =
-    tournament.tournament_format === "LEAGUE" ? "Liga" :
-    tournament.tournament_format === "CUP" ? "Puchar" : "Grupy + puchar";
+    tournament.tournament_format === "LEAGUE"
+      ? "Liga"
+      : tournament.tournament_format === "CUP"
+        ? "Puchar"
+        : "Grupy + puchar";
 
-  const busyButtonStyle = {
+  const busyButtonStyle: React.CSSProperties = {
     opacity: busy ? 0.6 : 1,
     cursor: busy ? "wait" : "pointer",
   };
@@ -202,54 +164,45 @@ export default function TournamentTeams() {
       <h1>Uczestnicy turnieju</h1>
 
       <section style={{ opacity: 0.85, marginBottom: "0.75rem" }}>
-        <div><strong>Turniej:</strong> {tournament.name}</div>
-        <div><strong>Format:</strong> {formatLabel}</div>
-        <div><strong>Status:</strong> {tournament.status}</div>
+        <div>
+          <strong>Turniej:</strong> {tournament.name}
+        </div>
+        <div>
+          <strong>Format:</strong> {formatLabel}
+        </div>
+        <div>
+          <strong>Status:</strong> {tournament.status}
+        </div>
       </section>
 
-      {needsResync && !busy && (
-        <div style={{
-            border: "1px solid #666", padding: "0.75rem", marginBottom: "1rem", borderRadius: 8
-        }}>
-          Wykryto zmianę liczby miejsc w konfiguracji turnieju.
-          <div style={{ marginTop: 6 }}>
-            <strong>W konfiguracji:</strong> {tournament.participants_count}{" "}
-            <strong> | Aktualnie pól:</strong> {teams.length}
-          </div>
-          <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button type="button" onClick={applyConfigCount} disabled={busy}>
-              {busy ? "Przetwarzanie…" : "Dopasuj listę"}
-            </button>
-            <button type="button" disabled={busy} onClick={cancelConfigChange}>
-              Anuluj zmianę
-            </button>
-          </div>
-        </div>
-      )}
-
       {tournament.status !== "DRAFT" && (
-        <div style={{
-            border: "1px solid #444", padding: "0.75rem", marginBottom: "1rem", borderRadius: 8
-        }}>
-          Zmiana nazw jest bezpieczna. Zmiana liczby miejsc (+/−) może wymagać cofnięcia rozgrywek.
+        <div
+          style={{
+            border: "1px solid #444",
+            padding: "0.75rem",
+            marginBottom: "1rem",
+            borderRadius: 8,
+          }}
+        >
+          Zmiana nazw jest bezpieczna. Zmiana liczby uczestników (+/−) spowoduje reset rozgrywek.
         </div>
       )}
 
       <section style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-        <strong>Liczba miejsc</strong>
+        <strong>Liczba uczestników</strong>
         <button
           type="button"
           onClick={() => changeTeamsCount(-1)}
-          disabled={needsResync}
+          disabled={busy}
           style={busyButtonStyle}
         >
           −
         </button>
-        <span>{tournament.participants_count}</span>
+        <span>{currentCount}</span>
         <button
           type="button"
           onClick={() => changeTeamsCount(1)}
-          disabled={needsResync}
+          disabled={busy}
           style={busyButtonStyle}
         >
           +
@@ -258,16 +211,20 @@ export default function TournamentTeams() {
 
       <hr />
 
-      <h2>Drużyny</h2>
+      <h2>{tournament?.competition_type === "INDIVIDUAL" ? "Zawodnicy" : "Drużyny"}</h2>
 
       {teams.length === 0 && !busy ? (
-        <p style={{ opacity: 0.6, fontStyle: "italic" }}>Przygotowywanie listy uczestników…</p>
+        <p style={{ opacity: 0.6, fontStyle: "italic" }}>
+          Brak aktywnych uczestników — ustaw liczbę miejsc (+) aby utworzyć listę.
+        </p>
       ) : (
-        <div style={{
+        <div
+          style={{
             display: "grid",
             gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
             gap: "0.5rem",
-          }}>
+          }}
+        >
           {teams.map((team) => (
             <input
               key={team.id}

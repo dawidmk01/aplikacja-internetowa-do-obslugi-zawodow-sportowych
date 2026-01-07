@@ -14,9 +14,11 @@ type TournamentDTO = {
   name: string;
   discipline: Discipline;
   tournament_format: TournamentFormat;
-  participants_count: number;
   format_config: Record<string, any>;
+  status?: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
 };
+
+type TeamDTO = { id: number; name: string };
 
 function clampInt(value: number, min: number, max: number) {
   if (Number.isNaN(value)) return min;
@@ -66,7 +68,10 @@ export default function TournamentBasicsSetup() {
 
   /* ====== KROK 2 (setup) ====== */
   const [format, setFormat] = useState<TournamentFormat>("LEAGUE");
+
+  // UWAGA: to NIE jest już pole turnieju — to „docelowa liczba aktywnych Team”
   const [participants, setParticipants] = useState(8);
+  const initialParticipantsRef = useRef<number>(8);
 
   const [leagueMatches, setLeagueMatches] = useState<1 | 2>(1);
 
@@ -79,18 +84,17 @@ export default function TournamentBasicsSetup() {
   const [groupMatches, setGroupMatches] = useState<1 | 2>(1);
   const [advanceFromGroup, setAdvanceFromGroup] = useState(2);
 
-  /* ====== Obsługa Flash Error (Błąd po przekierowaniu) ====== */
+  /* ====== Obsługa Flash Error ====== */
   useEffect(() => {
     const flash = (location.state as any)?.flashError as string | undefined;
     if (flash) {
       setError(flash);
-      // "consume" state
       navigate(location.pathname, { replace: true, state: {} });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.state]);
 
-  /* ====== load existing tournament ====== */
+  /* ====== load existing tournament + teams ====== */
   useEffect(() => {
     if (isCreateMode) return;
 
@@ -98,9 +102,16 @@ export default function TournamentBasicsSetup() {
       setLoading(true);
       setError(null);
       try {
-        const res = await apiFetch(`/api/tournaments/${id}/`);
-        if (!res.ok) throw new Error("Nie udało się pobrać danych turnieju.");
-        const t: TournamentDTO = await res.json();
+        const [tRes, teamsRes] = await Promise.all([
+          apiFetch(`/api/tournaments/${id}/`),
+          apiFetch(`/api/tournaments/${id}/teams/`),
+        ]);
+
+        if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
+        if (!teamsRes.ok) throw new Error("Nie udało się pobrać listy uczestników.");
+
+        const t: TournamentDTO = await tRes.json();
+        const teams: TeamDTO[] = await teamsRes.json();
 
         setName(t.name);
         setInitialName(t.name);
@@ -109,7 +120,11 @@ export default function TournamentBasicsSetup() {
         setInitialDiscipline(t.discipline);
 
         setFormat(t.tournament_format);
-        setParticipants(t.participants_count);
+
+        // participants = liczba aktywnych Team
+        const currentCount = Math.max(2, teams.length);
+        setParticipants(currentCount);
+        initialParticipantsRef.current = currentCount;
 
         const cfg = t.format_config || {};
         setLeagueMatches(cfg.league_matches ?? 1);
@@ -123,10 +138,11 @@ export default function TournamentBasicsSetup() {
         if (typeof savedGroups === "number" && savedGroups >= 1) {
           setGroupsCount(savedGroups);
         } else {
-          setGroupsCount(defaultGroupsCountFor4PerGroup(t.participants_count));
+          setGroupsCount(defaultGroupsCountFor4PerGroup(currentCount));
         }
         setGroupMatches(cfg.group_matches ?? 1);
         setAdvanceFromGroup(cfg.advance_from_group ?? 2);
+
       } catch (e: any) {
         setError(e.message || "Błąd ładowania.");
       } finally {
@@ -189,8 +205,9 @@ export default function TournamentBasicsSetup() {
   };
 
   const buildFormatConfig = () => {
-    const safeGroups = clampInt(groupsCount, 1, Math.max(1, participants));
-    const sizes = splitIntoGroups(participants, safeGroups);
+    const safeParticipants = clampInt(participants, 2, 10_000);
+    const safeGroups = clampInt(groupsCount, 1, Math.max(1, safeParticipants));
+    const sizes = splitIntoGroups(safeParticipants, safeGroups);
     const computedTeamsPerGroup = Math.max(2, ...(sizes.length ? sizes : [2]));
 
     return {
@@ -208,33 +225,34 @@ export default function TournamentBasicsSetup() {
   };
 
   /**
-   * GŁÓWNY zapis (z obsługą createdId i redirectu przy błędzie setupu)
+   * GŁÓWNY zapis:
+   * - create/patch name + discipline
+   * - change-setup (format + format_config)
+   * - teams/setup (participants_count) => generuje/regeneruje mecze
    */
   const saveAll = useCallback(async (): Promise<{ tournamentId: number }> => {
-    // 1. Walidacja NAZWY (blokuje zapis, ustawia error globalny)
     const trimmedName = name.trim();
     if (!trimmedName) {
       const msg = "Wpisz nazwę turnieju — bez tego nie da się przejść dalej.";
       setError(msg);
-      throw new Error(msg); // Przerywamy flow guarda
+      throw new Error(msg);
     }
 
-    // Jeśli nie ma zmian w edit mode, po prostu zwracamy ID
     if (!isCreateMode && !dirty) return { tournamentId: Number(id) };
 
     setSaving(true);
     setError(null);
+
     let createdId: number | null = null;
 
     try {
-      // 2. CREATE jeśli brak ID
       let tournamentId = Number(id);
 
+      // 1) CREATE
       if (isCreateMode) {
         const createRes = await apiFetch("/api/tournaments/", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          // Używamy trimmedName
           body: JSON.stringify({ name: trimmedName, discipline }),
         });
 
@@ -246,8 +264,13 @@ export default function TournamentBasicsSetup() {
         const created = await createRes.json();
         createdId = created.id;
         tournamentId = created.id;
+
+        // po create traktuj to jako „początkowe”
+        setInitialName(trimmedName);
+        setInitialDiscipline(discipline);
+
       } else {
-        // 3. EDIT: dyscyplina
+        // 2) EDIT: dyscyplina
         if (discipline !== initialDiscipline) {
           const ok = confirmDisciplineChange();
           if (!ok) {
@@ -266,23 +289,22 @@ export default function TournamentBasicsSetup() {
           }
         }
 
-        // 4. EDIT: nazwa
-        if (name !== initialName) {
+        // 3) EDIT: nazwa
+        if (trimmedName !== initialName) {
           const res = await apiFetch(`/api/tournaments/${tournamentId}/`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            // Używamy trimmedName
             body: JSON.stringify({ name: trimmedName }),
           });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(data?.detail || "Nie udało się zapisać nazwy turnieju.");
           }
-          setInitialName(trimmedName); // Aktualizujemy initial na trimmed
+          setInitialName(trimmedName);
         }
       }
 
-      // 5. SETUP: change-setup (dry-run i confirm resetu)
+      // 4) SETUP: change-setup (bez participants_count)
       const format_config = buildFormatConfig();
 
       const dry = await apiFetch(`/api/tournaments/${tournamentId}/change-setup/?dry_run=true`, {
@@ -290,7 +312,6 @@ export default function TournamentBasicsSetup() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           tournament_format: format,
-          participants_count: participants,
           format_config,
         }),
       });
@@ -303,13 +324,12 @@ export default function TournamentBasicsSetup() {
       const dryData = await dry.json();
       const resetNeeded = Boolean(dryData?.reset_needed);
 
-      if (resetNeeded) {
+      // Uwaga: w create-mode reset jest normalny (backend mógł utworzyć startową strukturę)
+      if (!isCreateMode && resetNeeded) {
         const ok = window.confirm(
-          "Zmieniasz konfigurację po wygenerowaniu rozgrywek. To usunie etapy i mecze, ale uczestnicy zostaną. Kontynuować?"
+          "Zmieniasz konfigurację po wygenerowaniu rozgrywek. To usunie etapy i mecze (uczestnicy zostaną). Kontynuować?"
         );
-        if (!ok) {
-          throw new Error("Anulowano zapis konfiguracji.");
-        }
+        if (!ok) throw new Error("Anulowano zapis konfiguracji.");
       }
 
       const res = await apiFetch(`/api/tournaments/${tournamentId}/change-setup/`, {
@@ -317,7 +337,6 @@ export default function TournamentBasicsSetup() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           tournament_format: format,
-          participants_count: participants,
           format_config,
         }),
       });
@@ -327,13 +346,38 @@ export default function TournamentBasicsSetup() {
         throw new Error(data?.detail || "Błąd zapisu konfiguracji.");
       }
 
-      // Context FlowGuard automatycznie zresetuje `dirty` po pomyślnym wykonaniu tej funkcji.
+      // 5) TEAMS: ustaw docelową liczbę aktywnych uczestników + regeneruj mecze
+      const safeParticipants = clampInt(participants, 2, 10_000);
+      const participantsChanged = safeParticipants !== initialParticipantsRef.current;
+
+      // Jeśli zmieniłeś liczbę i turniej nie jest w „pustym” stanie, backend i tak zresetuje.
+      // Potwierdzenie zostawiamy jako jedno (wyżej) dla resetNeeded; tu tylko „dodatkowe” przy zmianie liczby.
+      if (!isCreateMode && participantsChanged && !resetNeeded) {
+        const ok = window.confirm(
+          "Zmiana liczby uczestników spowoduje reset rozgrywek. Kontynuować?"
+        );
+        if (!ok) throw new Error("Anulowano zmianę liczby uczestników.");
+      }
+
+      const teamsRes = await apiFetch(`/api/tournaments/${tournamentId}/teams/setup/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ participants_count: safeParticipants }),
+      });
+
+      if (!teamsRes.ok) {
+        const data = await teamsRes.json().catch(() => ({}));
+        throw new Error(data?.detail || "Nie udało się ustawić liczby uczestników.");
+      }
+
+      // aktualizacja initial participants po udanym zapisie
+      initialParticipantsRef.current = safeParticipants;
+
       return { tournamentId };
 
     } catch (e: any) {
       const msg = e?.message || "Nie udało się zapisać.";
 
-      // UX FIX: Jeśli create przeszedł, a setup padł, przekierowujemy na /setup z błędem
       if (isCreateMode && createdId) {
         navigate(`/tournaments/${createdId}/setup`, {
           replace: true,
@@ -355,7 +399,6 @@ export default function TournamentBasicsSetup() {
     navigate
   ]);
 
-  // Rejestracja funkcji zapisu w kontekście
   useEffect(() => {
     registerSave(async () => {
       const { tournamentId } = await saveAll();
@@ -368,11 +411,9 @@ export default function TournamentBasicsSetup() {
 
   return (
     <div style={{ padding: "2rem", maxWidth: 900 }}>
-      {/* Pasek nawigacji widoczny w trybie tworzenia (bo brak layoutu) */}
       {isCreateMode && <TournamentFlowNav getCreatedId={() => createdIdRef.current} />}
 
       <h1>Konfiguracja turnieju</h1>
-
       {error && <p style={{ color: "crimson" }}>{error}</p>}
 
       {/* ===== Dane turnieju ===== */}
@@ -388,7 +429,6 @@ export default function TournamentBasicsSetup() {
             onChange={(e) => {
               setName(e.target.value);
               markDirty();
-              // Czyścimy błąd, gdy użytkownik zaczyna pisać
               if (error) setError(null);
             }}
           />
@@ -431,7 +471,10 @@ export default function TournamentBasicsSetup() {
           min={2}
           value={participants}
           disabled={saving}
-          onChange={(e) => { setParticipants(Number(e.target.value)); markDirty(); }}
+          onChange={(e) => {
+            setParticipants(clampInt(Number(e.target.value), 2, 10_000));
+            markDirty();
+          }}
         />
       </section>
 
@@ -569,7 +612,6 @@ export default function TournamentBasicsSetup() {
         </section>
       )}
 
-      {/* Footer nawigacyjny tylko w trybie CREATE */}
       {isCreateMode ? (
         <TournamentStepFooter getCreatedId={() => createdIdRef.current} />
       ) : null}

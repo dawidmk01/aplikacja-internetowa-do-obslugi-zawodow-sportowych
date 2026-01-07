@@ -8,10 +8,13 @@ User = get_user_model()
 
 class TournamentSerializer(serializers.ModelSerializer):
     """
+    Zasady:
     - name: zawsze edytowalne
-    - discipline: po DRAFT zmiana tylko przez /change-discipline/
-    - setup: po DRAFT zmiana tylko przez /change-setup/ (reset rozgrywek)
+    - discipline: po DRAFT tylko przez /change-discipline/
+    - setup (format/config): po DRAFT tylko przez /change-setup/
+    - liczba uczestników NIE jest częścią konfiguracji (pochodzi z Team)
     """
+
     my_role = serializers.SerializerMethodField()
 
     class Meta:
@@ -23,6 +26,10 @@ class TournamentSerializer(serializers.ModelSerializer):
             "created_at",
             "my_role",
         )
+
+    # ============================================================
+    # WALIDACJA FORMATU VS DYSCYPLINA
+    # ============================================================
 
     def validate_tournament_format(self, value):
         discipline = (
@@ -38,12 +45,9 @@ class TournamentSerializer(serializers.ModelSerializer):
                 )
         return value
 
-    def validate_participants_count(self, value):
-        if value < 2:
-            raise serializers.ValidationError(
-                "Liczba uczestników musi wynosić co najmniej 2."
-            )
-        return value
+    # ============================================================
+    # WALIDACJA KONTEKSTOWA (STATUS / ROLE)
+    # ============================================================
 
     def validate(self, attrs):
         request = self.context.get("request")
@@ -52,30 +56,38 @@ class TournamentSerializer(serializers.ModelSerializer):
         if not request or not request.user.is_authenticated or not instance:
             return attrs
 
-        # dyscyplina po DRAFT -> tylko change-discipline
+        # --------------------------------------------
+        # Dyscyplina po DRAFT -> tylko change-discipline
+        # --------------------------------------------
         if instance.status != Tournament.Status.DRAFT and "discipline" in attrs:
             raise serializers.ValidationError(
                 {
                     "discipline": (
-                        "Zmiana dyscypliny po konfiguracji turnieju wymaga resetu wyników. "
+                        "Zmiana dyscypliny po konfiguracji turnieju wymaga resetu. "
                         "Użyj endpointu: POST /api/tournaments/<id>/change-discipline/"
                     )
                 }
             )
 
-        # setup po DRAFT -> tylko change-setup (reset rozgrywek, drużyny zostają)
+        # --------------------------------------------
+        # Setup po DRAFT -> tylko change-setup
+        # --------------------------------------------
         if instance.status != Tournament.Status.DRAFT and any(
-            f in attrs for f in ("tournament_format", "participants_count", "format_config")
+            f in attrs for f in ("tournament_format", "format_config")
         ):
             raise serializers.ValidationError(
                 {
                     "detail": (
-                        "Zmiana konfiguracji turnieju po wygenerowaniu rozgrywek wymaga "
-                        "usunięcia etapów i meczów (drużyny zostają). "
+                        "Zmiana konfiguracji turnieju po wygenerowaniu rozgrywek "
+                        "wymaga resetu etapów i meczów. "
                         "Użyj endpointu: POST /api/tournaments/<id>/change-setup/"
                     )
                 }
             )
+
+        # ============================================================
+        # UPRAWNIENIA
+        # ============================================================
 
         is_organizer = instance.organizer_id == request.user.id
         is_assistant = instance.memberships.filter(
@@ -94,28 +106,28 @@ class TournamentSerializer(serializers.ModelSerializer):
                 "entry_mode",
                 "competition_type",
                 "tournament_format",
-                "participants_count",
                 "format_config",
             ):
                 attrs.pop(field, None)
 
-        # Walidacja formatu mieszanego
-        tournament_format = attrs.get("tournament_format", instance.tournament_format)
-        participants_count = attrs.get("participants_count", instance.participants_count)
-
-        if tournament_format == Tournament.TournamentFormat.MIXED and participants_count < 4:
-            raise serializers.ValidationError(
-                {"participants_count": "Format mieszany wymaga co najmniej 4 uczestników."}
-            )
-
         return attrs
+
+    # ============================================================
+    # CREATE
+    # ============================================================
 
     def create(self, validated_data):
         if "competition_type" not in validated_data:
-            validated_data["competition_type"] = Tournament.infer_default_competition_type(
-                validated_data.get("discipline")
+            validated_data["competition_type"] = (
+                Tournament.infer_default_competition_type(
+                    validated_data.get("discipline")
+                )
             )
         return super().create(validated_data)
+
+    # ============================================================
+    # META
+    # ============================================================
 
     def get_my_role(self, obj):
         request = self.context.get("request")

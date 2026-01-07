@@ -4,7 +4,8 @@ from .tournaments import (
     MyTournamentListView,
     ArchiveTournamentView,
     UnarchiveTournamentView,
-    GenerateTournamentView,
+    ChangeDisciplineView,
+    ChangeSetupView,
 )
 
 from .assistants import (
@@ -37,7 +38,8 @@ __all__ = [
     "MyTournamentListView",
     "ArchiveTournamentView",
     "UnarchiveTournamentView",
-    "GenerateTournamentView",
+    "ChangeDisciplineView",
+    "ChangeSetupView",
 
     # assistants
     "TournamentAssistantListView",

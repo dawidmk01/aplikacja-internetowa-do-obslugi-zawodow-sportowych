@@ -80,7 +80,8 @@ class Tournament(models.Model):
         default=TournamentFormat.LEAGUE,
     )
 
-    participants_count = models.PositiveIntegerField(default=2)
+    # ❌ USUNIĘTO: participants_count
+    # participants_count = models.PositiveIntegerField(default=2)
 
     format_config = models.JSONField(default=dict, blank=True)
 
