@@ -1,5 +1,6 @@
 from collections import defaultdict
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
 from tournaments.models import Match, Stage, Tournament
 
 
@@ -23,31 +24,27 @@ def get_knockout_bracket(tournament: Tournament) -> Dict[str, Any]:
         return {"rounds": [], "third_place": None}
 
     # 1. Rozdzielamy główną drabinkę od 3. miejsca
-    main_bracket_matches = []
+    main_bracket_matches: list[Match] = []
+    third_place_matches: list[Match] = []
 
-    # ZMIANA: Zamiast jednej zmiennej, używamy listy, aby obsłużyć dwumecz
-    third_place_matches = []
-
-    def is_third_place(stage_type):
-        return str(stage_type) == "THIRD_PLACE"
+    def is_third_place(stage_type) -> bool:
+        # ✅ lepiej niż str(stage_type) == "THIRD_PLACE"
+        return stage_type == Stage.StageType.THIRD_PLACE
 
     for m in matches:
         if is_third_place(m.stage.stage_type):
-            third_place_matches.append(m)  # ZMIANA: append zamiast przypisania
+            third_place_matches.append(m)
         else:
             main_bracket_matches.append(m)
 
-    # Serializujemy 3. miejsce
-    # Teraz przekazujemy całą listę meczów (może być 1 lub 2) do funkcji tworzącej pojedynek
     tp_item = None
     if third_place_matches:
         tp_item = _create_duel_item(third_place_matches)
 
-    # Jeśli nie ma głównej drabinki, zwracamy tylko 3 miejsce (rzadki case)
     if not main_bracket_matches:
         return {"rounds": [], "third_place": tp_item}
 
-    # 2. LOGIKA GRUPOWANIA W PARY (DUELS) DLA GŁÓWNEJ DRABINKI
+    # 2. Grupowanie meczów w dule (1 lub 2 mecze) w obrębie rundy
     grouped_duels = defaultdict(list)
 
     for m in main_bracket_matches:
@@ -61,17 +58,15 @@ def get_knockout_bracket(tournament: Tournament) -> Dict[str, Any]:
         full_key = (m.stage.order, r_num, teams_key)
         grouped_duels[full_key].append(m)
 
-    # 3. Przypisanie do Wirtualnych Rund
+    # 3. Przypisanie do wirtualnych rund
     unique_rounds = set()
     for (st_order, r_num, _), _ in grouped_duels.items():
         unique_rounds.add((st_order, r_num))
 
     sorted_rounds = sorted(list(unique_rounds))
     key_to_virtual_round = {key: i + 1 for i, key in enumerate(sorted_rounds)}
-    max_virtual_round = len(sorted_rounds)
 
     rounds_map = defaultdict(list)
-
     sorted_duels_items = sorted(grouped_duels.items(), key=lambda x: x[1][0].id)
 
     for (st_order, r_num, _), duel_matches in sorted_duels_items:
@@ -85,17 +80,8 @@ def get_knockout_bracket(tournament: Tournament) -> Dict[str, Any]:
     for v_round in sorted(rounds_map.keys()):
         duels = rounds_map[v_round]
 
-        diff = max_virtual_round - v_round
-        if diff == 0:
-            label = "Finał"
-        elif diff == 1:
-            label = "Półfinał"
-        elif diff == 2:
-            label = "Ćwierćfinał"
-        elif diff == 3:
-            label = "1/8 Finału"
-        else:
-            label = f"Runda {v_round}"
+        # ✅ POPRAWKA: etykieta na podstawie liczby par w rundzie
+        label = _label_from_duels_count(len(duels), v_round=v_round)
 
         bracket_rounds.append({
             "round_number": v_round,
@@ -109,12 +95,30 @@ def get_knockout_bracket(tournament: Tournament) -> Dict[str, Any]:
     }
 
 
-def _create_duel_item(matches: List[Match]) -> Dict[str, Any]:
+def _label_from_duels_count(duels_count: int, *, v_round: int) -> str:
+    """
+    Nadaje nazwę rundzie na podstawie liczby par.
+    Działa poprawnie nawet jeśli w bazie istnieje tylko jedna runda (np. same ćwierćfinały).
+    """
+    teams_in_round = duels_count * 2
+
+    if teams_in_round == 2:
+        return "Finał"
+    if teams_in_round == 4:
+        return "Półfinał"
+    if teams_in_round == 8:
+        return "Ćwierćfinał"
+    if teams_in_round >= 16 and teams_in_round % 2 == 0:
+        return f"1/{teams_in_round // 2} Finału"
+
+    return f"Runda {v_round}"
+
+
+def _create_duel_item(matches: List[Match]) -> Optional[Dict[str, Any]]:
     """Tworzy obiekt pojedynku zawierający 1 lub 2 mecze."""
     if not matches:
         return None
 
-    # Sortujemy po ID
     matches.sort(key=lambda x: x.id)
 
     m1 = matches[0]
@@ -136,7 +140,6 @@ def _create_duel_item(matches: List[Match]) -> Dict[str, Any]:
     }
 
     if m2:
-        # Obsługa odwrócenia gospodarzy w rewanżu
         if m2.home_team_id == m1.away_team_id:
             base_data["score_leg2_home"] = m2.away_score
             base_data["score_leg2_away"] = m2.home_score
@@ -147,7 +150,7 @@ def _create_duel_item(matches: List[Match]) -> Dict[str, Any]:
     return base_data
 
 
-def _resolve_aggregate_winner(matches):
+def _resolve_aggregate_winner(matches: List[Match]):
     if matches[-1].status == "FINISHED":
         return matches[-1].winner_id
     return None

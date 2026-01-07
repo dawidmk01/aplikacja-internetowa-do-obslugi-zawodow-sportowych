@@ -35,8 +35,10 @@ def ensure_matches_generated(tournament: Tournament) -> None:
         generate_league_stage(tournament)
 
     elif fmt == Tournament.TournamentFormat.MIXED:
+        # ✅ TYLKO GRUPY
+        # KO ma powstać dopiero po zakończeniu fazy grupowej
+        # (endpoint /advance-from-groups/ -> advance_from_groups_to_knockout)
         generate_group_stage(tournament)
-        generate_knockout_stage(tournament)
 
     elif fmt == Tournament.TournamentFormat.CUP:
         generate_knockout_stage(tournament)
