@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
 import NavBar from "./components/NavBar";
+// NOWY IMPORT
+import BackButton from "./components/BackButton";
 import { apiFetch, clearTokens } from "./api";
 
 /* ===== STRONY PUBLICZNE ===== */
@@ -14,18 +16,19 @@ import FindTournament from "./pages/FindTournament";
 /* ===== STREFA ZALOGOWANA ===== */
 import ProtectedRoute from "./ProtectedRoute";
 import MyTournaments from "./pages/MyTournaments";
-import CreateTournament from "./pages/CreateTournament";
+import TournamentBasicsSetup from "./pages/TournamentBasicsSetup";
 
 /* ===== LAYOUTY ===== */
-// Dodajemy nowy import layoutu zgodnie ze screenem
 import TournamentLayout from "./layouts/TournamentLayout";
 
+/* ===== FLOW CONTEXT ===== */
+import { TournamentFlowGuardProvider } from "./flow/TournamentFlowGuardContext";
+
 /* ===== FLOW TURNIEJU ===== */
-import TournamentSetup from "./pages/TournamentSetup";          // krok 2
-import TournamentTeams from "./pages/TournamentTeams";          // krok 3
-import TournamentMatches from "./pages/TournamentMatches";      // krok 4
-import TournamentSchedule from "./pages/TournamentSchedule";    // krok 5
-import TournamentResults from "./pages/TournamentResults.tsx";
+import TournamentTeams from "./pages/TournamentTeams";
+import TournamentMatches from "./pages/TournamentMatches";
+import TournamentSchedule from "./pages/TournamentSchedule";
+import TournamentResults from "./pages/TournamentResults";
 
 /* ===== WIDOKI POZA FLOW ===== */
 import TournamentDetail from "./pages/TournamentDetail";
@@ -65,6 +68,9 @@ export default function App() {
     <BrowserRouter>
       <NavBar username={username} onLogout={handleLogout} />
 
+      {/* GLOBALNY PRZYCISK POWROTU (Poza Routes, widoczny wszędzie oprócz Home) */}
+      <BackButton />
+
       <Routes>
         {/* =========================
             PUBLICZNE
@@ -88,21 +94,21 @@ export default function App() {
         />
 
         {/* =========================
-            TWORZENIE NOWEGO TURNIEJU (KROK 1)
-            To zostaje osobno, bo nie ma jeszcze ID
+            TWORZENIE NOWEGO TURNIEJU (NOWY KROK 1)
            ========================= */}
         <Route
           path="/tournaments/new"
           element={
             <ProtectedRoute>
-              <CreateTournament />
+              <TournamentFlowGuardProvider>
+                <TournamentBasicsSetup />
+              </TournamentFlowGuardProvider>
             </ProtectedRoute>
           }
         />
 
         {/* =========================
             ZAGNIEŻDŻONY ROUTING TURNIEJU (MANAGEMENT)
-            Tutaj wszystkie podstrony dziedziczą TournamentLayout
            ========================= */}
         <Route
           path="/tournaments/:id"
@@ -112,27 +118,19 @@ export default function App() {
             </ProtectedRoute>
           }
         >
-          {/* Domyślny widok: /tournaments/123 -> Szczegóły turnieju */}
-          {/* UWAGA: Teraz ten widok jest chroniony i ma layout.
-              Jeśli ma być publiczny, trzeba by zmienić strukturę. */}
+          {/* Domyślny widok: Szczegóły turnieju */}
           <Route index element={<TournamentDetail />} />
 
-          {/* KROK 1 (EDYCJA) */}
-          <Route path="edit" element={<CreateTournament />} />
+          {/* edit -> setup (Redirect) */}
+          <Route path="edit" element={<Navigate to="setup" replace />} />
 
-          {/* KROK 2 – KONFIGURACJA */}
-          <Route path="setup" element={<TournamentSetup />} />
+          {/* POŁĄCZONY KROK (Konfiguracja + Dane) */}
+          <Route path="setup" element={<TournamentBasicsSetup />} />
 
-          {/* KROK 3 – UCZESTNICY */}
+          {/* POZOSTAŁE KROKI */}
           <Route path="teams" element={<TournamentTeams />} />
-
-          {/* KROK 4 – GENEROWANIE MECZÓW */}
           <Route path="matches" element={<TournamentMatches />} />
-
-          {/* KROK 5 – HARMONOGRAM */}
           <Route path="schedule" element={<TournamentSchedule />} />
-
-          {/* KROK 6 – WYNIKI */}
           <Route path="results" element={<TournamentResults />} />
 
           {/* TABELA / STANDINGS */}

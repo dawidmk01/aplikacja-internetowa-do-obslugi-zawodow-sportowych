@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { apiFetch } from "../api";
 
 type Team = { id: number; name: string };
@@ -23,7 +23,6 @@ type SetupTeamsResponse = {
 
 export default function TournamentTeams() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
 
   const [tournament, setTournament] = useState<TournamentDTO | null>(null);
   const [teams, setTeams] = useState<Team[]>([]);
@@ -75,12 +74,14 @@ export default function TournamentTeams() {
       try {
         setMessage(null);
         setLoading(true);
+
         const t = await loadTournament();
-        const currentTeams = await loadTeams();
+        let currentTeams = await loadTeams();
 
         if (mounted && t.status === "DRAFT" && currentTeams.length === 0) {
           setBusy(true);
           await setupTeams(t.participants_count);
+          currentTeams = await loadTeams();
           setMessage("Utworzono listę uczestników.");
         }
       } catch (e: any) {
@@ -99,6 +100,10 @@ export default function TournamentTeams() {
 
   const needsResync = useMemo(() => {
     if (!tournament) return false;
+    // Ignorujemy stan początkowy (pusta lista w DRAFT nie jest błędem synchronizacji)
+    if (teams.length === 0 && tournament.status === "DRAFT") {
+      return false;
+    }
     return teams.length !== tournament.participants_count;
   }, [tournament, teams.length]);
 
@@ -193,7 +198,6 @@ export default function TournamentTeams() {
   };
 
   return (
-    // USUNIĘTO overflowY: "scroll". Zostawiono minHeight, żeby stopka nie skakała.
     <div style={{ padding: "2rem", maxWidth: 900, minHeight: "100vh" }}>
       <h1>Uczestnicy turnieju</h1>
 
@@ -203,7 +207,6 @@ export default function TournamentTeams() {
         <div><strong>Status:</strong> {tournament.status}</div>
       </section>
 
-      {/* Ukrywamy komunikat podczas pracy (busy), żeby nie mrugał */}
       {needsResync && !busy && (
         <div style={{
             border: "1px solid #666", padding: "0.75rem", marginBottom: "1rem", borderRadius: 8
@@ -257,45 +260,36 @@ export default function TournamentTeams() {
 
       <h2>Drużyny</h2>
 
-      <div style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-          gap: "0.5rem",
-        }}>
-        {teams.map((team) => (
-          <input
-            key={team.id}
-            value={team.name}
-            disabled={busy}
-            onChange={(e) =>
-              setTeams((prev) =>
-                prev.map((t) => (t.id === team.id ? { ...t, name: e.target.value } : t))
-              )
-            }
-            onBlur={async (e) => {
-              try {
-                await updateTeamName(team.id, e.target.value);
-              } catch (err: any) {
-                setMessage(err.message);
-                await loadTeams().catch(() => null);
+      {teams.length === 0 && !busy ? (
+        <p style={{ opacity: 0.6, fontStyle: "italic" }}>Przygotowywanie listy uczestników…</p>
+      ) : (
+        <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+            gap: "0.5rem",
+          }}>
+          {teams.map((team) => (
+            <input
+              key={team.id}
+              value={team.name}
+              disabled={busy}
+              onChange={(e) =>
+                setTeams((prev) =>
+                  prev.map((t) => (t.id === team.id ? { ...t, name: e.target.value } : t))
+                )
               }
-            }}
-          />
-        ))}
-      </div>
-
-      <div style={{ marginTop: "2rem", display: "flex", gap: "1rem" }}>
-        <button type="button" onClick={() => navigate(-1)} disabled={busy}>
-          ← Wróć
-        </button>
-        <button
-          type="button"
-          disabled={busy || (needsResync && !busy)}
-          onClick={() => navigate(`/tournaments/${id}/matches`)}
-        >
-          {tournament.status === "DRAFT" ? "Generuj rozgrywki →" : "Przejdź do rozgrywek →"}
-        </button>
-      </div>
+              onBlur={async (e) => {
+                try {
+                  await updateTeamName(team.id, e.target.value);
+                } catch (err: any) {
+                  setMessage(err.message);
+                  await loadTeams().catch(() => null);
+                }
+              }}
+            />
+          ))}
+        </div>
+      )}
 
       {message && <p style={{ marginTop: "1rem" }}>{message}</p>}
     </div>
