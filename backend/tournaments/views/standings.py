@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
 from tournaments.models import Tournament, Stage
-from tournaments.services.standings.league_table import compute_stage_standings
+from tournaments.services.standings.compute import compute_stage_standings
 from tournaments.services.standings.knockout_bracket import get_knockout_bracket
 
 

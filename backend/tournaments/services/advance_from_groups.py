@@ -12,7 +12,7 @@ from django.db import transaction
 from django.db.models import Q
 
 from tournaments.models import Tournament, Stage, Team, Match
-from tournaments.services.standings.league_table import compute_stage_standings
+from tournaments.services.standings.compute import compute_stage_standings
 from tournaments.services.generators.knockout import generate_knockout_stage
 
 
