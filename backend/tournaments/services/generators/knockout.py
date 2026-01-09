@@ -397,34 +397,41 @@ def _collect_pair_winners(matches: List[Match], *, cup_matches: int) -> List[Tea
         if len(group) != 2:
             raise ValueError("Dwumecz wymaga dokładnie 2 meczów w parze.")
 
-        winner_ids_nonnull = {m.winner_id for m in group if m.winner_id is not None}
-        if len(winner_ids_nonnull) == 1 and len(winner_ids_nonnull) == len(group):
-            winners.append(group[0].winner)  # type: ignore[arg-type]
-            continue
+        # 1) Jeśli winner_id jest spójny na OBU meczach, używamy go bez liczenia agregatu.
+        if all(m.winner_id is not None for m in group):
+            wid = {m.winner_id for m in group}
+            if len(wid) == 1:
+                winners.append(group[0].winner)  # type: ignore[arg-type]
+                continue
 
-        totals: dict[int, int] = {}
-        team_ids: set[int] = set()
-
-        for m in group:
-            team_ids.add(m.home_team_id)
-            team_ids.add(m.away_team_id)
-            totals[m.home_team_id] = totals.get(m.home_team_id, 0) + int(m.home_score)
-            totals[m.away_team_id] = totals.get(m.away_team_id, 0) + int(m.away_score)
-
+        # 2) Liczymy agregat bramek (reg+dogrywka), karne NIE wchodzą do agregatu.
+        team_ids: set[int] = {group[0].home_team_id, group[0].away_team_id}
         if len(team_ids) != 2:
             raise ValueError("Błąd danych KO: para nie ma dokładnie 2 drużyn.")
 
         t1, t2 = list(team_ids)
-        g1, g2 = totals.get(t1, 0), totals.get(t2, 0)
+        g1 = sum(team_goals_in_match(m, t1) for m in group)
+        g2 = sum(team_goals_in_match(m, t2) for m in group)
 
-        if g1 == g2:
-            raise ValueError("Dwumecz nie ma rozstrzygnięcia (remis w agregacie).")
+        # 2a) agregat rozstrzyga
+        if g1 != g2:
+            winner_id = t1 if g1 > g2 else t2
+            Match.objects.filter(pk__in=[m.pk for m in group]).update(winner_id=winner_id)
+            winners.append(_team_from_group(group, winner_id))
+            continue
 
-        winner_id = t1 if g1 > g2 else t2
-        Match.objects.filter(pk__in=[m.pk for m in group]).update(winner_id=winner_id)
-        winners.append(_team_from_group(group, winner_id))
+        # 2b) agregat remisowy → karne w rewanżu (u Ciebie: mecz o większym ID)
+        second_leg = max(group, key=lambda m: m.id)
+        pw = penalty_winner_id(second_leg)
+        if pw is not None:
+            Match.objects.filter(pk__in=[m.pk for m in group]).update(winner_id=pw)
+            winners.append(_team_from_group(group, pw))
+            continue
+
+        raise ValueError("Dwumecz nie ma rozstrzygnięcia (remis w agregacie i brak karnych w rewanżu).")
 
     return winners
+
 
 
 def _collect_pair_losers(matches: List[Match], *, cup_matches: int) -> List[Team]:

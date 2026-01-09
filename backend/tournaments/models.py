@@ -28,6 +28,7 @@ class Tournament(models.Model):
         FOOTBALL = "football", "Piłka nożna"
         VOLLEYBALL = "volleyball", "Siatkówka"
         BASKETBALL = "basketball", "Koszykówka"
+        HANDBALL = "handball", "Piłka ręczna"
         TENNIS = "tennis", "Tenis"
         WRESTLING = "wrestling", "Zapasy"
 
@@ -353,6 +354,15 @@ class Match(models.Model):
     # ===== WYNIK =====
     home_score = models.PositiveIntegerField(default=0)
     away_score = models.PositiveIntegerField(default=0)
+
+    # dogrywka (piłka nożna KO / opcjonalnie inne dyscypliny wg konfiguracji)
+    went_to_extra_time = models.BooleanField(default=False)
+    home_extra_time_score = models.PositiveSmallIntegerField(null=True, blank=True)
+    away_extra_time_score = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    decided_by_penalties = models.BooleanField(default=False)
+    home_penalty_score = models.PositiveSmallIntegerField(null=True, blank=True)
+    away_penalty_score = models.PositiveSmallIntegerField(null=True, blank=True)
 
     # Czy wynik został faktycznie wprowadzony/edytowany przez użytkownika
     result_entered = models.BooleanField(default=False)

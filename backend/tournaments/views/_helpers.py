@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 from django.db.models import Q
 
 from tournaments.services.generators.knockout import generate_next_knockout_stage
+from tournaments.services.match_outcome import team_goals_in_match, penalty_winner_id
 
 from ..models import Match, Stage, Team, Tournament, TournamentMembership
 
@@ -52,23 +53,39 @@ def _pair_key_ids(home_id: int, away_id: int) -> Tuple[int, int]:
 
 def _sync_two_leg_pair_winner_if_possible(stage: Stage, tournament: Tournament, match: Match) -> None:
     """
-    Dla cup_matches=2:
+    Dla cup_matches=2 (dwumecz):
     - jeśli para ma 2 mecze i oba są FINISHED, liczymy agregat bramek,
+      gdzie bramki = (wynik regulaminowy + dogrywka), karne NIE wchodzą do agregatu.
     - jeśli agregat rozstrzyga -> ustawiamy winner na OBU meczach pary,
-    - jeśli agregat remisowy -> czyścimy winner na OBU meczach.
+    - jeśli agregat remisowy -> próbujemy rozstrzygnąć karnymi w REWANŻU,
+    - jeśli nadal brak rozstrzygnięcia -> czyścimy winner na OBU meczach.
     """
     if _get_cup_matches(tournament) != 2:
         return
 
     key = _pair_key_ids(match.home_team_id, match.away_team_id)
 
+    # Pobierz mecze z etapu (minimalnie potrzebne pola)
     group = list(
-        Match.objects.filter(stage=stage)
-        .only("id", "status", "winner_id", "home_team_id", "away_team_id", "home_score", "away_score")
+        Match.objects.filter(stage=stage).only(
+            "id",
+            "status",
+            "winner_id",
+            "home_team_id",
+            "away_team_id",
+            "home_score",
+            "away_score",
+            "went_to_extra_time",
+            "home_extra_time_score",
+            "away_extra_time_score",
+            "decided_by_penalties",
+            "home_penalty_score",
+            "away_penalty_score",
+        )
     )
     group = [m for m in group if _pair_key_ids(m.home_team_id, m.away_team_id) == key]
 
-    # BYE/walkower ma zwykle tylko 1 mecz — nie liczymy agregatu.
+    # BYE/walkower może mieć 1 mecz — nie liczymy dwumeczu.
     if len(group) == 1:
         return
 
@@ -78,28 +95,36 @@ def _sync_two_leg_pair_winner_if_possible(stage: Stage, tournament: Tournament, 
     if any(m.status != Match.Status.FINISHED for m in group):
         return
 
-    goals: dict[int, int] = {}
-    for m in group:
-        hs = int(m.home_score or 0)
-        a_s = int(m.away_score or 0)
-        goals[m.home_team_id] = goals.get(m.home_team_id, 0) + hs
-        goals[m.away_team_id] = goals.get(m.away_team_id, 0) + a_s
-
+    # Zidentyfikuj dwie drużyny pary
     team_ids = list({group[0].home_team_id, group[0].away_team_id})
     if len(team_ids) != 2:
         return
 
     t1, t2 = team_ids[0], team_ids[1]
-    g1, g2 = goals.get(t1, 0), goals.get(t2, 0)
+
+    # Agregat goli (regulamin + dogrywka) z obu meczów
+    g1 = sum(team_goals_in_match(m, t1) for m in group)
+    g2 = sum(team_goals_in_match(m, t2) for m in group)
 
     ids = [group[0].id, group[1].id]
 
-    if g1 == g2:
-        Match.objects.filter(id__in=ids).update(winner=None)
+    # 1) Jeśli agregat rozstrzyga, ustaw zwycięzcę
+    if g1 != g2:
+        winner_id = t1 if g1 > g2 else t2
+        Match.objects.filter(id__in=ids).update(winner_id=winner_id)
         return
 
-    winner_id = t1 if g1 > g2 else t2
-    Match.objects.filter(id__in=ids).update(winner_id=winner_id)
+    # 2) Agregat remisowy -> rozstrzygnięcie karnymi w REWANŻU
+    # Rewanż najprościej: mecz o większym id (u Ciebie stabilne w praktyce)
+    second_leg = max(group, key=lambda m: m.id)
+    pw = penalty_winner_id(second_leg)
+
+    if pw is not None:
+        Match.objects.filter(id__in=ids).update(winner_id=pw)
+        return
+
+    # 3) Nadal brak rozstrzygnięcia -> wyczyść winner na obu meczach
+    Match.objects.filter(id__in=ids).update(winner=None)
 
 
 # ============================================================
