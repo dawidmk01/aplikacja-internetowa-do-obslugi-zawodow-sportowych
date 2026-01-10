@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from typing import List
-
 from tournaments.models import Group, Match, Stage, Team, Tournament
 from tournaments.services.standings.types import StandingRow
 from tournaments.services.standings.rulesets.base import StandingsRuleset
 from tournaments.services.standings.rulesets.football import FootballPZPNRuleset
 from tournaments.services.standings.rulesets.handball import HandballSuperligaRuleset
 from tournaments.services.match_outcome import final_score
+
+
+BYE_TEAM_NAME = "__SYSTEM_BYE__"
 
 
 def _get_ruleset(tournament: Tournament) -> StandingsRuleset:
@@ -24,6 +25,14 @@ def compute_stage_standings(
     stage: Stage,
     group: Group | None = None,
 ) -> list[StandingRow]:
+    """
+    Kluczowa zasada (Wariant B):
+    - Standings liczymy z uczestników *kontekstu etapu/grupy*,
+      a nie z Team.is_active.
+    Dzięki temu:
+    - po awansie do KO i zmianie is_active drużyny NIE znikają z tabel grup,
+    - zmiany wyników w grupach nadal mogą zmienić kolejność/awans.
+    """
     ruleset = _get_ruleset(tournament)
 
     teams = _get_teams_for_context(tournament, stage, group)
@@ -41,32 +50,44 @@ def compute_stage_standings(
     return ruleset.sort_rows(rows.values(), finished_matches, all_stage_matches)
 
 
-BYE_TEAM_NAME = "__SYSTEM_BYE__"
+def _team_ids_from_matches(stage: Stage, group: Group | None) -> set[int]:
+    qs = Match.objects.filter(stage=stage)
+    if group is not None:
+        qs = qs.filter(group=group)
+
+    home_ids = set(qs.values_list("home_team_id", flat=True))
+    away_ids = set(qs.values_list("away_team_id", flat=True))
+    ids = home_ids | away_ids
+    ids.discard(None)  # bezpieczeństwo
+    return ids
+
 
 def _get_teams_for_context(tournament: Tournament, stage: Stage, group: Group | None) -> list[Team]:
-    if group is None:
-        return list(tournament.teams.filter(is_active=True).exclude(name=BYE_TEAM_NAME))
+    """
+    Najważniejsza zmiana:
+    - NIE filtrujemy po is_active.
+    Uczestników kontekstu bierzemy z meczów etapu/grupy.
+    """
+    ids = _team_ids_from_matches(stage, group)
 
-    team_ids = set(
-        Match.objects.filter(stage=stage, group=group).values_list("home_team_id", flat=True)
-    ) | set(
-        Match.objects.filter(stage=stage, group=group).values_list("away_team_id", flat=True)
-    )
+    # Jeżeli z jakiegoś powodu nie ma jeszcze meczów (np. widok przed generacją),
+    # to fallback: pokaż wszystkich uczestników turnieju (bez BYE).
+    if not ids:
+        return list(tournament.teams.exclude(name=BYE_TEAM_NAME))
 
-    return list(Team.objects.filter(id__in=team_ids, is_active=True).exclude(name=BYE_TEAM_NAME))
-
+    return list(Team.objects.filter(id__in=ids).exclude(name=BYE_TEAM_NAME))
 
 
 def _get_finished_matches(stage: Stage, group: Group | None):
     qs = Match.objects.filter(stage=stage, status=Match.Status.FINISHED)
-    if group:
+    if group is not None:
         qs = qs.filter(group=group)
     return qs
 
 
 def _get_all_matches(stage: Stage, group: Group | None):
     qs = Match.objects.filter(stage=stage)
-    if group:
+    if group is not None:
         qs = qs.filter(group=group)
     return qs
 
@@ -86,14 +107,12 @@ def _apply_match_result(rows: dict[int, StandingRow], match: Match, tournament: 
     home.played += 1
     away.played += 1
 
-    # Superliga: gole z karnych nie wchodzą do wyniku i nie liczą się do kryteriów tabeli
     home.goals_for += hs
     home.goals_against += aws
     away.goals_for += aws
     away.goals_against += hs
 
     discipline = getattr(tournament, "discipline", None)
-
     is_handball = discipline in ("handball", "HANDBALL")
 
     if hs > aws:
@@ -104,7 +123,7 @@ def _apply_match_result(rows: dict[int, StandingRow], match: Match, tournament: 
 
     if hs < aws:
         away.wins += 1
-        away.away_wins += 1  # zostawiamy, choć w handball nie jest tie-breakerem
+        away.away_wins += 1
         home.losses += 1
         away.points += 3
         return
@@ -128,19 +147,15 @@ def _apply_match_result(rows: dict[int, StandingRow], match: Match, tournament: 
                 away.points += 2
                 home.points += 1
             else:
-                # powinno być niemożliwe po walidacji
                 home.draws += 1
                 away.draws += 1
         else:
-            # jeśli backend dopuścił remis bez karnych – traktujemy jako draw,
-            # ale docelowo finish/serializer powinien to zablokować
             home.draws += 1
             away.draws += 1
             home.points += 1
             away.points += 1
         return
 
-    # pozostałe dyscypliny (np. football): remis = 1 pkt
     home.draws += 1
     away.draws += 1
     home.points += 1

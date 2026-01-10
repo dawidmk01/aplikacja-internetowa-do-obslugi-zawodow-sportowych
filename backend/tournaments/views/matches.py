@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple, List
+from typing import Optional, List
 
 from django.db import transaction
 from django.db.models import Q
@@ -19,22 +19,19 @@ from tournaments.services.match_outcome import (
     validate_penalties_consistency,
 )
 
-from ..models import Match, Stage, Team, Tournament
+from ..models import Match, Stage, Tournament
 from ..serializers import MatchResultUpdateSerializer, MatchSerializer
 from ._helpers import (
     user_can_manage_tournament,
     _get_cup_matches,
     _sync_two_leg_pair_winner_if_possible,
-    _knockout_downstream_stages,
-    _knockout_downstream_has_results,
-    _soft_propagate_knockout_winner_change,
-    rollback_knockout_after_stage,
     _try_auto_advance_knockout,
+    handle_knockout_winner_change,
 )
 
 
 # ============================================================
-# Lokalne helpers (KO/3 miejsce + dwumecz)
+# Local Helpers
 # ============================================================
 
 def _third_place_value() -> str:
@@ -46,31 +43,25 @@ def _is_third_place_stage(stage: Stage) -> bool:
     return str(stage.stage_type) == str(_third_place_value())
 
 
-def _pair_key_ids(home_id: int, away_id: int) -> Tuple[int, int]:
-    return (home_id, away_id) if home_id < away_id else (away_id, home_id)
-
-
 def _get_pair_matches(stage: Stage, match: Match) -> List[Match]:
     """
-    Zwraca mecze należące do tej samej pary (Home vs Away lub Away vs Home).
-    Optimized: Filters at DB level instead of fetching all stage matches.
+    Returns matches belonging to the same pair (Home vs Away or Away vs Home) in the same stage.
+    Used for two-legged ties.
     """
     if not match.home_team_id or not match.away_team_id:
         return [match]
 
-    # Szukamy meczów A vs B lub B vs A w tym samym etapie
     qs = Match.objects.filter(
         Q(home_team_id=match.home_team_id, away_team_id=match.away_team_id) |
         Q(home_team_id=match.away_team_id, away_team_id=match.home_team_id),
         stage=stage
     ).only(
-        "id",
-        "status",
-        "winner_id",
-        "home_team_id",
-        "away_team_id",
-        "home_score",
-        "away_score",
+        "id", "status", "winner_id",
+        "home_team_id", "away_team_id",
+        "home_score", "away_score",
+        "went_to_extra_time", "home_extra_time_score", "away_extra_time_score",
+        "decided_by_penalties", "home_penalty_score", "away_penalty_score",
+        "result_entered",
     )
     return list(qs)
 
@@ -81,72 +72,112 @@ def _pair_is_complete_two_leg(group: List[Match]) -> bool:
 
 def _pair_winner_id(group: List[Match]) -> Optional[int]:
     """
-    Zakładamy, że _sync_two_leg_pair_winner_if_possible ustawia winner_id na OBU meczach pary.
+    Assumes _sync_two_leg_pair_winner_if_possible sets winner_id on BOTH matches when possible.
     """
     if not group:
         return None
     ids = {m.winner_id for m in group}
-    # Jeśli w zbiorze jest None (brak rozstrzygnięcia w jednym z meczów) -> brak winnera pary
     if None in ids:
         return None
-    # Jeśli jest dokładnie 1 unikalne ID (i nie jest to None), to mamy zwycięzcę
     if len(ids) == 1:
         return next(iter(ids))
     return None
 
 
-def _score_winner_id(match: Match) -> Optional[int]:
-    """
-    Zwycięzca wynikający z wyniku (jeśli nie remis i mamy komplet danych).
-    Stosowane głównie przy PATCH, jako pomocnicze wyliczenie przed finalizacją.
-    """
-    if match.home_score is None or match.away_score is None:
-        return None
-    if match.home_score == match.away_score:
-        return None
-    return match.home_team_id if match.home_score > match.away_score else match.away_team_id
-
-
-def _rollback_or_propagate_after_winner_change(
-        *,
-        tournament: Tournament,
-        stage: Stage,
-        old_winner_id: Optional[int],
-        new_winner_id: Optional[int],
+def _handle_knockout_progression(
+    tournament: Tournament,
+    stage: Stage,
+    old_winner_id: Optional[int],
+    new_winner_id: Optional[int],
 ) -> None:
     """
-    Rollback/propagacja dotyczy tylko głównego KO (nie 3 miejsca).
+    Consolidated logic for handling winner changes in Knockout stages.
+    Handles rollback (soft reset) and auto-advancement.
+    IMPORTANT: applies only to the main KNOCKOUT tree (not Third Place).
     """
     if stage.stage_type != Stage.StageType.KNOCKOUT:
         return
 
-    if old_winner_id == new_winner_id:
+    handle_knockout_winner_change(
+        tournament=tournament,
+        stage=stage,
+        old_winner_id=old_winner_id,
+        new_winner_id=new_winner_id,
+    )
+
+    if tournament.status != Tournament.Status.FINISHED:
+        _try_auto_advance_knockout(stage)
+
+
+# ============================================================
+# MIXED: Regenerate KO after GROUP/LEAGUE edits (safe)
+# ============================================================
+
+def _is_mixed(tournament: Tournament) -> bool:
+    return str(getattr(tournament, "tournament_format", "")).upper() == "MIXED"
+
+
+def _knockout_exists(tournament: Tournament) -> bool:
+    return Stage.objects.filter(
+        tournament=tournament,
+        stage_type=Stage.StageType.KNOCKOUT,
+    ).exists()
+
+
+def _knockout_has_started(tournament: Tournament) -> bool:
+    """
+    KO is considered started if any KO match is not purely SCHEDULED
+    or if any KO match has result_entered=True.
+    """
+    qs = Match.objects.filter(
+        tournament=tournament,
+        stage__stage_type=Stage.StageType.KNOCKOUT,
+    )
+    if qs.filter(result_entered=True).exists():
+        return True
+    if qs.exclude(status=Match.Status.SCHEDULED).exists():
+        return True
+    return False
+
+def _import_advance_from_groups():
+    """
+    Importujemy funkcję awansu z grup do KO.
+    W projekcie plik jest w tournaments/services/advance_from_groups.py
+    """
+    from tournaments.services.advance_from_groups import advance_from_groups  # alias
+    return advance_from_groups
+
+
+
+
+def _regenerate_knockout_from_groups_if_safe(tournament: Tournament) -> None:
+    """
+    If tournament is MIXED and KO exists but has not started yet,
+    rebuild KO + 3rd place from current group standings.
+
+    This fixes:
+    - editing GROUP/LEAGUE results updates KO seeds
+    while protecting:
+    - if KO already started (any KO match touched), we DO NOT auto-regenerate.
+    """
+    if not _is_mixed(tournament):
+        return
+    if not _knockout_exists(tournament):
+        return
+    if _knockout_has_started(tournament):
         return
 
-    if not _knockout_downstream_stages(tournament, stage.order).exists():
-        return
+    third_place = _third_place_value()
 
-    # Jeśli nie ma już rozstrzygnięcia -> downstream jest nieważny (Rollback)
-    if new_winner_id is None:
-        rollback_knockout_after_stage(stage)
-        return
+    # delete stages (cascade deletes matches)
+    Stage.objects.filter(
+        tournament=tournament,
+        stage_type__in=[Stage.StageType.KNOCKOUT, third_place],
+    ).delete()
 
-    # Jeśli downstream ma już wyniki -> nie możemy bezpiecznie podmienić drużyny -> Rollback
-    if _knockout_downstream_has_results(tournament, stage.order):
-        rollback_knockout_after_stage(stage)
-        return
-
-    # Próba miękkiej propagacji (podmiana drużyny w 'Next Match')
-    new_team = Team.objects.filter(pk=new_winner_id).first()
-    try:
-        _soft_propagate_knockout_winner_change(
-            tournament=tournament,
-            after_order=stage.order,
-            old_team_id=old_winner_id,
-            new_team=new_team,
-        )
-    except ValueError:
-        rollback_knockout_after_stage(stage)
+    # regenerate
+    advance_from_groups = _import_advance_from_groups()
+    advance_from_groups(tournament)
 
 
 # ============================================================
@@ -194,12 +225,6 @@ class MatchScheduleUpdateView(RetrieveUpdateAPIView):
 class MatchResultUpdateView(RetrieveUpdateAPIView):
     """
     PATCH /api/matches/<pk>/result/
-
-    Zasada:
-    - FINISHED ustawiamy wyłącznie w /finish/
-    - KO:
-      * cup_matches=1: remis dozwolony, winner może być None (wybierany przy /finish/)
-      * cup_matches=2: winner wyliczamy dopiero z agregatu, gdy oba mecze FINISHED
     """
     serializer_class = MatchResultUpdateSerializer
     permission_classes = [IsAuthenticated]
@@ -220,77 +245,56 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
         stage = match.stage
         tournament = match.tournament
 
-        old_winner_id = match.winner_id
-        old_status = match.status
-
-        serializer = self.get_serializer(match, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-
-        # Blokada ustawiania statusu FINISHED przez PATCH
-        validated_status = serializer.validated_data.get('status')
-        if validated_status == Match.Status.FINISHED and old_status != Match.Status.FINISHED:
-            # Wymuszamy zachowanie starego statusu przy zapisie, aby uniknąć "migania" w bazie
-            match = serializer.save(status=old_status)
-        else:
-            match = serializer.save()
+        old_single_winner_id = match.winner_id
 
         cup_matches = _get_cup_matches(tournament)
         is_knockout_like = stage.stage_type == Stage.StageType.KNOCKOUT or _is_third_place_stage(stage)
 
-        # 1) Liga / grupa – standard (remis dozwolony)
+        old_pair_winner = None
+        if is_knockout_like and cup_matches == 2:
+            old_pair_winner = _pair_winner_id(_get_pair_matches(stage, match))
+
+        serializer = self.get_serializer(match, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        match = serializer.save()
+
+        # ============================
+        # LEAGUE / GROUP
+        # ============================
         if stage.stage_type in (Stage.StageType.LEAGUE, Stage.StageType.GROUP):
             try:
                 MatchResultService.apply_result(match)
             except Exception:
                 pass
+
+            # NEW: regenerate KO seeds if safe (MIXED, KO exists, KO not started)
+            try:
+                _regenerate_knockout_from_groups_if_safe(tournament)
+            except Exception:
+                # don't block PATCH
+                pass
+
             return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
 
-        # 2) KO / 3 miejsce
+        # ============================
+        # KO / THIRD PLACE
+        # ============================
         if is_knockout_like:
-            # ---- cup_matches=1: jeżeli nie remis -> ustaw winner wg wyniku
             if cup_matches == 1:
-                winner_id = _score_winner_id(match)
+                # winner derived from current result (incl. ET/penalties if provided)
+                new_winner_id = knockout_winner_id(match)
 
-                # Aktualizuj zwycięzcę tylko jeśli się zmienił
-                if winner_id is not None and winner_id != match.winner_id:
-                    match.winner_id = winner_id
+                # keep DB in sync (also allow clearing when undecidable)
+                if new_winner_id != match.winner_id:
+                    match.winner_id = new_winner_id
                     match.save(update_fields=["winner"])
 
-                # rollback/propagacja tylko dla głównego KO
-                _rollback_or_propagate_after_winner_change(
-                    tournament=tournament,
-                    stage=stage,
-                    old_winner_id=old_winner_id,
-                    new_winner_id=match.winner_id,
-                )
+                _handle_knockout_progression(tournament, stage, old_single_winner_id, new_winner_id)
 
-                if stage.stage_type == Stage.StageType.KNOCKOUT and tournament.status != Tournament.Status.FINISHED:
-                    _try_auto_advance_knockout(stage)
-
-                return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
-
-            # ---- cup_matches=2: po zmianie wyniku przelicz agregat TYLKO jeśli oba mecze FINISHED
             elif cup_matches == 2:
-                # Pobierz zwycięzcę pary PRZED aktualizacją agregatu
-                old_pair_winner = _pair_winner_id(_get_pair_matches(stage, match))
-
-                # Przelicz agregat (to może zaktualizować winner_id w bazie dla obu meczów)
                 _sync_two_leg_pair_winner_if_possible(stage, tournament, match)
-
-                # Pobierz zwycięzcę PO aktualizacji
                 new_pair_winner = _pair_winner_id(_get_pair_matches(stage, match))
-
-                _rollback_or_propagate_after_winner_change(
-                    tournament=tournament,
-                    stage=stage,
-                    old_winner_id=old_pair_winner,
-                    new_winner_id=new_pair_winner,
-                )
-
-                if stage.stage_type == Stage.StageType.KNOCKOUT and tournament.status != Tournament.Status.FINISHED:
-                    _try_auto_advance_knockout(stage)
-
-                return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
+                _handle_knockout_progression(tournament, stage, old_pair_winner, new_pair_winner)
 
         return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
 
@@ -298,12 +302,6 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
 class FinishMatchView(APIView):
     """
     POST /api/matches/<pk>/finish/
-
-    Zasady:
-    - FINISHED ustawiamy wyłącznie tutaj.
-    - KO/3 miejsce:
-      * cup_matches=1: Remis w czasie regulaminowym wymaga dogrywki/karnych.
-      * cup_matches=2: Remis w meczu dozwolony, ale po 2 meczach agregat musi wyłonić winner.
     """
     permission_classes = [IsAuthenticated]
 
@@ -323,12 +321,9 @@ class FinishMatchView(APIView):
         if not user_can_manage_tournament(request.user, tournament):
             return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
 
-        cup_matches = _get_cup_matches(tournament)
-        is_knockout_like = stage.stage_type == Stage.StageType.KNOCKOUT or _is_third_place_stage(stage)
-
-        # ===============================
-        # LIGA / GRUPA
-        # ===============================
+        # ============================
+        # LEAGUE / GROUP
+        # ============================
         if stage.stage_type in (Stage.StageType.LEAGUE, Stage.StageType.GROUP):
             try:
                 MatchResultService.apply_result(match)
@@ -337,11 +332,21 @@ class FinishMatchView(APIView):
 
             match.status = Match.Status.FINISHED
             match.save(update_fields=["status"])
+
+            # NEW: regenerate KO if safe (same rule as PATCH)
+            try:
+                _regenerate_knockout_from_groups_if_safe(tournament)
+            except Exception:
+                pass
+
             return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
 
-        # ===============================
-        # KO + 3 miejsce
-        # ===============================
+        # ============================
+        # KO + 3rd place
+        # ============================
+        cup_matches = _get_cup_matches(tournament)
+        is_knockout_like = stage.stage_type == Stage.StageType.KNOCKOUT or _is_third_place_stage(stage)
+
         if is_knockout_like:
             if not match.result_entered:
                 return Response(
@@ -355,7 +360,6 @@ class FinishMatchView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # ---- cup_matches=1: jeden mecz, musi być zwycięzca
             if cup_matches == 1:
                 err = validate_extra_time_consistency(match) or validate_penalties_consistency(match)
                 if err:
@@ -373,63 +377,32 @@ class FinishMatchView(APIView):
                 match.status = Match.Status.FINISHED
                 match.save(update_fields=["winner", "status"])
 
-                _rollback_or_propagate_after_winner_change(
-                    tournament=tournament,
-                    stage=stage,
-                    old_winner_id=old_winner_id,
-                    new_winner_id=match.winner_id,
-                )
-
-                if stage.stage_type == Stage.StageType.KNOCKOUT and tournament.status != Tournament.Status.FINISHED:
-                    _try_auto_advance_knockout(stage)
-
+                _handle_knockout_progression(tournament, stage, old_winner_id, winner_id)
                 return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
 
-            # ---- cup_matches=2: winner dopiero po agregacie (po 2. meczu)
             elif cup_matches == 2:
                 old_pair_winner = _pair_winner_id(_get_pair_matches(stage, match))
 
-                # 1. Oznaczamy bieżący mecz jako FINISHED (wstępnie)
                 if match.status != Match.Status.FINISHED:
                     match.status = Match.Status.FINISHED
                     match.save(update_fields=["status"])
 
-                # 2. Przeliczamy agregat dwumeczu
-                # Funkcja ta powinna ustawić winner_id w obu meczach, jeśli para jest rozstrzygnięta
                 _sync_two_leg_pair_winner_if_possible(stage, tournament, match)
 
-                # 3. Sprawdzamy czy dwumecz jest kompletny i rozstrzygnięty
                 group = _get_pair_matches(stage, match)
-
                 if _pair_is_complete_two_leg(group):
                     new_pair_winner = _pair_winner_id(group)
                     if not new_pair_winner:
-                        # Agregat remisowy -> COFAMY zakończenie meczu.
-                        # Użytkownik musi zmienić wynik (karne/dogrywka w rewanżu).
                         match.status = Match.Status.SCHEDULED
                         match.save(update_fields=["status"])
-
                         return Response(
-                            {
-                                "detail": "Dwumecz musi być rozstrzygnięty. Zmień wynik rewanżu (agregat nie może być remisowy)."},
+                            {"detail": "Dwumecz musi być rozstrzygnięty. Zmień wynik rewanżu."},
                             status=status.HTTP_400_BAD_REQUEST,
                         )
                 else:
-                    # Jeśli to dopiero pierwszy mecz lub drugi jeszcze nie finished (teoretycznie niemożliwe tu),
-                    # to winner pary to None.
                     new_pair_winner = None
 
-                # 4. Propagacja (jeśli para rozstrzygnięta)
-                _rollback_or_propagate_after_winner_change(
-                    tournament=tournament,
-                    stage=stage,
-                    old_winner_id=old_pair_winner,
-                    new_winner_id=new_pair_winner,
-                )
-
-                if stage.stage_type == Stage.StageType.KNOCKOUT and tournament.status != Tournament.Status.FINISHED:
-                    _try_auto_advance_knockout(stage)
-
+                _handle_knockout_progression(tournament, stage, old_pair_winner, new_pair_winner)
                 return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
 
         return Response({"detail": "Nieobsługiwany typ etapu."}, status=status.HTTP_400_BAD_REQUEST)

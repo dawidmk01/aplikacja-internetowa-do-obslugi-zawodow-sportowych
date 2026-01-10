@@ -164,3 +164,10 @@ def _set_active_teams(tournament: Tournament, advancing_ids: set[int]) -> None:
     """
     tournament.teams.filter(is_active=True).exclude(id__in=advancing_ids).update(is_active=False)
     tournament.teams.filter(id__in=advancing_ids).update(is_active=True)
+
+# ============================================================
+# Backward-compatible alias (używane przez views/matches.py)
+# ============================================================
+
+def advance_from_groups(tournament: Tournament) -> Stage:
+    return advance_from_groups_to_knockout(tournament)

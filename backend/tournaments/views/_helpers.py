@@ -65,7 +65,6 @@ def _sync_two_leg_pair_winner_if_possible(stage: Stage, tournament: Tournament, 
 
     key = _pair_key_ids(match.home_team_id, match.away_team_id)
 
-    # Pobierz mecze z etapu (minimalnie potrzebne pola)
     group = list(
         Match.objects.filter(stage=stage).only(
             "id",
@@ -95,27 +94,22 @@ def _sync_two_leg_pair_winner_if_possible(stage: Stage, tournament: Tournament, 
     if any(m.status != Match.Status.FINISHED for m in group):
         return
 
-    # Zidentyfikuj dwie drużyny pary
     team_ids = list({group[0].home_team_id, group[0].away_team_id})
     if len(team_ids) != 2:
         return
 
     t1, t2 = team_ids[0], team_ids[1]
 
-    # Agregat goli (regulamin + dogrywka) z obu meczów
     g1 = sum(team_goals_in_match(m, t1) for m in group)
     g2 = sum(team_goals_in_match(m, t2) for m in group)
 
     ids = [group[0].id, group[1].id]
 
-    # 1) Jeśli agregat rozstrzyga, ustaw zwycięzcę
     if g1 != g2:
         winner_id = t1 if g1 > g2 else t2
         Match.objects.filter(id__in=ids).update(winner_id=winner_id)
         return
 
-    # 2) Agregat remisowy -> rozstrzygnięcie karnymi w REWANŻU
-    # Rewanż najprościej: mecz o większym id (u Ciebie stabilne w praktyce)
     second_leg = max(group, key=lambda m: m.id)
     pw = penalty_winner_id(second_leg)
 
@@ -123,15 +117,17 @@ def _sync_two_leg_pair_winner_if_possible(stage: Stage, tournament: Tournament, 
         Match.objects.filter(id__in=ids).update(winner_id=pw)
         return
 
-    # 3) Nadal brak rozstrzygnięcia -> wyczyść winner na obu meczach
     Match.objects.filter(id__in=ids).update(winner=None)
 
 
 # ============================================================
-# KO (ROLLBACK / PROPAGACJA)
+# KO (ROLLBACK / PROPAGACJA / SOFT RESET)
 # ============================================================
 
 def _knockout_downstream_stages(tournament: Tournament, after_order: int):
+    """
+    Zwraca etapy KO downstream (tylko StageType.KNOCKOUT) po wskazanym order.
+    """
     return Stage.objects.filter(
         tournament=tournament,
         stage_type=Stage.StageType.KNOCKOUT,
@@ -140,6 +136,10 @@ def _knockout_downstream_stages(tournament: Tournament, after_order: int):
 
 
 def _knockout_downstream_has_results(tournament: Tournament, after_order: int) -> bool:
+    """
+    Czy w downstream KO są już wyniki? (FINISHED lub wprowadzone bramki/winner)
+    Jeśli tak -> nie wolno soft-resetować, trzeba hard-rollback.
+    """
     qs = Match.objects.filter(
         tournament=tournament,
         stage__stage_type=Stage.StageType.KNOCKOUT,
@@ -153,22 +153,28 @@ def _knockout_downstream_has_results(tournament: Tournament, after_order: int) -
     ).exists()
 
 
-def _soft_propagate_knockout_winner_change(
+def _soft_reset_downstream_for_team_change(
+    *,
     tournament: Tournament,
     after_order: int,
-    old_team_id: Optional[int],
-    new_team: Optional[Team],
+    old_team_id: int,
+    new_team: Team,
 ) -> None:
-    if not old_team_id:
-        return
-    if new_team is None:
-        return
-
-    downstream_matches = Match.objects.filter(
-        tournament=tournament,
-        stage__stage_type=Stage.StageType.KNOCKOUT,
-        stage__order__gt=after_order,
-    ).select_related("stage")
+    """
+    Soft reset:
+    - podmienia old_team_id -> new_team w KO/THIRD_PLACE po danym order
+    - czyści wynik/winner/status w dotkniętych meczach
+    - otwiera etapy (OPEN) po danym order
+    """
+    # Dotykamy zarówno KO jak i THIRD_PLACE, bo 3. miejsce zależy od półfinałów.
+    downstream_matches = (
+        Match.objects.filter(
+            tournament=tournament,
+            stage__order__gt=after_order,
+            stage__stage_type__in=[Stage.StageType.KNOCKOUT, Stage.StageType.THIRD_PLACE],
+        )
+        .select_related("stage")
+    )
 
     to_update = []
     for m in downstream_matches:
@@ -185,33 +191,49 @@ def _soft_propagate_knockout_winner_change(
             continue
 
         if m.home_team_id == m.away_team_id:
+            # To jest stan niemożliwy -> w takiej sytuacji nie próbujemy „magii”
             raise ValueError("Kolizja w KO: po podmianie drużyn mecz stał się home==away.")
 
+        # Czyścimy wynik i stan meczu – bo to już inna para.
         m.home_score = None
         m.away_score = None
         m.winner = None
         m.status = Match.Status.SCHEDULED
+        m.result_entered = False
 
         to_update.append(m)
 
     if to_update:
         Match.objects.bulk_update(
             to_update,
-            ["home_team", "away_team", "home_score", "away_score", "winner", "status"],
+            [
+                "home_team",
+                "away_team",
+                "home_score",
+                "away_score",
+                "winner",
+                "status",
+                "result_entered",
+            ],
         )
 
+    # Otwieramy downstream etapy (KO i 3 miejsce)
     Stage.objects.filter(
         tournament=tournament,
-        stage_type=Stage.StageType.KNOCKOUT,
         order__gt=after_order,
+        stage_type__in=[Stage.StageType.KNOCKOUT, Stage.StageType.THIRD_PLACE],
     ).exclude(status=Stage.Status.OPEN).update(status=Stage.Status.OPEN)
 
+    # Jeśli turniej był FINISHED, a grzebiemy w drabince -> wraca do CONFIGURED
     if tournament.status == Tournament.Status.FINISHED:
         tournament.status = Tournament.Status.CONFIGURED
         tournament.save(update_fields=["status"])
 
 
 def rollback_knockout_after_stage(stage: Stage) -> int:
+    """
+    Hard rollback: usuwa wszystkie downstream etapy KO po danym etapie (tylko KO).
+    """
     tournament = stage.tournament
     downstream_stages = _knockout_downstream_stages(tournament, stage.order)
 
@@ -228,6 +250,65 @@ def rollback_knockout_after_stage(stage: Stage) -> int:
 
     return deleted_count
 
+
+def handle_knockout_winner_change(
+    *,
+    tournament: Tournament,
+    stage: Stage,
+    old_winner_id: Optional[int],
+    new_winner_id: Optional[int],
+) -> None:
+    """
+    Centralna decyzja po zmianie zwycięzcy (KO):
+    - jeśli winner się nie zmienił -> nic
+    - jeśli nie ma downstream -> nic
+    - jeśli new_winner_id jest None -> hard rollback (downstream nieważny)
+    - jeśli downstream ma wyniki -> hard rollback
+    - w innym przypadku -> soft reset (podmień drużynę w downstream i wyczyść tylko dotknięte mecze)
+
+    Uwaga:
+    - Wywołuj TYLKO dla stage_type == KNOCKOUT.
+    - Dla THIRD_PLACE nie propagujemy nic dalej (bo to koniec ścieżki).
+    """
+    if stage.stage_type != Stage.StageType.KNOCKOUT:
+        return
+
+    if old_winner_id == new_winner_id:
+        return
+
+    if not _knockout_downstream_stages(tournament, stage.order).exists():
+        return
+
+    # Jeśli nie ma rozstrzygnięcia po zmianie -> downstream staje się nieważny
+    if new_winner_id is None:
+        rollback_knockout_after_stage(stage)
+        return
+
+    # Jeśli downstream ma już wyniki -> rollback (bezpieczniej)
+    if _knockout_downstream_has_results(tournament, stage.order):
+        rollback_knockout_after_stage(stage)
+        return
+
+    # Soft reset: zamiana drużyny w downstream
+    new_team = Team.objects.filter(pk=new_winner_id).first()
+    if not new_team:
+        rollback_knockout_after_stage(stage)
+        return
+
+    try:
+        _soft_reset_downstream_for_team_change(
+            tournament=tournament,
+            after_order=stage.order,
+            old_team_id=old_winner_id or 0,
+            new_team=new_team,
+        )
+    except ValueError:
+        rollback_knockout_after_stage(stage)
+
+
+# ============================================================
+# AUTO-PROGRES KO
+# ============================================================
 
 def _try_auto_advance_knockout(stage: Stage) -> None:
     """

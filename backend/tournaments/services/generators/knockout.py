@@ -7,6 +7,7 @@ from typing import DefaultDict, Iterable, List, Tuple, Optional
 from django.db import transaction
 
 from tournaments.models import Match, Stage, Team, Tournament
+from tournaments.services.match_outcome import team_goals_in_match, penalty_winner_id
 
 
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
@@ -17,35 +18,46 @@ BYE_TEAM_NAME = "__SYSTEM_BYE__"
 # ============================================================
 
 @transaction.atomic
-def generate_knockout_stage(tournament: Tournament) -> Stage:
+def generate_knockout_stage(
+    tournament: Tournament,
+    *,
+    teams: Optional[List[Team]] = None,
+    team_ids: Optional[List[int]] = None,
+) -> Stage:
+    """
+    WARIANT B (docelowy):
+    - Generator KO NIE bazuje na Team.is_active.
+    - Możesz przekazać jawnie listę drużyn (teams) lub listę ID (team_ids),
+      a generator zachowa kolejność jako seeding.
+
+    Jeśli nic nie przekażesz: generator weźmie wszystkie drużyny turnieju (bez BYE).
+    """
     _validate_tournament(tournament)
 
-    teams = _get_active_teams(tournament)
+    seed_teams = _resolve_seed_teams(tournament, teams=teams, team_ids=team_ids)
     cup_matches = _get_cup_matches(tournament)
 
     # =========================================================
-    # 🔧 POPRAWKA: Dynamiczne obliczanie kolejności (order)
+    # Dynamiczne obliczanie kolejności (order)
     # =========================================================
-    # W formacie MIXED istnieje już etap grupowy (np. order=1).
-    # Musimy sprawdzić ostatni order i dodać 1.
     last_stage = Stage.objects.filter(tournament=tournament).order_by("-order").first()
     new_order = (last_stage.order + 1) if last_stage else 1
 
     stage = Stage.objects.create(
         tournament=tournament,
         stage_type=Stage.StageType.KNOCKOUT,
-        order=new_order,  # <-- Używamy wyliczonej wartości zamiast sztywnego "1"
+        order=new_order,
         status=Stage.Status.OPEN,
     )
 
-    bracket_size = _next_power_of_two(len(teams))
-    byes_count = bracket_size - len(teams)
+    bracket_size = _next_power_of_two(len(seed_teams))
+    byes_count = bracket_size - len(seed_teams)
 
     bye_team: Optional[Team] = None
     if byes_count > 0:
         bye_team = _get_or_create_bye_team(tournament)
 
-    pairs = _build_first_round_pairs(teams=teams, byes_count=byes_count, bye_team=bye_team)
+    pairs = _build_first_round_pairs(teams=seed_teams, byes_count=byes_count, bye_team=bye_team)
 
     matches = _build_matches_for_pairs(
         tournament=tournament,
@@ -56,17 +68,17 @@ def generate_knockout_stage(tournament: Tournament) -> Stage:
         round_number=1,
     )
 
-    if len(teams) >= 2 and not matches:
+    if len(seed_teams) >= 2 and not matches:
         raise ValueError("Generator pucharowy nie utworzył żadnych meczów.")
 
     Match.objects.bulk_create(matches)
 
-    # Aktualizacja statusu
+    # Aktualizacja statusu (bez agresywnych resetów)
     if tournament.status == Tournament.Status.DRAFT:
         tournament.status = Tournament.Status.CONFIGURED
         tournament.save(update_fields=["status"])
     elif tournament.status == Tournament.Status.CONFIGURED:
-         pass
+        pass
 
     return stage
 
@@ -215,7 +227,7 @@ def _validate_tournament(tournament: Tournament) -> None:
     allowed_statuses = {
         Tournament.Status.DRAFT,
         Tournament.Status.CONFIGURED,
-        Tournament.Status.RUNNING
+        Tournament.Status.RUNNING,
     }
     if tournament.status not in allowed_statuses:
         raise ValueError(
@@ -224,17 +236,63 @@ def _validate_tournament(tournament: Tournament) -> None:
 
     allowed_formats = {
         Tournament.TournamentFormat.CUP,
-        Tournament.TournamentFormat.MIXED
+        Tournament.TournamentFormat.MIXED,
     }
     if tournament.tournament_format not in allowed_formats:
         raise ValueError("Generator pucharowy obsługuje wyłącznie format CUP lub MIXED.")
 
 
-def _get_active_teams(tournament: Tournament) -> List[Team]:
-    teams = list(tournament.teams.filter(is_active=True).order_by("id"))
-    if len(teams) < 2:
+def _resolve_seed_teams(
+    tournament: Tournament,
+    *,
+    teams: Optional[List[Team]] = None,
+    team_ids: Optional[List[int]] = None,
+) -> List[Team]:
+    """
+    Zwraca listę drużyn do seedingu KO (bez BYE) i NIE filtruje po is_active.
+
+    Zasady:
+    - jeśli podasz teams: zachowujemy kolejność jako seeding
+    - jeśli podasz team_ids: zachowujemy kolejność team_ids
+    - jeśli nie podasz nic: bierzemy wszystkie drużyny turnieju (bez BYE) posortowane po id
+    """
+    if teams is not None and team_ids is not None:
+        raise ValueError("Podaj albo teams, albo team_ids (nie oba na raz).")
+
+    if teams is not None:
+        cleaned: List[Team] = []
+        for t in teams:
+            if t.tournament_id != tournament.id:
+                raise ValueError("Przekazano drużynę z innego turnieju (błędny seeding).")
+            if t.name == BYE_TEAM_NAME:
+                continue
+            cleaned.append(t)
+
+        if len(cleaned) < 2:
+            raise ValueError("Do wygenerowania fazy pucharowej wymaganych jest co najmniej dwóch uczestników.")
+        return cleaned
+
+    if team_ids is not None:
+        teams_map = Team.objects.filter(tournament=tournament, id__in=team_ids).in_bulk()
+        missing = [tid for tid in team_ids if tid not in teams_map]
+        if missing:
+            raise ValueError(f"Nie znaleziono drużyn o ID: {missing}")
+
+        ordered: List[Team] = []
+        for tid in team_ids:
+            t = teams_map[tid]
+            if t.name == BYE_TEAM_NAME:
+                continue
+            ordered.append(t)
+
+        if len(ordered) < 2:
+            raise ValueError("Do wygenerowania fazy pucharowej wymaganych jest co najmniej dwóch uczestników.")
+        return ordered
+
+    all_teams = list(tournament.teams.exclude(name=BYE_TEAM_NAME).order_by("id"))
+    if len(all_teams) < 2:
         raise ValueError("Do wygenerowania fazy pucharowej wymaganych jest co najmniej dwóch uczestników.")
-    return teams
+    return all_teams
 
 
 def _get_or_create_bye_team(tournament: Tournament) -> Team:
@@ -278,6 +336,7 @@ def _build_first_round_pairs(
     if byes_count >= len(teams):
         raise ValueError("Nieprawidłowa liczba BYE względem liczby drużyn.")
 
+    # Seeding: pierwsze 'byes_count' dostaje wolny los
     bye_teams = teams[:byes_count]
     play_teams = teams[byes_count:]
 
@@ -420,7 +479,7 @@ def _collect_pair_winners(matches: List[Match], *, cup_matches: int) -> List[Tea
             winners.append(_team_from_group(group, winner_id))
             continue
 
-        # 2b) agregat remisowy → karne w rewanżu (u Ciebie: mecz o większym ID)
+        # 2b) agregat remisowy → karne w rewanżu (mecz o większym ID)
         second_leg = max(group, key=lambda m: m.id)
         pw = penalty_winner_id(second_leg)
         if pw is not None:
@@ -431,7 +490,6 @@ def _collect_pair_winners(matches: List[Match], *, cup_matches: int) -> List[Tea
         raise ValueError("Dwumecz nie ma rozstrzygnięcia (remis w agregacie i brak karnych w rewanżu).")
 
     return winners
-
 
 
 def _collect_pair_losers(matches: List[Match], *, cup_matches: int) -> List[Team]:
