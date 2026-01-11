@@ -2,13 +2,14 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 from tournaments.models import Match, Stage, Tournament
+from tournaments.services.match_outcome import team_goals_in_match, penalty_winner_id
 
 
 def get_knockout_bracket(tournament: Tournament) -> Dict[str, Any]:
     """
     Zwraca strukturę drabinki KO.
     Grupuje dwumecze (mecze między tymi samymi drużynami w tej samej rundzie) w jeden obiekt.
-    Poprawiona obsługa dwumeczu o 3. miejsce.
+    Poprawiona obsługa dwumeczu (agregat + karne) oraz dwumeczu o 3. miejsce.
     """
     matches = (
         Match.objects
@@ -28,7 +29,6 @@ def get_knockout_bracket(tournament: Tournament) -> Dict[str, Any]:
     third_place_matches: list[Match] = []
 
     def is_third_place(stage_type) -> bool:
-        # ✅ lepiej niż str(stage_type) == "THIRD_PLACE"
         return stage_type == Stage.StageType.THIRD_PLACE
 
     for m in matches:
@@ -79,10 +79,7 @@ def get_knockout_bracket(tournament: Tournament) -> Dict[str, Any]:
 
     for v_round in sorted(rounds_map.keys()):
         duels = rounds_map[v_round]
-
-        # ✅ POPRAWKA: etykieta na podstawie liczby par w rundzie
         label = _label_from_duels_count(len(duels), v_round=v_round)
-
         bracket_rounds.append({
             "round_number": v_round,
             "label": label,
@@ -96,10 +93,6 @@ def get_knockout_bracket(tournament: Tournament) -> Dict[str, Any]:
 
 
 def _label_from_duels_count(duels_count: int, *, v_round: int) -> str:
-    """
-    Nadaje nazwę rundzie na podstawie liczby par.
-    Działa poprawnie nawet jeśli w bazie istnieje tylko jedna runda (np. same ćwierćfinały).
-    """
     teams_in_round = duels_count * 2
 
     if teams_in_round == 2:
@@ -124,22 +117,23 @@ def _create_duel_item(matches: List[Match]) -> Optional[Dict[str, Any]]:
     m1 = matches[0]
     m2 = matches[1] if len(matches) > 1 else None
 
-    base_data = {
+    winner_id = m1.winner_id if not m2 else _resolve_aggregate_winner(matches)
+
+    base_data: Dict[str, Any] = {
         "id": m1.id,
         "status": m2.status if m2 else m1.status,
         "home_team_id": m1.home_team_id,
         "away_team_id": m1.away_team_id,
         "home_team_name": m1.home_team.name if m1.home_team else "TBD",
         "away_team_name": m1.away_team.name if m1.away_team else "TBD",
-        "winner_id": m1.winner_id if not m2 else _resolve_aggregate_winner(matches),
-
+        "winner_id": winner_id,
         "score_leg1_home": m1.home_score,
         "score_leg1_away": m1.away_score,
-
-        "is_two_legged": True if m2 else False
+        "is_two_legged": True if m2 else False,
     }
 
     if m2:
+        # Wynik leg2 w ujęciu drużyn z leg1 (dla UI)
         if m2.home_team_id == m1.away_team_id:
             base_data["score_leg2_home"] = m2.away_score
             base_data["score_leg2_away"] = m2.home_score
@@ -147,10 +141,62 @@ def _create_duel_item(matches: List[Match]) -> Optional[Dict[str, Any]]:
             base_data["score_leg2_home"] = m2.home_score
             base_data["score_leg2_away"] = m2.away_score
 
+        # Dodatkowo (opcjonalnie dla UI): agregat w układzie leg1 home/away (reg+dogrywka)
+        try:
+            t_home = m1.home_team_id
+            t_away = m1.away_team_id
+            if t_home and t_away:
+                agg_home = sum(team_goals_in_match(m, t_home) for m in matches)
+                agg_away = sum(team_goals_in_match(m, t_away) for m in matches)
+                base_data["aggregate_home"] = agg_home
+                base_data["aggregate_away"] = agg_away
+        except Exception:
+            pass
+
     return base_data
 
 
-def _resolve_aggregate_winner(matches: List[Match]):
-    if matches[-1].status == "FINISHED":
-        return matches[-1].winner_id
+def _resolve_aggregate_winner(matches: List[Match]) -> Optional[int]:
+    """
+    Dla dwumeczu:
+    - Jeśli oba mecze FINISHED:
+        1) jeżeli winner_id na obu i spójny -> zwróć go
+        2) inaczej policz agregat (reg+dogrywka), karne nie wchodzą
+        3) przy remisie agregatu -> karne w rewanżu (mecz o większym ID)
+    - W przeciwnym razie -> None
+    """
+    if not matches:
+        return None
+
+    if len(matches) == 1:
+        return matches[0].winner_id
+
+    if len(matches) != 2:
+        # systemowo wspieramy max 2 legi na parę
+        return None
+
+    if any(m.status != Match.Status.FINISHED for m in matches):
+        return None
+
+    if all(m.winner_id is not None for m in matches):
+        wid = {m.winner_id for m in matches}
+        if len(wid) == 1:
+            return next(iter(wid))
+
+    team_ids = {matches[0].home_team_id, matches[0].away_team_id}
+    if len(team_ids) != 2:
+        return None
+    t1, t2 = list(team_ids)
+
+    g1 = sum(team_goals_in_match(m, t1) for m in matches)
+    g2 = sum(team_goals_in_match(m, t2) for m in matches)
+
+    if g1 != g2:
+        return t1 if g1 > g2 else t2
+
+    second_leg = max(matches, key=lambda m: m.id)
+    pw = penalty_winner_id(second_leg)
+    if pw is not None:
+        return pw
+
     return None

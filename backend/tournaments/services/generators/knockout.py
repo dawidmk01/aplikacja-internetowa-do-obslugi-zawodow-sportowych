@@ -13,10 +13,6 @@ from tournaments.services.match_outcome import team_goals_in_match, penalty_winn
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
 
 
-# ============================================================
-# API PUBLICZNE
-# ============================================================
-
 @transaction.atomic
 def generate_knockout_stage(
     tournament: Tournament,
@@ -35,11 +31,12 @@ def generate_knockout_stage(
     _validate_tournament(tournament)
 
     seed_teams = _resolve_seed_teams(tournament, teams=teams, team_ids=team_ids)
-    cup_matches = _get_cup_matches(tournament)
 
-    # =========================================================
-    # Dynamiczne obliczanie kolejności (order)
-    # =========================================================
+    # ile meczów na rundy "poza finałem"
+    cup_matches = _get_cup_matches(tournament)
+    # ile meczów ma finał
+    final_matches = _get_final_matches(tournament)
+
     last_stage = Stage.objects.filter(tournament=tournament).order_by("-order").first()
     new_order = (last_stage.order + 1) if last_stage else 1
 
@@ -59,11 +56,14 @@ def generate_knockout_stage(
 
     pairs = _build_first_round_pairs(teams=seed_teams, byes_count=byes_count, bye_team=bye_team)
 
+    # Jeśli to od razu finał (2 drużyny) -> użyj final_matches, a nie cup_matches
+    matches_per_pair = final_matches if len(seed_teams) == 2 else cup_matches
+
     matches = _build_matches_for_pairs(
         tournament=tournament,
         stage=stage,
         pairs=pairs,
-        matches_per_pair=cup_matches,
+        matches_per_pair=matches_per_pair,
         bye_team=bye_team,
         round_number=1,
     )
@@ -73,18 +73,16 @@ def generate_knockout_stage(
 
     Match.objects.bulk_create(matches)
 
-    # Aktualizacja statusu (bez agresywnych resetów)
     if tournament.status == Tournament.Status.DRAFT:
         tournament.status = Tournament.Status.CONFIGURED
         tournament.save(update_fields=["status"])
-    elif tournament.status == Tournament.Status.CONFIGURED:
-        pass
 
     return stage
 
 
 @transaction.atomic
 def generate_next_knockout_stage(stage: Stage) -> Stage:
+    # ✅ poprawny warunek (bez literówki KNOCKCKOUT)
     if stage.stage_type != Stage.StageType.KNOCKOUT:
         raise ValueError("Ten generator obsługuje wyłącznie etap typu KNOCKOUT.")
 
@@ -93,6 +91,7 @@ def generate_next_knockout_stage(stage: Stage) -> Stage:
 
     tournament = stage.tournament
     cup_matches = _get_cup_matches(tournament)
+    final_matches = _get_final_matches(tournament)
 
     matches = list(stage.matches.select_related("winner", "home_team", "away_team").all())
     if not matches:
@@ -113,9 +112,7 @@ def generate_next_knockout_stage(stage: Stage) -> Stage:
         return stage
 
     if len(advancers) % 2 != 0:
-        raise ValueError(
-            "Nieprawidłowa liczba awansujących drużyn. Sprawdź wyniki w bieżącym etapie KO."
-        )
+        raise ValueError("Nieprawidłowa liczba awansujących drużyn.")
 
     next_stage = Stage.objects.create(
         tournament=tournament,
@@ -132,33 +129,30 @@ def generate_next_knockout_stage(stage: Stage) -> Stage:
             raise ValueError("Błąd logiki KO: drużyna nie może grać sama ze sobą.")
         pairs.append((home, away))
 
+    # ✅ jeśli to finał (zostają 2 drużyny) -> użyj final_matches
+    matches_per_pair = final_matches if len(advancers) == 2 else cup_matches
+
     created = _build_matches_for_pairs(
         tournament=tournament,
         stage=next_stage,
         pairs=pairs,
-        matches_per_pair=cup_matches,
+        matches_per_pair=matches_per_pair,
         bye_team=None,
         round_number=1,
     )
     Match.objects.bulk_create(created)
 
-    # ========================================================
-    # MECZ O 3. MIEJSCE
-    # ========================================================
+    # MECZ O 3. MIEJSCE (po półfinałach)
     if len(advancers) == 2 and _has_third_place(tournament):
         _maybe_create_third_place_stage(
             tournament=tournament,
-            losers_source_matches=matches,  # półfinały
-            order=next_stage.order,         # ten sam poziom co finał
+            losers_source_matches=matches,
+            order=next_stage.order,
             cup_matches=cup_matches,
         )
 
     return next_stage
 
-
-# ============================================================
-# THIRD PLACE – POMOCNICZE
-# ============================================================
 
 def _has_third_place(tournament: Tournament) -> bool:
     cfg = tournament.format_config or {}
@@ -210,10 +204,6 @@ def _maybe_create_third_place_stage(
         )
 
 
-# ============================================================
-# WALIDACJE / KONFIG
-# ============================================================
-
 def _get_cup_matches(tournament: Tournament) -> int:
     cfg = tournament.format_config or {}
     try:
@@ -223,6 +213,15 @@ def _get_cup_matches(tournament: Tournament) -> int:
     return cup_matches if cup_matches in (1, 2) else 1
 
 
+def _get_final_matches(tournament: Tournament) -> int:
+    cfg = tournament.format_config or {}
+    try:
+        final_matches = int(cfg.get("final_matches", 1))
+    except (TypeError, ValueError):
+        final_matches = 1
+    return final_matches if final_matches in (1, 2) else 1
+
+
 def _validate_tournament(tournament: Tournament) -> None:
     allowed_statuses = {
         Tournament.Status.DRAFT,
@@ -230,14 +229,9 @@ def _validate_tournament(tournament: Tournament) -> None:
         Tournament.Status.RUNNING,
     }
     if tournament.status not in allowed_statuses:
-        raise ValueError(
-            "Faza pucharowa może być generowana tylko dla turnieju w statusie DRAFT, CONFIGURED lub RUNNING."
-        )
+        raise ValueError("Faza pucharowa może być generowana tylko dla turnieju w statusie DRAFT/CONFIGURED/RUNNING.")
 
-    allowed_formats = {
-        Tournament.TournamentFormat.CUP,
-        Tournament.TournamentFormat.MIXED,
-    }
+    allowed_formats = {Tournament.TournamentFormat.CUP, Tournament.TournamentFormat.MIXED}
     if tournament.tournament_format not in allowed_formats:
         raise ValueError("Generator pucharowy obsługuje wyłącznie format CUP lub MIXED.")
 
@@ -248,14 +242,6 @@ def _resolve_seed_teams(
     teams: Optional[List[Team]] = None,
     team_ids: Optional[List[int]] = None,
 ) -> List[Team]:
-    """
-    Zwraca listę drużyn do seedingu KO (bez BYE) i NIE filtruje po is_active.
-
-    Zasady:
-    - jeśli podasz teams: zachowujemy kolejność jako seeding
-    - jeśli podasz team_ids: zachowujemy kolejność team_ids
-    - jeśli nie podasz nic: bierzemy wszystkie drużyny turnieju (bez BYE) posortowane po id
-    """
     if teams is not None and team_ids is not None:
         raise ValueError("Podaj albo teams, albo team_ids (nie oba na raz).")
 
@@ -307,10 +293,6 @@ def _get_or_create_bye_team(tournament: Tournament) -> Team:
     return team
 
 
-# ============================================================
-# LOGIKA DRABINKI – RUNDA 1
-# ============================================================
-
 def _next_power_of_two(n: int) -> int:
     if n <= 1:
         return 1
@@ -336,7 +318,6 @@ def _build_first_round_pairs(
     if byes_count >= len(teams):
         raise ValueError("Nieprawidłowa liczba BYE względem liczby drużyn.")
 
-    # Seeding: pierwsze 'byes_count' dostaje wolny los
     bye_teams = teams[:byes_count]
     play_teams = teams[byes_count:]
 
@@ -360,7 +341,11 @@ def _build_matches_for_pairs(
     matches: List[Match] = []
     bye_id = bye_team.id if bye_team else None
 
+    if matches_per_pair not in (1, 2):
+        matches_per_pair = 1
+
     for home, away in pairs:
+        # BYE -> walkower
         if bye_id is not None and away.id == bye_id:
             matches.append(
                 Match(
@@ -377,9 +362,6 @@ def _build_matches_for_pairs(
             )
             continue
 
-        if matches_per_pair not in (1, 2):
-            matches_per_pair = 1
-
         for leg in range(matches_per_pair):
             h, a = (home, away) if leg == 0 else (away, home)
             matches.append(
@@ -395,10 +377,6 @@ def _build_matches_for_pairs(
 
     return matches
 
-
-# ============================================================
-# ZWYCIĘZCY / PRZEGRANI PAR
-# ============================================================
 
 def _pair_key(m: Match) -> Tuple[int, int]:
     a = m.home_team_id
@@ -472,7 +450,6 @@ def _collect_pair_winners(matches: List[Match], *, cup_matches: int) -> List[Tea
         g1 = sum(team_goals_in_match(m, t1) for m in group)
         g2 = sum(team_goals_in_match(m, t2) for m in group)
 
-        # 2a) agregat rozstrzyga
         if g1 != g2:
             winner_id = t1 if g1 > g2 else t2
             Match.objects.filter(pk__in=[m.pk for m in group]).update(winner_id=winner_id)
@@ -487,7 +464,7 @@ def _collect_pair_winners(matches: List[Match], *, cup_matches: int) -> List[Tea
             winners.append(_team_from_group(group, pw))
             continue
 
-        raise ValueError("Dwumecz nie ma rozstrzygnięcia (remis w agregacie i brak karnych w rewanżu).")
+        raise ValueError("Dwumecz: remis w agregacie i brak karnych w rewanżu.")
 
     return winners
 

@@ -1,9 +1,12 @@
+# backend/tournaments/services/match_generation.py
 from django.db import transaction
 
 from tournaments.models import Tournament, Stage, Team
 from tournaments.services.generators.league import generate_league_stage
 from tournaments.services.generators.knockout import generate_knockout_stage
 from tournaments.services.generators.groups import generate_group_stage
+
+BYE_TEAM_NAME = "__SYSTEM_BYE__"
 
 
 @transaction.atomic
@@ -13,17 +16,18 @@ def ensure_matches_generated(tournament: Tournament) -> None:
     faktycznej listy aktywnych uczestników (Team).
 
     Zasady:
-    - źródłem prawdy są Team(is_active=True)
-    - minimum 2 aktywne Team
+    - źródłem prawdy są Team(is_active=True) Z WYŁĄCZENIEM __SYSTEM_BYE__
+    - minimum 2 aktywnych Team
     - funkcja NIE zarządza statusem turnieju
     """
 
-    active_teams_count = Team.objects.filter(
-        tournament=tournament,
-        is_active=True,
-    ).count()
+    active_teams = list(
+        Team.objects.filter(tournament=tournament, is_active=True)
+        .exclude(name=BYE_TEAM_NAME)
+        .order_by("id")
+    )
 
-    if active_teams_count < 2:
+    if len(active_teams) < 2:
         return
 
     # RESET STRUKTURY (Match usuną się kaskadowo)
@@ -35,10 +39,9 @@ def ensure_matches_generated(tournament: Tournament) -> None:
         generate_league_stage(tournament)
 
     elif fmt == Tournament.TournamentFormat.MIXED:
-        # ✅ TYLKO GRUPY
-        # KO ma powstać dopiero po zakończeniu fazy grupowej
-        # (endpoint /advance-from-groups/ -> advance_from_groups_to_knockout)
+        # tylko grupy; KO dopiero po /advance-from-groups/
         generate_group_stage(tournament)
 
     elif fmt == Tournament.TournamentFormat.CUP:
-        generate_knockout_stage(tournament)
+        # KLUCZOWE: KO musi brać TYLKO aktywnych uczestników
+        generate_knockout_stage(tournament, teams=active_teams)

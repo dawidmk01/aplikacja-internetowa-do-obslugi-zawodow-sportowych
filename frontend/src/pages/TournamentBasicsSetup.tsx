@@ -376,7 +376,7 @@ export default function TournamentBasicsSetup() {
       const teamsRes = await apiFetch(`/api/tournaments/${tournamentId}/teams/setup/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ participants_count: safeParticipants }),
+        body: JSON.stringify({teams_count: safeParticipants }),
       });
       if (!teamsRes.ok) throw new Error("Nie udało się ustawić liczby uczestników.");
       initialParticipantsRef.current = safeParticipants;

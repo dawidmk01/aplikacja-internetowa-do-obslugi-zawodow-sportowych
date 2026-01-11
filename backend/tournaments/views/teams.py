@@ -1,3 +1,4 @@
+# backend/tournaments/views/teams.py
 from __future__ import annotations
 
 from django.db import transaction
@@ -14,6 +15,8 @@ from ..serializers import TeamSerializer, TeamUpdateSerializer, TournamentSerial
 from ..services.match_generation import ensure_matches_generated
 from ._helpers import user_can_manage_tournament
 
+BYE_TEAM_NAME = "__SYSTEM_BYE__"
+
 
 class TournamentTeamListView(ListAPIView):
     serializer_class = TeamSerializer
@@ -23,7 +26,12 @@ class TournamentTeamListView(ListAPIView):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
         if not user_can_manage_tournament(self.request.user, tournament):
             return Team.objects.none()
-        return tournament.teams.filter(is_active=True).order_by("id")
+        return (
+            tournament.teams
+            .filter(is_active=True)
+            .exclude(name=BYE_TEAM_NAME)
+            .order_by("id")
+        )
 
 
 class TournamentTeamUpdateView(APIView):
@@ -34,7 +42,15 @@ class TournamentTeamUpdateView(APIView):
         if not user_can_manage_tournament(request.user, tournament):
             return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
 
-        team = get_object_or_404(Team, pk=team_id, tournament=tournament, is_active=True)
+        team = get_object_or_404(
+            Team,
+            pk=team_id,
+            tournament=tournament,
+            is_active=True,
+        )
+
+        if team.name == BYE_TEAM_NAME:
+            return Response({"detail": "Nie można edytować zespołu technicznego BYE."}, status=status.HTTP_400_BAD_REQUEST)
 
         serializer = TeamUpdateSerializer(team, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
@@ -48,14 +64,15 @@ class TournamentTeamSetupView(APIView):
     Endpoint: POST /api/tournaments/<id>/teams/setup/
 
     Cel:
-    - Ustawić faktyczną liczbę aktywnych Team (to jest źródło prawdy).
+    - Ustawić faktyczną liczbę aktywnych Team (źródło prawdy),
+      ale NIGDY nie aktywować __SYSTEM_BYE__.
     - Jeżeli liczba aktywnych Team się zmienia -> UPGRADE rozgrywek:
       reset Stage/Match + regeneracja (ensure_matches_generated).
 
     Wejście:
-    - Preferowane: {"teams_count": <int>}
-    - Tymczasowo akceptowane: {"participants_count": <int>} (dla zgodności FE)
+    - Docelowo: {"teams_count": <int>}
     """
+
     permission_classes = [IsAuthenticated]
 
     @transaction.atomic
@@ -65,22 +82,15 @@ class TournamentTeamSetupView(APIView):
         if not user_can_manage_tournament(request.user, tournament):
             return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
 
-        # Bezpieczniej: nie pozwalaj grzebać w składzie, gdy turniej trwa albo jest zarchiwizowany.
         if tournament.status in (Tournament.Status.RUNNING, Tournament.Status.FINISHED):
             return Response(
-                {
-                    "detail": (
-                        "Nie można zmieniać liczby uczestników, gdy turniej jest w trakcie "
-                        "lub zarchiwizowany. Zresetuj/odarchiwizuj turniej i spróbuj ponownie."
-                    )
-                },
+                {"detail": "Nie można zmieniać liczby uczestników, gdy turniej jest w trakcie lub zarchiwizowany."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 1) Wejściowy count (nowy klucz: teams_count)
         raw_count = request.data.get("teams_count", None)
+        # Jeżeli chcesz całkowicie wyczyścić participants_count, usuń 2 linie niżej:
         if raw_count is None:
-            # kompatybilność z wcześniejszym FE
             raw_count = request.data.get("participants_count", None)
 
         try:
@@ -89,18 +99,17 @@ class TournamentTeamSetupView(APIView):
             return Response({"detail": "Nieprawidłowa liczba uczestników."}, status=status.HTTP_400_BAD_REQUEST)
 
         if requested_count < 2:
-            return Response(
-                {"detail": "Liczba uczestników musi wynosić co najmniej 2."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Liczba uczestników musi wynosić co najmniej 2."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 2) Stan przed zmianą (czy istnieje struktura / ile aktywnych)
-        active_before = Team.objects.filter(tournament=tournament, is_active=True).count()
+        # Wymuś: BYE zawsze nieaktywny (naprawia wcześniejsze “zepsucie”)
+        Team.objects.filter(tournament=tournament, name=BYE_TEAM_NAME).update(is_active=False)
+
+        # Liczymy i modyfikujemy WYŁĄCZNIE zwykłe teamy (bez BYE)
+        active_before = Team.objects.filter(tournament=tournament, is_active=True).exclude(name=BYE_TEAM_NAME).count()
         had_structure = Stage.objects.filter(tournament=tournament).exists()
 
-        # 3) Uzupełnij rekordy Team do requested_count (nie kasujemy nazw)
-        all_teams = list(tournament.teams.order_by("id"))
-        existing_total = len(all_teams)
+        all_real_teams = list(tournament.teams.exclude(name=BYE_TEAM_NAME).order_by("id"))
+        existing_total = len(all_real_teams)
 
         name_prefix = (
             "Zawodnik"
@@ -115,11 +124,10 @@ class TournamentTeamSetupView(APIView):
                     for i in range(existing_total + 1, requested_count + 1)
                 ]
             )
-            all_teams = list(tournament.teams.order_by("id"))
+            all_real_teams = list(tournament.teams.exclude(name=BYE_TEAM_NAME).order_by("id"))
 
-        # 4) Ustaw aktywność dokładnie pod requested_count
         changed = []
-        for idx, team in enumerate(all_teams):
+        for idx, team in enumerate(all_real_teams):
             should_be_active = idx < requested_count
             if team.is_active != should_be_active:
                 team.is_active = should_be_active
@@ -128,24 +136,19 @@ class TournamentTeamSetupView(APIView):
         if changed:
             Team.objects.bulk_update(changed, ["is_active"])
 
-        active_after = Team.objects.filter(tournament=tournament, is_active=True).count()
+        active_after = Team.objects.filter(tournament=tournament, is_active=True).exclude(name=BYE_TEAM_NAME).count()
 
-        # 5) Upgrade rozgrywek tylko wtedy, gdy:
-        # - zmieniła się liczba aktywnych, LUB
-        # - nie ma struktury (np. świeży turniej), a mamy min. 2 aktywnych.
         count_changed = active_after != active_before
         should_upgrade = (active_after >= 2) and (count_changed or not had_structure)
 
         reset_done = False
         if should_upgrade and tournament.status != Tournament.Status.DRAFT:
-            # Nie kasujemy tu Stage/Match ręcznie – robi to ensure_matches_generated.
             tournament.status = Tournament.Status.DRAFT
             tournament.save(update_fields=["status"])
             reset_done = True
 
         if should_upgrade:
             ensure_matches_generated(tournament)
-            # Po wygenerowaniu struktury uznajemy turniej za skonfigurowany
             if tournament.status == Tournament.Status.DRAFT:
                 tournament.status = Tournament.Status.CONFIGURED
                 tournament.save(update_fields=["status"])
@@ -158,7 +161,12 @@ class TournamentTeamSetupView(APIView):
         else:
             detail += " (Bez przebudowy rozgrywek.)"
 
-        active_teams = tournament.teams.filter(is_active=True).order_by("id")
+        active_teams = (
+            tournament.teams.filter(is_active=True)
+            .exclude(name=BYE_TEAM_NAME)
+            .order_by("id")
+        )
+
         return Response(
             {
                 "detail": detail,

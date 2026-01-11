@@ -20,6 +20,8 @@ type MatchDto = {
   stage_order: number;
   round_number: number | null;
 
+  group_name?: string | null;
+
   home_team_id: number;
   away_team_id: number;
   home_team_name: string;
@@ -93,15 +95,15 @@ type StandingsResponse = {
    HELPERY
    ========================= */
 
+function normalizeGroupKey(name: string | null | undefined): string {
+  const s = (name ?? "").trim().toLowerCase();
+  if (!s) return "";
+  return s.replace(/^grupa\s+/i, "").trim();
+}
+
 function last5Form(teamId: number, matches: MatchDto[]): FormResult[] {
   return matches
-    .filter(
-      (m) =>
-        m.status === "FINISHED" &&
-        !isByeMatch(m) &&
-        !["KNOCKOUT", "THIRD_PLACE"].includes(m.stage_type) &&
-        (m.home_team_id === teamId || m.away_team_id === teamId)
-    )
+    .filter((m) => m.status === "FINISHED" && !isByeMatch(m) && (m.home_team_id === teamId || m.away_team_id === teamId))
     .sort((a, b) => {
       if (a.stage_order !== b.stage_order) return b.stage_order - a.stage_order;
 
@@ -228,6 +230,12 @@ export default function TournamentStandings() {
                   ? g.group_name
                   : displayGroupName(g.group_name, idx);
 
+              // WAŻNE: do formy bierzemy tylko mecze GROUP z tej konkretnej grupy
+              const groupKey = normalizeGroupKey(g.group_name);
+              const groupMatches = matches.filter(
+                (m) => m.stage_type === "GROUP" && normalizeGroupKey(m.group_name) === groupKey
+              );
+
               return (
                 <div key={g.group_id} style={{ marginBottom: "2.5rem" }}>
                   <h3
@@ -240,13 +248,16 @@ export default function TournamentStandings() {
                   >
                     {groupTitle}
                   </h3>
-                  <Table rows={g.table} matches={matches} />
+                  <Table rows={g.table} matchesForForm={groupMatches} />
                 </div>
               );
             })}
           </div>
         ) : hasLeagueTable ? (
-          <Table rows={standings!.table!} matches={matches} />
+          <Table
+            rows={standings!.table!}
+            matchesForForm={matches.filter((m) => m.stage_type === "LEAGUE")}
+          />
         ) : (
           !isCup && <p>Brak danych tabeli.</p>
         )
@@ -304,7 +315,7 @@ export default function TournamentStandings() {
    KOMPONENTY: TABELA
    ========================= */
 
-function Table({ rows, matches }: { rows: StandingRow[]; matches: MatchDto[] }) {
+function Table({ rows, matchesForForm }: { rows: StandingRow[]; matchesForForm: MatchDto[] }) {
   return (
     <div style={{ overflowX: "auto" }}>
       <table
@@ -332,7 +343,7 @@ function Table({ rows, matches }: { rows: StandingRow[]; matches: MatchDto[] }) 
         </thead>
         <tbody>
           {rows.map((r, i) => {
-            const form = last5Form(r.team_id, matches);
+            const form = last5Form(r.team_id, matchesForForm);
             return (
               <tr key={r.team_id} style={{ borderBottom: "1px solid #333" }}>
                 <td style={{ padding: "10px" }}>{i + 1}</td>
@@ -565,7 +576,9 @@ function BracketMatchCard({ item, isThirdPlace }: { item: BracketDuelItem; isThi
       </div>
 
       {item.status === "FINISHED" && (
-        <div style={{ fontSize: "0.65rem", color: "#666", marginTop: "6px", textAlign: "right", fontStyle: "italic" }}>Zakończony</div>
+        <div style={{ fontSize: "0.65rem", color: "#666", marginTop: "6px", textAlign: "right", fontStyle: "italic" }}>
+          Zakończony
+        </div>
       )}
     </div>
   );

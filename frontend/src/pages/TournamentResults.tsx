@@ -23,14 +23,12 @@ type HandballKnockoutTiebreak = "OVERTIME_PENALTIES" | "PENALTIES";
 export type TournamentDTO = {
   id: number;
   name?: string;
-  discipline: string; // "football" | "handball" | ...
+  discipline: string;
   tournament_format?: "LEAGUE" | "CUP" | "MIXED";
   status: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
   format_config?: {
     cup_matches?: number;
     cup_matches_by_stage_order?: Record<string, number>;
-
-    // Handball config (opcjonalne)
     handball_table_draw_mode?: HandballTableDrawMode;
     handball_knockout_tiebreak?: HandballKnockoutTiebreak;
   };
@@ -50,23 +48,34 @@ export type MatchDTO = {
 
   home_team_name: string;
   away_team_name: string;
-  home_score: number;
-  away_score: number;
+  home_score: number | null;
+  away_score: number | null;
 
-  // dogrywka
   went_to_extra_time?: boolean;
   home_extra_time_score?: number | null;
   away_extra_time_score?: number | null;
 
-  // karne
   decided_by_penalties?: boolean;
   home_penalty_score?: number | null;
   away_penalty_score?: number | null;
 
-  // meta
   result_entered?: boolean;
   winner_id?: number | null;
 };
+
+type MatchDraft = Partial<
+  Pick<
+    MatchDTO,
+    | "home_score"
+    | "away_score"
+    | "went_to_extra_time"
+    | "home_extra_time_score"
+    | "away_extra_time_score"
+    | "decided_by_penalties"
+    | "home_penalty_score"
+    | "away_penalty_score"
+  >
+>;
 
 /* ============================================================
    HELPERS: numeric parsing
@@ -183,10 +192,8 @@ function aggregateForPair(pair: MatchDTO[]): {
     return { ok: false, tie: false, secondLegId: second.id, message: "Brak ID drużyn (home_team_id/away_team_id)." };
   }
 
-  const scoreA =
-    goalsForTeam(m1, a) + goalsForTeam(m2, a);
-  const scoreB =
-    goalsForTeam(m1, b) + goalsForTeam(m2, b);
+  const scoreA = goalsForTeam(m1, a) + goalsForTeam(m2, a);
+  const scoreB = goalsForTeam(m1, b) + goalsForTeam(m2, b);
 
   return { ok: true, tie: scoreA === scoreB, secondLegId: second.id };
 }
@@ -207,10 +214,9 @@ function canUseExtraTimeUI(t: TournamentDTO | null, m: MatchDTO): boolean {
 
   if (isKnockoutLike(m.stage_type)) {
     if (hb && getHandballKnockoutTiebreak(t) === "PENALTIES") return false;
-    return true; // football i inne: pozwól
+    return true;
   }
 
-  // Handball w lidze/grupie zależnie od draw-mode
   if (hb && (m.stage_type === "LEAGUE" || m.stage_type === "GROUP")) {
     return getHandballTableDrawMode(t) === "OVERTIME_PENALTIES";
   }
@@ -243,7 +249,6 @@ function normalizeMatchForConfig(
 
   let next: MatchDTO = { ...m };
 
-  // 1) Jeśli konfiguracja zabrania – czyść
   if (!extraAllowed) {
     next.went_to_extra_time = false;
     next.home_extra_time_score = null;
@@ -255,7 +260,6 @@ function normalizeMatchForConfig(
     next.away_penalty_score = null;
   }
 
-  // 2) Minimalna higiena: w KO (cup_matches=1) przy braku remisu nie trzymamy dogrywki/karnych
   const isKO = isKnockoutLike(next.stage_type);
   if (isKO && cupMatches === 1 && !regularTie(next)) {
     next.went_to_extra_time = false;
@@ -267,22 +271,29 @@ function normalizeMatchForConfig(
     return next;
   }
 
-  // 3) Jeśli dogrywka wyłączona -> czyść jej wyniki
   if (!next.went_to_extra_time) {
     next.home_extra_time_score = null;
     next.away_extra_time_score = null;
   }
 
-  // 4) Jeśli karne wyłączone -> czyść ich wyniki
   if (!next.decided_by_penalties) {
     next.home_penalty_score = null;
     next.away_penalty_score = null;
   }
 
-  // 5) Dodatkowa logika handball:
-  //    - w lidze/grupie: ALLOW_DRAW -> nie trzymamy rozstrzygnięć
   if (hb && (next.stage_type === "LEAGUE" || next.stage_type === "GROUP")) {
+    if (!regularTie(next)) {
+      next.went_to_extra_time = false;
+      next.home_extra_time_score = null;
+      next.away_extra_time_score = null;
+      next.decided_by_penalties = false;
+      next.home_penalty_score = null;
+      next.away_penalty_score = null;
+      return next;
+    }
+
     const mode = getHandballTableDrawMode(t);
+
     if (mode === "ALLOW_DRAW") {
       next.went_to_extra_time = false;
       next.home_extra_time_score = null;
@@ -291,15 +302,18 @@ function normalizeMatchForConfig(
       next.home_penalty_score = null;
       next.away_penalty_score = null;
     }
+
     if (mode === "PENALTIES") {
       next.went_to_extra_time = false;
       next.home_extra_time_score = null;
       next.away_extra_time_score = null;
+      if (next.decided_by_penalties) {
+        next.home_penalty_score = next.home_penalty_score ?? 0;
+        next.away_penalty_score = next.away_penalty_score ?? 0;
+      }
     }
   }
 
-  // 6) Dwumecz: karnych NIE czyścimy automatycznie (mogą być potrzebne przy agregacie)
-  //    ale pilnujemy, żeby włączenie karnych miało sens (wyniki nie-null, gdy checkbox on)
   if (isKO && cupMatches === 2) {
     if (next.decided_by_penalties) {
       next.home_penalty_score = next.home_penalty_score ?? 0;
@@ -325,7 +339,6 @@ function canFinishMatchUI(args: {
   const extraAllowed = canUseExtraTimeUI(tournament, match);
   const penAllowed = canUsePenaltiesUI(tournament, match);
 
-  // ===== Spójność pól =====
   if (match.went_to_extra_time && !extraAllowed) {
     return { ok: false, message: "Dogrywka jest niedozwolona w tej konfiguracji." };
   }
@@ -348,15 +361,11 @@ function canFinishMatchUI(args: {
     }
   }
 
-  // ==========================================================
-  // LEAGUE / GROUP – tylko handball ma tryby rozstrzygania remisów
-  // ==========================================================
   if (!knockoutLike && hb && (stageType === "LEAGUE" || stageType === "GROUP")) {
     const mode = getHandballTableDrawMode(tournament);
 
     if (!regularTie(match)) return { ok: true };
 
-    // remis
     if (mode === "ALLOW_DRAW") {
       return { ok: true };
     }
@@ -368,7 +377,6 @@ function canFinishMatchUI(args: {
       return { ok: true };
     }
 
-    // OVERTIME_PENALTIES
     if (!match.went_to_extra_time) {
       return { ok: false, message: "Piłka ręczna: przy remisie wymagana dogrywka (a jeśli nadal remis, karne)." };
     }
@@ -380,13 +388,8 @@ function canFinishMatchUI(args: {
     return { ok: true };
   }
 
-  // ==========================================================
-  // KO / THIRD_PLACE
-  // ==========================================================
   if (knockoutLike) {
-    // 1 mecz w parze -> musi być rozstrzygnięcie
     if (cupMatches === 1) {
-      // handball KO – tryb tiebreak
       if (hb && regularTie(match)) {
         const tb = getHandballKnockoutTiebreak(tournament);
 
@@ -397,7 +400,6 @@ function canFinishMatchUI(args: {
           return { ok: true };
         }
 
-        // OVERTIME_PENALTIES
         if (!match.went_to_extra_time) {
           return { ok: false, message: "Piłka ręczna (KO): przy remisie wymagana dogrywka." };
         }
@@ -409,15 +411,12 @@ function canFinishMatchUI(args: {
         return { ok: true };
       }
 
-      // football i inne: jeśli remis po final score -> wymagane karne
       if (finalTie(match)) {
         if (!match.decided_by_penalties || !penaltiesValid(match)) {
           return { ok: false, message: "Mecz pucharowy (1 mecz) nie może zakończyć się remisem – ustaw rozstrzygnięcie (karne)." };
         }
       }
 
-      // Ważne: przy cup_matches=1, karne mają sens tylko przy remisie po final score
-      // (backend /finish/ waliduje tę spójność)
       if (match.decided_by_penalties && !finalTie(match)) {
         return { ok: false, message: "Karne mają sens tylko przy remisie po regulaminie/dogrywce." };
       }
@@ -425,43 +424,33 @@ function canFinishMatchUI(args: {
       return { ok: true };
     }
 
-    // dwumecz: remis w pojedynczym meczu jest dozwolony,
-    // ale przy domykaniu pary agregat nie może być remisowy (musi być rozstrzygnięcie w rewanżu).
     if (cupMatches === 2) {
       const pair = getPairMatches(allMatches, match);
-      if (pair.length !== 2) {
-        // BYE albo nienormalna para -> nie blokuj
-        return { ok: true };
-      }
+      if (pair.length !== 2) return { ok: true };
 
       const other = pair.find((m) => m.id !== match.id);
       if (!other) return { ok: true };
-
-      // Jeśli drugi mecz pary NIE jest jeszcze FINISHED, to domknięcie pary nie następuje -> nie blokuj
       if (other.status !== "FINISHED") return { ok: true };
 
-      // teraz finish tego meczu domyka parę -> sprawdzamy agregat
       const agg = aggregateForPair(pair);
       const secondLegId = agg.secondLegId;
 
       if (!agg.ok) return { ok: true };
 
       if (agg.tie) {
-        // rozstrzygnięcie jest w "rewanżu" (backend używa meczu o większym ID)
         if (secondLegId === match.id) {
-          // to jest rewanż -> wymagamy karnych i ich poprawności
           if (!match.decided_by_penalties || !penaltiesValid(match)) {
             return { ok: false, message: "Dwumecz: agregat remisowy – rozstrzygnij karne w rewanżu." };
           }
           return { ok: true };
         } else {
-          // rewanżem jest DRUGI mecz (już zakończony) -> musi już mieć wpisane karne
           const secondLeg = pair.find((m) => m.id === secondLegId);
           const ok = secondLeg?.decided_by_penalties && penaltiesValid(secondLeg);
           if (!ok) {
             return {
               ok: false,
-              message: "Dwumecz: agregat remisowy – rozstrzygnięcie musi być w rewanżu (mecz o większym ID). Uzupełnij karne w rewanżu, potem zakończ ten mecz.",
+              message:
+                "Dwumecz: agregat remisowy – rozstrzygnięcie musi być w rewanżu (mecz o większym ID). Uzupełnij karne w rewanżu, potem zakończ ten mecz.",
             };
           }
           return { ok: true };
@@ -473,6 +462,19 @@ function canFinishMatchUI(args: {
   }
 
   return { ok: true };
+}
+
+function toDraft(m: MatchDTO): MatchDraft {
+  return {
+    home_score: m.home_score,
+    away_score: m.away_score,
+    went_to_extra_time: !!m.went_to_extra_time,
+    home_extra_time_score: m.home_extra_time_score ?? null,
+    away_extra_time_score: m.away_extra_time_score ?? null,
+    decided_by_penalties: !!m.decided_by_penalties,
+    home_penalty_score: m.home_penalty_score ?? null,
+    away_penalty_score: m.away_penalty_score ?? null,
+  };
 }
 
 /* ============================================================
@@ -490,11 +492,88 @@ export default function TournamentResults() {
   const [busyGenerate, setBusyGenerate] = useState(false);
 
   const [message, setMessage] = useState<string | null>(null);
+
+  // "edited" = zapisane (zielony akcent)
   const [edited, setEdited] = useState<Set<number>>(new Set());
+
+  // "dirty" = ma niezapisane zmiany
+  const [dirty, setDirty] = useState<Set<number>>(new Set());
+
+  // drafty – żeby reload po zapisie nie kasował innych lokalnych zmian
+  const [drafts, setDrafts] = useState<Record<number, MatchDraft>>({});
+
+  // ===== edycja meczu zakończonego =====
+  const [editingFinished, setEditingFinished] = useState<Set<number>>(new Set());
+  const [finishedSnapshots, setFinishedSnapshots] = useState<Record<number, MatchDTO>>({});
+
+  const isEditingFinished = (matchId: number) => editingFinished.has(matchId);
+
+  const startEditFinished = (m: MatchDTO) => {
+    setFinishedSnapshots((prev) => ({ ...prev, [m.id]: { ...m } }));
+    setEditingFinished((prev) => {
+      const n = new Set(prev);
+      n.add(m.id);
+      return n;
+    });
+    setMessage("Tryb edycji: po zapisaniu zmiany mogą wpłynąć na kolejne etapy KO.");
+  };
+
+  const cancelEditFinished = (matchId: number) => {
+    const snap = finishedSnapshots[matchId];
+    if (snap) {
+      setMatches((prev) => prev.map((x) => (x.id === matchId ? snap : x)));
+    }
+
+    setDrafts((prev) => {
+      const n = { ...prev };
+      delete n[matchId];
+      return n;
+    });
+
+    setDirty((prev) => {
+      const n = new Set(prev);
+      n.delete(matchId);
+      return n;
+    });
+
+    setEditingFinished((prev) => {
+      const n = new Set(prev);
+      n.delete(matchId);
+      return n;
+    });
+
+    setFinishedSnapshots((prev) => {
+      const n = { ...prev };
+      delete n[matchId];
+      return n;
+    });
+
+    setMessage("Edycja anulowana.");
+  };
+
+  const exitEditFinished = (matchId: number) => {
+    setEditingFinished((prev) => {
+      const n = new Set(prev);
+      n.delete(matchId);
+      return n;
+    });
+    setFinishedSnapshots((prev) => {
+      const n = { ...prev };
+      delete n[matchId];
+      return n;
+    });
+  };
 
   /* ============================================================
      API calls
      ============================================================ */
+
+  const parseApiError = async (res: Response): Promise<string> => {
+    const data = await res.json().catch(() => null);
+    if (!data) return "Błąd żądania.";
+    if (typeof (data as any)?.detail === "string") return (data as any).detail;
+    return "Błąd żądania.";
+  };
 
   const loadTournament = async (): Promise<TournamentDTO> => {
     const res = await apiFetch(`/api/tournaments/${id}/`);
@@ -504,19 +583,44 @@ export default function TournamentResults() {
     return data;
   };
 
-  const loadMatches = async (): Promise<MatchDTO[]> => {
+  const mergeDrafts = (base: MatchDTO[], t: TournamentDTO | null): MatchDTO[] => {
+    // 1) nałóż drafty
+    const withDrafts: MatchDTO[] = base.map((m) => ({ ...m, ...(drafts[m.id] ?? {}) }));
+
+    // 2) normalizacja per konfiguracja (uwzględnia dwumecze itp.)
+    const normalized = withDrafts.map((m) => {
+      const cupMatches = getCupMatchesForStage(t, m.stage_order);
+      return normalizeMatchForConfig(t, m, cupMatches, withDrafts);
+    });
+
+    // 3) czyść drafty które już nie istnieją (np. po regeneracji KO)
+    const ids = new Set(normalized.map((m) => m.id));
+    setDrafts((prev) => {
+      const n: Record<number, MatchDraft> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        const id = Number(k);
+        if (ids.has(id)) n[id] = v;
+      }
+      return n;
+    });
+
+    setDirty((prev) => {
+      const n = new Set<number>();
+      for (const x of prev) if (ids.has(x)) n.add(x);
+      return n;
+    });
+
+    return normalized;
+  };
+
+  const loadMatches = async (tOverride?: TournamentDTO | null): Promise<MatchDTO[]> => {
     const res = await apiFetch(`/api/tournaments/${id}/matches/`);
     if (!res.ok) throw new Error("Nie udało się pobrać meczów.");
     const raw = await res.json();
 
-    const list: MatchDTO[] = Array.isArray(raw)
-      ? raw
-      : Array.isArray(raw?.results)
-        ? raw.results
-        : [];
+    const list: MatchDTO[] = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? raw.results : [];
 
-    // Normalizacja pól opcjonalnych na wartości „bezpieczne” dla UI
-    const normalized = list.map((m) => ({
+    const normalizedApi = list.map((m) => ({
       ...m,
       went_to_extra_time: !!m.went_to_extra_time,
       decided_by_penalties: !!m.decided_by_penalties,
@@ -524,23 +628,21 @@ export default function TournamentResults() {
       away_extra_time_score: m.away_extra_time_score ?? null,
       home_penalty_score: m.home_penalty_score ?? null,
       away_penalty_score: m.away_penalty_score ?? null,
+      home_score: m.home_score ?? 0,
+      away_score: m.away_score ?? 0,
     }));
 
-    setMatches(normalized);
-    return normalized;
-  };
+    const effectiveTournament = tOverride ?? tournament;
+    const final = mergeDrafts(normalizedApi, effectiveTournament ?? null);
 
-  const parseApiError = async (res: Response): Promise<string> => {
-    const data = await res.json().catch(() => null);
-    if (!data) return "Błąd żądania.";
-    if (typeof (data as any)?.detail === "string") return (data as any).detail;
-    return "Błąd żądania.";
+    setMatches(final);
+    return final;
   };
 
   const updateMatchScore = async (match: MatchDTO) => {
     const payload: any = {
-      home_score: match.home_score,
-      away_score: match.away_score,
+      home_score: match.home_score ?? 0,
+      away_score: match.away_score ?? 0,
 
       went_to_extra_time: !!match.went_to_extra_time,
       home_extra_time_score: match.went_to_extra_time ? (match.home_extra_time_score ?? 0) : null,
@@ -573,7 +675,8 @@ export default function TournamentResults() {
       setBusyGenerate(false);
       throw new Error(await parseApiError(res));
     }
-    await Promise.all([loadMatches(), loadTournament().catch(() => null)]);
+    const t = await loadTournament().catch(() => tournament);
+    await loadMatches(t ?? null);
     setBusyGenerate(false);
   };
 
@@ -584,7 +687,8 @@ export default function TournamentResults() {
     try {
       const res = await apiFetch(`/api/tournaments/${id}/advance-from-groups/`, { method: "POST" });
       if (!res.ok) throw new Error(await parseApiError(res));
-      await Promise.all([loadMatches(), loadTournament().catch(() => null)]);
+      const t = await loadTournament().catch(() => tournament);
+      await loadMatches(t ?? null);
       setMessage("Faza pucharowa wygenerowana.");
     } catch (e: any) {
       setMessage(e.message);
@@ -596,17 +700,22 @@ export default function TournamentResults() {
   useEffect(() => {
     if (!id) return;
     let mounted = true;
+
     const init = async () => {
       try {
         setMessage(null);
         setLoading(true);
-        await Promise.all([loadTournament(), loadMatches()]);
+
+        // ważne: najpierw turniej (konfig), potem mecze (normalizacja)
+        const t = await loadTournament();
+        await loadMatches(t);
       } catch (e: any) {
         if (mounted) setMessage(e.message);
       } finally {
         if (mounted) setLoading(false);
       }
     };
+
     init();
     return () => {
       mounted = false;
@@ -645,8 +754,8 @@ export default function TournamentResults() {
     return "Zakończony";
   }
 
-  const saveMatch = async (matchId: number, opts?: { silentMessage?: boolean }) => {
-    const match = matches.find((m) => m.id === matchId);
+  const saveMatch = async (matchId: number, opts?: { silentMessage?: boolean; matchOverride?: MatchDTO }) => {
+    const match = opts?.matchOverride ?? matches.find((m) => m.id === matchId);
     if (!match) return;
 
     try {
@@ -654,7 +763,18 @@ export default function TournamentResults() {
       if (!opts?.silentMessage) setMessage(null);
 
       await updateMatchScore(match);
-      await Promise.all([loadMatches(), loadTournament().catch(() => null)]);
+
+      // po zapisie: czyścimy draft i dirty dla tego meczu
+      setDrafts((prev) => {
+        const n = { ...prev };
+        delete n[match.id];
+        return n;
+      });
+      setDirty((prev) => {
+        const n = new Set(prev);
+        n.delete(match.id);
+        return n;
+      });
 
       setEdited((prev) => {
         const n = new Set(prev);
@@ -662,17 +782,22 @@ export default function TournamentResults() {
         return n;
       });
 
+      // reload (ważne dla MIXED i KO propagacji), ale bez kasowania innych lokalnych zmian (drafty)
+      const t = await loadTournament().catch(() => tournament);
+      await loadMatches(t ?? null);
+
+      // jeśli edytowaliśmy zakończony mecz – wyjdź z trybu edycji po poprawnym zapisie
+      if (isEditingFinished(match.id)) {
+        exitEditFinished(match.id);
+      }
+
       if (!opts?.silentMessage) setMessage("Wynik zapisany.");
     } catch (e: any) {
       setMessage(e.message);
-      await loadMatches().catch(() => null);
+      await loadMatches(tournament).catch(() => null);
     } finally {
       setBusyMatchId(null);
     }
-  };
-
-  const saveOnBlur = async (matchId: number) => {
-    await saveMatch(matchId);
   };
 
   const onFinishMatchClick = async (matchId: number) => {
@@ -680,7 +805,7 @@ export default function TournamentResults() {
     if (!match) return;
 
     if (match.status === "FINISHED") {
-      setMessage("Ten mecz jest już zakończony.");
+      setMessage("Ten mecz jest już zakończony. Użyj „Wprowadź zmiany”, jeśli chcesz coś poprawić.");
       return;
     }
 
@@ -702,11 +827,31 @@ export default function TournamentResults() {
       setBusyMatchId(match.id);
       setMessage(null);
 
-      // przed finish zapisujemy aktualne dane (dogrywka/karne też)
+      // zawsze zapisujemy aktualny stan lokalny przed finishem
       await updateMatchScore(match);
-
       await finishMatch(match.id);
-      await Promise.all([loadMatches(), loadTournament().catch(() => null)]);
+
+      // wyczyść draft/dirty dla tego meczu
+      setDrafts((prev) => {
+        const n = { ...prev };
+        delete n[match.id];
+        return n;
+      });
+      setDirty((prev) => {
+        const n = new Set(prev);
+        n.delete(match.id);
+        return n;
+      });
+
+      setEdited((prev) => {
+        const n = new Set(prev);
+        n.add(match.id);
+        return n;
+      });
+
+      const t = await loadTournament().catch(() => tournament);
+      await loadMatches(t ?? null);
+
       setMessage("Mecz zakończony.");
     } catch (e: any) {
       setMessage(e.message);
@@ -716,16 +861,30 @@ export default function TournamentResults() {
   };
 
   const updateLocalMatch = (matchId: number, updater: (m: MatchDTO) => MatchDTO) => {
-    setMatches((prev) => {
-      const base = prev.map((m) => (m.id === matchId ? updater(m) : m));
-      const changed = base.find((m) => m.id === matchId);
-      if (!changed) return base;
+    const current = matches.find((m) => m.id === matchId);
+    if (!current) return;
 
-      const cupMatches = getCupMatchesForStage(tournament, changed.stage_order);
-      const normalized = normalizeMatchForConfig(tournament, changed, cupMatches, base);
+    const base = matches.map((m) => (m.id === matchId ? updater(m) : m));
+    const changed = base.find((m) => m.id === matchId);
+    if (!changed) return;
 
-      return base.map((m) => (m.id === matchId ? normalized : m));
+    const cupMatches = getCupMatchesForStage(tournament, changed.stage_order);
+    const normalizedChanged = normalizeMatchForConfig(tournament, changed, cupMatches, base);
+
+    const nextList = base.map((m) => (m.id === matchId ? normalizedChanged : m));
+    setMatches(nextList);
+
+    // oznacz jako niezapisane (dirty) i zapisz draft
+    setDirty((prev) => {
+      const n = new Set(prev);
+      n.add(matchId);
+      return n;
     });
+
+    setDrafts((prev) => ({
+      ...prev,
+      [matchId]: toDraft(normalizedChanged),
+    }));
   };
 
   const renderMatchRow = (match: MatchDTO) => {
@@ -734,7 +893,11 @@ export default function TournamentResults() {
     const status = uiStatus(match);
     const isBusy = busyMatchId === match.id;
     const wasEdited = edited.has(match.id);
+    const isDirty = dirty.has(match.id);
+
     const isFinished = match.status === "FINISHED";
+    const inEditFinished = isFinished && isEditingFinished(match.id);
+
     const knockoutLike = isKnockoutLike(match.stage_type);
     const cupMatches = getCupMatchesForStage(tournament, match.stage_order);
 
@@ -745,10 +908,6 @@ export default function TournamentResults() {
     const extraAllowed = canUseExtraTimeUI(tournament, match);
     const penAllowed = canUsePenaltiesUI(tournament, match);
 
-    // Kiedy pokazać sekcje:
-    // - KO cup=1: gdy remis w regulaminie lub już ustawiono dogrywkę/karne
-    // - KO cup=2: pokazuj karne, gdy to rewanż i para może się domknąć agregatem remisowym
-    // - Handball liga/grupa: zależnie od draw-mode (tylko gdy remis)
     let showExtraSection = false;
     let showPenSection = false;
 
@@ -757,7 +916,6 @@ export default function TournamentResults() {
         showExtraSection = extraAllowed && (regIsTie || !!match.went_to_extra_time);
         showPenSection = penAllowed && (finIsTie || !!match.decided_by_penalties || regIsTie);
       } else {
-        // dwumecz
         const pair = getPairMatches(matches, match);
         const agg = pair.length === 2 ? aggregateForPair(pair) : null;
         const secondLegId = agg?.secondLegId ?? null;
@@ -770,41 +928,40 @@ export default function TournamentResults() {
       }
     } else if (hb && (match.stage_type === "LEAGUE" || match.stage_type === "GROUP")) {
       const mode = getHandballTableDrawMode(tournament);
-      if (regIsTie && mode !== "ALLOW_DRAW") {
-        showExtraSection = extraAllowed;
-        showPenSection = penAllowed;
+      const forceShow = !!match.went_to_extra_time || !!match.decided_by_penalties;
+
+      if ((regIsTie && mode !== "ALLOW_DRAW") || forceShow) {
+        showExtraSection = extraAllowed && (regIsTie || !!match.went_to_extra_time);
+        showPenSection = penAllowed && (regIsTie || !!match.decided_by_penalties);
       }
     }
 
     const penaltiesLabel =
-      match.decided_by_penalties &&
-      match.home_penalty_score != null &&
-      match.away_penalty_score != null
+      match.decided_by_penalties && match.home_penalty_score != null && match.away_penalty_score != null
         ? `Karne: ${match.home_penalty_score}:${match.away_penalty_score}`
         : null;
 
     const extraLabel =
-      match.went_to_extra_time &&
-      match.home_extra_time_score != null &&
-      match.away_extra_time_score != null
+      match.went_to_extra_time && match.home_extra_time_score != null && match.away_extra_time_score != null
         ? `Dogrywka: ${match.home_extra_time_score}:${match.away_extra_time_score}`
         : null;
 
-    const bg = isFinished
-      ? "rgba(30, 144, 255, 0.10)"
-      : wasEdited
-        ? "rgba(46, 204, 113, 0.08)"
-        : "transparent";
+    const bg = isFinished ? "rgba(30, 144, 255, 0.10)" : wasEdited ? "rgba(46, 204, 113, 0.08)" : "transparent";
 
     const borderLeft = isFinished
       ? "4px solid rgba(30,144,255,0.8)"
       : wasEdited
-        ? "4px solid rgba(46,204,113,0.8)"
-        : "4px solid transparent";
+      ? "4px solid rgba(46,204,113,0.8)"
+      : "4px solid transparent";
 
-    // Ostrzeżenia (miękkie, informacyjne)
     const finishVerdict = canFinishMatchUI({ tournament, match, cupMatches, allMatches: matches });
     const showFinishWarning = !finishVerdict.ok && !isFinished;
+
+    // blokada tylko, gdy FINISHED i NIE w trybie edycji
+    const lockByFinish = isFinished && !inEditFinished;
+
+    // score blokujemy gdy ET/karne aktywne (Twoja logika)
+    const lockRegularInputs = isBusy || lockByFinish || !!match.went_to_extra_time || !!match.decided_by_penalties;
 
     return (
       <div
@@ -854,12 +1011,11 @@ export default function TournamentResults() {
             type="number"
             min={0}
             value={scoreToInputValue(match.home_score)}
-            disabled={isBusy}
+            disabled={lockRegularInputs}
             onChange={(e) => {
               const v = inputValueToScore(e.target.value);
               updateLocalMatch(match.id, (m) => ({ ...m, home_score: v }));
             }}
-            onBlur={() => saveOnBlur(match.id)}
             style={{ width: 70, textAlign: "center", padding: "0.4rem" }}
           />
           <span style={{ fontWeight: "bold" }}>:</span>
@@ -867,51 +1023,134 @@ export default function TournamentResults() {
             type="number"
             min={0}
             value={scoreToInputValue(match.away_score)}
-            disabled={isBusy}
+            disabled={lockRegularInputs}
             onChange={(e) => {
               const v = inputValueToScore(e.target.value);
               updateLocalMatch(match.id, (m) => ({ ...m, away_score: v }));
             }}
-            onBlur={() => saveOnBlur(match.id)}
             style={{ width: 70, textAlign: "center", padding: "0.4rem" }}
           />
 
-          <button
-            onClick={() => onFinishMatchClick(match.id)}
-            disabled={isBusy}
-            style={{
-              marginLeft: "1rem",
-              padding: "0.4rem 0.8rem",
-              borderRadius: 4,
-              border: "1px solid #555",
-              background: isFinished ? "rgba(30,144,255,0.25)" : "rgba(255,255,255,0.05)",
-              color: "#fff",
-              cursor: "pointer",
-              opacity: isBusy ? 0.6 : 1,
-              fontSize: "0.85em",
-            }}
-          >
-            {isFinished ? "Mecz zakończony" : "Zakończ mecz"}
-          </button>
+          {/* ===== Buttons ===== */}
+          {!isFinished ? (
+            <>
+              <button
+                onClick={() => saveMatch(match.id)}
+                disabled={isBusy || !isDirty}
+                style={{
+                  marginLeft: "1rem",
+                  padding: "0.4rem 0.8rem",
+                  borderRadius: 4,
+                  border: "1px solid rgba(46,204,113,0.5)",
+                  background: isDirty ? "rgba(46,204,113,0.18)" : "rgba(255,255,255,0.05)",
+                  color: "#fff",
+                  cursor: isDirty ? "pointer" : "not-allowed",
+                  opacity: isBusy ? 0.6 : 1,
+                  fontSize: "0.85em",
+                }}
+              >
+                Zapisz wynik
+              </button>
+
+              <button
+                onClick={() => onFinishMatchClick(match.id)}
+                disabled={isBusy}
+                style={{
+                  padding: "0.4rem 0.8rem",
+                  borderRadius: 4,
+                  border: "1px solid #555",
+                  background: "rgba(255,255,255,0.05)",
+                  color: "#fff",
+                  cursor: "pointer",
+                  opacity: isBusy ? 0.6 : 1,
+                  fontSize: "0.85em",
+                }}
+              >
+                Zakończ mecz
+              </button>
+
+              {isDirty && <span style={{ marginLeft: "0.5rem", fontSize: "0.85em", opacity: 0.75 }}>Niezapisane zmiany</span>}
+            </>
+          ) : !inEditFinished ? (
+            <button
+              onClick={() => startEditFinished(match)}
+              disabled={isBusy}
+              style={{
+                marginLeft: "1rem",
+                padding: "0.4rem 0.8rem",
+                borderRadius: 4,
+                border: "1px solid rgba(30,144,255,0.6)",
+                background: "rgba(30,144,255,0.25)",
+                color: "#fff",
+                cursor: "pointer",
+                opacity: isBusy ? 0.6 : 1,
+                fontSize: "0.85em",
+              }}
+            >
+              Wprowadź zmiany
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={() => saveMatch(match.id)}
+                disabled={isBusy || !isDirty}
+                style={{
+                  marginLeft: "1rem",
+                  padding: "0.4rem 0.8rem",
+                  borderRadius: 4,
+                  border: "1px solid rgba(46,204,113,0.5)",
+                  background: isDirty ? "rgba(46,204,113,0.18)" : "rgba(255,255,255,0.05)",
+                  color: "#fff",
+                  cursor: isDirty ? "pointer" : "not-allowed",
+                  opacity: isBusy ? 0.6 : 1,
+                  fontSize: "0.85em",
+                }}
+              >
+                Zapisz zmiany
+              </button>
+              <button
+                onClick={() => cancelEditFinished(match.id)}
+                disabled={isBusy}
+                style={{
+                  padding: "0.4rem 0.8rem",
+                  borderRadius: 4,
+                  border: "1px solid #555",
+                  background: "rgba(255,255,255,0.05)",
+                  color: "#fff",
+                  cursor: "pointer",
+                  opacity: isBusy ? 0.6 : 1,
+                  fontSize: "0.85em",
+                }}
+              >
+                Anuluj
+              </button>
+
+              {isDirty && <span style={{ marginLeft: "0.5rem", fontSize: "0.85em", opacity: 0.75 }}>Niezapisane zmiany</span>}
+            </>
+          )}
         </div>
+
+        {isFinished && !inEditFinished && (
+          <div style={{ marginTop: "0.5rem", fontSize: "0.85em", opacity: 0.75 }}>
+            Mecz jest zakończony. Jeśli musisz poprawić wynik, kliknij „Wprowadź zmiany”.
+          </div>
+        )}
+
+        {!lockByFinish && (match.went_to_extra_time || match.decided_by_penalties) && (
+          <div style={{ marginTop: "0.5rem", fontSize: "0.85em", opacity: 0.75 }}>
+            Aby zmienić wynik podstawowy, wyłącz najpierw dogrywkę i/lub karne.
+          </div>
+        )}
 
         {/* ===== Extra time section ===== */}
         {showExtraSection && (
-          <div
-            style={{
-              marginTop: "0.75rem",
-              display: "flex",
-              gap: "1rem",
-              alignItems: "center",
-              flexWrap: "wrap",
-            }}
-          >
+          <div style={{ marginTop: "0.75rem", display: "flex", gap: "1rem", alignItems: "center", flexWrap: "wrap" }}>
             <label style={{ display: "flex", gap: "0.5rem", alignItems: "center", opacity: 0.9 }}>
               <input
                 type="checkbox"
                 checked={!!match.went_to_extra_time}
-                disabled={isBusy || isFinished || !extraAllowed}
-                onChange={async (e) => {
+                disabled={isBusy || lockByFinish || !extraAllowed}
+                onChange={(e) => {
                   const checked = e.target.checked;
                   updateLocalMatch(match.id, (m) => ({
                     ...m,
@@ -919,8 +1158,6 @@ export default function TournamentResults() {
                     home_extra_time_score: checked ? (m.home_extra_time_score ?? 0) : null,
                     away_extra_time_score: checked ? (m.away_extra_time_score ?? 0) : null,
                   }));
-                  // zapis od razu – checkbox nie ma naturalnego onBlur UX
-                  await saveMatch(match.id, { silentMessage: true });
                 }}
               />
               Dogrywka
@@ -933,12 +1170,11 @@ export default function TournamentResults() {
                   type="number"
                   min={0}
                   value={scoreToInputValue(match.home_extra_time_score ?? 0)}
-                  disabled={isBusy || isFinished}
+                  disabled={isBusy || lockByFinish}
                   onChange={(e) => {
                     const v = inputValueToScore(e.target.value);
                     updateLocalMatch(match.id, (m) => ({ ...m, home_extra_time_score: v }));
                   }}
-                  onBlur={() => saveOnBlur(match.id)}
                   style={{ width: 70, textAlign: "center", padding: "0.35rem" }}
                 />
                 <span style={{ fontWeight: "bold" }}>:</span>
@@ -946,12 +1182,11 @@ export default function TournamentResults() {
                   type="number"
                   min={0}
                   value={scoreToInputValue(match.away_extra_time_score ?? 0)}
-                  disabled={isBusy || isFinished}
+                  disabled={isBusy || lockByFinish}
                   onChange={(e) => {
                     const v = inputValueToScore(e.target.value);
                     updateLocalMatch(match.id, (m) => ({ ...m, away_extra_time_score: v }));
                   }}
-                  onBlur={() => saveOnBlur(match.id)}
                   style={{ width: 70, textAlign: "center", padding: "0.35rem" }}
                 />
               </div>
@@ -961,21 +1196,13 @@ export default function TournamentResults() {
 
         {/* ===== Penalties section ===== */}
         {showPenSection && (
-          <div
-            style={{
-              marginTop: "0.75rem",
-              display: "flex",
-              gap: "1rem",
-              alignItems: "center",
-              flexWrap: "wrap",
-            }}
-          >
+          <div style={{ marginTop: "0.75rem", display: "flex", gap: "1rem", alignItems: "center", flexWrap: "wrap" }}>
             <label style={{ display: "flex", gap: "0.5rem", alignItems: "center", opacity: 0.9 }}>
               <input
                 type="checkbox"
                 checked={!!match.decided_by_penalties}
-                disabled={isBusy || isFinished || !penAllowed}
-                onChange={async (e) => {
+                disabled={isBusy || lockByFinish || !penAllowed}
+                onChange={(e) => {
                   const checked = e.target.checked;
                   updateLocalMatch(match.id, (m) => ({
                     ...m,
@@ -983,7 +1210,6 @@ export default function TournamentResults() {
                     home_penalty_score: checked ? (m.home_penalty_score ?? 0) : null,
                     away_penalty_score: checked ? (m.away_penalty_score ?? 0) : null,
                   }));
-                  await saveMatch(match.id, { silentMessage: true });
                 }}
               />
               Rozstrzygnięcie w rzutach karnych
@@ -996,12 +1222,11 @@ export default function TournamentResults() {
                   type="number"
                   min={0}
                   value={scoreToInputValue(match.home_penalty_score ?? 0)}
-                  disabled={isBusy || isFinished}
+                  disabled={isBusy || lockByFinish}
                   onChange={(e) => {
                     const v = inputValueToScore(e.target.value);
                     updateLocalMatch(match.id, (m) => ({ ...m, home_penalty_score: v }));
                   }}
-                  onBlur={() => saveOnBlur(match.id)}
                   style={{ width: 70, textAlign: "center", padding: "0.35rem" }}
                 />
                 <span style={{ fontWeight: "bold" }}>:</span>
@@ -1009,12 +1234,11 @@ export default function TournamentResults() {
                   type="number"
                   min={0}
                   value={scoreToInputValue(match.away_penalty_score ?? 0)}
-                  disabled={isBusy || isFinished}
+                  disabled={isBusy || lockByFinish}
                   onChange={(e) => {
                     const v = inputValueToScore(e.target.value);
                     updateLocalMatch(match.id, (m) => ({ ...m, away_penalty_score: v }));
                   }}
-                  onBlur={() => saveOnBlur(match.id)}
                   style={{ width: 70, textAlign: "center", padding: "0.35rem" }}
                 />
               </div>
@@ -1022,7 +1246,6 @@ export default function TournamentResults() {
           </div>
         )}
 
-        {/* ===== Informacyjne ostrzeżenia ===== */}
         {showFinishWarning && (
           <div style={{ marginTop: "0.6rem", fontSize: "0.85em", color: "#e74c3c" }}>
             {finishVerdict.message}
@@ -1070,17 +1293,21 @@ export default function TournamentResults() {
             <strong>Turniej:</strong> {tournament.name}
           </div>
         )}
-        <div>Wyniki zapisują się automatycznie po opuszczeniu pola (onBlur). Checkboxy zapisują się od razu.</div>
+
+        <div>
+          Wyniki zapisują się dopiero po kliknięciu <strong>„Zapisz wynik / Zapisz zmiany”</strong> (lub <strong>„Zakończ mecz”</strong>).
+          Zmiany w checkboxach (dogrywka/karne) również wymagają zapisu.
+        </div>
+
         {hb && (
           <div style={{ marginTop: "0.5rem", opacity: 0.85 }}>
             <strong>Piłka ręczna – tryb remisów:</strong>{" "}
             {hbMode === "ALLOW_DRAW"
               ? "Liga/grupa: remis dopuszczalny"
               : hbMode === "PENALTIES"
-                ? "Liga/grupa: remis → karne"
-                : "Liga/grupa: remis → dogrywka + karne"}{" "}
-            | <strong>KO:</strong>{" "}
-            {hbTB === "PENALTIES" ? "od razu karne" : "dogrywka + karne"}
+              ? "Liga/grupa: remis → karne"
+              : "Liga/grupa: remis → dogrywka + karne"}{" "}
+            | <strong>KO:</strong> {hbTB === "PENALTIES" ? "od razu karne" : "dogrywka + karne"}
           </div>
         )}
       </section>
@@ -1090,24 +1317,15 @@ export default function TournamentResults() {
 
         const isLastStage = s.stageId === lastStageId;
         const canAdvanceFromGroups =
-          tournament?.tournament_format === "MIXED" &&
-          isLastStage &&
-          s.stageType === "GROUP" &&
-          allMatchesInLastStageFinished;
+          tournament?.tournament_format === "MIXED" && isLastStage && s.stageType === "GROUP" && allMatchesInLastStageFinished;
 
         return (
-          <section
-            key={s.stageId}
-            style={{ marginTop: "3rem", paddingTop: "1rem", borderTop: "1px solid #333" }}
-          >
+          <section key={s.stageId} style={{ marginTop: "3rem", paddingTop: "1rem", borderTop: "1px solid #333" }}>
             <h2 style={{ marginBottom: "1.5rem", color: "#eee" }}>{headerTitle}</h2>
 
             {s.stageType === "GROUP" ? (
               groupMatchesByGroup(s.matches).map(([groupName, gm], idx) => (
-                <div
-                  key={groupName}
-                  style={{ marginBottom: "2rem", paddingLeft: "1rem", borderLeft: "2px solid #333" }}
-                >
+                <div key={groupName} style={{ marginBottom: "2rem", paddingLeft: "1rem", borderLeft: "2px solid #333" }}>
                   <h3 style={{ color: "#aaa", marginBottom: "1rem" }}>{displayGroupName(groupName, idx)}</h3>
 
                   {groupMatchesByRound(gm).map(([round, roundMatches]) => (

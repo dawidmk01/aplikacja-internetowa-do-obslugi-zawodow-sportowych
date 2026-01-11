@@ -54,7 +54,7 @@ export default function TournamentTeams() {
     const res = await apiFetch(`/api/tournaments/${id}/teams/setup/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ participants_count: count }),
+      body: JSON.stringify({ teams_count: count }),
     });
 
     if (!res.ok) {

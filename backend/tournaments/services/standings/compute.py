@@ -62,20 +62,23 @@ def _team_ids_from_matches(stage: Stage, group: Group | None) -> set[int]:
     return ids
 
 
+
 def _get_teams_for_context(tournament: Tournament, stage: Stage, group: Group | None) -> list[Team]:
-    """
-    Najważniejsza zmiana:
-    - NIE filtrujemy po is_active.
-    Uczestników kontekstu bierzemy z meczów etapu/grupy.
-    """
-    ids = _team_ids_from_matches(stage, group)
+    # UWAGA: standings mają pokazywać skład z meczów/turnieju,
+    # a nie zależeć od Team.is_active (bo eliminacje ≠ dezaktywacja).
+    if group is None:
+        return list(tournament.teams.exclude(name=BYE_TEAM_NAME).order_by("id"))
 
-    # Jeżeli z jakiegoś powodu nie ma jeszcze meczów (np. widok przed generacją),
-    # to fallback: pokaż wszystkich uczestników turnieju (bez BYE).
-    if not ids:
-        return list(tournament.teams.exclude(name=BYE_TEAM_NAME))
+    team_ids = set(
+        Match.objects.filter(stage=stage, group=group).values_list("home_team_id", flat=True)
+    ) | set(
+        Match.objects.filter(stage=stage, group=group).values_list("away_team_id", flat=True)
+    )
 
-    return list(Team.objects.filter(id__in=ids).exclude(name=BYE_TEAM_NAME))
+    return list(
+        Team.objects.filter(id__in=team_ids).exclude(name=BYE_TEAM_NAME).order_by("id")
+    )
+
 
 
 def _get_finished_matches(stage: Stage, group: Group | None):
