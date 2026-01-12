@@ -10,6 +10,7 @@ import { displayGroupName, isByeMatch } from "../flow/stagePresentation";
 type Tournament = {
   id: number;
   name: string;
+  discipline?: string; // np. "tennis"
   tournament_format: "LEAGUE" | "CUP" | "MIXED";
 };
 
@@ -27,6 +28,7 @@ type MatchDto = {
   home_team_name: string;
   away_team_name: string;
 
+  // dla tenisa: sety
   home_score: number | null;
   away_score: number | null;
 
@@ -37,18 +39,35 @@ type MatchDto = {
 type StandingRow = {
   team_id: number;
   team_name: string;
+
   played: number;
   wins: number;
   draws: number;
   losses: number;
+  points: number;
+
+  // legacy / default
   goals_for: number;
   goals_against: number;
   goal_difference: number;
-  points: number;
+
+  // uniwersalne (u Ciebie liczone m.in. dla tenisa)
+  games_for?: number;
+  games_against?: number;
+  games_difference?: number;
+
+  // tenis – docelowe (jeśli backend zwraca)
+  sets_for?: number;
+  sets_against?: number;
+  sets_diff?: number;
+  games_diff?: number;
 };
 
 type FormResult = "W" | "D" | "L";
 
+/**
+ * Dane z /standings/ -> bracket
+ */
 type BracketDuelItem = {
   id: number;
   status: "SCHEDULED" | "IN_PROGRESS" | "FINISHED";
@@ -66,6 +85,20 @@ type BracketDuelItem = {
   score_leg1_away: number | null;
   score_leg2_home?: number | null;
   score_leg2_away?: number | null;
+
+  // --- dodatkowe dane (opcjonalne) ---
+  aggregate_home?: number | null;
+  aggregate_away?: number | null;
+
+  // karne
+  penalties_leg1_home?: number | null;
+  penalties_leg1_away?: number | null;
+  penalties_leg2_home?: number | null;
+  penalties_leg2_away?: number | null;
+
+  // tenis: sety w gemach (jak Match.tennis_sets)
+  tennis_sets_leg1?: any | null;
+  tennis_sets_leg2?: any | null;
 };
 
 type BracketRound = {
@@ -85,7 +118,13 @@ type GroupStanding = {
   table: StandingRow[];
 };
 
+type StandingsMeta = {
+  discipline?: string;
+  table_schema?: string; // "TENNIS" | "DEFAULT" ...
+};
+
 type StandingsResponse = {
+  meta?: StandingsMeta;
   table?: StandingRow[];
   groups?: GroupStanding[];
   bracket?: BracketData;
@@ -103,7 +142,12 @@ function normalizeGroupKey(name: string | null | undefined): string {
 
 function last5Form(teamId: number, matches: MatchDto[]): FormResult[] {
   return matches
-    .filter((m) => m.status === "FINISHED" && !isByeMatch(m) && (m.home_team_id === teamId || m.away_team_id === teamId))
+    .filter(
+      (m) =>
+        m.status === "FINISHED" &&
+        !isByeMatch(m) &&
+        (m.home_team_id === teamId || m.away_team_id === teamId)
+    )
     .sort((a, b) => {
       if (a.stage_order !== b.stage_order) return b.stage_order - a.stage_order;
 
@@ -123,6 +167,47 @@ function last5Form(teamId: number, matches: MatchDto[]): FormResult[] {
       if (scored < conceded) return "L";
       return "D";
     });
+}
+
+/**
+ * Tenis: tennis_sets = [
+ *  {home_games:6, away_games:4},
+ *  {home_games:7, away_games:6, home_tiebreak:7, away_tiebreak:5}
+ * ]
+ * -> "6-4, 7-6(7-5)" (perspektywa HOME vs AWAY)
+ */
+function formatTennisSets(tennisSets: any): string | null {
+  if (!Array.isArray(tennisSets) || tennisSets.length === 0) return null;
+
+  const parts: string[] = [];
+  for (const s of tennisSets) {
+    if (!s || typeof s !== "object") continue;
+
+    const hg = Number(s.home_games);
+    const ag = Number(s.away_games);
+    if (!Number.isFinite(hg) || !Number.isFinite(ag)) continue;
+
+    const ht = s.home_tiebreak;
+    const at = s.away_tiebreak;
+
+    if (Number.isFinite(Number(ht)) && Number.isFinite(Number(at))) {
+      parts.push(`${hg}-${ag}(${Number(ht)}-${Number(at)})`);
+    } else {
+      parts.push(`${hg}-${ag}`);
+    }
+  }
+
+  return parts.length ? parts.join(", ") : null;
+}
+
+function formatPenalties(ph: number | null | undefined, pa: number | null | undefined): string | null {
+  if (ph == null || pa == null) return null;
+  return `k. ${ph}:${pa}`;
+}
+
+function safeNum(v: any, fallback = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 /* =========================
@@ -175,6 +260,13 @@ export default function TournamentStandings() {
   if (loading) return <p style={{ padding: "2rem" }}>Ładowanie…</p>;
   if (error) return <p style={{ padding: "2rem", color: "crimson" }}>{error}</p>;
   if (!tournament) return null;
+
+  const tournamentDiscipline = (tournament.discipline ?? "").toLowerCase();
+  const metaSchema = (standings?.meta?.table_schema ?? "").toUpperCase();
+  const metaDiscipline = (standings?.meta?.discipline ?? "").toLowerCase();
+
+  const discipline = (metaDiscipline || tournamentDiscipline || "").toLowerCase();
+  const isTennis = metaSchema === "TENNIS" || discipline === "tennis";
 
   const isCup = tournament.tournament_format === "CUP";
   const isMixed = tournament.tournament_format === "MIXED";
@@ -230,7 +322,7 @@ export default function TournamentStandings() {
                   ? g.group_name
                   : displayGroupName(g.group_name, idx);
 
-              // WAŻNE: do formy bierzemy tylko mecze GROUP z tej konkretnej grupy
+              // do formy bierzemy tylko mecze GROUP z tej konkretnej grupy
               const groupKey = normalizeGroupKey(g.group_name);
               const groupMatches = matches.filter(
                 (m) => m.stage_type === "GROUP" && normalizeGroupKey(m.group_name) === groupKey
@@ -248,7 +340,7 @@ export default function TournamentStandings() {
                   >
                     {groupTitle}
                   </h3>
-                  <Table rows={g.table} matchesForForm={groupMatches} />
+                  <Table rows={g.table} matchesForForm={groupMatches} isTennis={isTennis} />
                 </div>
               );
             })}
@@ -257,6 +349,7 @@ export default function TournamentStandings() {
           <Table
             rows={standings!.table!}
             matchesForForm={matches.filter((m) => m.stage_type === "LEAGUE")}
+            isTennis={isTennis}
           />
         ) : (
           !isCup && <p>Brak danych tabeli.</p>
@@ -298,9 +391,9 @@ export default function TournamentStandings() {
             </div>
 
             {layoutMode === "STANDARD" ? (
-              <StandardBracketView data={standings!.bracket!} />
+              <StandardBracketView data={standings!.bracket!} discipline={discipline} />
             ) : (
-              <CenteredBracketView data={standings!.bracket!} />
+              <CenteredBracketView data={standings!.bracket!} discipline={discipline} />
             )}
           </div>
         ) : (
@@ -315,35 +408,121 @@ export default function TournamentStandings() {
    KOMPONENTY: TABELA
    ========================= */
 
-function Table({ rows, matchesForForm }: { rows: StandingRow[]; matchesForForm: MatchDto[] }) {
+function Table({
+  rows,
+  matchesForForm,
+  isTennis,
+}: {
+  rows: StandingRow[];
+  matchesForForm: MatchDto[];
+  isTennis: boolean;
+}) {
   return (
     <div style={{ overflowX: "auto" }}>
       <table
         style={{
           width: "100%",
           borderCollapse: "collapse",
-          minWidth: "600px",
+          minWidth: isTennis ? "900px" : "600px",
           color: "#ddd",
         }}
       >
         <thead>
-          <tr style={{ borderBottom: "2px solid #444", textAlign: "left" }}>
-            <th style={{ padding: "10px" }}>#</th>
-            <th style={{ padding: "10px" }}>Drużyna</th>
-            <th>M</th>
-            <th>Z</th>
-            <th>R</th>
-            <th>P</th>
-            <th>B+</th>
-            <th>B-</th>
-            <th>RB</th>
-            <th>Pkt</th>
-            <th>Forma</th>
-          </tr>
+          {isTennis ? (
+            <tr style={{ borderBottom: "2px solid #444", textAlign: "left" }}>
+              <th style={{ padding: "10px" }}>#</th>
+              <th style={{ padding: "10px" }}>Zawodnik</th>
+              <th>M</th>
+              <th>Z</th>
+              <th>P</th>
+              <th>Sety +</th>
+              <th>Sety -</th>
+              <th>RS</th>
+              <th>Gemy +</th>
+              <th>Gemy -</th>
+              <th>RG</th>
+              <th>Pkt</th>
+              <th>Forma</th>
+            </tr>
+          ) : (
+            <tr style={{ borderBottom: "2px solid #444", textAlign: "left" }}>
+              <th style={{ padding: "10px" }}>#</th>
+              <th style={{ padding: "10px" }}>Drużyna</th>
+              <th>M</th>
+              <th>Z</th>
+              <th>R</th>
+              <th>P</th>
+              <th>B+</th>
+              <th>B-</th>
+              <th>RB</th>
+              <th>Pkt</th>
+              <th>Forma</th>
+            </tr>
+          )}
         </thead>
+
         <tbody>
           {rows.map((r, i) => {
             const form = last5Form(r.team_id, matchesForForm);
+
+            if (isTennis) {
+              // sety: preferuj pola tenisowe, fallback na legacy goals_*
+              const setsFor = safeNum(r.sets_for, safeNum(r.goals_for, 0));
+              const setsAgainst = safeNum(r.sets_against, safeNum(r.goals_against, 0));
+              const setsDiff = safeNum(r.sets_diff, safeNum(r.goal_difference, setsFor - setsAgainst));
+
+              // gemy: preferuj games_* / games_diff, fallback na 0
+              const gamesFor = safeNum(r.games_for, 0);
+              const gamesAgainst = safeNum(r.games_against, 0);
+              const gamesDiff = safeNum(
+                r.games_diff,
+                safeNum(r.games_difference, gamesFor - gamesAgainst)
+              );
+
+              return (
+                <tr key={r.team_id} style={{ borderBottom: "1px solid #333" }}>
+                  <td style={{ padding: "10px" }}>{i + 1}</td>
+                  <td style={{ padding: "10px", fontWeight: "bold" }}>{r.team_name}</td>
+                  <td>{r.played}</td>
+                  <td>{r.wins}</td>
+                  <td>{r.losses}</td>
+                  <td>{setsFor}</td>
+                  <td>{setsAgainst}</td>
+                  <td>{setsDiff}</td>
+                  <td>{gamesFor}</td>
+                  <td>{gamesAgainst}</td>
+                  <td>{gamesDiff}</td>
+                  <td>
+                    <strong style={{ color: "#3498db" }}>{r.points}</strong>
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", gap: "3px" }}>
+                      {form.map((f, idx) => (
+                        <span
+                          key={idx}
+                          style={{
+                            width: 16,
+                            height: 16,
+                            borderRadius: "50%",
+                            fontSize: 9,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontWeight: "bold",
+                            color: "#fff",
+                            backgroundColor: f === "W" ? "#2ecc71" : f === "D" ? "#95a5a6" : "#e74c3c",
+                          }}
+                        >
+                          {f}
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              );
+            }
+
+            // DEFAULT (piłka/ręczna/kosz itp.)
             return (
               <tr key={r.team_id} style={{ borderBottom: "1px solid #333" }}>
                 <td style={{ padding: "10px" }}>{i + 1}</td>
@@ -394,14 +573,14 @@ function Table({ rows, matchesForForm }: { rows: StandingRow[]; matchesForForm: 
    KOMPONENTY: DRABINKA (Widoki)
    ========================= */
 
-function StandardBracketView({ data }: { data: BracketData }) {
+function StandardBracketView({ data, discipline }: { data: BracketData; discipline: string }) {
   const { rounds, third_place } = data;
 
   return (
     <div style={{ overflowX: "auto", paddingBottom: "20px" }}>
       <div style={{ display: "flex", flexDirection: "row", gap: "40px" }}>
         {rounds.map((round) => (
-          <RoundColumn key={round.round_number} label={round.label} items={round.items} />
+          <RoundColumn key={round.round_number} label={round.label} items={round.items} discipline={discipline} />
         ))}
 
         {third_place && (
@@ -427,7 +606,7 @@ function StandardBracketView({ data }: { data: BracketData }) {
               Mecz o 3. miejsce
             </h3>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <BracketMatchCard item={third_place} isThirdPlace />
+              <BracketMatchCard item={third_place} isThirdPlace discipline={discipline} />
             </div>
           </div>
         )}
@@ -436,7 +615,7 @@ function StandardBracketView({ data }: { data: BracketData }) {
   );
 }
 
-function CenteredBracketView({ data }: { data: BracketData }) {
+function CenteredBracketView({ data, discipline }: { data: BracketData; discipline: string }) {
   const { rounds, third_place } = data;
   if (rounds.length === 0) return null;
 
@@ -450,7 +629,14 @@ function CenteredBracketView({ data }: { data: BracketData }) {
           {preFinalRounds.map((round) => {
             const half = Math.ceil(round.items.length / 2);
             const leftItems = round.items.slice(0, half);
-            return <RoundColumn key={`L-${round.round_number}`} label={round.label} items={leftItems} />;
+            return (
+              <RoundColumn
+                key={`L-${round.round_number}`}
+                label={round.label}
+                items={leftItems}
+                discipline={discipline}
+              />
+            );
           })}
         </div>
 
@@ -458,7 +644,7 @@ function CenteredBracketView({ data }: { data: BracketData }) {
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%" }}>
             <div style={{ fontSize: "2rem", marginBottom: "10px" }}>🏆</div>
 
-            <RoundColumn label={finalRound.label} items={finalRound.items} highlight />
+            <RoundColumn label={finalRound.label} items={finalRound.items} highlight discipline={discipline} />
 
             {third_place && (
               <div style={{ marginTop: "50px", opacity: 0.9, transform: "scale(0.95)" }}>
@@ -473,7 +659,7 @@ function CenteredBracketView({ data }: { data: BracketData }) {
                 >
                   Mecz o 3. miejsce
                 </h4>
-                <BracketMatchCard item={third_place} isThirdPlace />
+                <BracketMatchCard item={third_place} isThirdPlace discipline={discipline} />
               </div>
             )}
           </div>
@@ -484,7 +670,14 @@ function CenteredBracketView({ data }: { data: BracketData }) {
             const half = Math.ceil(round.items.length / 2);
             const rightItems = round.items.slice(half);
             if (rightItems.length === 0) return null;
-            return <RoundColumn key={`R-${round.round_number}`} label={round.label} items={rightItems} />;
+            return (
+              <RoundColumn
+                key={`R-${round.round_number}`}
+                label={round.label}
+                items={rightItems}
+                discipline={discipline}
+              />
+            );
           })}
         </div>
       </div>
@@ -496,7 +689,17 @@ function CenteredBracketView({ data }: { data: BracketData }) {
    KOMPONENTY POMOCNICZE DRABINKI
    ========================= */
 
-function RoundColumn({ label, items, highlight = false }: { label: string; items: BracketDuelItem[]; highlight?: boolean }) {
+function RoundColumn({
+  label,
+  items,
+  highlight = false,
+  discipline,
+}: {
+  label: string;
+  items: BracketDuelItem[];
+  highlight?: boolean;
+  discipline: string;
+}) {
   return (
     <div style={{ display: "flex", flexDirection: "column", minWidth: "240px" }}>
       <h3
@@ -516,19 +719,45 @@ function RoundColumn({ label, items, highlight = false }: { label: string; items
 
       <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-around", flexGrow: 1, gap: "20px" }}>
         {items.map((item) => (
-          <BracketMatchCard key={item.id} item={item} />
+          <BracketMatchCard key={item.id} item={item} discipline={discipline} />
         ))}
       </div>
     </div>
   );
 }
 
-function BracketMatchCard({ item, isThirdPlace }: { item: BracketDuelItem; isThirdPlace?: boolean }) {
+function BracketMatchCard({
+  item,
+  isThirdPlace,
+  discipline,
+}: {
+  item: BracketDuelItem;
+  isThirdPlace?: boolean;
+  discipline: string;
+}) {
+  const isTennis = (discipline ?? "").toLowerCase() === "tennis";
+
   const homeWin = item.winner_id !== null && item.winner_id === item.home_team_id;
   const awayWin = item.winner_id !== null && item.winner_id === item.away_team_id;
 
-  const aggHome = item.is_two_legged ? (item.score_leg1_home ?? 0) + (item.score_leg2_home ?? 0) : null;
-  const aggAway = item.is_two_legged ? (item.score_leg1_away ?? 0) + (item.score_leg2_away ?? 0) : null;
+  const aggHome =
+    item.is_two_legged
+      ? (item.aggregate_home ?? ((item.score_leg1_home ?? 0) + (item.score_leg2_home ?? 0)))
+      : null;
+
+  const aggAway =
+    item.is_two_legged
+      ? (item.aggregate_away ?? ((item.score_leg1_away ?? 0) + (item.score_leg2_away ?? 0)))
+      : null;
+
+  const canShowDetails = item.status !== "SCHEDULED";
+
+  const tennisLeg1 = isTennis && canShowDetails ? formatTennisSets(item.tennis_sets_leg1) : null;
+  const tennisLeg2 = isTennis && canShowDetails ? formatTennisSets(item.tennis_sets_leg2) : null;
+
+  const pensLeg2 = !isTennis ? formatPenalties(item.penalties_leg2_home ?? null, item.penalties_leg2_away ?? null) : null;
+  const pensLeg1 = !isTennis ? formatPenalties(item.penalties_leg1_home ?? null, item.penalties_leg1_away ?? null) : null;
+  const pensText = pensLeg2 || pensLeg1;
 
   return (
     <div
@@ -546,7 +775,16 @@ function BracketMatchCard({ item, isThirdPlace }: { item: BracketDuelItem; isThi
       }}
     >
       {item.is_two_legged && (
-        <div style={{ fontSize: "0.6rem", color: "#888", marginBottom: "6px", textAlign: "center", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+        <div
+          style={{
+            fontSize: "0.6rem",
+            color: "#888",
+            marginBottom: "6px",
+            textAlign: "center",
+            textTransform: "uppercase",
+            letterSpacing: "0.5px",
+          }}
+        >
           Dwumecz
         </div>
       )}
@@ -574,6 +812,28 @@ function BracketMatchCard({ item, isThirdPlace }: { item: BracketDuelItem; isThi
           {item.is_two_legged && <ScoreBox score={aggAway} isAgg={true} highlight={awayWin} />}
         </div>
       </div>
+
+      {(tennisLeg1 || tennisLeg2 || pensText) && (
+        <div style={{ marginTop: "8px", fontSize: "0.72rem", color: "#444", lineHeight: 1.25 }}>
+          {tennisLeg1 && !item.is_two_legged && (
+            <div>
+              <strong>Sety (gemy):</strong> {tennisLeg1}
+            </div>
+          )}
+
+          {item.is_two_legged && (tennisLeg1 || tennisLeg2) && (
+            <div>
+              <strong>Sety (gemy):</strong> {tennisLeg1 ? tennisLeg1 : "-"} {" | "} {tennisLeg2 ? tennisLeg2 : "-"}
+            </div>
+          )}
+
+          {pensText && (
+            <div>
+              <strong>Karne:</strong> {pensText}
+            </div>
+          )}
+        </div>
+      )}
 
       {item.status === "FINISHED" && (
         <div style={{ fontSize: "0.65rem", color: "#666", marginTop: "6px", textAlign: "right", fontStyle: "italic" }}>

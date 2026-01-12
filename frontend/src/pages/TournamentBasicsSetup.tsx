@@ -9,10 +9,13 @@ import TournamentStepFooter from "../components/TournamentStepFooter";
 type Discipline = "football" | "volleyball" | "basketball" | "handball" | "tennis" | "wrestling";
 type TournamentFormat = "LEAGUE" | "CUP" | "MIXED";
 
-/* --- Typy specyficzne dla Handball --- */
+/* --- Handball --- */
 type HandballTableDrawMode = "ALLOW_DRAW" | "PENALTIES" | "OVERTIME_PENALTIES";
 type HandballKnockoutTiebreak = "OVERTIME_PENALTIES" | "PENALTIES";
 type HandballPointsMode = "2_1_0" | "3_1_0" | "3_2_1_0";
+
+/* --- Tennis --- */
+type TennisBestOf = 3 | 5;
 
 type TournamentDTO = {
   id: number;
@@ -30,6 +33,11 @@ const HB_POINTS_OPTIONS: { value: HandballPointsMode; label: string }[] = [
   { value: "2_1_0", label: "2-1-0 (W-R-P)" },
   { value: "3_1_0", label: "3-1-0 (W-R-P)" },
   { value: "3_2_1_0", label: "3-2-1-0 (karne: W=2, P=1)" },
+];
+
+const TENNIS_BEST_OF_OPTIONS: { value: TennisBestOf; label: string }[] = [
+  { value: 3, label: "Best of 3 (do 2 wygranych setów)" },
+  { value: 5, label: "Best of 5 (do 3 wygranych setów)" },
 ];
 
 function clampInt(value: number, min: number, max: number) {
@@ -56,6 +64,11 @@ function splitIntoGroups(participants: number, groupsCount: number): number[] {
 function roundRobinMatches(size: number, matchesPerPair: 1 | 2) {
   if (size < 2) return 0;
   return (size * (size - 1)) / 2 * matchesPerPair;
+}
+
+function isPowerOfTwo(n: number) {
+  if (n < 1) return false;
+  return (n & (n - 1)) === 0;
 }
 
 export default function TournamentBasicsSetup() {
@@ -101,12 +114,70 @@ export default function TournamentBasicsSetup() {
   // Handball: Puchar
   const [hbKnockoutTiebreak, setHbKnockoutTiebreak] = useState<HandballKnockoutTiebreak>("OVERTIME_PENALTIES");
 
+  // Tennis: best-of
+  const [tennisBestOf, setTennisBestOf] = useState<TennisBestOf>(3);
+
+  const isHandball = discipline === "handball";
+  const isTennis = discipline === "tennis";
+
   /* ====== Logika spójności Handball ====== */
   useEffect(() => {
     if (hbPointsMode === "3_2_1_0" && hbTableDrawMode === "ALLOW_DRAW") {
       setHbTableDrawMode("PENALTIES");
     }
   }, [hbPointsMode, hbTableDrawMode]);
+
+  /* ====== Logika spójności TENIS ======
+     - brak dwumeczu w KO (zgodnie z TournamentResults)
+  */
+  useEffect(() => {
+    if (!isTennis) return;
+
+    // KO: wymuszamy 1 mecz (w tym finał i ewentualne 3. miejsce)
+    if (cupMatches !== 1) setCupMatches(1);
+    if (finalMatches !== 1) setFinalMatches(1);
+    if (thirdPlaceMatches !== 1) setThirdPlaceMatches(1);
+    // thirdPlace zostawiamy jako opcję, ale zawsze 1 mecz
+  }, [isTennis, cupMatches, finalMatches, thirdPlaceMatches]);
+
+  /* ====== MIXED: pilnowanie spójności grup ====== */
+  const maxGroupsForMin2PerGroup = useMemo(() => {
+    // wymuszamy minimum 2 zespoły w grupie: groupsCount <= floor(participants/2)
+    return Math.max(1, Math.floor(Math.max(2, participants) / 2));
+  }, [participants]);
+
+  useEffect(() => {
+    if (format !== "MIXED") return;
+
+    // clamp liczby grup (żeby nie było grup 1-osobowych)
+    setGroupsCount((prev) => clampInt(prev, 1, maxGroupsForMin2PerGroup));
+  }, [format, maxGroupsForMin2PerGroup]);
+
+  const groupSizes = useMemo(() => {
+    if (format !== "MIXED") return [];
+    const safeParticipants = clampInt(participants, 2, 10_000);
+    const safeGroups = clampInt(groupsCount, 1, Math.max(1, safeParticipants));
+    return splitIntoGroups(safeParticipants, safeGroups);
+  }, [format, participants, groupsCount]);
+
+  const minGroupSize = useMemo(() => {
+    if (!groupSizes.length) return 0;
+    return Math.min(...groupSizes);
+  }, [groupSizes]);
+
+  useEffect(() => {
+    if (format !== "MIXED") return;
+    if (minGroupSize < 2) return;
+
+    // clamp awansu, żeby nie przekraczał najmniejszej grupy
+    setAdvanceFromGroup((prev) => clampInt(prev, 1, minGroupSize));
+  }, [format, minGroupSize]);
+
+  const advanceOptions = useMemo(() => {
+    if (format !== "MIXED" || minGroupSize < 2) return [1, 2].filter((x) => x <= Math.max(1, minGroupSize));
+    const maxOpt = Math.min(minGroupSize, 8); // sensowny limit UI
+    return Array.from({ length: maxOpt }, (_, i) => i + 1);
+  }, [format, minGroupSize]);
 
   /* ====== Obsługa Flash Error ====== */
   useEffect(() => {
@@ -149,74 +220,102 @@ export default function TournamentBasicsSetup() {
         const cfg = t.format_config || {};
 
         // Liga / Grupy
-        setLeagueMatches(cfg.league_matches ?? 1);
+        setLeagueMatches(cfg.league_matches === 2 ? 2 : 1);
+
         const savedGroups = cfg.groups_count;
         if (typeof savedGroups === "number" && savedGroups >= 1) {
           setGroupsCount(savedGroups);
         } else {
           setGroupsCount(defaultGroupsCountFor4PerGroup(currentCount));
         }
-        setGroupMatches(cfg.group_matches ?? 1);
-        setAdvanceFromGroup(cfg.advance_from_group ?? 2);
+
+        setGroupMatches(cfg.group_matches === 2 ? 2 : 1);
+
+        // awans
+        const savedAdvance = Number(cfg.advance_from_group ?? 2);
+        setAdvanceFromGroup(Number.isFinite(savedAdvance) ? savedAdvance : 2);
 
         // Puchar
-        setCupMatches(cfg.cup_matches ?? 1);
-        setFinalMatches(cfg.final_matches ?? 1);
+        setCupMatches(cfg.cup_matches === 2 ? 2 : 1);
+        setFinalMatches(cfg.final_matches === 2 ? 2 : 1);
         setThirdPlace(!!cfg.third_place);
-        setThirdPlaceMatches(cfg.third_place_matches ?? 1);
+        setThirdPlaceMatches(cfg.third_place_matches === 2 ? 2 : 1);
 
         // Handball
         setHbTableDrawMode(cfg.handball_table_draw_mode ?? "ALLOW_DRAW");
         setHbKnockoutTiebreak(cfg.handball_knockout_tiebreak ?? "OVERTIME_PENALTIES");
         setHbPointsMode(cfg.handball_points_mode ?? "2_1_0");
 
+        // Tennis
+        setTennisBestOf(cfg.tennis_best_of === 5 ? 5 : 3);
       } catch (e: any) {
         setError(e.message || "Błąd ładowania.");
       } finally {
         setLoading(false);
       }
     };
+
     load();
   }, [id, isCreateMode]);
 
   /* ====== Preview ====== */
   const preview = useMemo(() => {
-    if (participants < 2) return null;
+    const p = clampInt(participants, 2, 10_000);
 
     if (format === "LEAGUE") {
-      const matches = (participants * (participants - 1)) / 2 * leagueMatches;
+      const matches = (p * (p - 1)) / 2 * leagueMatches;
       return { matches };
     }
 
     if (format === "CUP") {
-      const roundsMatches = (participants - 2) * cupMatches;
+      // liczba "tie" = p-1, ale finał liczymy osobno: (p-2) + finał
+      const roundsMatches = Math.max(0, (p - 2) * cupMatches);
       const finalCount = finalMatches;
       const thirdCount = thirdPlace ? thirdPlaceMatches : 0;
       return { matches: roundsMatches + finalCount + thirdCount };
     }
 
     if (format === "MIXED") {
-      const sizes = splitIntoGroups(participants, groupsCount);
-      const groupTotal = sizes.reduce(
-        (sum, size) => sum + roundRobinMatches(size, groupMatches),
-        0
-      );
-      const advancing = sizes.length * advanceFromGroup;
+      const safeGroups = clampInt(groupsCount, 1, Math.max(1, Math.floor(p / 2)));
+      const sizes = splitIntoGroups(p, safeGroups);
+
+      const groupTotal = sizes.reduce((sum, size) => sum + roundRobinMatches(size, groupMatches), 0);
+
+      // uwaga: awans nie może przekroczyć wielkości najmniejszej grupy
+      const minSize = sizes.length ? Math.min(...sizes) : 2;
+      const adv = clampInt(advanceFromGroup, 1, Math.max(1, minSize));
+      const advancing = sizes.length * adv;
+
       if (advancing < 2) {
         return { matches: groupTotal, groupMatches: groupTotal, koMatches: 0, groups: sizes.length };
       }
+
       const koRoundsMatches = Math.max(0, (advancing - 2) * cupMatches);
       const finalCount = finalMatches;
       const thirdCount = thirdPlace ? thirdPlaceMatches : 0;
       const koTotal = koRoundsMatches + finalCount + thirdCount;
-      return { matches: groupTotal + koTotal, groupMatches: groupTotal, koMatches: koTotal, groups: sizes.length };
+
+      return {
+        matches: groupTotal + koTotal,
+        groupMatches: groupTotal,
+        koMatches: koTotal,
+        groups: sizes.length,
+        advancing,
+      };
     }
+
     return null;
   }, [
-    format, participants,
+    format,
+    participants,
     leagueMatches,
-    cupMatches, finalMatches, thirdPlace, thirdPlaceMatches,
-    groupsCount, groupMatches, advanceFromGroup,
+    cupMatches,
+    finalMatches,
+    thirdPlace,
+    thirdPlaceMatches,
+    groupsCount,
+    groupMatches,
+    advanceFromGroup,
   ]);
 
   /* ====== Helpers ====== */
@@ -226,28 +325,77 @@ export default function TournamentBasicsSetup() {
     );
   };
 
+  const validateLocalBeforeSave = (): string | null => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return "Wpisz nazwę turnieju — bez tego nie da się przejść dalej.";
+
+    const p = clampInt(participants, 2, 10_000);
+
+    if (format === "MIXED") {
+      const gMax = Math.max(1, Math.floor(p / 2));
+      const g = clampInt(groupsCount, 1, gMax);
+      const sizes = splitIntoGroups(p, g);
+      const minSize = sizes.length ? Math.min(...sizes) : 2;
+
+      if (minSize < 2) return "W MIXED każda grupa musi mieć co najmniej 2 zespoły (zmniejsz liczbę grup).";
+
+      const adv = clampInt(advanceFromGroup, 1, minSize);
+      if (adv !== advanceFromGroup) {
+        return `Awans z grupy nie może być większy niż liczba zespołów w najmniejszej grupie (min: ${minSize}).`;
+      }
+
+      const advancing = g * adv;
+
+      // to nie musi być błąd, bo backend może robić BYE,
+      // ale UX-owo ostrzegamy – w praktyce drabinka jest najczytelniejsza dla 2^k
+      if (advancing >= 2 && !isPowerOfTwo(advancing)) {
+        return `Uwaga: awansujących jest ${advancing}. To nie jest potęga 2, więc w drabince mogą pojawić się wolne losy (BYE).`;
+      }
+    }
+
+    if (isTennis) {
+      if (cupMatches !== 1 || finalMatches !== 1 || thirdPlaceMatches !== 1) {
+        return "Tenis: KO nie wspiera dwumeczów — ustaw rundy/finał/3. miejsce na 1 mecz.";
+      }
+    }
+
+    return null;
+  };
+
   const buildFormatConfig = () => {
     const safeParticipants = clampInt(participants, 2, 10_000);
-    const safeGroups = clampInt(groupsCount, 1, Math.max(1, safeParticipants));
+
+    // MIXED: pilnujemy min. 2 na grupę
+    const maxGroups = Math.max(1, Math.floor(safeParticipants / 2));
+    const safeGroups = clampInt(groupsCount, 1, Math.max(1, maxGroups));
     const sizes = splitIntoGroups(safeParticipants, safeGroups);
+
     const computedTeamsPerGroup = Math.max(2, ...(sizes.length ? sizes : [2]));
+    const minSize = sizes.length ? Math.min(...sizes) : 2;
+    const safeAdvance = clampInt(advanceFromGroup, 1, Math.max(1, minSize));
 
     const rawConfig: Record<string, any> = {
       league_matches: leagueMatches,
+
       groups_count: safeGroups,
       teams_per_group: computedTeamsPerGroup,
       group_matches: groupMatches,
-      advance_from_group: advanceFromGroup,
-      cup_matches: cupMatches,
-      final_matches: finalMatches,
+      advance_from_group: safeAdvance,
+
+      cup_matches: isTennis ? 1 : cupMatches,
+      final_matches: isTennis ? 1 : finalMatches,
       third_place: thirdPlace,
-      third_place_matches: thirdPlaceMatches,
+      third_place_matches: isTennis ? 1 : thirdPlaceMatches,
     };
 
-    if (discipline === "handball") {
+    if (isHandball) {
       rawConfig.handball_table_draw_mode = hbTableDrawMode;
       rawConfig.handball_knockout_tiebreak = hbKnockoutTiebreak;
       rawConfig.handball_points_mode = hbPointsMode;
+    }
+
+    if (isTennis) {
+      rawConfig.tennis_best_of = tennisBestOf;
     }
 
     const finalConfig = { ...rawConfig };
@@ -258,7 +406,11 @@ export default function TournamentBasicsSetup() {
       delete finalConfig.third_place;
       delete finalConfig.third_place_matches;
       delete finalConfig.advance_from_group;
+      delete finalConfig.groups_count;
+      delete finalConfig.teams_per_group;
+      delete finalConfig.group_matches;
       delete finalConfig.handball_knockout_tiebreak;
+      // w LEAGUE handball_table_draw_mode / points_mode zostają (mają sens)
     }
 
     if (format === "CUP") {
@@ -272,7 +424,7 @@ export default function TournamentBasicsSetup() {
     }
 
     if (format === "MIXED") {
-       delete finalConfig.league_matches;
+      delete finalConfig.league_matches;
     }
 
     return finalConfig;
@@ -280,11 +432,18 @@ export default function TournamentBasicsSetup() {
 
   /* ====== SAVE ACTION ====== */
   const saveAll = useCallback(async (): Promise<{ tournamentId: number }> => {
-    const trimmedName = name.trim();
-    if (!trimmedName) {
-      const msg = "Wpisz nazwę turnieju — bez tego nie da się przejść dalej.";
-      setError(msg);
-      throw new Error(msg);
+    const localMsg = validateLocalBeforeSave();
+    if (localMsg) {
+      // jeżeli to ostrzeżenie o potędze 2 – pozwól kontynuować po potwierdzeniu
+      if (localMsg.startsWith("Uwaga:")) {
+        if (!window.confirm(`${localMsg}\n\nKontynuować zapis?`)) {
+          setError("Anulowano zapis konfiguracji.");
+          throw new Error("Anulowano zapis konfiguracji.");
+        }
+      } else {
+        setError(localMsg);
+        throw new Error(localMsg);
+      }
     }
 
     if (!isCreateMode && !dirty) return { tournamentId: Number(id) };
@@ -294,6 +453,7 @@ export default function TournamentBasicsSetup() {
     let createdId: number | null = null;
 
     try {
+      const trimmedName = name.trim();
       let tournamentId = Number(id);
 
       // 1) CREATE
@@ -303,13 +463,16 @@ export default function TournamentBasicsSetup() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: trimmedName, discipline }),
         });
+
         if (!createRes.ok) {
           const data = await createRes.json().catch(() => ({}));
           throw new Error(data?.detail || "Nie udało się utworzyć turnieju.");
         }
+
         const created = await createRes.json();
         createdId = created.id;
         tournamentId = created.id;
+
         setInitialName(trimmedName);
         setInitialDiscipline(discipline);
       } else {
@@ -327,6 +490,7 @@ export default function TournamentBasicsSetup() {
             setInitialDiscipline(discipline);
           }
         }
+
         // 3) EDIT NAME
         if (trimmedName !== initialName) {
           const res = await apiFetch(`/api/tournaments/${tournamentId}/`, {
@@ -339,8 +503,9 @@ export default function TournamentBasicsSetup() {
         }
       }
 
-      // 4) SETUP CHANGE
+      // 4) SETUP CHANGE (dry-run)
       const format_config = buildFormatConfig();
+
       const dry = await apiFetch(`/api/tournaments/${tournamentId}/change-setup/?dry_run=true`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -348,8 +513,8 @@ export default function TournamentBasicsSetup() {
       });
       if (!dry.ok) throw new Error("Błąd walidacji konfiguracji.");
 
-      const dryData = await dry.json();
-      const resetNeeded = Boolean(dryData?.reset_needed);
+      const dryData = await dry.json().catch(() => ({}));
+      const resetNeeded = Boolean((dryData as any)?.reset_needed);
 
       if (!isCreateMode && resetNeeded) {
         if (!window.confirm("Zmiana konfiguracji usunie istniejące mecze. Kontynuować?")) {
@@ -367,6 +532,7 @@ export default function TournamentBasicsSetup() {
       // 5) TEAMS COUNT
       const safeParticipants = clampInt(participants, 2, 10_000);
       const participantsChanged = safeParticipants !== initialParticipantsRef.current;
+
       if (!isCreateMode && participantsChanged && !resetNeeded) {
         if (!window.confirm("Zmiana liczby uczestników spowoduje reset rozgrywek. Kontynuować?")) {
           throw new Error("Anulowano zmianę liczby uczestników.");
@@ -376,9 +542,10 @@ export default function TournamentBasicsSetup() {
       const teamsRes = await apiFetch(`/api/tournaments/${tournamentId}/teams/setup/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({teams_count: safeParticipants }),
+        body: JSON.stringify({ teams_count: safeParticipants }),
       });
       if (!teamsRes.ok) throw new Error("Nie udało się ustawić liczby uczestników.");
+
       initialParticipantsRef.current = safeParticipants;
 
       return { tournamentId };
@@ -393,13 +560,30 @@ export default function TournamentBasicsSetup() {
       setSaving(false);
     }
   }, [
-    isCreateMode, id, dirty,
-    name, discipline, initialDiscipline, initialName,
-    format, participants,
-    leagueMatches, cupMatches, finalMatches, thirdPlace, thirdPlaceMatches,
-    groupsCount, groupMatches, advanceFromGroup,
-    hbTableDrawMode, hbKnockoutTiebreak, hbPointsMode,
-    navigate
+    isCreateMode,
+    id,
+    dirty,
+    name,
+    discipline,
+    initialDiscipline,
+    initialName,
+    format,
+    participants,
+    leagueMatches,
+    cupMatches,
+    finalMatches,
+    thirdPlace,
+    thirdPlaceMatches,
+    groupsCount,
+    groupMatches,
+    advanceFromGroup,
+    hbTableDrawMode,
+    hbKnockoutTiebreak,
+    hbPointsMode,
+    tennisBestOf,
+    isHandball,
+    isTennis,
+    navigate,
   ]);
 
   useEffect(() => {
@@ -412,10 +596,8 @@ export default function TournamentBasicsSetup() {
 
   if (loading) return <p style={{ padding: "2rem" }}>Ładowanie…</p>;
 
-  /* ====== RENDER HELPERS ====== */
   const showLeagueOrGroupConfig = format === "LEAGUE" || format === "MIXED";
   const showKnockoutConfig = format === "CUP" || format === "MIXED";
-  const isHandball = discipline === "handball";
 
   return (
     <div style={{ padding: "2rem", maxWidth: 900 }}>
@@ -427,21 +609,30 @@ export default function TournamentBasicsSetup() {
       {/* ===== 1. DANE TURNIEJU ===== */}
       <section style={{ marginTop: "1.5rem" }}>
         <h3>Dane turnieju</h3>
+
         <div style={{ marginBottom: 12 }}>
           <label>Nazwa</label>
           <input
             style={{ width: "100%", padding: 8 }}
             value={name}
             required
-            onChange={(e) => { setName(e.target.value); markDirty(); if (error) setError(null); }}
+            onChange={(e) => {
+              setName(e.target.value);
+              markDirty();
+              if (error) setError(null);
+            }}
           />
         </div>
+
         <div style={{ marginBottom: 12 }}>
           <label>Dyscyplina</label>
           <select
             style={{ width: "100%", padding: 8 }}
             value={discipline}
-            onChange={(e) => { setDiscipline(e.target.value as Discipline); markDirty(); }}
+            onChange={(e) => {
+              setDiscipline(e.target.value as Discipline);
+              markDirty();
+            }}
           >
             <option value="football">Piłka nożna</option>
             <option value="volleyball">Siatkówka</option>
@@ -451,21 +642,52 @@ export default function TournamentBasicsSetup() {
             <option value="wrestling">Zapasy</option>
           </select>
         </div>
+
+        {/* TENNIS: best-of */}
+        {isTennis && (
+          <div style={{ marginBottom: 12 }}>
+            <label>Tenis – format meczu</label>
+            <select
+              style={{ width: "100%", padding: 8 }}
+              value={tennisBestOf}
+              disabled={saving}
+              onChange={(e) => {
+                setTennisBestOf(Number(e.target.value) as TennisBestOf);
+                markDirty();
+              }}
+            >
+              {TENNIS_BEST_OF_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+
+            <div style={{ marginTop: 6, fontSize: "0.9em", color: "#666" }}>
+              Wyniki będziesz wpisywać w <strong>gemach per set</strong> w ekranie „Wprowadzanie wyników”.
+            </div>
+          </div>
+        )}
       </section>
 
       {/* ===== 2. RODZAJ TURNIEJU (MASTER SWITCH) ===== */}
       <section style={{ marginTop: "2rem" }}>
         <h3>Rodzaj turnieju</h3>
+
         <select
           style={{ width: "100%", padding: 8 }}
           value={format}
-          onChange={(e) => { setFormat(e.target.value as TournamentFormat); markDirty(); }}
+          onChange={(e) => {
+            setFormat(e.target.value as TournamentFormat);
+            markDirty();
+          }}
           disabled={saving}
         >
           <option value="LEAGUE">Liga</option>
           <option value="CUP">Puchar (KO)</option>
           <option value="MIXED">Grupy + puchar</option>
         </select>
+
         <p style={{ marginTop: 8, fontSize: "0.9em", color: "#666" }}>
           Liczba uczestników:{" "}
           <input
@@ -475,8 +697,15 @@ export default function TournamentBasicsSetup() {
             value={participants}
             disabled={saving}
             onChange={(e) => {
-              setParticipants(clampInt(Number(e.target.value), 2, 10_000));
+              const p = clampInt(Number(e.target.value), 2, 10_000);
+              setParticipants(p);
               markDirty();
+
+              // jeśli MIXED: automatycznie popraw groupsCount, żeby nie było grup 1-osobowych
+              if (format === "MIXED") {
+                const gMax = Math.max(1, Math.floor(p / 2));
+                setGroupsCount((prev) => clampInt(prev, 1, gMax));
+              }
             }}
           />
         </p>
@@ -487,10 +716,11 @@ export default function TournamentBasicsSetup() {
         <section style={{ marginTop: "1.5rem" }}>
           <h3>Faza {format === "LEAGUE" ? "ligowa" : "grupowa"}</h3>
 
-          {/* A) Specyficzne dla Handballa w tabeli */}
+          {/* A) Handball – tabela */}
           {isHandball && (
             <div style={{ marginBottom: "1rem" }}>
               <strong>Ustawienia punktacji (Piłka ręczna)</strong>
+
               <div style={{ marginTop: 8 }}>
                 <label style={{ display: "block", marginBottom: 8 }}>
                   Punktacja (tabela):
@@ -504,7 +734,9 @@ export default function TournamentBasicsSetup() {
                     }}
                   >
                     {HB_POINTS_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
                     ))}
                   </select>
                 </label>
@@ -534,7 +766,7 @@ export default function TournamentBasicsSetup() {
             </div>
           )}
 
-          {/* B) Ustawienia strukturalne Ligi */}
+          {/* B) Liga */}
           {format === "LEAGUE" && (
             <div>
               <label>
@@ -542,7 +774,11 @@ export default function TournamentBasicsSetup() {
                 <select
                   style={{ marginLeft: 8 }}
                   value={leagueMatches}
-                  onChange={(e) => { setLeagueMatches(Number(e.target.value) as 1 | 2); markDirty(); }}
+                  disabled={saving}
+                  onChange={(e) => {
+                    setLeagueMatches(Number(e.target.value) as 1 | 2);
+                    markDirty();
+                  }}
                 >
                   <option value={1}>1 mecz (bez rewanżu)</option>
                   <option value={2}>2 mecze (rewanż)</option>
@@ -551,7 +787,7 @@ export default function TournamentBasicsSetup() {
             </div>
           )}
 
-          {/* C) Ustawienia strukturalne Grup (MIXED) */}
+          {/* C) Grupy (MIXED) */}
           {format === "MIXED" && (
             <div style={{ display: "flex", gap: "20px", flexWrap: "wrap" }}>
               <label>
@@ -559,12 +795,12 @@ export default function TournamentBasicsSetup() {
                 <input
                   type="number"
                   min={1}
-                  max={participants}
-                  style={{ width: 60, marginLeft: 8 }}
+                  max={maxGroupsForMin2PerGroup}
+                  style={{ width: 70, marginLeft: 8 }}
                   value={groupsCount}
                   disabled={saving}
                   onChange={(e) => {
-                    setGroupsCount(clampInt(Number(e.target.value), 1, Math.max(1, participants)));
+                    setGroupsCount(clampInt(Number(e.target.value), 1, maxGroupsForMin2PerGroup));
                     markDirty();
                   }}
                 />
@@ -576,7 +812,10 @@ export default function TournamentBasicsSetup() {
                   style={{ marginLeft: 8 }}
                   value={groupMatches}
                   disabled={saving}
-                  onChange={(e) => { setGroupMatches(Number(e.target.value) as 1 | 2); markDirty(); }}
+                  onChange={(e) => {
+                    setGroupMatches(Number(e.target.value) as 1 | 2);
+                    markDirty();
+                  }}
                 >
                   <option value={1}>1 mecz</option>
                   <option value={2}>2 mecze</option>
@@ -588,14 +827,25 @@ export default function TournamentBasicsSetup() {
                 <select
                   style={{ marginLeft: 8 }}
                   value={advanceFromGroup}
-                  disabled={saving}
-                  onChange={(e) => { setAdvanceFromGroup(Number(e.target.value)); markDirty(); }}
+                  disabled={saving || minGroupSize < 2}
+                  onChange={(e) => {
+                    setAdvanceFromGroup(Number(e.target.value));
+                    markDirty();
+                  }}
                 >
-                  <option value={1}>1</option>
-                  <option value={2}>2</option>
-                  <option value={4}>4</option>
+                  {advanceOptions.map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
                 </select>
               </label>
+
+              {groupSizes.length > 0 && (
+                <div style={{ fontSize: "0.9em", color: "#666", alignSelf: "center" }}>
+                  Rozmiary grup: {groupSizes.join(", ")} (min: {minGroupSize})
+                </div>
+              )}
             </div>
           )}
         </section>
@@ -606,12 +856,12 @@ export default function TournamentBasicsSetup() {
         <section style={{ marginTop: "1.5rem" }}>
           <h3>Faza pucharowa</h3>
 
-          {/* A) Specyficzne dla Handballa w KO */}
+          {/* A) Handball KO */}
           {isHandball && (
             <div style={{ marginBottom: "1rem" }}>
               <strong>Dogrywki i karne (Puchar)</strong>
               <div style={{ marginTop: 8 }}>
-                 <label>
+                <label>
                   Sposób rozstrzygania remisów:
                   <select
                     style={{ marginLeft: 8 }}
@@ -630,19 +880,27 @@ export default function TournamentBasicsSetup() {
             </div>
           )}
 
-          {/* B) Struktura Pucharu */}
+          {/* B) Struktura KO */}
           <div style={{ display: "flex", gap: "20px", flexWrap: "wrap" }}>
             <label>
               Rundy (mecze):
               <select
                 style={{ marginLeft: 8 }}
                 value={cupMatches}
-                disabled={saving}
-                onChange={(e) => { setCupMatches(Number(e.target.value) as 1 | 2); markDirty(); }}
+                disabled={saving || isTennis}
+                onChange={(e) => {
+                  setCupMatches(Number(e.target.value) as 1 | 2);
+                  markDirty();
+                }}
               >
                 <option value={1}>1 mecz</option>
                 <option value={2}>2 mecze (dwumecz)</option>
               </select>
+              {isTennis && (
+                <span style={{ fontSize: "0.8em", color: "orange", marginLeft: 8 }}>
+                  (Tenis: brak dwumeczu)
+                </span>
+              )}
             </label>
 
             <label>
@@ -650,12 +908,20 @@ export default function TournamentBasicsSetup() {
               <select
                 style={{ marginLeft: 8 }}
                 value={finalMatches}
-                disabled={saving}
-                onChange={(e) => { setFinalMatches(Number(e.target.value) as 1 | 2); markDirty(); }}
+                disabled={saving || isTennis}
+                onChange={(e) => {
+                  setFinalMatches(Number(e.target.value) as 1 | 2);
+                  markDirty();
+                }}
               >
                 <option value={1}>1 mecz</option>
                 <option value={2}>2 mecze</option>
               </select>
+              {isTennis && (
+                <span style={{ fontSize: "0.8em", color: "orange", marginLeft: 8 }}>
+                  (Tenis: zawsze 1)
+                </span>
+              )}
             </label>
 
             <label style={{ display: "flex", alignItems: "center" }}>
@@ -663,7 +929,10 @@ export default function TournamentBasicsSetup() {
                 type="checkbox"
                 checked={thirdPlace}
                 disabled={saving}
-                onChange={(e) => { setThirdPlace(e.target.checked); markDirty(); }}
+                onChange={(e) => {
+                  setThirdPlace(e.target.checked);
+                  markDirty();
+                }}
                 style={{ marginRight: 8 }}
               />
               Mecz o 3. miejsce
@@ -675,12 +944,20 @@ export default function TournamentBasicsSetup() {
                 <select
                   style={{ marginLeft: 8 }}
                   value={thirdPlaceMatches}
-                  disabled={saving}
-                  onChange={(e) => { setThirdPlaceMatches(Number(e.target.value) as 1 | 2); markDirty(); }}
+                  disabled={saving || isTennis}
+                  onChange={(e) => {
+                    setThirdPlaceMatches(Number(e.target.value) as 1 | 2);
+                    markDirty();
+                  }}
                 >
                   <option value={1}>1 mecz</option>
                   <option value={2}>2 mecze</option>
                 </select>
+                {isTennis && (
+                  <span style={{ fontSize: "0.8em", color: "orange", marginLeft: 8 }}>
+                    (Tenis: zawsze 1)
+                  </span>
+                )}
               </label>
             )}
           </div>
@@ -691,16 +968,16 @@ export default function TournamentBasicsSetup() {
       {preview && (
         <section style={{ marginTop: "2rem" }}>
           <h4 style={{ margin: "0 0 10px 0" }}>Podsumowanie struktury</h4>
+
           {"groups" in preview && <div>Liczba grup: <strong>{preview.groups}</strong></div>}
+          {"advancing" in preview && <div>Awansujących do KO: <strong>{(preview as any).advancing}</strong></div>}
           {"groupMatches" in preview && <div>Mecze w grupach: <strong>{preview.groupMatches}</strong></div>}
           {"koMatches" in preview && <div>Mecze fazy pucharowej: <strong>{preview.koMatches}</strong></div>}
           <div style={{ marginTop: 8 }}>Szacowana łączna liczba meczów: <strong>{preview.matches}</strong></div>
         </section>
       )}
 
-      {isCreateMode ? (
-        <TournamentStepFooter getCreatedId={() => createdIdRef.current} />
-      ) : null}
+      {isCreateMode ? <TournamentStepFooter getCreatedId={() => createdIdRef.current} /> : null}
     </div>
   );
 }

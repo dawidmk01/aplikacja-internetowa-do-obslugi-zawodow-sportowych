@@ -117,6 +117,7 @@ class Tournament(models.Model):
 
     @staticmethod
     def infer_default_competition_type(discipline: str) -> str:
+        # Tenis i zapasy traktujemy jako domyślnie indywidualne.
         if discipline in (Tournament.Discipline.TENNIS, Tournament.Discipline.WRESTLING):
             return Tournament.CompetitionType.INDIVIDUAL
         return Tournament.CompetitionType.TEAM
@@ -351,11 +352,43 @@ class Match(models.Model):
         related_name="away_matches",
     )
 
-    # ===== WYNIK =====
+    # ============================================================
+    # WYNIK – pola ogólne (wspólne dla dyscyplin)
+    # ============================================================
+    #
+    # home_score / away_score:
+    # - piłka nożna / ręczna / koszykówka: bramki / punkty,
+    # - tenis: liczba wygranych setów (wyliczana na podstawie tennis_sets).
+    #
     home_score = models.PositiveIntegerField(default=0)
     away_score = models.PositiveIntegerField(default=0)
 
-    # dogrywka (piłka nożna KO / opcjonalnie inne dyscypliny wg konfiguracji)
+    # ============================================================
+    # TENIS – zapis setów w gemach
+    # ============================================================
+    #
+    # Struktura JSON (lista setów):
+    # [
+    #   {"home_games": 6, "away_games": 4},
+    #   {"home_games": 3, "away_games": 6},
+    #   {"home_games": 7, "away_games": 6, "home_tiebreak": 7, "away_tiebreak": 5}
+    # ]
+    #
+    # Zasady:
+    # - pole wykorzystywane tylko dla Tournament.discipline == "tennis",
+    # - dla pozostałych dyscyplin powinno pozostać NULL,
+    # - walidacja poprawności (6–0..7–6 oraz tie-break przy 7–6) odbywa się w serializerze/usługach.
+    #
+    tennis_sets = models.JSONField(
+        blank=True,
+        null=True,
+        default=None,
+        help_text="Dla tenisa: lista setów w gemach (opcjonalnie z tie-breakiem).",
+    )
+
+    # ============================================================
+    # DOGRYWKA / KARNE (głównie piłka nożna KO oraz ręczna wg konfiguracji)
+    # ============================================================
     went_to_extra_time = models.BooleanField(default=False)
     home_extra_time_score = models.PositiveSmallIntegerField(null=True, blank=True)
     away_extra_time_score = models.PositiveSmallIntegerField(null=True, blank=True)

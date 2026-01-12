@@ -20,6 +20,13 @@ export type MatchStatus = "SCHEDULED" | "IN_PROGRESS" | "FINISHED";
 type HandballTableDrawMode = "ALLOW_DRAW" | "PENALTIES" | "OVERTIME_PENALTIES";
 type HandballKnockoutTiebreak = "OVERTIME_PENALTIES" | "PENALTIES";
 
+export type TennisSetDTO = {
+  home_games: number;
+  away_games: number;
+  home_tiebreak?: number | null;
+  away_tiebreak?: number | null;
+};
+
 export type TournamentDTO = {
   id: number;
   name?: string;
@@ -31,6 +38,10 @@ export type TournamentDTO = {
     cup_matches_by_stage_order?: Record<string, number>;
     handball_table_draw_mode?: HandballTableDrawMode;
     handball_knockout_tiebreak?: HandballKnockoutTiebreak;
+
+    // TENNIS:
+    // best-of-3 albo best-of-5
+    tennis_best_of?: 3 | 5 | number;
   };
 };
 
@@ -48,8 +59,13 @@ export type MatchDTO = {
 
   home_team_name: string;
   away_team_name: string;
+
+  // Dla tenisa: sety wygrane (liczone z tennis_sets)
   home_score: number | null;
   away_score: number | null;
+
+  // TENNIS (gemy per set)
+  tennis_sets?: TennisSetDTO[] | null;
 
   went_to_extra_time?: boolean;
   home_extra_time_score?: number | null;
@@ -68,6 +84,7 @@ type MatchDraft = Partial<
     MatchDTO,
     | "home_score"
     | "away_score"
+    | "tennis_sets"
     | "went_to_extra_time"
     | "home_extra_time_score"
     | "away_extra_time_score"
@@ -103,6 +120,10 @@ function isHandball(t: TournamentDTO | null): boolean {
   return lower(t?.discipline) === "handball";
 }
 
+function isTennis(t: TournamentDTO | null): boolean {
+  return lower(t?.discipline) === "tennis";
+}
+
 function getHandballTableDrawMode(t: TournamentDTO | null): HandballTableDrawMode {
   const m = t?.format_config?.handball_table_draw_mode;
   if (m === "PENALTIES" || m === "OVERTIME_PENALTIES" || m === "ALLOW_DRAW") return m;
@@ -113,6 +134,16 @@ function getHandballKnockoutTiebreak(t: TournamentDTO | null): HandballKnockoutT
   const m = t?.format_config?.handball_knockout_tiebreak;
   if (m === "PENALTIES" || m === "OVERTIME_PENALTIES") return m;
   return "OVERTIME_PENALTIES";
+}
+
+function getTennisBestOf(t: TournamentDTO | null): 3 | 5 {
+  const raw = Number(t?.format_config?.tennis_best_of ?? 3);
+  return raw === 5 ? 5 : 3;
+}
+
+function tennisTargetSets(t: TournamentDTO | null): number {
+  const bestOf = getTennisBestOf(t);
+  return bestOf === 5 ? 3 : 2;
 }
 
 export function isKnockoutLike(stageType: MatchStageType): boolean {
@@ -156,6 +187,128 @@ function penaltiesValid(m: MatchDTO): boolean {
 }
 
 /* ============================================================
+   TENNIS: compute/validate sets (gemy)
+   ============================================================ */
+
+function clampInt(n: number): number {
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.floor(n);
+}
+
+function normalizeTennisSet(s: TennisSetDTO): TennisSetDTO {
+  return {
+    home_games: clampInt(s.home_games),
+    away_games: clampInt(s.away_games),
+    home_tiebreak: s.home_tiebreak == null ? null : clampInt(s.home_tiebreak),
+    away_tiebreak: s.away_tiebreak == null ? null : clampInt(s.away_tiebreak),
+  };
+}
+
+function tennisSetWinner(set: TennisSetDTO): 1 | 2 | null {
+  const hg = set.home_games;
+  const ag = set.away_games;
+
+  // proste ograniczenie UI
+  if (hg < 0 || ag < 0) return null;
+  if (hg > 7 || ag > 7) return null;
+
+  // 7:6 / 6:7 -> wymagany TB
+  if (hg === 7 && ag === 6) {
+    if (set.home_tiebreak == null || set.away_tiebreak == null) return null;
+    if (set.home_tiebreak === set.away_tiebreak) return null;
+    return set.home_tiebreak > set.away_tiebreak ? 1 : 2;
+  }
+  if (hg === 6 && ag === 7) {
+    if (set.home_tiebreak == null || set.away_tiebreak == null) return null;
+    if (set.home_tiebreak === set.away_tiebreak) return null;
+    return set.home_tiebreak > set.away_tiebreak ? 1 : 2;
+  }
+
+  // poza 7:6 / 6:7 TB nie powinien istnieć
+  if (set.home_tiebreak != null || set.away_tiebreak != null) return null;
+
+  // 7:5 / 5:7
+  if (hg === 7 && ag === 5) return 1;
+  if (hg === 5 && ag === 7) return 2;
+
+  // 6:x z przewagą 2
+  if (hg === 6 && ag <= 4) return 1;
+  if (ag === 6 && hg <= 4) return 2;
+
+  // inne wyniki nie zamykają seta (np. 6:5, 5:6, 4:4 itd.)
+  return null;
+}
+
+function computeTennisSetsScore(sets: TennisSetDTO[] | null | undefined): [number, number] {
+  const list = Array.isArray(sets) ? sets : [];
+  let hs = 0;
+  let as = 0;
+  for (const raw of list) {
+    const s = normalizeTennisSet(raw);
+    const w = tennisSetWinner(s);
+    if (w === 1) hs += 1;
+    if (w === 2) as += 1;
+  }
+  return [hs, as];
+}
+
+function validateTennisSetsForMatch(args: {
+  tournament: TournamentDTO | null;
+  sets: TennisSetDTO[] | null | undefined;
+}): { ok: boolean; message?: string; homeSets?: number; awaySets?: number; finished?: boolean } {
+  const { tournament, sets } = args;
+  const bestOf = getTennisBestOf(tournament);
+  const target = tennisTargetSets(tournament);
+
+  const list = Array.isArray(sets) ? sets.map(normalizeTennisSet) : [];
+  if (list.length === 0) {
+    return { ok: false, message: "Uzupełnij przynajmniej 1 set (w gemach)." };
+  }
+  if (list.length > bestOf) {
+    return { ok: false, message: `Za dużo setów. Dla best-of-${bestOf} maksymalnie ${bestOf} sety.` };
+  }
+
+  let hs = 0;
+  let as = 0;
+
+  for (let i = 0; i < list.length; i++) {
+    const s = list[i];
+    const w = tennisSetWinner(s);
+    if (w == null) {
+      return {
+        ok: false,
+        message:
+          `Nieprawidłowy wynik w secie ${i + 1}. ` +
+          "Dozwolone: 6:0–6:4, 7:5, 7:6 (wymaga tie-breaka).",
+      };
+    }
+    if (w === 1) hs += 1;
+    if (w === 2) as += 1;
+
+    // nie pozwalamy dopisywać setów po osiągnięciu targetu
+    if (hs === target || as === target) {
+      if (i !== list.length - 1) {
+        return { ok: false, message: "Mecz jest już rozstrzygnięty – usuń nadmiarowe sety." };
+      }
+    }
+  }
+
+  if (hs === as) {
+    return { ok: false, message: "W tenisie remis w setach jest niedozwolony." };
+  }
+
+  const finished = hs === target || as === target;
+
+  if (finished) {
+    if (Math.max(hs, as) !== target) {
+      return { ok: false, message: `Nieprawidłowa liczba setów. Zwycięzca musi mieć ${target} sety.` };
+    }
+  }
+
+  return { ok: true, homeSets: hs, awaySets: as, finished };
+}
+
+/* ============================================================
    KO dwumecz: pary + agregat
    ============================================================ */
 
@@ -174,6 +327,13 @@ function getPairMatches(all: MatchDTO[], current: MatchDTO): MatchDTO[] {
     const mk = pairKey(m.home_team_id, m.away_team_id);
     return mk === k;
   });
+}
+
+function goalsForTeam(m: MatchDTO, teamId: number): number {
+  const [fh, fa] = finalScore(m);
+  if (m.home_team_id === teamId) return fh;
+  if (m.away_team_id === teamId) return fa;
+  return 0;
 }
 
 function aggregateForPair(pair: MatchDTO[]): {
@@ -198,18 +358,14 @@ function aggregateForPair(pair: MatchDTO[]): {
   return { ok: true, tie: scoreA === scoreB, secondLegId: second.id };
 }
 
-function goalsForTeam(m: MatchDTO, teamId: number): number {
-  const [fh, fa] = finalScore(m);
-  if (m.home_team_id === teamId) return fh;
-  if (m.away_team_id === teamId) return fa;
-  return 0;
-}
-
 /* ============================================================
    UI / DOMAIN validation for Finish
    ============================================================ */
 
 function canUseExtraTimeUI(t: TournamentDTO | null, m: MatchDTO): boolean {
+  // TENNIS: nigdy
+  if (isTennis(t)) return false;
+
   const hb = isHandball(t);
 
   if (isKnockoutLike(m.stage_type)) {
@@ -225,6 +381,9 @@ function canUseExtraTimeUI(t: TournamentDTO | null, m: MatchDTO): boolean {
 }
 
 function canUsePenaltiesUI(t: TournamentDTO | null, m: MatchDTO): boolean {
+  // TENNIS: nigdy
+  if (isTennis(t)) return false;
+
   const hb = isHandball(t);
 
   if (isKnockoutLike(m.stage_type)) return true;
@@ -244,10 +403,28 @@ function normalizeMatchForConfig(
   allMatches: MatchDTO[]
 ): MatchDTO {
   const hb = isHandball(t);
-  const extraAllowed = canUseExtraTimeUI(t, m);
-  const penAllowed = canUsePenaltiesUI(t, m);
+  const tn = isTennis(t);
 
   let next: MatchDTO = { ...m };
+
+  // TENNIS: czyścimy ET/karne zawsze
+  if (tn) {
+    next.went_to_extra_time = false;
+    next.home_extra_time_score = null;
+    next.away_extra_time_score = null;
+    next.decided_by_penalties = false;
+    next.home_penalty_score = null;
+    next.away_penalty_score = null;
+
+    const [hs, as] = computeTennisSetsScore(next.tennis_sets);
+    next.home_score = hs;
+    next.away_score = as;
+
+    return next;
+  }
+
+  const extraAllowed = canUseExtraTimeUI(t, m);
+  const penAllowed = canUsePenaltiesUI(t, m);
 
   if (!extraAllowed) {
     next.went_to_extra_time = false;
@@ -332,9 +509,33 @@ function canFinishMatchUI(args: {
 }): { ok: boolean; message?: string } {
   const { tournament, match, cupMatches, allMatches } = args;
 
+  const tn = isTennis(tournament);
   const hb = isHandball(tournament);
   const stageType = match.stage_type;
   const knockoutLike = isKnockoutLike(stageType);
+
+  // TENNIS: osobna logika finish
+  if (tn) {
+    // blokada dwumeczu w KO
+    if (knockoutLike && cupMatches === 2) {
+      return { ok: false, message: "Tenis nie wspiera trybu dwumeczu (cup_matches=2)." };
+    }
+
+    // brak ET/karnych
+    if (match.went_to_extra_time || match.decided_by_penalties) {
+      return { ok: false, message: "W tenisie nie obsługujemy dogrywki ani karnych." };
+    }
+
+    const v = validateTennisSetsForMatch({ tournament, sets: match.tennis_sets });
+    if (!v.ok) return { ok: false, message: v.message ?? "Nieprawidłowy wynik tenisowy." };
+
+    if (!v.finished) {
+      const target = tennisTargetSets(tournament);
+      return { ok: false, message: `Aby zakończyć mecz, ktoś musi wygrać ${target} sety (best-of-${getTennisBestOf(tournament)}).` };
+    }
+
+    return { ok: true };
+  }
 
   const extraAllowed = canUseExtraTimeUI(tournament, match);
   const penAllowed = canUsePenaltiesUI(tournament, match);
@@ -366,9 +567,7 @@ function canFinishMatchUI(args: {
 
     if (!regularTie(match)) return { ok: true };
 
-    if (mode === "ALLOW_DRAW") {
-      return { ok: true };
-    }
+    if (mode === "ALLOW_DRAW") return { ok: true };
 
     if (mode === "PENALTIES") {
       if (!match.decided_by_penalties || !penaltiesValid(match)) {
@@ -434,7 +633,6 @@ function canFinishMatchUI(args: {
 
       const agg = aggregateForPair(pair);
       const secondLegId = agg.secondLegId;
-
       if (!agg.ok) return { ok: true };
 
       if (agg.tie) {
@@ -445,7 +643,7 @@ function canFinishMatchUI(args: {
           return { ok: true };
         } else {
           const secondLeg = pair.find((m) => m.id === secondLegId);
-          const ok = secondLeg?.decided_by_penalties && penaltiesValid(secondLeg);
+          const ok = !!(secondLeg?.decided_by_penalties && penaltiesValid(secondLeg));
           if (!ok) {
             return {
               ok: false,
@@ -468,6 +666,7 @@ function toDraft(m: MatchDTO): MatchDraft {
   return {
     home_score: m.home_score,
     away_score: m.away_score,
+    tennis_sets: m.tennis_sets ?? null,
     went_to_extra_time: !!m.went_to_extra_time,
     home_extra_time_score: m.home_extra_time_score ?? null,
     away_extra_time_score: m.away_extra_time_score ?? null,
@@ -587,13 +786,13 @@ export default function TournamentResults() {
     // 1) nałóż drafty
     const withDrafts: MatchDTO[] = base.map((m) => ({ ...m, ...(drafts[m.id] ?? {}) }));
 
-    // 2) normalizacja per konfiguracja (uwzględnia dwumecze itp.)
+    // 2) normalizacja per konfiguracja
     const normalized = withDrafts.map((m) => {
       const cupMatches = getCupMatchesForStage(t, m.stage_order);
       return normalizeMatchForConfig(t, m, cupMatches, withDrafts);
     });
 
-    // 3) czyść drafty które już nie istnieją (np. po regeneracji KO)
+    // 3) czyść drafty które już nie istnieją
     const ids = new Set(normalized.map((m) => m.id));
     setDrafts((prev) => {
       const n: Record<number, MatchDraft> = {};
@@ -620,8 +819,10 @@ export default function TournamentResults() {
 
     const list: MatchDTO[] = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? raw.results : [];
 
-    const normalizedApi = list.map((m) => ({
+    const normalizedApi = list.map((m: any) => ({
       ...m,
+      tennis_sets: m.tennis_sets ?? null,
+
       went_to_extra_time: !!m.went_to_extra_time,
       decided_by_penalties: !!m.decided_by_penalties,
       home_extra_time_score: m.home_extra_time_score ?? null,
@@ -640,18 +841,46 @@ export default function TournamentResults() {
   };
 
   const updateMatchScore = async (match: MatchDTO) => {
-    const payload: any = {
-      home_score: match.home_score ?? 0,
-      away_score: match.away_score ?? 0,
+    const tn = isTennis(tournament);
 
-      went_to_extra_time: !!match.went_to_extra_time,
-      home_extra_time_score: match.went_to_extra_time ? (match.home_extra_time_score ?? 0) : null,
-      away_extra_time_score: match.went_to_extra_time ? (match.away_extra_time_score ?? 0) : null,
+    let payload: any;
 
-      decided_by_penalties: !!match.decided_by_penalties,
-      home_penalty_score: match.decided_by_penalties ? (match.home_penalty_score ?? 0) : null,
-      away_penalty_score: match.decided_by_penalties ? (match.away_penalty_score ?? 0) : null,
-    };
+    if (tn) {
+      const sets = Array.isArray(match.tennis_sets) ? match.tennis_sets.map(normalizeTennisSet) : [];
+      const v = validateTennisSetsForMatch({ tournament, sets });
+
+      // Na SAVE dopuszczamy „niezakończone” (np. 1:0 w setach), ale sety muszą być poprawne.
+      if (!v.ok) {
+        throw new Error(v.message ?? "Nieprawidłowy wynik tenisowy.");
+      }
+
+      payload = {
+        tennis_sets: sets,
+        home_score: v.homeSets ?? 0,
+        away_score: v.awaySets ?? 0,
+
+        // tenis: twardo wyłącz
+        went_to_extra_time: false,
+        home_extra_time_score: null,
+        away_extra_time_score: null,
+        decided_by_penalties: false,
+        home_penalty_score: null,
+        away_penalty_score: null,
+      };
+    } else {
+      payload = {
+        home_score: match.home_score ?? 0,
+        away_score: match.away_score ?? 0,
+
+        went_to_extra_time: !!match.went_to_extra_time,
+        home_extra_time_score: match.went_to_extra_time ? (match.home_extra_time_score ?? 0) : null,
+        away_extra_time_score: match.went_to_extra_time ? (match.away_extra_time_score ?? 0) : null,
+
+        decided_by_penalties: !!match.decided_by_penalties,
+        home_penalty_score: match.decided_by_penalties ? (match.home_penalty_score ?? 0) : null,
+        away_penalty_score: match.decided_by_penalties ? (match.away_penalty_score ?? 0) : null,
+      };
+    }
 
     const res = await apiFetch(`/api/matches/${match.id}/result/`, {
       method: "PATCH",
@@ -706,7 +935,7 @@ export default function TournamentResults() {
         setMessage(null);
         setLoading(true);
 
-        // ważne: najpierw turniej (konfig), potem mecze (normalizacja)
+        // najpierw turniej (konfig), potem mecze (normalizacja)
         const t = await loadTournament();
         await loadMatches(t);
       } catch (e: any) {
@@ -736,10 +965,10 @@ export default function TournamentResults() {
 
   const allMatchesInLastStageFinished = useMemo(() => {
     if (!lastStageId) return false;
-    const last = stages.find((s) => s.stageId === lastStageId);
+    const last = stages.find((s: any) => s.stageId === lastStageId);
     if (!last) return false;
     if (!last.matches.length) return false;
-    return last.matches.every((m) => m.status === "FINISHED");
+    return last.matches.every((m: MatchDTO) => m.status === "FINISHED");
   }, [stages, lastStageId]);
 
   function uiStatus(m: MatchDTO) {
@@ -764,7 +993,6 @@ export default function TournamentResults() {
 
       await updateMatchScore(match);
 
-      // po zapisie: czyścimy draft i dirty dla tego meczu
       setDrafts((prev) => {
         const n = { ...prev };
         delete n[match.id];
@@ -782,11 +1010,9 @@ export default function TournamentResults() {
         return n;
       });
 
-      // reload (ważne dla MIXED i KO propagacji), ale bez kasowania innych lokalnych zmian (drafty)
       const t = await loadTournament().catch(() => tournament);
       await loadMatches(t ?? null);
 
-      // jeśli edytowaliśmy zakończony mecz – wyjdź z trybu edycji po poprawnym zapisie
       if (isEditingFinished(match.id)) {
         exitEditFinished(match.id);
       }
@@ -827,11 +1053,10 @@ export default function TournamentResults() {
       setBusyMatchId(match.id);
       setMessage(null);
 
-      // zawsze zapisujemy aktualny stan lokalny przed finishem
+      // zawsze zapisujemy aktualny stan przed finishem
       await updateMatchScore(match);
       await finishMatch(match.id);
 
-      // wyczyść draft/dirty dla tego meczu
       setDrafts((prev) => {
         const n = { ...prev };
         delete n[match.id];
@@ -874,7 +1099,6 @@ export default function TournamentResults() {
     const nextList = base.map((m) => (m.id === matchId ? normalizedChanged : m));
     setMatches(nextList);
 
-    // oznacz jako niezapisane (dirty) i zapisz draft
     setDirty((prev) => {
       const n = new Set(prev);
       n.add(matchId);
@@ -885,6 +1109,42 @@ export default function TournamentResults() {
       ...prev,
       [matchId]: toDraft(normalizedChanged),
     }));
+  };
+
+  /* ============================================================
+     TENNIS UI helpers (per match)
+     ============================================================ */
+
+  const updateTennisSet = (matchId: number, idx: number, patch: Partial<TennisSetDTO>) => {
+    updateLocalMatch(matchId, (m) => {
+      const list = Array.isArray(m.tennis_sets) ? [...m.tennis_sets] : [];
+      while (list.length <= idx) {
+        list.push({ home_games: 0, away_games: 0, home_tiebreak: null, away_tiebreak: null });
+      }
+      const current = normalizeTennisSet(list[idx]);
+      const nextSet = normalizeTennisSet({ ...current, ...patch });
+      list[idx] = nextSet;
+      return { ...m, tennis_sets: list };
+    });
+  };
+
+  const addTennisSet = (matchId: number) => {
+    updateLocalMatch(matchId, (m) => {
+      const bestOf = getTennisBestOf(tournament);
+      const list = Array.isArray(m.tennis_sets) ? [...m.tennis_sets] : [];
+      if (list.length >= bestOf) return m;
+      list.push({ home_games: 0, away_games: 0, home_tiebreak: null, away_tiebreak: null });
+      return { ...m, tennis_sets: list };
+    });
+  };
+
+  const removeLastTennisSet = (matchId: number) => {
+    updateLocalMatch(matchId, (m) => {
+      const list = Array.isArray(m.tennis_sets) ? [...m.tennis_sets] : [];
+      if (list.length <= 1) return m;
+      list.pop();
+      return { ...m, tennis_sets: list };
+    });
   };
 
   const renderMatchRow = (match: MatchDTO) => {
@@ -902,6 +1162,8 @@ export default function TournamentResults() {
     const cupMatches = getCupMatchesForStage(tournament, match.stage_order);
 
     const hb = isHandball(tournament);
+    const tn = isTennis(tournament);
+
     const regIsTie = regularTie(match);
     const finIsTie = finalTie(match);
 
@@ -911,28 +1173,30 @@ export default function TournamentResults() {
     let showExtraSection = false;
     let showPenSection = false;
 
-    if (knockoutLike) {
-      if (cupMatches === 1) {
-        showExtraSection = extraAllowed && (regIsTie || !!match.went_to_extra_time);
-        showPenSection = penAllowed && (finIsTie || !!match.decided_by_penalties || regIsTie);
-      } else {
-        const pair = getPairMatches(matches, match);
-        const agg = pair.length === 2 ? aggregateForPair(pair) : null;
-        const secondLegId = agg?.secondLegId ?? null;
-        const other = pair.find((m) => m.id !== match.id);
-        const willClosePair = !!other && other.status === "FINISHED";
-        const needsPen = willClosePair && agg?.ok && agg.tie && secondLegId === match.id;
+    if (!tn) {
+      if (knockoutLike) {
+        if (cupMatches === 1) {
+          showExtraSection = extraAllowed && (regIsTie || !!match.went_to_extra_time);
+          showPenSection = penAllowed && (finIsTie || !!match.decided_by_penalties || regIsTie);
+        } else {
+          const pair = getPairMatches(matches, match);
+          const agg = pair.length === 2 ? aggregateForPair(pair) : null;
+          const secondLegId = agg?.secondLegId ?? null;
+          const other = pair.find((m) => m.id !== match.id);
+          const willClosePair = !!other && other.status === "FINISHED";
+          const needsPen = willClosePair && agg?.ok && agg.tie && secondLegId === match.id;
 
-        showExtraSection = extraAllowed && (regIsTie || !!match.went_to_extra_time);
-        showPenSection = penAllowed && (needsPen || !!match.decided_by_penalties);
-      }
-    } else if (hb && (match.stage_type === "LEAGUE" || match.stage_type === "GROUP")) {
-      const mode = getHandballTableDrawMode(tournament);
-      const forceShow = !!match.went_to_extra_time || !!match.decided_by_penalties;
+          showExtraSection = extraAllowed && (regIsTie || !!match.went_to_extra_time);
+          showPenSection = penAllowed && (needsPen || !!match.decided_by_penalties);
+        }
+      } else if (hb && (match.stage_type === "LEAGUE" || match.stage_type === "GROUP")) {
+        const mode = getHandballTableDrawMode(tournament);
+        const forceShow = !!match.went_to_extra_time || !!match.decided_by_penalties;
 
-      if ((regIsTie && mode !== "ALLOW_DRAW") || forceShow) {
-        showExtraSection = extraAllowed && (regIsTie || !!match.went_to_extra_time);
-        showPenSection = penAllowed && (regIsTie || !!match.decided_by_penalties);
+        if ((regIsTie && mode !== "ALLOW_DRAW") || forceShow) {
+          showExtraSection = extraAllowed && (regIsTie || !!match.went_to_extra_time);
+          showPenSection = penAllowed && (regIsTie || !!match.decided_by_penalties);
+        }
       }
     }
 
@@ -946,6 +1210,8 @@ export default function TournamentResults() {
         ? `Dogrywka: ${match.home_extra_time_score}:${match.away_extra_time_score}`
         : null;
 
+    const tennisLabel = tn ? `Sety: ${match.home_score ?? 0}:${match.away_score ?? 0}` : null;
+
     const bg = isFinished ? "rgba(30, 144, 255, 0.10)" : wasEdited ? "rgba(46, 204, 113, 0.08)" : "transparent";
 
     const borderLeft = isFinished
@@ -957,11 +1223,14 @@ export default function TournamentResults() {
     const finishVerdict = canFinishMatchUI({ tournament, match, cupMatches, allMatches: matches });
     const showFinishWarning = !finishVerdict.ok && !isFinished;
 
-    // blokada tylko, gdy FINISHED i NIE w trybie edycji
     const lockByFinish = isFinished && !inEditFinished;
 
-    // score blokujemy gdy ET/karne aktywne (Twoja logika)
-    const lockRegularInputs = isBusy || lockByFinish || !!match.went_to_extra_time || !!match.decided_by_penalties;
+    // w tenisie nie blokujemy edycji przez ET/karne (bo ich nie ma)
+    const lockRegularInputs = isBusy || lockByFinish || (!tn && (!!match.went_to_extra_time || !!match.decided_by_penalties));
+
+    const tennisSets = Array.isArray(match.tennis_sets) ? match.tennis_sets : [];
+
+    const tennisValidation = tn ? validateTennisSetsForMatch({ tournament, sets: match.tennis_sets }) : { ok: true as const };
 
     return (
       <div
@@ -991,45 +1260,186 @@ export default function TournamentResults() {
           </div>
 
           <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
-            {extraLabel && (
+            {tn && tennisLabel && <div style={{ opacity: 0.9, fontSize: "0.9em" }}>{tennisLabel}</div>}
+
+            {!tn && extraLabel && (
               <div style={{ opacity: 0.85, fontSize: "0.85em" }}>
                 {extraLabel} <span style={{ opacity: 0.6 }}>(dodaje się do wyniku)</span>
               </div>
             )}
-            {penaltiesLabel && (
+            {!tn && penaltiesLabel && (
               <div style={{ opacity: 0.85, fontSize: "0.85em" }}>
                 {penaltiesLabel} <span style={{ opacity: 0.6 }}>(nie wlicza się do wyniku)</span>
               </div>
             )}
+
             <div style={{ opacity: 0.6, fontSize: "0.85em" }}>{uiStatusLabel(status)}</div>
           </div>
         </div>
 
-        {/* ===== Regular score ===== */}
+        {/* ===== Regular score / TENNIS sets ===== */}
         <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
-          <input
-            type="number"
-            min={0}
-            value={scoreToInputValue(match.home_score)}
-            disabled={lockRegularInputs}
-            onChange={(e) => {
-              const v = inputValueToScore(e.target.value);
-              updateLocalMatch(match.id, (m) => ({ ...m, home_score: v }));
-            }}
-            style={{ width: 70, textAlign: "center", padding: "0.4rem" }}
-          />
-          <span style={{ fontWeight: "bold" }}>:</span>
-          <input
-            type="number"
-            min={0}
-            value={scoreToInputValue(match.away_score)}
-            disabled={lockRegularInputs}
-            onChange={(e) => {
-              const v = inputValueToScore(e.target.value);
-              updateLocalMatch(match.id, (m) => ({ ...m, away_score: v }));
-            }}
-            style={{ width: 70, textAlign: "center", padding: "0.4rem" }}
-          />
+          {!tn ? (
+            <>
+              <input
+                type="number"
+                min={0}
+                value={scoreToInputValue(match.home_score)}
+                disabled={lockRegularInputs}
+                onChange={(e) => {
+                  const v = inputValueToScore(e.target.value);
+                  updateLocalMatch(match.id, (m) => ({ ...m, home_score: v }));
+                }}
+                style={{ width: 70, textAlign: "center", padding: "0.4rem" }}
+              />
+              <span style={{ fontWeight: "bold" }}>:</span>
+              <input
+                type="number"
+                min={0}
+                value={scoreToInputValue(match.away_score)}
+                disabled={lockRegularInputs}
+                onChange={(e) => {
+                  const v = inputValueToScore(e.target.value);
+                  updateLocalMatch(match.id, (m) => ({ ...m, away_score: v }));
+                }}
+                style={{ width: 70, textAlign: "center", padding: "0.4rem" }}
+              />
+            </>
+          ) : (
+            <div style={{ width: "100%" }}>
+              <div style={{ marginTop: "0.25rem", opacity: 0.85, fontSize: "0.9em" }}>
+                Tenis (gemy). Best-of-{getTennisBestOf(tournament)}: do {tennisTargetSets(tournament)} wygranych setów.
+              </div>
+
+              <div style={{ marginTop: "0.75rem", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+                {tennisSets.map((s, idx) => {
+                  const ns = normalizeTennisSet(s);
+                  const needsTB = (ns.home_games === 7 && ns.away_games === 6) || (ns.home_games === 6 && ns.away_games === 7);
+                  const setWinner = tennisSetWinner(ns);
+
+                  return (
+                    <div
+                      key={idx}
+                      style={{
+                        display: "flex",
+                        gap: "0.75rem",
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        padding: "0.5rem",
+                        border: "1px solid #333",
+                        borderRadius: 6,
+                        background: "rgba(255,255,255,0.02)",
+                      }}
+                    >
+                      <div style={{ minWidth: 60, opacity: 0.75 }}>Set {idx + 1}</div>
+
+                      <div style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+                        <input
+                          type="number"
+                          min={0}
+                          max={7}
+                          value={scoreToInputValue(ns.home_games)}
+                          disabled={lockRegularInputs}
+                          onChange={(e) => updateTennisSet(match.id, idx, { home_games: inputValueToScore(e.target.value) })}
+                          style={{ width: 70, textAlign: "center", padding: "0.35rem" }}
+                        />
+                        <span style={{ fontWeight: "bold" }}>:</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={7}
+                          value={scoreToInputValue(ns.away_games)}
+                          disabled={lockRegularInputs}
+                          onChange={(e) => updateTennisSet(match.id, idx, { away_games: inputValueToScore(e.target.value) })}
+                          style={{ width: 70, textAlign: "center", padding: "0.35rem" }}
+                        />
+                      </div>
+
+                      <div style={{ opacity: 0.75, fontSize: "0.9em" }}>
+                        gemy
+                        {setWinner ? (
+                          <span style={{ marginLeft: "0.5rem", opacity: 0.85 }}>
+                            (wygrywa: {setWinner === 1 ? match.home_team_name : match.away_team_name})
+                          </span>
+                        ) : (
+                          <span style={{ marginLeft: "0.5rem", color: "#e67e22" }}>(niepoprawny / niedokończony set)</span>
+                        )}
+                      </div>
+
+                      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+                        <label style={{ display: "flex", gap: "0.35rem", alignItems: "center", opacity: needsTB ? 1 : 0.6 }}>
+                          <span style={{ fontSize: "0.85em" }}>TB</span>
+                          <input
+                            type="number"
+                            min={0}
+                            value={scoreToInputValue(ns.home_tiebreak ?? 0)}
+                            disabled={lockRegularInputs || !needsTB}
+                            onChange={(e) =>
+                              updateTennisSet(match.id, idx, { home_tiebreak: needsTB ? inputValueToScore(e.target.value) : null })
+                            }
+                            style={{ width: 60, textAlign: "center", padding: "0.3rem" }}
+                          />
+                          <span style={{ fontWeight: "bold", opacity: 0.7 }}>:</span>
+                          <input
+                            type="number"
+                            min={0}
+                            value={scoreToInputValue(ns.away_tiebreak ?? 0)}
+                            disabled={lockRegularInputs || !needsTB}
+                            onChange={(e) =>
+                              updateTennisSet(match.id, idx, { away_tiebreak: needsTB ? inputValueToScore(e.target.value) : null })
+                            }
+                            style={{ width: 60, textAlign: "center", padding: "0.3rem" }}
+                          />
+                        </label>
+
+                        {!needsTB && (ns.home_tiebreak != null || ns.away_tiebreak != null) && (
+                          <span style={{ color: "#e67e22", fontSize: "0.85em" }}>Tie-break dozwolony tylko przy 7:6 / 6:7.</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
+                  <button
+                    onClick={() => addTennisSet(match.id)}
+                    disabled={lockRegularInputs || tennisSets.length >= getTennisBestOf(tournament)}
+                    style={{
+                      padding: "0.35rem 0.7rem",
+                      borderRadius: 6,
+                      border: "1px solid #444",
+                      background: "rgba(255,255,255,0.05)",
+                      color: "#fff",
+                      cursor: "pointer",
+                      opacity: lockRegularInputs || tennisSets.length >= getTennisBestOf(tournament) ? 0.5 : 1,
+                      fontSize: "0.85em",
+                    }}
+                  >
+                    Dodaj set
+                  </button>
+
+                  <button
+                    onClick={() => removeLastTennisSet(match.id)}
+                    disabled={lockRegularInputs || tennisSets.length <= 1}
+                    style={{
+                      padding: "0.35rem 0.7rem",
+                      borderRadius: 6,
+                      border: "1px solid #444",
+                      background: "rgba(255,255,255,0.05)",
+                      color: "#fff",
+                      cursor: "pointer",
+                      opacity: lockRegularInputs || tennisSets.length <= 1 ? 0.5 : 1,
+                      fontSize: "0.85em",
+                    }}
+                  >
+                    Usuń ostatni set
+                  </button>
+
+                  {!tennisValidation.ok && <span style={{ color: "#e67e22", fontSize: "0.85em" }}>{tennisValidation.message}</span>}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ===== Buttons ===== */}
           {!isFinished ? (
@@ -1038,7 +1448,7 @@ export default function TournamentResults() {
                 onClick={() => saveMatch(match.id)}
                 disabled={isBusy || !isDirty}
                 style={{
-                  marginLeft: "1rem",
+                  marginLeft: tn ? 0 : "1rem",
                   padding: "0.4rem 0.8rem",
                   borderRadius: 4,
                   border: "1px solid rgba(46,204,113,0.5)",
@@ -1136,14 +1546,14 @@ export default function TournamentResults() {
           </div>
         )}
 
-        {!lockByFinish && (match.went_to_extra_time || match.decided_by_penalties) && (
+        {!tn && !lockByFinish && (match.went_to_extra_time || match.decided_by_penalties) && (
           <div style={{ marginTop: "0.5rem", fontSize: "0.85em", opacity: 0.75 }}>
             Aby zmienić wynik podstawowy, wyłącz najpierw dogrywkę i/lub karne.
           </div>
         )}
 
         {/* ===== Extra time section ===== */}
-        {showExtraSection && (
+        {!tn && showExtraSection && (
           <div style={{ marginTop: "0.75rem", display: "flex", gap: "1rem", alignItems: "center", flexWrap: "wrap" }}>
             <label style={{ display: "flex", gap: "0.5rem", alignItems: "center", opacity: 0.9 }}>
               <input
@@ -1195,7 +1605,7 @@ export default function TournamentResults() {
         )}
 
         {/* ===== Penalties section ===== */}
-        {showPenSection && (
+        {!tn && showPenSection && (
           <div style={{ marginTop: "0.75rem", display: "flex", gap: "1rem", alignItems: "center", flexWrap: "wrap" }}>
             <label style={{ display: "flex", gap: "0.5rem", alignItems: "center", opacity: 0.9 }}>
               <input
@@ -1247,9 +1657,7 @@ export default function TournamentResults() {
         )}
 
         {showFinishWarning && (
-          <div style={{ marginTop: "0.6rem", fontSize: "0.85em", color: "#e74c3c" }}>
-            {finishVerdict.message}
-          </div>
+          <div style={{ marginTop: "0.6rem", fontSize: "0.85em", color: "#e74c3c" }}>{finishVerdict.message}</div>
         )}
       </div>
     );
@@ -1275,6 +1683,10 @@ export default function TournamentResults() {
   const hbMode = hb ? getHandballTableDrawMode(tournament) : null;
   const hbTB = hb ? getHandballKnockoutTiebreak(tournament) : null;
 
+  const tn = isTennis(tournament);
+  const tnBestOf = tn ? getTennisBestOf(tournament) : null;
+  const tnTarget = tn ? tennisTargetSets(tournament) : null;
+
   return (
     <div style={{ padding: "2rem", maxWidth: 980 }}>
       <h1>Wprowadzanie wyników</h1>
@@ -1295,9 +1707,16 @@ export default function TournamentResults() {
         )}
 
         <div>
-          Wyniki zapisują się dopiero po kliknięciu <strong>„Zapisz wynik / Zapisz zmiany”</strong> (lub <strong>„Zakończ mecz”</strong>).
-          Zmiany w checkboxach (dogrywka/karne) również wymagają zapisu.
+          Wyniki zapisują się dopiero po kliknięciu <strong>„Zapisz wynik / Zapisz zmiany”</strong> (lub{" "}
+          <strong>„Zakończ mecz”</strong>). Zmiany w checkboxach (dogrywka/karne) również wymagają zapisu.
         </div>
+
+        {tn && (
+          <div style={{ marginTop: "0.5rem", opacity: 0.9 }}>
+            <strong>Tenis:</strong> wynik wpisujesz jako <strong>sety w gemach</strong>. Best-of-{tnBestOf}: do {tnTarget} wygranych setów.
+            Tie-break podajesz tylko dla wyniku <strong>7:6</strong> (lub <strong>6:7</strong>).
+          </div>
+        )}
 
         {hb && (
           <div style={{ marginTop: "0.5rem", opacity: 0.85 }}>
@@ -1312,7 +1731,7 @@ export default function TournamentResults() {
         )}
       </section>
 
-      {stages.map((s) => {
+      {stages.map((s: any) => {
         const headerTitle = stageHeaderTitle(s.stageType, s.stageOrder, s.allMatches);
 
         const isLastStage = s.stageId === lastStageId;
@@ -1366,7 +1785,7 @@ export default function TournamentResults() {
                 </div>
               ))
             ) : (
-              <div>{s.matches.map((m) => renderMatchRow(m))}</div>
+              <div>{s.matches.map((m: MatchDTO) => renderMatchRow(m))}</div>
             )}
 
             <div

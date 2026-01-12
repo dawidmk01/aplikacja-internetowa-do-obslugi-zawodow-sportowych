@@ -4,11 +4,25 @@ from typing import Optional, TYPE_CHECKING
 
 from tournaments.models import Match, Stage
 
+from tournaments.services.match_outcome import knockout_winner_id, penalty_winner_id
+
 if TYPE_CHECKING:
     from tournaments.models import Team
 
 
 __all__ = ["MatchResultService"]
+
+
+def _third_place_value() -> str:
+    return getattr(Stage.StageType, "THIRD_PLACE", "THIRD_PLACE")
+
+
+def _is_knockout_like(stage_type: str) -> bool:
+    return str(stage_type) in (str(Stage.StageType.KNOCKOUT), str(_third_place_value()))
+
+
+def _lower(v: object) -> str:
+    return str(v or "").lower()
 
 
 class MatchResultService:
@@ -20,8 +34,9 @@ class MatchResultService:
     - wpisanie/edycja wyniku NIE kończy meczu,
     - status FINISHED ustawiany jest WYŁĄCZNIE przez osobną akcję domenową
       (POST /api/matches/:id/finish/),
-    - jeżeli mecz jest już FINISHED, to edycja wyniku NIE powinna cofać statusu
-      do IN_PROGRESS (trzymamy FINISHED, ale aktualizujemy winner).
+    - jeżeli mecz jest już FINISHED, to edycja wyniku może „od-finiszować” mecz,
+      jeśli po zmianie nie da się wyznaczyć zwycięzcy (np. tenis: 1:1 po edycji).
+      To jest celowe zabezpieczenie spójności danych.
     """
 
     # ========================================================
@@ -34,15 +49,15 @@ class MatchResultService:
         Reaguje na zmianę wyniku meczu.
 
         - jeśli wynik nie był ruszony (result_entered=False) -> SCHEDULED, winner=None
-        - jeśli wynik był ruszony -> IN_PROGRESS + winner zależnie od typu etapu
-        - jeśli match.status == FINISHED -> NIE zmieniamy statusu (zostaje FINISHED),
-          ale nadal liczymy winner (żeby edycja wyniku aktualizowała zwycięzcę).
+        - jeśli wynik był ruszony -> IN_PROGRESS + winner zależnie od dyscypliny i typu etapu
+        - jeśli match.status == FINISHED:
+          - gdy nadal da się wyznaczyć winner -> zostaje FINISHED
+          - gdy NIE da się wyznaczyć winner -> cofamy do IN_PROGRESS (spójność)
         """
-
         stage_type = match.stage.stage_type
+        discipline = _lower(getattr(match.tournament, "discipline", ""))
 
-        # 1) Jeśli użytkownik jeszcze nie "dotknął" wyniku -> traktujemy jako brak wyniku
-        #    (w Twoim modelu score ma default 0, więc result_entered jest jedyną sensowną flagą)
+        # 1) Brak wyniku (result_entered=False)
         if not match.result_entered:
             MatchResultService._set_state(
                 match=match,
@@ -51,18 +66,19 @@ class MatchResultService:
             )
             return
 
-        # 2) Ustal winner wg domeny
+        # 2) Winner wg domeny
         if stage_type in (Stage.StageType.LEAGUE, Stage.StageType.GROUP):
-            winner = MatchResultService._winner_league_or_group(match)
-        elif stage_type == Stage.StageType.KNOCKOUT:
-            winner = MatchResultService._winner_knockout(match)
+            winner = MatchResultService._winner_league_or_group(match, discipline=discipline)
+        elif _is_knockout_like(stage_type):
+            winner = MatchResultService._winner_knockout_like(match, discipline=discipline)
         else:
             raise ValueError(f"Nieobsługiwany typ etapu turnieju: {stage_type}")
 
         # 3) Status po edycji wyniku:
-        #    - jeżeli mecz jest już zakończony, NIE cofamy statusu (zostaje FINISHED)
-        #    - w przeciwnym razie IN_PROGRESS
-        if match.status == Match.Status.FINISHED:
+        #    - standardowo: IN_PROGRESS
+        #    - jeżeli było FINISHED i nadal mamy winner -> zostaw FINISHED
+        #    - jeżeli było FINISHED i nie mamy winner -> cofamy do IN_PROGRESS (spójność)
+        if match.status == Match.Status.FINISHED and winner is not None:
             desired_status = Match.Status.FINISHED
         else:
             desired_status = Match.Status.IN_PROGRESS
@@ -78,27 +94,53 @@ class MatchResultService:
     # ========================================================
 
     @staticmethod
-    def _winner_league_or_group(match: Match) -> Optional["Team"]:
+    def _winner_league_or_group(match: Match, *, discipline: str) -> Optional["Team"]:
         """
         Liga / grupa:
-        - remis dozwolony -> winner=None
+        - football: remis dozwolony -> winner=None
+        - handball: remis może być rozstrzygany karnymi (jeśli podane i różne)
+        - tennis: brak remisów w meczu docelowo, ale przy PATCH dopuszczamy częściowy wynik
+                 (np. 1:1) -> winner=None
         """
-        if match.home_score > match.away_score:
+        hs = int(match.home_score or 0)
+        aws = int(match.away_score or 0)
+
+        if hs > aws:
             return match.home_team
-        if match.away_score > match.home_score:
+        if aws > hs:
             return match.away_team
+
+        # remis (score tie)
+        if discipline == "handball":
+            # jeśli są karne (i rozstrzygają), winner może wynikać z karnych
+            wid = penalty_winner_id(match)
+            if wid is None:
+                return None
+            return match.home_team if wid == match.home_team_id else match.away_team
+
+        # football/tennis/pozostałe: remis => brak winner
         return None
 
     @staticmethod
-    def _winner_knockout(match: Match) -> Optional["Team"]:
+    def _winner_knockout_like(match: Match, *, discipline: str) -> Optional["Team"]:
         """
-        KO:
-        - remis = brak rozstrzygnięcia (winner=None)
-          (zakończenie meczu KO i walidacja remisu odbywa się w POST /finish/)
+        KO / mecz o 3. miejsce:
+        - tenis: winner z setów (home_score/away_score), bez ET/karnych
+        - pozostałe: winner wg knockout_winner_id (reg+ET, a jeśli remis to karne)
+          (uwaga: rozstrzyganie remisu „na twardo” powinno być wymagane dopiero w FINISH,
+           ale przy PATCH możemy mieć winner=None jeśli jeszcze nie wpisano karnych).
         """
-        if match.home_score == match.away_score:
+        if discipline == "tennis":
+            hs = int(match.home_score or 0)
+            aws = int(match.away_score or 0)
+            if hs == aws:
+                return None
+            return match.home_team if hs > aws else match.away_team
+
+        wid = knockout_winner_id(match)
+        if wid is None:
             return None
-        return match.home_team if match.home_score > match.away_score else match.away_team
+        return match.home_team if wid == match.home_team_id else match.away_team
 
     # ========================================================
     # ZAPIS STANU (minimalny, idempotentny)
