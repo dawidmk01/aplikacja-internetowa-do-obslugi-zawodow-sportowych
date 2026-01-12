@@ -16,6 +16,7 @@ type HandballPointsMode = "2_1_0" | "3_1_0" | "3_2_1_0";
 
 /* --- Tennis --- */
 type TennisBestOf = 3 | 5;
+type TennisPointsMode = "NONE" | "PLT";
 
 type TournamentDTO = {
   id: number;
@@ -38,6 +39,19 @@ const HB_POINTS_OPTIONS: { value: HandballPointsMode; label: string }[] = [
 const TENNIS_BEST_OF_OPTIONS: { value: TennisBestOf; label: string }[] = [
   { value: 3, label: "Best of 3 (do 2 wygranych setów)" },
   { value: 5, label: "Best of 5 (do 3 wygranych setów)" },
+];
+
+const TENNIS_POINTS_MODE_OPTIONS: { value: TennisPointsMode; label: string; hint?: string }[] = [
+  {
+    value: "NONE",
+    label: "Bez punktów (ranking: zwycięstwa, RS, RG, H2H)",
+    hint: "Klasyczny wariant grup tenisowych: tabela bez kolumny Pkt.",
+  },
+  {
+    value: "PLT",
+    label: "Punktacja PLT (np. 10/8/4/2/0)",
+    hint: "Jeśli Twoja liga używa punktów – backend liczy i zwraca Pkt.",
+  },
 ];
 
 function clampInt(value: number, min: number, max: number) {
@@ -116,6 +130,9 @@ export default function TournamentBasicsSetup() {
 
   // Tennis: best-of
   const [tennisBestOf, setTennisBestOf] = useState<TennisBestOf>(3);
+
+  // Tennis: tabela – punkty lub bez punktów
+  const [tennisPointsMode, setTennisPointsMode] = useState<TennisPointsMode>("NONE");
 
   const isHandball = discipline === "handball";
   const isTennis = discipline === "tennis";
@@ -248,6 +265,9 @@ export default function TournamentBasicsSetup() {
 
         // Tennis
         setTennisBestOf(cfg.tennis_best_of === 5 ? 5 : 3);
+
+        const tpm = (cfg.tennis_points_mode ?? "NONE").toString().toUpperCase();
+        setTennisPointsMode(tpm === "PLT" ? "PLT" : "NONE");
       } catch (e: any) {
         setError(e.message || "Błąd ładowania.");
       } finally {
@@ -396,6 +416,8 @@ export default function TournamentBasicsSetup() {
 
     if (isTennis) {
       rawConfig.tennis_best_of = tennisBestOf;
+      // Dotyczy tabeli (LEAGUE/MIXED). W CUP i tak wyczyścimy.
+      rawConfig.tennis_points_mode = tennisPointsMode;
     }
 
     const finalConfig = { ...rawConfig };
@@ -411,6 +433,7 @@ export default function TournamentBasicsSetup() {
       delete finalConfig.group_matches;
       delete finalConfig.handball_knockout_tiebreak;
       // w LEAGUE handball_table_draw_mode / points_mode zostają (mają sens)
+      // tenis_best_of zostaje (dotyczy meczu), tennis_points_mode zostaje (dotyczy tabeli)
     }
 
     if (format === "CUP") {
@@ -421,10 +444,14 @@ export default function TournamentBasicsSetup() {
       delete finalConfig.advance_from_group;
       delete finalConfig.handball_table_draw_mode;
       delete finalConfig.handball_points_mode;
+
+      // CUP nie ma tabeli – usuń tryb punktów tenisowych, żeby config był czysty
+      delete finalConfig.tennis_points_mode;
     }
 
     if (format === "MIXED") {
       delete finalConfig.league_matches;
+      // tenis_points_mode zostaje (tabela grup)
     }
 
     return finalConfig;
@@ -581,6 +608,7 @@ export default function TournamentBasicsSetup() {
     hbKnockoutTiebreak,
     hbPointsMode,
     tennisBestOf,
+    tennisPointsMode,
     isHandball,
     isTennis,
     navigate,
@@ -715,6 +743,39 @@ export default function TournamentBasicsSetup() {
       {showLeagueOrGroupConfig && (
         <section style={{ marginTop: "1.5rem" }}>
           <h3>Faza {format === "LEAGUE" ? "ligowa" : "grupowa"}</h3>
+
+          {/* TENNIS: tryb punktów w tabeli */}
+          {isTennis && (
+            <div style={{ marginBottom: "1rem" }}>
+              <strong>Tenis – tabela</strong>
+              <div style={{ marginTop: 8 }}>
+                <label style={{ display: "block", marginBottom: 8 }}>
+                  System klasyfikacji:
+                  <select
+                    style={{ marginLeft: 8 }}
+                    value={tennisPointsMode}
+                    disabled={saving}
+                    onChange={(e) => {
+                      setTennisPointsMode(e.target.value as TennisPointsMode);
+                      markDirty();
+                    }}
+                  >
+                    {TENNIS_POINTS_MODE_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div style={{ fontSize: "0.9em", color: "#666" }}>
+                  {tennisPointsMode === "PLT"
+                    ? "Tabela pokaże kolumnę Pkt (liczone wg ustawień w backendzie)."
+                    : "Tabela będzie bez punktów – o kolejności decydują: zwycięstwa, RS, RG i H2H (gdy etap zakończony)."}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* A) Handball – tabela */}
           {isHandball && (

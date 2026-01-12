@@ -10,12 +10,11 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-# 1️⃣ IMPORT: Potrzebujemy Team i ensure_matches_generated do inicjalizacji turnieju
-from ..models import Tournament, Team
-from ..permissions import IsTournamentOrganizer
-from ..serializers import TournamentSerializer
-from ._helpers import user_can_manage_tournament
+from tournaments.models import Team, Tournament
+from tournaments.permissions import IsTournamentOrganizer
+from tournaments.serializers import TournamentSerializer
 from tournaments.services.match_generation import ensure_matches_generated
+from tournaments.views._helpers import user_can_manage_tournament
 
 
 # =========================
@@ -30,6 +29,70 @@ def get_model_any(app_label: str, names: list[str]):
     raise LookupError(f"Nie znaleziono żadnego modelu z listy: {names}")
 
 
+# =========================
+# TENIS: dwa systemy punktacji
+# =========================
+TENIS_POINTS_MODES = ("NONE", "PLT")
+
+
+def normalize_format_config(discipline: str | None, cfg: dict | None) -> dict:
+    """
+    Ujednolica format_config:
+    - zawsze dict
+    - dla tenisa: gwarantuje tennis_points_mode ∈ {NONE, PLT} (domyślnie NONE)
+    - dla innych dyscyplin: usuwa tennis_points_mode
+    """
+    disc = (discipline or "").lower()
+
+    if cfg is None:
+        cfg = {}
+    if not isinstance(cfg, dict):
+        raise serializers.ValidationError({"format_config": "format_config musi być obiektem JSON (dict)."})
+    cfg = dict(cfg)
+
+    if disc == "tennis":
+        mode = cfg.get("tennis_points_mode") or "NONE"
+        if mode not in TENIS_POINTS_MODES:
+            raise serializers.ValidationError(
+                {"format_config": {"tennis_points_mode": f"Dozwolone: {', '.join(TENIS_POINTS_MODES)}"}}
+            )
+        cfg["tennis_points_mode"] = mode
+    else:
+        cfg.pop("tennis_points_mode", None)
+
+    return cfg
+
+
+def strip_standings_only_keys(discipline: str | None, cfg: dict | None) -> dict:
+    """
+    Zwraca config bez kluczy wpływających WYŁĄCZNIE na standings (bez resetu Stage/Match).
+    Aktualnie: tennis_points_mode.
+    """
+    disc = (discipline or "").lower()
+    cfg = dict(cfg or {})
+    if disc == "tennis":
+        cfg.pop("tennis_points_mode", None)
+    return cfg
+
+
+def clear_standings_cache(tournament: Tournament) -> None:
+    """
+    Czyści cache tabel (jeśli takie modele istnieją w projekcie).
+    Bezpieczne: ignoruje brak modeli.
+    """
+    for model_name in ("Standing", "LeagueStanding", "TeamStanding"):
+        try:
+            M = apps.get_model("tournaments", model_name)
+        except LookupError:
+            continue
+
+        if any(f.name == "tournament" for f in M._meta.fields):
+            M.objects.filter(tournament=tournament).delete()
+
+
+# =========================
+# LIST / CREATE
+# =========================
 class TournamentListView(ListCreateAPIView):
     queryset = Tournament.objects.all()
     serializer_class = TournamentSerializer
@@ -37,10 +100,13 @@ class TournamentListView(ListCreateAPIView):
 
     @transaction.atomic
     def perform_create(self, serializer):
-        # 1. Zapis turnieju
-        tournament = serializer.save(organizer=self.request.user)
+        tournament: Tournament = serializer.save(organizer=self.request.user)
 
-        # 2. Utworzenie 2 domyślnych uczestników (minimalna wymagana liczba)
+        # Normalizacja format_config (ważne dla tenisa: tennis_points_mode default)
+        tournament.format_config = normalize_format_config(tournament.discipline, tournament.format_config or {})
+        tournament.save(update_fields=["format_config"])
+
+        # 2 domyślnych uczestników
         name_prefix = (
             "Zawodnik"
             if tournament.competition_type == Tournament.CompetitionType.INDIVIDUAL
@@ -49,15 +115,13 @@ class TournamentListView(ListCreateAPIView):
 
         Team.objects.bulk_create(
             [
-                Team(tournament=tournament, name=f"{name_prefix} 1", is_active=True),
+                Teamz:=Team(tournament=tournament, name=f"{name_prefix} 1", is_active=True),
                 Team(tournament=tournament, name=f"{name_prefix} 2", is_active=True),
             ]
         )
 
-        # 3. Pierwsze generowanie meczów (dla tych 2 uczestników)
         ensure_matches_generated(tournament)
 
-        # 4. Aktualizacja statusu na CONFIGURED (bo mamy już strukturę)
         tournament.status = Tournament.Status.CONFIGURED
         tournament.save(update_fields=["status"])
 
@@ -73,6 +137,9 @@ class MyTournamentListView(ListAPIView):
         )
 
 
+# =========================
+# DETAIL
+# =========================
 class TournamentDetailView(RetrieveUpdateAPIView):
     queryset = Tournament.objects.all()
     serializer_class = TournamentSerializer
@@ -99,6 +166,9 @@ class TournamentDetailView(RetrieveUpdateAPIView):
         return super().retrieve(request, *args, **kwargs)
 
 
+# =========================
+# ARCHIVE / UNARCHIVE
+# =========================
 class ArchiveTournamentView(APIView):
     """Przeniesienie turnieju do archiwum: Status -> FINISHED oraz cofnięcie publikacji."""
     permission_classes = [IsAuthenticated, IsTournamentOrganizer]
@@ -113,7 +183,6 @@ class ArchiveTournamentView(APIView):
         tournament.status = Tournament.Status.FINISHED
         tournament.is_published = False
         tournament.save(update_fields=["status", "is_published"])
-
         return Response({"detail": "Turniej został zarchiwizowany."}, status=status.HTTP_200_OK)
 
 
@@ -130,35 +199,30 @@ class UnarchiveTournamentView(APIView):
 
         tournament.status = Tournament.Status.CONFIGURED
         tournament.save(update_fields=["status"])
-
         return Response({"detail": "Turniej został przywrócony z archiwum."}, status=status.HTTP_200_OK)
 
 
-# ==========================================================
-# ZMIANA DYSCYPLINY
-# - TEAM->TEAM: wyniki out, konfiguracja + nazwy zostają
-# - TEAM<->INDIVIDUAL: FULL RESET (usuń wszystko, odbuduj uczestników)
-# ==========================================================
-
+# =========================
+# CHANGE DISCIPLINE
+# =========================
 class ChangeDisciplineSerializer(serializers.Serializer):
     discipline = serializers.ChoiceField(choices=Tournament.Discipline.choices, required=True)
 
 
 class ChangeDisciplineView(APIView):
     """
-    TEAM -> TEAM (np. football -> volleyball):
-      - czyści wyniki meczów + standings
-      - zostawia konfigurację i nazwy drużyn
+    TEAM -> TEAM:
+      - czyści wyniki + standings
+      - zostawia konfigurację i nazwy
 
-    TEAM <-> INDIVIDUAL (np. football -> tennis):
-      - FULL RESET: usuwa rozgrywki i uczestników (nazwy),
-        resetuje konfigurację, ustawia DRAFT i tworzy nowych uczestników
+    TEAM <-> INDIVIDUAL:
+      - FULL RESET: usuwa etapy/mecze/uczestników i resetuje setup.
     """
     permission_classes = [IsAuthenticated, IsTournamentOrganizer]
 
     @transaction.atomic
     def post(self, request, pk):
-        tournament = get_object_or_404(Tournament, pk=pk)
+        tournament: Tournament = get_object_or_404(Tournament, pk=pk)
         self.check_object_permissions(request, tournament)
 
         serializer = ChangeDisciplineSerializer(data=request.data)
@@ -170,15 +234,13 @@ class ChangeDisciplineView(APIView):
         if new_discipline == old_discipline:
             return Response({"detail": "Dyscyplina nie uległa zmianie."}, status=status.HTTP_200_OK)
 
-        # Sprawdź dozwolone formaty
         allowed_formats = Tournament.allowed_formats_for_discipline(new_discipline)
         if tournament.tournament_format and tournament.tournament_format not in allowed_formats:
             return Response(
                 {
                     "detail": (
                         "Zmiana dyscypliny wymaga większego resetu, ponieważ aktualny format "
-                        "turnieju nie jest dostępny dla nowej dyscypliny. "
-                        "Należy ponownie skonfigurować format i wygenerować rozgrywki."
+                        "nie jest dostępny dla nowej dyscypliny."
                     ),
                     "reset_level": "FORMAT_INCOMPATIBLE",
                     "next_step": "setup",
@@ -186,58 +248,35 @@ class ChangeDisciplineView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Typ rozgrywki zależny od dyscypliny
         new_comp_type = Tournament.infer_default_competition_type(new_discipline)
-        old_comp_type = tournament.competition_type
-        comp_type_changed = new_comp_type != old_comp_type
+        comp_type_changed = new_comp_type != tournament.competition_type
 
-        Match = get_model_any("tournaments", ["Match"])
-        Stage = get_model_any("tournaments", ["Stage"])
-        Team = get_model_any("tournaments", ["Team"])
+        MatchModel = get_model_any("tournaments", ["Match"])
+        StageModel = get_model_any("tournaments", ["Stage"])
+        TeamModel = get_model_any("tournaments", ["Team"])
 
-        # ------------------------------------------------------
-        # FULL RESET, gdy zmienia się TEAM <-> INDIVIDUAL
-        # ------------------------------------------------------
         if comp_type_changed:
-            # usuń rozgrywki
-            Match.objects.filter(tournament=tournament).delete()
-            Stage.objects.filter(tournament=tournament).delete()
+            MatchModel.objects.filter(tournament=tournament).delete()
+            StageModel.objects.filter(tournament=tournament).delete()
+            TeamModel.objects.filter(tournament=tournament).delete()
 
-            # usuń uczestników => usuwasz nazwy
-            Team.objects.filter(tournament=tournament).delete()
-
-            # reset konfiguracji
             tournament.discipline = new_discipline
             tournament.competition_type = new_comp_type
             tournament.tournament_format = Tournament.TournamentFormat.LEAGUE
-            tournament.format_config = {}
+            tournament.format_config = normalize_format_config(new_discipline, {})
             tournament.status = Tournament.Status.DRAFT
+            tournament.save(update_fields=["discipline", "competition_type", "tournament_format", "format_config", "status"])
 
-            tournament.save(
-                update_fields=[
-                    "discipline",
-                    "competition_type",
-                    "tournament_format",
-                    "format_config",
-                    "status",
-                ]
-            )
-
-            # odbuduj uczestników z prefiksem (domyślne 2 drużyny)
             name_prefix = "Zawodnik" if new_comp_type == Tournament.CompetitionType.INDIVIDUAL else "Drużyna"
-
-            Team.objects.bulk_create(
-                [
-                    Team(tournament=tournament, name=f"{name_prefix} {i}", is_active=True)
-                    for i in range(1, 3)
-                ]
+            TeamModel.objects.bulk_create(
+                [TeamModel(tournament=tournament, name=f"{name_prefix} {i}", is_active=True) for i in range(1, 3)]
             )
 
             return Response(
                 {
                     "detail": (
-                        "Zmieniono dyscyplinę. Ponieważ zmienił się typ rozgrywki (drużynowy/indywidualny), "
-                        "turniej został zresetowany: usunięto etapy, mecze oraz listę uczestników (nazwy)."
+                        "Zmieniono dyscyplinę. Ponieważ zmienił się typ rozgrywki "
+                        "(drużynowy/indywidualny), wykonano pełny reset."
                     ),
                     "reset_level": "FULL_RESET",
                     "next_step": "setup",
@@ -245,33 +284,33 @@ class ChangeDisciplineView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        # ------------------------------------------------------
-        # Minimalny reset (wyniki out), gdy typ się nie zmienia
-        # ------------------------------------------------------
+        # minimalny reset (wyniki out), typ bez zmiany
         tournament.discipline = new_discipline
-        tournament.competition_type = new_comp_type  # spójność, nawet jeśli bez zmiany
+        tournament.competition_type = new_comp_type
+        tournament.format_config = normalize_format_config(new_discipline, tournament.format_config or {})
 
-        Match.objects.filter(tournament=tournament).update(
+        # defensywnie czyścimy pola „specyficzne”
+        MatchModel.objects.filter(tournament=tournament).update(
             home_score=0,
             away_score=0,
+            tennis_sets=None,
+            went_to_extra_time=False,
+            home_extra_time_score=None,
+            away_extra_time_score=None,
+            decided_by_penalties=False,
+            home_penalty_score=None,
+            away_penalty_score=None,
             winner=None,
-            status=Match.Status.SCHEDULED,
+            status=MatchModel.Status.SCHEDULED,
             result_entered=False,
         )
 
-        # standings/cache
-        for model_name in ("Standing", "LeagueStanding", "TeamStanding"):
-            try:
-                M = apps.get_model("tournaments", model_name)
-                if "tournament" in [f.name for f in M._meta.fields]:
-                    M.objects.filter(tournament=tournament).delete()
-            except LookupError:
-                pass
+        clear_standings_cache(tournament)
 
         if tournament.status == Tournament.Status.FINISHED:
             tournament.status = Tournament.Status.CONFIGURED
 
-        tournament.save(update_fields=["discipline", "competition_type", "status"])
+        tournament.save(update_fields=["discipline", "competition_type", "format_config", "status"])
 
         return Response(
             {
@@ -283,10 +322,9 @@ class ChangeDisciplineView(APIView):
         )
 
 
-# ==========================================================
-# ZMIANA SETUP (format/config) – reset rozgrywek, drużyny zostają
-# ==========================================================
-
+# =========================
+# CHANGE SETUP
+# =========================
 class ChangeSetupSerializer(serializers.Serializer):
     tournament_format = serializers.ChoiceField(choices=Tournament.TournamentFormat.choices)
     format_config = serializers.JSONField(required=False)
@@ -296,33 +334,29 @@ class ChangeSetupSerializer(serializers.Serializer):
 
         allowed_formats = Tournament.allowed_formats_for_discipline(tournament.discipline)
         if attrs["tournament_format"] not in allowed_formats:
-            raise serializers.ValidationError(
-                {"tournament_format": "Wybrany format nie jest dostępny dla tej dyscypliny."}
-            )
+            raise serializers.ValidationError({"tournament_format": "Wybrany format nie jest dostępny dla tej dyscypliny."})
+
+        attrs["format_config"] = normalize_format_config(
+            tournament.discipline,
+            attrs.get("format_config") or {},
+        )
         return attrs
 
 
 class ChangeSetupView(APIView):
     """
-    Zmiana konfiguracji turnieju (FORMAT + FORMAT_CONFIG).
-
-    Zasady:
-    - NIE dotyka liczby uczestników
-    - jeśli istnieją etapy/mecze → reset (Stage/Match)
-    - uczestnicy (Team) ZOSTAJĄ
-    - obsługuje dry_run=true
+    - zmiana FORMAT lub struktury config -> reset Stage/Match
+    - zmiana tennis_points_mode (tenis) -> bez resetu Stage/Match, tylko czyszczenie cache standings
+    - dry_run=true zwraca requires_reset / reset_needed
     """
     permission_classes = [IsAuthenticated, IsTournamentOrganizer]
 
     @transaction.atomic
     def post(self, request, pk):
-        tournament = get_object_or_404(Tournament, pk=pk)
+        tournament: Tournament = get_object_or_404(Tournament, pk=pk)
         self.check_object_permissions(request, tournament)
 
-        serializer = ChangeSetupSerializer(
-            data=request.data,
-            context={"tournament": tournament},
-        )
+        serializer = ChangeSetupSerializer(data=request.data, context={"tournament": tournament})
         serializer.is_valid(raise_exception=True)
 
         new_format = serializer.validated_data["tournament_format"]
@@ -330,37 +364,30 @@ class ChangeSetupView(APIView):
 
         dry_run = str(request.query_params.get("dry_run", "")).lower() in ("1", "true", "yes")
 
-        changed = (
-            tournament.tournament_format != new_format
-            or (tournament.format_config or {}) != new_cfg
-        )
+        old_cfg = normalize_format_config(tournament.discipline, tournament.format_config or {})
+        new_cfg = normalize_format_config(tournament.discipline, new_cfg)
 
-        # --------------------------------------------
-        # Czy istnieją rozgrywki do resetu?
-        # --------------------------------------------
-        reset_needed = False
+        fmt_changed = tournament.tournament_format != new_format
+        cfg_changed = old_cfg != new_cfg
+        changed = fmt_changed or cfg_changed
 
-        try:
-            StageModel = get_model_any("tournaments", ["Stage"])
-            reset_needed = StageModel.objects.filter(tournament=tournament).exists()
-        except LookupError:
-            pass
+        old_struct = strip_standings_only_keys(tournament.discipline, old_cfg)
+        new_struct = strip_standings_only_keys(tournament.discipline, new_cfg)
+        structure_changed = old_struct != new_struct
 
-        if not reset_needed:
-            try:
-                MatchModel = get_model_any("tournaments", ["Match"])
-                reset_needed = MatchModel.objects.filter(tournament=tournament).exists()
-            except LookupError:
-                pass
+        requires_reset = fmt_changed or structure_changed
 
-        # --------------------------------------------
-        # DRY RUN
-        # --------------------------------------------
+        StageModel = get_model_any("tournaments", ["Stage"])
+        MatchModel = get_model_any("tournaments", ["Match"])
+
+        reset_needed = StageModel.objects.filter(tournament=tournament).exists() or MatchModel.objects.filter(tournament=tournament).exists()
+
         if dry_run:
             return Response(
                 {
                     "changed": changed,
-                    "reset_needed": bool(reset_needed and changed),
+                    "requires_reset": bool(requires_reset and changed),
+                    "reset_needed": bool(reset_needed and requires_reset and changed),
                     "detail": "Sprawdzenie zakończone.",
                 },
                 status=status.HTTP_200_OK,
@@ -368,34 +395,16 @@ class ChangeSetupView(APIView):
 
         reset_performed = False
 
-        # --------------------------------------------
-        # RESET ROZGRYWEK (jeśli trzeba)
-        # --------------------------------------------
-        if changed and reset_needed:
-            try:
-                StageModel = get_model_any("tournaments", ["Stage"])
-                StageModel.objects.filter(tournament=tournament).delete()
-                reset_performed = True
-            except LookupError:
-                try:
-                    MatchModel = get_model_any("tournaments", ["Match"])
-                    MatchModel.objects.filter(tournament=tournament).delete()
-                    reset_performed = True
-                except LookupError:
-                    pass
+        if changed and requires_reset and reset_needed:
+            StageModel.objects.filter(tournament=tournament).delete()
+            MatchModel.objects.filter(tournament=tournament).delete()
+            reset_performed = True
+            clear_standings_cache(tournament)
 
-            # standings / cache
-            for model_name in ("Standing", "LeagueStanding", "TeamStanding"):
-                try:
-                    M = apps.get_model("tournaments", model_name)
-                    if any(f.name == "tournament" for f in M._meta.fields):
-                        M.objects.filter(tournament=tournament).delete()
-                except LookupError:
-                    pass
+        # jeśli nie resetujemy, ale zmienił się cfg (np. tennis_points_mode) -> czyścimy cache tabel
+        if changed and (not reset_performed) and cfg_changed:
+            clear_standings_cache(tournament)
 
-        # --------------------------------------------
-        # ZAPIS SETUPU
-        # --------------------------------------------
         if changed:
             tournament.tournament_format = new_format
             tournament.format_config = new_cfg
@@ -405,14 +414,13 @@ class ChangeSetupView(APIView):
             elif reset_performed:
                 tournament.status = Tournament.Status.DRAFT
 
-            tournament.save(
-                update_fields=["tournament_format", "format_config", "status"]
-            )
+            tournament.save(update_fields=["tournament_format", "format_config", "status"])
 
         return Response(
             {
                 "detail": "Konfiguracja zapisana.",
                 "changed": changed,
+                "requires_reset": bool(requires_reset and changed),
                 "reset_performed": reset_performed,
                 "next_step": "teams",
             },

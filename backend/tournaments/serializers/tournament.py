@@ -5,6 +5,37 @@ from tournaments.models import Tournament, TournamentMembership
 
 User = get_user_model()
 
+TENIS_POINTS_MODES = ("NONE", "PLT")
+
+
+def _normalize_format_config(discipline: str | None, cfg) -> dict:
+    """
+    Ujednolica format_config:
+    - zawsze dict
+    - dla tenisa: gwarantuje tennis_points_mode ∈ {NONE, PLT} (domyślnie NONE)
+    - dla innych dyscyplin: usuwa tennis_points_mode, jeśli ktoś go podał
+    """
+    discipline = (discipline or "").lower()
+
+    if cfg is None:
+        cfg = {}
+    if not isinstance(cfg, dict):
+        raise serializers.ValidationError({"format_config": "format_config musi być obiektem JSON (dict)."})
+
+    cfg = dict(cfg)  # kopia
+
+    if discipline == "tennis":
+        mode = (cfg.get("tennis_points_mode") or "NONE")
+        if mode not in TENIS_POINTS_MODES:
+            raise serializers.ValidationError(
+                {"format_config": {"tennis_points_mode": f"Dozwolone: {', '.join(TENIS_POINTS_MODES)}"}}
+            )
+        cfg["tennis_points_mode"] = mode
+    else:
+        cfg.pop("tennis_points_mode", None)
+
+    return cfg
+
 
 class TournamentSerializer(serializers.ModelSerializer):
     """
@@ -45,6 +76,13 @@ class TournamentSerializer(serializers.ModelSerializer):
                 )
         return value
 
+    def validate_format_config(self, value):
+        discipline = (
+            self.initial_data.get("discipline")
+            or (self.instance.discipline if self.instance else None)
+        )
+        return _normalize_format_config(discipline, value)
+
     # ============================================================
     # WALIDACJA KONTEKSTOWA (STATUS / ROLE)
     # ============================================================
@@ -52,6 +90,11 @@ class TournamentSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         request = self.context.get("request")
         instance = self.instance
+
+        # Ujednolicamy format_config także wtedy, gdy przychodzi w PATCH/POST
+        if "format_config" in attrs:
+            discipline = attrs.get("discipline") or (instance.discipline if instance else None)
+            attrs["format_config"] = _normalize_format_config(discipline, attrs.get("format_config"))
 
         if not request or not request.user.is_authenticated or not instance:
             return attrs
@@ -123,6 +166,11 @@ class TournamentSerializer(serializers.ModelSerializer):
                     validated_data.get("discipline")
                 )
             )
+
+        # Domyślny config dla tenisa
+        discipline = (validated_data.get("discipline") or "").lower()
+        validated_data["format_config"] = _normalize_format_config(discipline, validated_data.get("format_config"))
+
         return super().create(validated_data)
 
     # ============================================================

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Iterable, Tuple
+from typing import Any, Tuple, Literal
 
 from tournaments.models import Group, Match, Stage, Team, Tournament
 from tournaments.services.match_outcome import final_score
@@ -13,6 +13,8 @@ from tournaments.services.standings.types import StandingRow
 
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
 
+TennisPointsMode = Literal["NONE", "PLT"]
+
 
 def _get_ruleset(tournament: Tournament) -> StandingsRuleset:
     discipline = getattr(tournament, "discipline", None)
@@ -22,9 +24,12 @@ def _get_ruleset(tournament: Tournament) -> StandingsRuleset:
     if discipline in ("handball", "HANDBALL"):
         return HandballSuperligaRuleset()
     if discipline in ("tennis", "TENNIS"):
-        return TennisRuleset()
+        cfg = getattr(tournament, "format_config", None) or {}
+        mode = (cfg.get("tennis_points_mode") or "NONE").upper()
+        return TennisRuleset(points_mode="PLT" if mode == "PLT" else "NONE")
 
     return FootballPZPNRuleset()
+
 
 
 def compute_stage_standings(
@@ -36,9 +41,6 @@ def compute_stage_standings(
     Kluczowa zasada (Wariant B):
     - Standings liczymy z uczestników *kontekstu etapu/grupy*,
       a nie z Team.is_active.
-    Dzięki temu:
-    - po awansie do KO i zmianie is_active drużyny NIE znikają z tabel grup,
-    - zmiany wyników w grupach nadal mogą zmienić kolejność/awans.
     """
     ruleset = _get_ruleset(tournament)
 
@@ -60,8 +62,6 @@ def compute_stage_standings(
 
 
 def _get_teams_for_context(tournament: Tournament, stage: Stage, group: Group | None) -> list[Team]:
-    # UWAGA: standings mają pokazywać skład z meczów/turnieju,
-    # a nie zależeć od Team.is_active (bo eliminacje ≠ dezaktywacja).
     if group is None:
         return list(tournament.teams.exclude(name=BYE_TEAM_NAME).order_by("id"))
 
@@ -103,12 +103,7 @@ def _safe_int(v: Any) -> int:
 
 def _tennis_games_from_match(match: Match) -> Tuple[int, int]:
     """
-    Tenis: z match.tennis_sets wyliczamy sumę gemów:
-    - home_games = suma set_obj["home_games"]
-    - away_games = suma set_obj["away_games"]
-
-    Tie-break (home_tiebreak/away_tiebreak) NIE jest liczony jako gemy.
-    Funkcja jest defensywna: jeśli struktura jest częściowo błędna, liczy to co się da.
+    Tenis: z match.tennis_sets wyliczamy sumę gemów (bez tie-breaków).
     """
     sets = getattr(match, "tennis_sets", None)
     if not isinstance(sets, list):
@@ -124,6 +119,42 @@ def _tennis_games_from_match(match: Match) -> Tuple[int, int]:
         ag_sum += _safe_int(s.get("away_games"))
 
     return (hg_sum, ag_sum)
+
+
+def _tennis_points_mode(tournament: Tournament) -> TennisPointsMode:
+    cfg = getattr(tournament, "format_config", None) or {}
+    mode = (cfg.get("tennis_points_mode") or "NONE").upper()
+    return "PLT" if mode == "PLT" else "NONE"
+
+
+def _plt_points_from_sets(match: Match, home_sets: int, away_sets: int) -> Tuple[int, int]:
+    """
+    Punktacja wzorowana na przykładzie Polskiej Ligi Tenisa:
+    - zwycięstwo 2:0 -> 10 pkt, przegrana -> 2 pkt
+    - zwycięstwo 2:1 -> 8 pkt,  przegrana -> 4 pkt
+    - walkower -> 0 pkt (brak pewnego pola w modelu, więc tylko defensywnie)
+
+    Uogólnienie dla BO5:
+    - wygrana "do zera" (np. 3:0) traktowana jak straight sets -> 10/2
+    - wygrana z oddanym setem (np. 3:1, 3:2) -> 8/4
+    """
+    tennis_sets = getattr(match, "tennis_sets", None)
+
+    # defensywny “walkower”: FINISHED, ale brak danych setów oraz 0:0
+    if (not tennis_sets) and home_sets == 0 and away_sets == 0:
+        return (0, 0)
+
+    if home_sets == away_sets:
+        # remis w setach nie powinien wystąpić w tenisie, ale defensywnie:
+        return (0, 0)
+
+    home_won = home_sets > away_sets
+    loser_sets = min(home_sets, away_sets)
+
+    if loser_sets == 0:
+        return (10, 2) if home_won else (2, 10)
+
+    return (8, 4) if home_won else (4, 8)
 
 
 def _apply_match_result(rows: dict[int, StandingRow], match: Match, tournament: Tournament) -> None:
@@ -150,37 +181,67 @@ def _apply_match_result(rows: dict[int, StandingRow], match: Match, tournament: 
     is_tennis = discipline in ("tennis", "TENNIS")
 
     # -----------------------
-    # TENIS: punkty + gemy
+    # TENIS: sety + gemy + (opcjonalnie) punkty PLT
     # -----------------------
     if is_tennis:
-        # gemy jako tie-break w tabeli
+        # gemy (do tie-breaków w tabeli)
         home_games, away_games = _tennis_games_from_match(match)
         home.games_for += home_games
         home.games_against += away_games
         away.games_for += away_games
         away.games_against += home_games
 
-        # 1 pkt za zwycięstwo (spójne z Twoją dotychczasową logiką)
+        # W/L
         if hs > aws:
             home.wins += 1
             away.losses += 1
-            home.points += 1
+        elif hs < aws:
+            away.wins += 1
+            away.away_wins += 1  # pole istnieje w typie, ale w tenisie nie jest używane
+            home.losses += 1
+        else:
+            # defensywnie (remis w setach nie powinien przejść walidacji)
+            home.draws += 1
+            away.draws += 1
+            return
+
+        # PUNKTY: zależnie od trybu
+        mode = _tennis_points_mode(tournament)
+        if mode == "PLT":
+            ph, pa = _plt_points_from_sets(match, hs, aws)
+            home.points += ph
+            away.points += pa
+        else:
+            # tryb bez punktów: points zostaje 0 (UI może ukryć kolumnę)
+            pass
+
+        return
+
+    # -----------------------
+    # FOOTBALL / default: 3/1/0
+    # -----------------------
+    if not is_handball:
+        if hs > aws:
+            home.wins += 1
+            away.losses += 1
+            home.points += 3
             return
 
         if hs < aws:
             away.wins += 1
-            away.away_wins += 1  # nie ma znaczenia w tenisie, ale pole istnieje
+            away.away_wins += 1
             home.losses += 1
-            away.points += 1
+            away.points += 3
             return
 
-        # defensywny fallback (remis w setach nie powinien przejść walidacji)
         home.draws += 1
         away.draws += 1
+        home.points += 1
+        away.points += 1
         return
 
     # -----------------------
-    # FOOTBALL / HANDBALL: standard 3 pkt za wygraną
+    # HANDBALL: wariant z karnymi 2/1 po dogrywce/remisie + ew. karne
     # -----------------------
     if hs > aws:
         home.wins += 1
@@ -196,40 +257,31 @@ def _apply_match_result(rows: dict[int, StandingRow], match: Match, tournament: 
         return
 
     # remis po wyniku końcowym (reg+dogrywka)
-    if is_handball:
-        if (
-            match.decided_by_penalties
-            and match.home_penalty_score is not None
-            and match.away_penalty_score is not None
-        ):
-            if match.home_penalty_score > match.away_penalty_score:
-                home.wins += 1
-                home.penalty_wins += 1
-                away.losses += 1
-                away.penalty_losses += 1
-                home.points += 2
-                away.points += 1
-            elif match.home_penalty_score < match.away_penalty_score:
-                away.wins += 1
-                away.penalty_wins += 1
-                away.away_wins += 1
-                home.losses += 1
-                home.penalty_losses += 1
-                away.points += 2
-                home.points += 1
-            else:
-                # teoretycznie nie powinno się zdarzyć w karnych
-                home.draws += 1
-                away.draws += 1
+    if (
+        match.decided_by_penalties
+        and match.home_penalty_score is not None
+        and match.away_penalty_score is not None
+    ):
+        if match.home_penalty_score > match.away_penalty_score:
+            home.wins += 1
+            home.penalty_wins += 1
+            away.losses += 1
+            away.penalty_losses += 1
+            home.points += 2
+            away.points += 1
+        elif match.home_penalty_score < match.away_penalty_score:
+            away.wins += 1
+            away.penalty_wins += 1
+            away.away_wins += 1
+            home.losses += 1
+            home.penalty_losses += 1
+            away.points += 2
+            home.points += 1
         else:
             home.draws += 1
             away.draws += 1
-            home.points += 1
-            away.points += 1
-        return
-
-    # football / default
-    home.draws += 1
-    away.draws += 1
-    home.points += 1
-    away.points += 1
+    else:
+        home.draws += 1
+        away.draws += 1
+        home.points += 1
+        away.points += 1

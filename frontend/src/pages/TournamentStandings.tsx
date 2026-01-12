@@ -12,6 +12,7 @@ type Tournament = {
   name: string;
   discipline?: string; // np. "tennis"
   tournament_format: "LEAGUE" | "CUP" | "MIXED";
+  format_config?: Record<string, any>; // <-- DODANE (np. { tennis_points_mode: "PLT" | "NONE" })
 };
 
 type MatchDto = {
@@ -28,7 +29,7 @@ type MatchDto = {
   home_team_name: string;
   away_team_name: string;
 
-  // dla tenisa: sety
+  // dla tenisa: sety (np. 2:1), dla reszty: bramki/punkty
   home_score: number | null;
   away_score: number | null;
 
@@ -56,7 +57,7 @@ type StandingRow = {
   games_against?: number;
   games_difference?: number;
 
-  // tenis – docelowe (jeśli backend zwraca)
+  // tenis – opcjonalne, jeśli kiedyś backend będzie to zwracał
   sets_for?: number;
   sets_against?: number;
   sets_diff?: number;
@@ -121,6 +122,7 @@ type GroupStanding = {
 type StandingsMeta = {
   discipline?: string;
   table_schema?: string; // "TENNIS" | "DEFAULT" ...
+  tennis_points_mode?: string; // "PLT" | "NONE"
 };
 
 type StandingsResponse = {
@@ -210,6 +212,18 @@ function safeNum(v: any, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function getTennisPointsMode(tournament: Tournament | null, standings: StandingsResponse | null): "PLT" | "NONE" {
+  const tMode = (tournament?.format_config?.tennis_points_mode ?? "").toString().toUpperCase();
+  if (tMode === "PLT") return "PLT";
+  if (tMode === "NONE") return "NONE";
+
+  const sMode = (standings?.meta?.tennis_points_mode ?? "").toString().toUpperCase();
+  if (sMode === "PLT") return "PLT";
+  if (sMode === "NONE") return "NONE";
+
+  return "NONE";
+}
+
 /* =========================
    KOMPONENT GŁÓWNY
    ========================= */
@@ -268,6 +282,9 @@ export default function TournamentStandings() {
   const discipline = (metaDiscipline || tournamentDiscipline || "").toLowerCase();
   const isTennis = metaSchema === "TENNIS" || discipline === "tennis";
 
+  const tennisPointsMode = getTennisPointsMode(tournament, standings);
+  const showTennisPoints = isTennis && tennisPointsMode === "PLT";
+
   const isCup = tournament.tournament_format === "CUP";
   const isMixed = tournament.tournament_format === "MIXED";
 
@@ -322,7 +339,6 @@ export default function TournamentStandings() {
                   ? g.group_name
                   : displayGroupName(g.group_name, idx);
 
-              // do formy bierzemy tylko mecze GROUP z tej konkretnej grupy
               const groupKey = normalizeGroupKey(g.group_name);
               const groupMatches = matches.filter(
                 (m) => m.stage_type === "GROUP" && normalizeGroupKey(m.group_name) === groupKey
@@ -340,7 +356,12 @@ export default function TournamentStandings() {
                   >
                     {groupTitle}
                   </h3>
-                  <Table rows={g.table} matchesForForm={groupMatches} isTennis={isTennis} />
+                  <Table
+                    rows={g.table}
+                    matchesForForm={groupMatches}
+                    isTennis={isTennis}
+                    showTennisPoints={showTennisPoints}
+                  />
                 </div>
               );
             })}
@@ -350,6 +371,7 @@ export default function TournamentStandings() {
             rows={standings!.table!}
             matchesForForm={matches.filter((m) => m.stage_type === "LEAGUE")}
             isTennis={isTennis}
+            showTennisPoints={showTennisPoints}
           />
         ) : (
           !isCup && <p>Brak danych tabeli.</p>
@@ -412,18 +434,22 @@ function Table({
   rows,
   matchesForForm,
   isTennis,
+  showTennisPoints,
 }: {
   rows: StandingRow[];
   matchesForForm: MatchDto[];
   isTennis: boolean;
+  showTennisPoints: boolean;
 }) {
+  const minWidth = isTennis ? (showTennisPoints ? "950px" : "900px") : "600px";
+
   return (
     <div style={{ overflowX: "auto" }}>
       <table
         style={{
           width: "100%",
           borderCollapse: "collapse",
-          minWidth: isTennis ? "900px" : "600px",
+          minWidth,
           color: "#ddd",
         }}
       >
@@ -441,7 +467,7 @@ function Table({
               <th>Gemy +</th>
               <th>Gemy -</th>
               <th>RG</th>
-              <th>Pkt</th>
+              {showTennisPoints && <th>Pkt (PLT)</th>}
               <th>Forma</th>
             </tr>
           ) : (
@@ -474,10 +500,7 @@ function Table({
               // gemy: preferuj games_* / games_diff, fallback na 0
               const gamesFor = safeNum(r.games_for, 0);
               const gamesAgainst = safeNum(r.games_against, 0);
-              const gamesDiff = safeNum(
-                r.games_diff,
-                safeNum(r.games_difference, gamesFor - gamesAgainst)
-              );
+              const gamesDiff = safeNum(r.games_diff, safeNum(r.games_difference, gamesFor - gamesAgainst));
 
               return (
                 <tr key={r.team_id} style={{ borderBottom: "1px solid #333" }}>
@@ -492,9 +515,13 @@ function Table({
                   <td>{gamesFor}</td>
                   <td>{gamesAgainst}</td>
                   <td>{gamesDiff}</td>
-                  <td>
-                    <strong style={{ color: "#3498db" }}>{r.points}</strong>
-                  </td>
+
+                  {showTennisPoints && (
+                    <td>
+                      <strong style={{ color: "#3498db" }}>{r.points}</strong>
+                    </td>
+                  )}
+
                   <td>
                     <div style={{ display: "flex", gap: "3px" }}>
                       {form.map((f, idx) => (
@@ -641,7 +668,15 @@ function CenteredBracketView({ data, discipline }: { data: BracketData; discipli
         </div>
 
         <div style={{ margin: "0 40px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%" }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              height: "100%",
+            }}
+          >
             <div style={{ fontSize: "2rem", marginBottom: "10px" }}>🏆</div>
 
             <RoundColumn label={finalRound.label} items={finalRound.items} highlight discipline={discipline} />
