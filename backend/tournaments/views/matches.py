@@ -8,7 +8,7 @@ from django.shortcuts import get_object_or_404
 
 from rest_framework import status
 from rest_framework.generics import ListAPIView, RetrieveUpdateAPIView
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -140,11 +140,6 @@ def _stringify_validation_detail(detail: object) -> str:
 def _validate_tennis_match_before_finish(match: Match, cfg: dict) -> Optional[str]:
     """
     Walidacja defensywna przed zakończeniem meczu tenisowego.
-
-    Wariant "gemy":
-    - źródłem prawdy jest match.tennis_sets,
-    - home_score/away_score to sety (muszą wynikać z tennis_sets),
-    - dogrywka i karne muszą być puste/wyłączone.
     """
     if not match.result_entered:
         return "Nie można zakończyć meczu tenisowego bez wprowadzenia wyniku."
@@ -162,7 +157,6 @@ def _validate_tennis_match_before_finish(match: Match, cfg: dict) -> Optional[st
     if match.home_penalty_score is not None or match.away_penalty_score is not None:
         return "W tenisie nie obsługujemy karnych (pola karnych muszą być puste)."
 
-    # Reuse walidacji z serializerów (żeby nie duplikować reguł setów i tie-breaka).
     try:
         from tournaments.serializers.matches import _validate_tennis_sets_and_compute_score
         home_sets, away_sets = _validate_tennis_sets_and_compute_score(match.tennis_sets, cfg=cfg)
@@ -182,20 +176,12 @@ def _validate_tennis_match_before_finish(match: Match, cfg: dict) -> Optional[st
 
 
 def _tennis_winner_id_from_sets(match: Match) -> Optional[int]:
-    """
-    Dla tenisa: winner wynika wyłącznie z setów (home_score/away_score).
-    Przy PATCH może być jeszcze remis (np. 1:1) -> None.
-    """
     hs = int(match.home_score or 0)
     aws = int(match.away_score or 0)
     if hs == aws:
         return None
     return match.home_team_id if hs > aws else match.away_team_id
 
-
-# ============================================================
-# MIXED: Regenerate KO after GROUP/LEAGUE edits (safe)
-# ============================================================
 
 def _is_mixed(tournament: Tournament) -> bool:
     return str(getattr(tournament, "tournament_format", "")).upper() == "MIXED"
@@ -209,10 +195,6 @@ def _knockout_exists(tournament: Tournament) -> bool:
 
 
 def _knockout_has_started(tournament: Tournament) -> bool:
-    """
-    KO is considered started if any KO match is not purely SCHEDULED
-    or if any KO match has result_entered=True.
-    """
     qs = Match.objects.filter(
         tournament=tournament,
         stage__stage_type=Stage.StageType.KNOCKOUT,
@@ -225,19 +207,11 @@ def _knockout_has_started(tournament: Tournament) -> bool:
 
 
 def _import_advance_from_groups():
-    """
-    Importujemy funkcję awansu z grup do KO.
-    W projekcie plik jest w tournaments/services/advance_from_groups.py
-    """
     from tournaments.services.advance_from_groups import advance_from_groups  # alias
     return advance_from_groups
 
 
 def _regenerate_knockout_from_groups_if_safe(tournament: Tournament) -> None:
-    """
-    If tournament is MIXED and KO exists but has not started yet,
-    rebuild KO + 3rd place from current group standings.
-    """
     if not _is_mixed(tournament):
         return
     if not _knockout_exists(tournament):
@@ -256,11 +230,36 @@ def _regenerate_knockout_from_groups_if_safe(tournament: Tournament) -> None:
     advance_from_groups(tournament)
 
 
+def _public_access_or_403(request, tournament: Tournament) -> Optional[Response]:
+    """
+    Zasady dostępu dla strony publicznej:
+    - manager (organizator/asystent) -> zawsze OK
+    - public:
+      - tournament.is_published musi być True
+      - jeśli tournament.access_code ustawione, wymagamy ?code=...
+    """
+    user = getattr(request, "user", None)
+    if user and getattr(user, "is_authenticated", False) and user_can_manage_tournament(user, tournament):
+        return None
+
+    if not tournament.is_published:
+        return Response({"detail": "Turniej nie jest dostępny."}, status=status.HTTP_403_FORBIDDEN)
+
+    if tournament.access_code:
+        if request.query_params.get("code") != tournament.access_code:
+            return Response({"detail": "Wymagany poprawny kod dostępu."}, status=status.HTTP_403_FORBIDDEN)
+
+    return None
+
+
 # ============================================================
 # Views
 # ============================================================
 
 class TournamentMatchListView(ListAPIView):
+    """
+    Lista meczów dla managerów (organizator/asystent).
+    """
     serializer_class = MatchSerializer
     permission_classes = [IsAuthenticated]
 
@@ -276,7 +275,42 @@ class TournamentMatchListView(ListAPIView):
         )
 
 
+class TournamentPublicMatchListView(ListAPIView):
+    """
+    Publiczna lista meczów dla widza.
+
+    GET /api/tournaments/<id>/public/matches/
+    (opcjonalnie) ?code=XXXX jeśli turniej ma access_code
+    """
+    serializer_class = MatchSerializer
+    permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
+        denied = _public_access_or_403(self.request, tournament)
+        if denied is not None:
+            # DRF nie pozwala łatwo zwrócić Response z get_queryset,
+            # więc zwracamy pusty queryset, a Response zwrócimy w list().
+            return Match.objects.none()
+
+        return (
+            Match.objects.filter(tournament=tournament)
+            .select_related("home_team", "away_team", "stage")
+            .order_by("stage__order", "round_number", "id")
+        )
+
+    def list(self, request, *args, **kwargs):
+        tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
+        denied = _public_access_or_403(request, tournament)
+        if denied is not None:
+            return denied
+        return super().list(request, *args, **kwargs)
+
+
 class MatchScheduleUpdateView(RetrieveUpdateAPIView):
+    """
+    PATCH /api/matches/<id>/
+    """
     queryset = Match.objects.all()
     serializer_class = MatchSerializer
     permission_classes = [IsAuthenticated]
@@ -326,7 +360,6 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
         cup_matches = _get_cup_matches(tournament)
         is_knockout_like = stage.stage_type == Stage.StageType.KNOCKOUT or _is_third_place_stage(stage)
 
-        # TENIS: nie wspieramy dwumeczu – blokada już na PATCH
         if is_knockout_like and _is_tennis(tournament) and cup_matches == 2:
             return Response(
                 {"detail": "Tenis nie wspiera trybu dwumeczu (cup_matches=2)."},
@@ -341,9 +374,6 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
         serializer.is_valid(raise_exception=True)
         match = serializer.save()
 
-        # ============================
-        # LEAGUE / GROUP
-        # ============================
         if stage.stage_type in (Stage.StageType.LEAGUE, Stage.StageType.GROUP):
             try:
                 MatchResultService.apply_result(match)
@@ -357,12 +387,8 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
 
             return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
 
-        # ============================
-        # KO / THIRD PLACE
-        # ============================
         if is_knockout_like:
             if cup_matches == 1:
-                # TENIS: winner z setów; inne dyscypliny: knockout_winner_id (reg+ET, a jeśli remis -> karne)
                 if _is_tennis(tournament):
                     new_winner_id = _tennis_winner_id_from_sets(match)
                 else:
@@ -406,9 +432,6 @@ class FinishMatchView(APIView):
 
         cfg = tournament.format_config or {}
 
-        # ============================
-        # LEAGUE / GROUP
-        # ============================
         if stage.stage_type in (Stage.StageType.LEAGUE, Stage.StageType.GROUP):
             if _is_tennis(tournament):
                 err = _validate_tennis_match_before_finish(match, cfg)
@@ -430,9 +453,6 @@ class FinishMatchView(APIView):
 
             return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
 
-        # ============================
-        # KO + 3rd place
-        # ============================
         cup_matches = _get_cup_matches(tournament)
         is_knockout_like = stage.stage_type == Stage.StageType.KNOCKOUT or _is_third_place_stage(stage)
 
@@ -443,7 +463,6 @@ class FinishMatchView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # TENIS: blokada dwumeczu + walidacja tennis_sets przed finish
             if _is_tennis(tournament):
                 if cup_matches == 2:
                     return Response(
@@ -454,7 +473,6 @@ class FinishMatchView(APIView):
                 if err:
                     return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Standard dla pozostałych dyscyplin / defensywnie
             if match.home_score is None or match.away_score is None:
                 return Response(
                     {"detail": "Brak kompletnego wyniku — uzupełnij bramki/punkty."},
@@ -462,7 +480,6 @@ class FinishMatchView(APIView):
                 )
 
             if cup_matches == 1:
-                # Tenis przejdzie tu bez ET/karnych; inne dyscypliny walidujemy standardowo
                 err = validate_extra_time_consistency(match) or validate_penalties_consistency(match)
                 if err and not _is_tennis(tournament):
                     return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)

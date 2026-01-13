@@ -1,4 +1,4 @@
-from .tournament import TournamentSerializer
+from .tournament import TournamentSerializer, TournamentMetaUpdateSerializer
 from .assistants import TournamentAssistantSerializer, AddAssistantSerializer
 from .teams import TeamSerializer, TeamUpdateSerializer
 from .generate import GenerateTournamentSerializer
@@ -10,6 +10,7 @@ from .matches import (
 
 __all__ = [
     "TournamentSerializer",
+    "TournamentMetaUpdateSerializer",
     "TournamentAssistantSerializer",
     "AddAssistantSerializer",
     "TeamSerializer",
@@ -19,3 +20,4 @@ __all__ = [
     "MatchScheduleUpdateSerializer",
     "MatchResultUpdateSerializer",
 ]
+

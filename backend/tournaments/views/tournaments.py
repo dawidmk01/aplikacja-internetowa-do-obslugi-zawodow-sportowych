@@ -12,12 +12,13 @@ from rest_framework.views import APIView
 
 from tournaments.models import Team, Tournament
 from tournaments.permissions import IsTournamentOrganizer
-from tournaments.serializers import TournamentSerializer
+from tournaments.serializers import TournamentSerializer, TournamentMetaUpdateSerializer
 from tournaments.services.match_generation import ensure_matches_generated
 from tournaments.views._helpers import user_can_manage_tournament
 
 
-# =========================
+
+# =========================d
 # HELPERY MODEL-LOOKUP
 # =========================
 def get_model_any(app_label: str, names: list[str]):
@@ -165,7 +166,43 @@ class TournamentDetailView(RetrieveUpdateAPIView):
 
         return super().retrieve(request, *args, **kwargs)
 
+# =========================
+# META (SCHEDULE + DESCRIPTION)
+# =========================
+class TournamentMetaUpdateView(APIView):
+    """
+    Edycja metadanych turnieju (harmonogram + opis) bez otwierania pełnego PATCH.
 
+    Endpoint:
+      PATCH /api/tournaments/<id>/meta/
+
+    Uprawnienia:
+    - organizator LUB asystent (user_can_manage_tournament)
+
+    Obsługiwane pola:
+    - start_date, end_date, location, description
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk: int, *args, **kwargs):
+        tournament = get_object_or_404(Tournament, pk=pk)
+
+        if not user_can_manage_tournament(request.user, tournament):
+            return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = TournamentMetaUpdateSerializer(
+            tournament,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        # Zwracamy pełny widok turnieju (spójny z resztą UI)
+        return Response(TournamentSerializer(tournament, context={"request": request}).data)
+    
 # =========================
 # ARCHIVE / UNARCHIVE
 # =========================
@@ -426,3 +463,4 @@ class ChangeSetupView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+

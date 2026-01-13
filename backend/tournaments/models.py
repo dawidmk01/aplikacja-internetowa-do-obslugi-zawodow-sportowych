@@ -81,9 +81,6 @@ class Tournament(models.Model):
         default=TournamentFormat.LEAGUE,
     )
 
-    # ❌ USUNIĘTO: participants_count
-    # participants_count = models.PositiveIntegerField(default=2)
-
     format_config = models.JSONField(default=dict, blank=True)
 
     entry_mode = models.CharField(
@@ -107,6 +104,9 @@ class Tournament(models.Model):
     )
 
     access_code = models.CharField(max_length=20, blank=True, null=True)
+
+    # Opis turnieju (widoczny w panelu publicznym)
+    description = models.TextField(blank=True, null=True)
 
     # Harmonogram turnieju (opcjonalny)
     start_date = models.DateField(blank=True, null=True)

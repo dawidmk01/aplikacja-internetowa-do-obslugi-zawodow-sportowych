@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
@@ -20,15 +22,21 @@ def _normalize_format_config(discipline: str | None, cfg) -> dict:
     if cfg is None:
         cfg = {}
     if not isinstance(cfg, dict):
-        raise serializers.ValidationError({"format_config": "format_config musi być obiektem JSON (dict)."})
+        raise serializers.ValidationError(
+            {"format_config": "format_config musi być obiektem JSON (dict)."}
+        )
 
     cfg = dict(cfg)  # kopia
 
     if discipline == "tennis":
-        mode = (cfg.get("tennis_points_mode") or "NONE")
+        mode = cfg.get("tennis_points_mode") or "NONE"
         if mode not in TENIS_POINTS_MODES:
             raise serializers.ValidationError(
-                {"format_config": {"tennis_points_mode": f"Dozwolone: {', '.join(TENIS_POINTS_MODES)}"}}
+                {
+                    "format_config": {
+                        "tennis_points_mode": f"Dozwolone: {', '.join(TENIS_POINTS_MODES)}"
+                    }
+                }
             )
         cfg["tennis_points_mode"] = mode
     else:
@@ -93,9 +101,14 @@ class TournamentSerializer(serializers.ModelSerializer):
 
         # Ujednolicamy format_config także wtedy, gdy przychodzi w PATCH/POST
         if "format_config" in attrs:
-            discipline = attrs.get("discipline") or (instance.discipline if instance else None)
-            attrs["format_config"] = _normalize_format_config(discipline, attrs.get("format_config"))
+            discipline = attrs.get("discipline") or (
+                instance.discipline if instance else None
+            )
+            attrs["format_config"] = _normalize_format_config(
+                discipline, attrs.get("format_config")
+            )
 
+        # Jeśli to CREATE (instance None) lub brak usera, nie narzucamy reguł zmian po DRAFT
         if not request or not request.user.is_authenticated or not instance:
             return attrs
 
@@ -167,9 +180,11 @@ class TournamentSerializer(serializers.ModelSerializer):
                 )
             )
 
-        # Domyślny config dla tenisa
         discipline = (validated_data.get("discipline") or "").lower()
-        validated_data["format_config"] = _normalize_format_config(discipline, validated_data.get("format_config"))
+        validated_data["format_config"] = _normalize_format_config(
+            discipline,
+            validated_data.get("format_config"),
+        )
 
         return super().create(validated_data)
 
@@ -192,3 +207,26 @@ class TournamentSerializer(serializers.ModelSerializer):
             return TournamentMembership.Role.ASSISTANT
 
         return None
+
+
+class TournamentMetaUpdateSerializer(serializers.ModelSerializer):
+    """
+    Serializer do edycji pól meta turnieju:
+    - start_date, end_date, location
+    - description (pole opisu do TournamentPublic/TournamentDetail)
+    Endpoint: PATCH /api/tournaments/{id}/meta/
+    """
+
+    class Meta:
+        model = Tournament
+        fields = ("start_date", "end_date", "location", "description")
+
+    def validate(self, attrs):
+        # Walidacja: end_date >= start_date (jeżeli oba są ustawione)
+        start = attrs.get("start_date", getattr(self.instance, "start_date", None))
+        end = attrs.get("end_date", getattr(self.instance, "end_date", None))
+        if start and end and end < start:
+            raise serializers.ValidationError(
+                {"end_date": "Data zakończenia nie może być wcześniejsza niż data rozpoczęcia."}
+            )
+        return attrs

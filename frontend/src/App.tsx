@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
 import NavBar from "./components/NavBar";
-// NOWY IMPORT
 import BackButton from "./components/BackButton";
 import { apiFetch, clearTokens } from "./api";
 
@@ -12,6 +11,7 @@ import Login from "./pages/Login";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 import FindTournament from "./pages/FindTournament";
+import TournamentPublic from "./pages/TournamentPublic";
 
 /* ===== STREFA ZALOGOWANA ===== */
 import ProtectedRoute from "./ProtectedRoute";
@@ -24,21 +24,19 @@ import TournamentLayout from "./layouts/TournamentLayout";
 /* ===== FLOW CONTEXT ===== */
 import { TournamentFlowGuardProvider } from "./flow/TournamentFlowGuardContext";
 
-/* ===== FLOW TURNIEJU ===== */
+/* ===== FLOW TURNIEJU (ZALOGOWANI) ===== */
 import TournamentTeams from "./pages/TournamentTeams";
 import TournamentSchedule from "./pages/TournamentSchedule";
 import TournamentResults from "./pages/TournamentResults";
 
-/* ===== WIDOKI POZA FLOW ===== */
+/* ===== WIDOKI POZA FLOW (ZALOGOWANI) ===== */
 import TournamentDetail from "./pages/TournamentDetail";
+
+/* (jeśli dalej używasz strony standings w panelu zalogowanym) */
 import TournamentStandings from "./pages/TournamentStandings";
 
 export default function App() {
   const [username, setUsername] = useState<string | null>(null);
-
-  /* =========================
-     SESJA UŻYTKOWNIKA
-     ========================= */
 
   const loadMe = async () => {
     try {
@@ -66,23 +64,23 @@ export default function App() {
   return (
     <BrowserRouter>
       <NavBar username={username} onLogout={handleLogout} />
-
-      {/* GLOBALNY PRZYCISK POWROTU (Poza Routes, widoczny wszędzie oprócz Home) */}
       <BackButton />
 
       <Routes>
-        {/* =========================
-            PUBLICZNE
-           ========================= */}
+        {/* PUBLICZNE */}
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login onLogin={loadMe} />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/find-tournament" element={<FindTournament />} />
 
-        {/* =========================
-            STREFA ZALOGOWANA
-           ========================= */}
+        {/* PUBLICZNY TURNIEJ */}
+        <Route path="/tournaments/:id" element={<TournamentPublic />} />
+
+        {/* Ten sam widok, tylko startowo na “Tabela/Drabinka” */}
+        <Route path="/tournaments/:id/standings" element={<TournamentPublic initialView="STANDINGS" />} />
+
+        {/* STREFA ZALOGOWANA */}
         <Route
           path="/my-tournaments"
           element={
@@ -92,9 +90,6 @@ export default function App() {
           }
         />
 
-        {/* =========================
-            TWORZENIE NOWEGO TURNIEJU (NOWY KROK 1)
-           ========================= */}
         <Route
           path="/tournaments/new"
           element={
@@ -106,38 +101,25 @@ export default function App() {
           }
         />
 
-        {/* =========================
-            ZAGNIEŻDŻONY ROUTING TURNIEJU (MANAGEMENT)
-           ========================= */}
+        {/* MANAGEMENT */}
         <Route
-          path="/tournaments/:id"
+          path="/tournaments/:id/detail/*"
           element={
             <ProtectedRoute>
               <TournamentLayout />
             </ProtectedRoute>
           }
         >
-          {/* Domyślny widok: Szczegóły turnieju */}
           <Route index element={<TournamentDetail />} />
-
-          {/* edit -> setup (Redirect) */}
           <Route path="edit" element={<Navigate to="setup" replace />} />
 
-          {/* POŁĄCZONY KROK (Konfiguracja + Dane) */}
           <Route path="setup" element={<TournamentBasicsSetup />} />
-
-          {/* POZOSTAŁE KROKI */}
           <Route path="teams" element={<TournamentTeams />} />
           <Route path="schedule" element={<TournamentSchedule />} />
           <Route path="results" element={<TournamentResults />} />
-
-          {/* TABELA / STANDINGS */}
           <Route path="standings" element={<TournamentStandings />} />
         </Route>
 
-        {/* =========================
-            FALLBACK
-           ========================= */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

@@ -1,6 +1,7 @@
 from .tournaments import (
     TournamentListView,
     TournamentDetailView,
+    TournamentMetaUpdateView,
     MyTournamentListView,
     ArchiveTournamentView,
     UnarchiveTournamentView,
@@ -22,6 +23,7 @@ from .teams import (
 
 from .matches import (
     TournamentMatchListView,
+    TournamentPublicMatchListView,
     MatchScheduleUpdateView,
     MatchResultUpdateView,
     FinishMatchView,
@@ -35,6 +37,7 @@ __all__ = [
     # tournaments
     "TournamentListView",
     "TournamentDetailView",
+    "TournamentMetaUpdateView",
     "MyTournamentListView",
     "ArchiveTournamentView",
     "UnarchiveTournamentView",
@@ -53,6 +56,7 @@ __all__ = [
 
     # matches
     "TournamentMatchListView",
+    "TournamentPublicMatchListView",
     "MatchScheduleUpdateView",
     "MatchResultUpdateView",
     "FinishMatchView",

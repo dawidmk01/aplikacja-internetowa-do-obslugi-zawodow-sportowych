@@ -1,8 +1,4 @@
-export type FlowStepKey =
-  | "setup"
-  | "teams"
-  | "schedule"
-  | "results";
+export type FlowStepKey = "setup" | "teams" | "schedule" | "results" | "detail";
 
 export type FlowStep = {
   key: FlowStepKey;
@@ -11,33 +7,56 @@ export type FlowStep = {
   match: (pathname: string) => boolean;
 };
 
+/* =========================
+   Helpers
+   ========================= */
+
+function cleanPath(pathname: string): string {
+  // usuń query i końcowe slashe
+  const p = pathname.split("?")[0];
+  return p.replace(/\/+$/, "");
+}
+
+/* =========================
+   Kroki flow
+   Bazowa ścieżka managementu: /tournaments/:id/detail/*
+   ========================= */
+
 export const FLOW_STEPS: FlowStep[] = [
   {
     key: "setup",
     label: "Konfiguracja",
-    path: (id) => `/tournaments/${id}/setup`,
-    match: (p) =>
-      p === "/tournaments/new" ||
-      p.split("?")[0].endsWith("/setup"),
+    path: (id) => `/tournaments/${id}/detail/setup`,
+    match: (p) => {
+      const x = cleanPath(p);
+      return x === "/tournaments/new" || x.endsWith("/detail/setup");
+    },
   },
   {
     key: "teams",
     label: "Uczestnicy",
-    path: (id) => `/tournaments/${id}/teams`,
-    match: (p) => p.split("?")[0].endsWith("/teams"),
+    path: (id) => `/tournaments/${id}/detail/teams`,
+    match: (p) => cleanPath(p).endsWith("/detail/teams"),
   },
   {
     key: "schedule",
     label: "Harmonogram",
-    path: (id) => `/tournaments/${id}/schedule`,
-    match: (p) => p.split("?")[0].endsWith("/schedule"),
+    path: (id) => `/tournaments/${id}/detail/schedule`,
+    match: (p) => cleanPath(p).endsWith("/detail/schedule"),
+  },
+  {
+    key: "detail",
+    label: "Szczegóły",
+    path: (id) => `/tournaments/${id}/detail`,
+    match: (p) => cleanPath(p).endsWith("/detail"),
   },
   {
     key: "results",
     label: "Wyniki",
-    path: (id) => `/tournaments/${id}/results`,
-    match: (p) => p.split("?")[0].endsWith("/results"),
+    path: (id) => `/tournaments/${id}/detail/results`,
+    match: (p) => cleanPath(p).endsWith("/detail/results"),
   },
+
 ];
 
 export function getCurrentStepIndex(pathname: string): number {

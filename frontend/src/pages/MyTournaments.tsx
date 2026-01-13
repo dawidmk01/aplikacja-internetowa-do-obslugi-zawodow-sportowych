@@ -271,7 +271,7 @@ export default function MyTournaments() {
                   <div style={{ minWidth: 280 }}>
                     <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
                       <Link
-                        to={`/tournaments/${t.id}`}
+                        to={`/tournaments/${t.id}/detail`}
                         style={{ fontSize: "1.05rem", fontWeight: 700, textDecoration: "none" }}
                       >
                         {t.name}
@@ -296,7 +296,7 @@ export default function MyTournaments() {
 
                   <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                     <Link
-                      to={`/tournaments/${t.id}`}
+                      to={`/tournaments/${t.id}/detail`}
                       style={{
                         border: "1px solid #444",
                         padding: "0.45rem 0.75rem",
