@@ -5,6 +5,7 @@ import { apiFetch } from "../api";
 type Team = { id: number; name: string };
 type TournamentFormat = "LEAGUE" | "CUP" | "MIXED";
 type TournamentStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
+type MyRole = "ORGANIZER" | "ASSISTANT" | null;
 
 type TournamentDTO = {
   id: number;
@@ -12,7 +13,9 @@ type TournamentDTO = {
   tournament_format: TournamentFormat;
   format_config?: Record<string, any>;
   status: TournamentStatus;
-  // backend może zwracać dodatkowe pola (np. organizer, my_role itd.)
+  competition_type?: "INDIVIDUAL" | "TEAM";
+  my_role?: MyRole;
+  matches_started?: boolean; // REALNY start (bez BYE)
   [key: string]: any;
 };
 
@@ -99,10 +102,53 @@ export default function TournamentTeams() {
 
   const currentCount = useMemo(() => Math.max(2, teams.length), [teams.length]);
 
-  const confirmIfResetMayHappen = (): boolean => {
-    if (!tournament) return false;
-    if (tournament.status === "DRAFT") return true;
+  if (loading) return <p>Ładowanie…</p>;
+  if (!tournament) return null;
 
+  const myRole: MyRole = tournament.my_role ?? null;
+  const isOrganizer = myRole === "ORGANIZER";
+  const isAssistant = myRole === "ASSISTANT";
+  const matchesStarted = Boolean(tournament.matches_started);
+
+  const lockCountForAssistant = isAssistant && matchesStarted;
+
+  const formatLabel =
+    tournament.tournament_format === "LEAGUE"
+      ? "Liga"
+      : tournament.tournament_format === "CUP"
+        ? "Puchar"
+        : "Grupy + puchar";
+
+  const confirmChangeCount = (): boolean => {
+    // Asystent po starcie i tak nie dojdzie do tego miejsca (button disabled),
+    // ale zostawiamy też ochronę UX.
+    if (lockCountForAssistant) {
+      setMessage("Asystent nie może zmieniać liczby uczestników po rozpoczęciu turnieju.");
+      return false;
+    }
+
+    // DRAFT: to “najbezpieczniej”
+    if (tournament.status === "DRAFT" && !matchesStarted) return true;
+
+    // Organizator po starcie: mocna informacja o skutkach
+    if (isOrganizer && matchesStarted) {
+      return window.confirm(
+        [
+          "Turniej jest rozpoczęty.",
+          "",
+          "Zmiana liczby uczestników spowoduje PEŁNY RESET rozgrywek:",
+          "- usunięcie wszystkich etapów i meczów (także rozegranych)",
+          "- skasowanie wyników i postępu drabinki/tabel",
+          "- skasowanie harmonogramu meczów",
+          "",
+          "Nazwy zawodników/drużyn pozostaną (część może zostać dezaktywowana przy zmniejszeniu liczby).",
+          "",
+          "Kontynuować?",
+        ].join("\n")
+      );
+    }
+
+    // Standardowe ostrzeżenie (CONFIGURED/RUNNING bez realnego startu itp.)
     return window.confirm(
       "Zmiana liczby uczestników spowoduje reset rozgrywek (etapy i mecze).\nKontynuować?"
     );
@@ -110,11 +156,12 @@ export default function TournamentTeams() {
 
   const changeTeamsCount = async (delta: number) => {
     if (!tournament || busy || inFlightRef.current) return;
+    if (lockCountForAssistant) return;
 
     const next = currentCount + delta;
     if (next < 2) return;
 
-    if (!confirmIfResetMayHappen()) return;
+    if (!confirmChangeCount()) return;
 
     try {
       inFlightRef.current = true;
@@ -144,16 +191,6 @@ export default function TournamentTeams() {
     }
   };
 
-  if (loading) return <p>Ładowanie…</p>;
-  if (!tournament) return null;
-
-  const formatLabel =
-    tournament.tournament_format === "LEAGUE"
-      ? "Liga"
-      : tournament.tournament_format === "CUP"
-        ? "Puchar"
-        : "Grupy + puchar";
-
   const busyButtonStyle: React.CSSProperties = {
     opacity: busy ? 0.6 : 1,
     cursor: busy ? "wait" : "pointer",
@@ -175,7 +212,35 @@ export default function TournamentTeams() {
         </div>
       </section>
 
-      {tournament.status !== "DRAFT" && (
+      {/* Komunikaty zależne od roli */}
+      {lockCountForAssistant && (
+        <div
+          style={{
+            border: "1px solid #6a3b3b",
+            padding: "0.75rem",
+            marginBottom: "1rem",
+            borderRadius: 8,
+          }}
+        >
+          Turniej już się rozpoczął (są mecze w trakcie lub zakończone) — asystent nie może zmieniać liczby uczestników.
+        </div>
+      )}
+
+      {isOrganizer && matchesStarted && (
+        <div
+          style={{
+            border: "1px solid #7a6a2a",
+            padding: "0.75rem",
+            marginBottom: "1rem",
+            borderRadius: 8,
+          }}
+        >
+          Turniej jest rozpoczęty. Organizator może zmienić liczbę uczestników, ale spowoduje to pełny reset:
+          usunięcie meczów, wyników i harmonogramu oraz ponowną generację rozgrywek.
+        </div>
+      )}
+
+      {!matchesStarted && tournament.status !== "DRAFT" && (
         <div
           style={{
             border: "1px solid #444",
@@ -193,7 +258,7 @@ export default function TournamentTeams() {
         <button
           type="button"
           onClick={() => changeTeamsCount(-1)}
-          disabled={busy}
+          disabled={busy || lockCountForAssistant}
           style={busyButtonStyle}
         >
           −
@@ -202,7 +267,7 @@ export default function TournamentTeams() {
         <button
           type="button"
           onClick={() => changeTeamsCount(1)}
-          disabled={busy}
+          disabled={busy || lockCountForAssistant}
           style={busyButtonStyle}
         >
           +

@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
 import NavBar from "./components/NavBar";
 import BackButton from "./components/BackButton";
-import { apiFetch, clearTokens } from "./api";
+import { clearTokens } from "./api";
 
 /* ===== STRONY PUBLICZNE ===== */
 import Home from "./pages/Home";
@@ -35,17 +35,60 @@ import TournamentDetail from "./pages/TournamentDetail";
 /* (jeśli dalej używasz strony standings w panelu zalogowanym) */
 import TournamentStandings from "./pages/TournamentStandings";
 
+function findAccessToken(): string | null {
+  try {
+    // Najpierw typowe klucze
+    const directKeys = ["access", "accessToken", "access_token", "jwt_access", "token"];
+    for (const k of directKeys) {
+      const v = localStorage.getItem(k);
+      if (v && v.trim()) return v.trim();
+    }
+
+    // Potem heurystyka: pierwszy klucz zawierający "access" (i nie "refresh")
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k) continue;
+      const lk = k.toLowerCase();
+      if (lk.includes("access") && !lk.includes("refresh")) {
+        const v = localStorage.getItem(k);
+        if (v && v.trim()) return v.trim();
+      }
+    }
+  } catch {
+    // nic
+  }
+  return null;
+}
+
+const API_BASE = ((import.meta as any).env?.VITE_API_URL as string | undefined) || "http://localhost:8000";
+
 export default function App() {
   const [username, setUsername] = useState<string | null>(null);
 
   const loadMe = async () => {
+    const token = findAccessToken();
+    if (!token) {
+      // brak tokena => jesteśmy anonimowi => żadnych requestów do /me
+      setUsername(null);
+      return;
+    }
+
     try {
-      const res = await apiFetch("/api/auth/me/");
+      const res = await fetch(`${API_BASE}/api/auth/me/`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
       if (!res.ok) {
+        // token jest, ale nie działa -> czyścimy i nie spamujemy konsoli
+        clearTokens();
         setUsername(null);
         return;
       }
-      const data = await res.json();
+
+      const data = await res.json().catch(() => null);
       setUsername(data?.username ?? null);
     } catch {
       setUsername(null);
@@ -59,6 +102,7 @@ export default function App() {
 
   useEffect(() => {
     loadMe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -76,8 +120,6 @@ export default function App() {
 
         {/* PUBLICZNY TURNIEJ */}
         <Route path="/tournaments/:id" element={<TournamentPublic />} />
-
-        {/* Ten sam widok, tylko startowo na “Tabela/Drabinka” */}
         <Route path="/tournaments/:id/standings" element={<TournamentPublic initialView="STANDINGS" />} />
 
         {/* STREFA ZALOGOWANA */}

@@ -3,11 +3,12 @@ from __future__ import annotations
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from tournaments.models import Tournament, TournamentMembership
+from tournaments.models import Match, Tournament, TournamentMembership
 
 User = get_user_model()
 
 TENIS_POINTS_MODES = ("NONE", "PLT")
+BYE_TEAM_NAME = "__SYSTEM_BYE__"
 
 
 def _normalize_format_config(discipline: str | None, cfg) -> dict:
@@ -30,6 +31,7 @@ def _normalize_format_config(discipline: str | None, cfg) -> dict:
 
     if discipline == "tennis":
         mode = cfg.get("tennis_points_mode") or "NONE"
+        mode = str(mode).upper()
         if mode not in TENIS_POINTS_MODES:
             raise serializers.ValidationError(
                 {
@@ -55,6 +57,7 @@ class TournamentSerializer(serializers.ModelSerializer):
     """
 
     my_role = serializers.SerializerMethodField()
+    matches_started = serializers.SerializerMethodField()
 
     class Meta:
         model = Tournament
@@ -64,6 +67,7 @@ class TournamentSerializer(serializers.ModelSerializer):
             "status",
             "created_at",
             "my_role",
+            "matches_started",
         )
 
     # ============================================================
@@ -208,12 +212,24 @@ class TournamentSerializer(serializers.ModelSerializer):
 
         return None
 
+    def get_matches_started(self, obj: Tournament) -> bool:
+        """
+        True tylko jeśli rozpoczął się REALNY mecz (nie techniczny BYE):
+        istnieje mecz IN_PROGRESS lub FINISHED, w którym NIE gra __SYSTEM_BYE__.
+        """
+        return (
+            obj.matches.exclude(home_team__name=BYE_TEAM_NAME)
+            .exclude(away_team__name=BYE_TEAM_NAME)
+            .filter(status__in=(Match.Status.IN_PROGRESS, Match.Status.FINISHED))
+            .exists()
+        )
+
 
 class TournamentMetaUpdateSerializer(serializers.ModelSerializer):
     """
     Serializer do edycji pól meta turnieju:
     - start_date, end_date, location
-    - description (pole opisu do TournamentPublic/TournamentDetail)
+    - description
     Endpoint: PATCH /api/tournaments/{id}/meta/
     """
 
@@ -222,11 +238,12 @@ class TournamentMetaUpdateSerializer(serializers.ModelSerializer):
         fields = ("start_date", "end_date", "location", "description")
 
     def validate(self, attrs):
-        # Walidacja: end_date >= start_date (jeżeli oba są ustawione)
         start = attrs.get("start_date", getattr(self.instance, "start_date", None))
         end = attrs.get("end_date", getattr(self.instance, "end_date", None))
         if start and end and end < start:
             raise serializers.ValidationError(
-                {"end_date": "Data zakończenia nie może być wcześniejsza niż data rozpoczęcia."}
+                {
+                    "end_date": "Data zakończenia nie może być wcześniejsza niż data rozpoczęcia."
+                }
             )
         return attrs

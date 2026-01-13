@@ -23,25 +23,17 @@ from .views import (
 
     # matches
     TournamentMatchListView,
+    TournamentPublicMatchListView,
     MatchScheduleUpdateView,
     MatchResultUpdateView,
     FinishMatchView,
 
     # stages
     AdvanceFromGroupsView,
+
+    # standings
+    TournamentStandingsView,
 )
-
-# standings + public matches
-try:
-    from .views import TournamentStandingsView  # type: ignore
-except ImportError:
-    from .views.standings import TournamentStandingsView  # type: ignore
-
-try:
-    from .views import TournamentPublicMatchListView  # type: ignore
-except ImportError:
-    from .views.public import TournamentPublicMatchListView  # type: ignore
-
 
 urlpatterns = [
     # =========================
@@ -63,14 +55,14 @@ urlpatterns = [
     path("tournaments/<int:pk>/assistants/", TournamentAssistantListView.as_view(), name="tournament-assistants"),
     path("tournaments/<int:pk>/assistants/list/", TournamentAssistantListView.as_view(), name="tournament-assistants-list"),
     path("tournaments/<int:pk>/assistants/add/", AddAssistantView.as_view(), name="assistant-add"),
-    path("tournaments/<int:pk>/assistants/remove/", RemoveAssistantView.as_view(), name="assistant-remove"),
+    path("tournaments/<int:pk>/assistants/<int:user_id>/remove/", RemoveAssistantView.as_view(), name="assistant-remove"),
 
     # =========================
     # DRUŻYNY
     # =========================
     path("tournaments/<int:pk>/teams/", TournamentTeamListView.as_view(), name="tournament-teams"),
     path("tournaments/<int:pk>/teams/setup/", TournamentTeamSetupView.as_view(), name="tournament-teams-setup"),
-    path("tournaments/<int:pk>/teams/update/", TournamentTeamUpdateView.as_view(), name="tournament-teams-update"),
+    path("tournaments/<int:pk>/teams/<int:team_id>/", TournamentTeamUpdateView.as_view(), name="tournament-team-detail"),
 
     # =========================
     # MECZE
@@ -85,23 +77,13 @@ urlpatterns = [
     # =========================
     # ETAPY – GRUPY → KO
     # =========================
-
-    # 🔹 STARY endpoint – wymagany przez frontend (PRZYWRÓCONY)
-    path(
-        "tournaments/<int:pk>/advance-from-groups/",
-        AdvanceFromGroupsView.as_view(),
-        name="tournament-advance-from-groups",
-    ),
-
-    # 🔹 NOWY endpoint – alias (opcjonalny, może zostać)
-    path(
-        "tournaments/<int:pk>/stages/advance/",
-        AdvanceFromGroupsView.as_view(),
-        name="stage-advance",
-    ),
+    path("tournaments/<int:pk>/advance-from-groups/", AdvanceFromGroupsView.as_view(), name="tournament-advance-from-groups"),
+    path("tournaments/<int:pk>/stages/advance/", AdvanceFromGroupsView.as_view(), name="stage-advance"),
 
     # =========================
     # STANDINGS
     # =========================
     path("tournaments/<int:pk>/standings/", TournamentStandingsView.as_view(), name="tournament-standings"),
+    # alias public (opcjonalny)
+    path("tournaments/<int:pk>/public/standings/", TournamentStandingsView.as_view(), name="tournament-public-standings"),
 ]

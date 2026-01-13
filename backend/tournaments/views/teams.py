@@ -1,4 +1,3 @@
-# backend/tournaments/views/teams.py
 from __future__ import annotations
 
 from django.db import transaction
@@ -10,12 +9,25 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from ..models import Stage, Team, Tournament
+from ..models import Match, Stage, Team, Tournament, TournamentMembership
 from ..serializers import TeamSerializer, TeamUpdateSerializer, TournamentSerializer
 from ..services.match_generation import ensure_matches_generated
 from ._helpers import user_can_manage_tournament
 
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
+
+
+def _tournament_real_started(tournament: Tournament) -> bool:
+    """
+    Turniej uznajemy za rozpoczęty tylko jeśli istnieje REALNY mecz (nie BYE),
+    który jest IN_PROGRESS albo FINISHED.
+    """
+    return (
+        tournament.matches.exclude(home_team__name=BYE_TEAM_NAME)
+        .exclude(away_team__name=BYE_TEAM_NAME)
+        .filter(status__in=(Match.Status.IN_PROGRESS, Match.Status.FINISHED))
+        .exists()
+    )
 
 
 class TournamentTeamListView(ListAPIView):
@@ -27,8 +39,7 @@ class TournamentTeamListView(ListAPIView):
         if not user_can_manage_tournament(self.request.user, tournament):
             return Team.objects.none()
         return (
-            tournament.teams
-            .filter(is_active=True)
+            tournament.teams.filter(is_active=True)
             .exclude(name=BYE_TEAM_NAME)
             .order_by("id")
         )
@@ -50,7 +61,10 @@ class TournamentTeamUpdateView(APIView):
         )
 
         if team.name == BYE_TEAM_NAME:
-            return Response({"detail": "Nie można edytować zespołu technicznego BYE."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Nie można edytować zespołu technicznego BYE."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         serializer = TeamUpdateSerializer(team, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
@@ -61,16 +75,14 @@ class TournamentTeamUpdateView(APIView):
 
 class TournamentTeamSetupView(APIView):
     """
-    Endpoint: POST /api/tournaments/<id>/teams/setup/
+    POST /api/tournaments/<id>/teams/setup/
 
-    Cel:
-    - Ustawić faktyczną liczbę aktywnych Team (źródło prawdy),
-      ale NIGDY nie aktywować __SYSTEM_BYE__.
-    - Jeżeli liczba aktywnych Team się zmienia -> UPGRADE rozgrywek:
-      reset Stage/Match + regeneracja (ensure_matches_generated).
+    - Ustawia liczbę aktywnych Team (bez aktywowania __SYSTEM_BYE__).
+    - Jeżeli liczba aktywnych Team się zmienia -> reset Stage/Match + regeneracja.
 
-    Wejście:
-    - Docelowo: {"teams_count": <int>}
+    Uprawnienia:
+    - organizer: może zmieniać także po rozpoczęciu (ale to resetuje wyniki)
+    - assistant: może zmieniać tylko do REALNEGO startu (bez liczenia BYE jako start)
     """
 
     permission_classes = [IsAuthenticated]
@@ -82,14 +94,30 @@ class TournamentTeamSetupView(APIView):
         if not user_can_manage_tournament(request.user, tournament):
             return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
 
-        if tournament.status in (Tournament.Status.RUNNING, Tournament.Status.FINISHED):
+        # Role
+        is_organizer = tournament.organizer_id == request.user.id
+        is_assistant = tournament.memberships.filter(
+            user=request.user,
+            role=TournamentMembership.Role.ASSISTANT,
+        ).exists()
+
+        # FINISHED blokujemy dla wszystkich (to i tak „archiwum”)
+        if tournament.status == Tournament.Status.FINISHED:
             return Response(
-                {"detail": "Nie można zmieniać liczby uczestników, gdy turniej jest w trakcie lub zarchiwizowany."},
+                {"detail": "Nie można zmieniać liczby uczestników w zakończonym turnieju."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        real_started = _tournament_real_started(tournament)
+
+        # Klucz: po REALNYM starcie blokujemy TYLKO asystenta.
+        if is_assistant and real_started:
+            return Response(
+                {"detail": "Turniej już się rozpoczął (są mecze w trakcie lub zakończone) — asystent nie może zmieniać liczby uczestników."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         raw_count = request.data.get("teams_count", None)
-        # Jeżeli chcesz całkowicie wyczyścić participants_count, usuń 2 linie niżej:
         if raw_count is None:
             raw_count = request.data.get("participants_count", None)
 
@@ -101,10 +129,9 @@ class TournamentTeamSetupView(APIView):
         if requested_count < 2:
             return Response({"detail": "Liczba uczestników musi wynosić co najmniej 2."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Wymuś: BYE zawsze nieaktywny (naprawia wcześniejsze “zepsucie”)
+        # Wymuś: BYE zawsze nieaktywny
         Team.objects.filter(tournament=tournament, name=BYE_TEAM_NAME).update(is_active=False)
 
-        # Liczymy i modyfikujemy WYŁĄCZNIE zwykłe teamy (bez BYE)
         active_before = Team.objects.filter(tournament=tournament, is_active=True).exclude(name=BYE_TEAM_NAME).count()
         had_structure = Stage.objects.filter(tournament=tournament).exists()
 
@@ -155,11 +182,17 @@ class TournamentTeamSetupView(APIView):
 
         detail = "Uczestnicy zostali zaktualizowani."
         if reset_done:
-            detail += " Rozgrywki zostały przebudowane (upgrade)."
+            detail += " Rozgrywki zostały przebudowane (reset etapów i meczów)."
         elif should_upgrade:
             detail += " Rozgrywki zostały wygenerowane."
         else:
             detail += " (Bez przebudowy rozgrywek.)"
+
+        # Mocniejsze ostrzeżenie dla organizatora, jeśli zmienił po REALNYM starcie
+        if is_organizer and real_started and should_upgrade:
+            detail += (
+                " UWAGA: turniej był już rozpoczęty — zmiana liczby uczestników usuwa istniejące mecze, wyniki i harmonogram."
+            )
 
         active_teams = (
             tournament.teams.filter(is_active=True)

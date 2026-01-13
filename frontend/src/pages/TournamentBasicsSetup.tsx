@@ -18,6 +18,7 @@ type HandballPointsMode = "2_1_0" | "3_1_0" | "3_2_1_0";
 type TennisBestOf = 3 | 5;
 type TennisPointsMode = "NONE" | "PLT";
 
+/* --- ZMIANA A: dodanie my_role do DTO --- */
 type TournamentDTO = {
   id: number;
   name: string;
@@ -25,6 +26,7 @@ type TournamentDTO = {
   tournament_format: TournamentFormat;
   format_config: Record<string, any>;
   status?: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
+  my_role?: "ORGANIZER" | "ASSISTANT" | null; // <-- DODANO
 };
 
 type TeamDTO = { id: number; name: string };
@@ -98,6 +100,10 @@ export default function TournamentBasicsSetup() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  /* --- ZMIANA B: stan roli + flaga read-only --- */
+  const [myRole, setMyRole] = useState<"ORGANIZER" | "ASSISTANT" | null>(null);
+  const isAssistantReadOnly = !isCreateMode && myRole === "ASSISTANT";
+
   /* ====== KROK 1 (dane podstawowe) ====== */
   const [name, setName] = useState("");
   const [discipline, setDiscipline] = useState<Discipline>("football");
@@ -144,29 +150,21 @@ export default function TournamentBasicsSetup() {
     }
   }, [hbPointsMode, hbTableDrawMode]);
 
-  /* ====== Logika spójności TENIS ======
-     - brak dwumeczu w KO (zgodnie z TournamentResults)
-  */
+  /* ====== Logika spójności TENIS ====== */
   useEffect(() => {
     if (!isTennis) return;
-
-    // KO: wymuszamy 1 mecz (w tym finał i ewentualne 3. miejsce)
     if (cupMatches !== 1) setCupMatches(1);
     if (finalMatches !== 1) setFinalMatches(1);
     if (thirdPlaceMatches !== 1) setThirdPlaceMatches(1);
-    // thirdPlace zostawiamy jako opcję, ale zawsze 1 mecz
   }, [isTennis, cupMatches, finalMatches, thirdPlaceMatches]);
 
   /* ====== MIXED: pilnowanie spójności grup ====== */
   const maxGroupsForMin2PerGroup = useMemo(() => {
-    // wymuszamy minimum 2 zespoły w grupie: groupsCount <= floor(participants/2)
     return Math.max(1, Math.floor(Math.max(2, participants) / 2));
   }, [participants]);
 
   useEffect(() => {
     if (format !== "MIXED") return;
-
-    // clamp liczby grup (żeby nie było grup 1-osobowych)
     setGroupsCount((prev) => clampInt(prev, 1, maxGroupsForMin2PerGroup));
   }, [format, maxGroupsForMin2PerGroup]);
 
@@ -185,14 +183,12 @@ export default function TournamentBasicsSetup() {
   useEffect(() => {
     if (format !== "MIXED") return;
     if (minGroupSize < 2) return;
-
-    // clamp awansu, żeby nie przekraczał najmniejszej grupy
     setAdvanceFromGroup((prev) => clampInt(prev, 1, minGroupSize));
   }, [format, minGroupSize]);
 
   const advanceOptions = useMemo(() => {
     if (format !== "MIXED" || minGroupSize < 2) return [1, 2].filter((x) => x <= Math.max(1, minGroupSize));
-    const maxOpt = Math.min(minGroupSize, 8); // sensowny limit UI
+    const maxOpt = Math.min(minGroupSize, 8);
     return Array.from({ length: maxOpt }, (_, i) => i + 1);
   }, [format, minGroupSize]);
 
@@ -224,6 +220,9 @@ export default function TournamentBasicsSetup() {
         const t: TournamentDTO = await tRes.json();
         const teams: TeamDTO[] = await teamsRes.json();
 
+        /* --- ZMIANA C: ustawienie myRole --- */
+        setMyRole(t.my_role ?? null);
+
         setName(t.name);
         setInitialName(t.name);
         setDiscipline(t.discipline);
@@ -236,7 +235,6 @@ export default function TournamentBasicsSetup() {
 
         const cfg = t.format_config || {};
 
-        // Liga / Grupy
         setLeagueMatches(cfg.league_matches === 2 ? 2 : 1);
 
         const savedGroups = cfg.groups_count;
@@ -248,24 +246,19 @@ export default function TournamentBasicsSetup() {
 
         setGroupMatches(cfg.group_matches === 2 ? 2 : 1);
 
-        // awans
         const savedAdvance = Number(cfg.advance_from_group ?? 2);
         setAdvanceFromGroup(Number.isFinite(savedAdvance) ? savedAdvance : 2);
 
-        // Puchar
         setCupMatches(cfg.cup_matches === 2 ? 2 : 1);
         setFinalMatches(cfg.final_matches === 2 ? 2 : 1);
         setThirdPlace(!!cfg.third_place);
         setThirdPlaceMatches(cfg.third_place_matches === 2 ? 2 : 1);
 
-        // Handball
         setHbTableDrawMode(cfg.handball_table_draw_mode ?? "ALLOW_DRAW");
         setHbKnockoutTiebreak(cfg.handball_knockout_tiebreak ?? "OVERTIME_PENALTIES");
         setHbPointsMode(cfg.handball_points_mode ?? "2_1_0");
 
-        // Tennis
         setTennisBestOf(cfg.tennis_best_of === 5 ? 5 : 3);
-
         const tpm = (cfg.tennis_points_mode ?? "NONE").toString().toUpperCase();
         setTennisPointsMode(tpm === "PLT" ? "PLT" : "NONE");
       } catch (e: any) {
@@ -288,7 +281,6 @@ export default function TournamentBasicsSetup() {
     }
 
     if (format === "CUP") {
-      // liczba "tie" = p-1, ale finał liczymy osobno: (p-2) + finał
       const roundsMatches = Math.max(0, (p - 2) * cupMatches);
       const finalCount = finalMatches;
       const thirdCount = thirdPlace ? thirdPlaceMatches : 0;
@@ -298,10 +290,7 @@ export default function TournamentBasicsSetup() {
     if (format === "MIXED") {
       const safeGroups = clampInt(groupsCount, 1, Math.max(1, Math.floor(p / 2)));
       const sizes = splitIntoGroups(p, safeGroups);
-
       const groupTotal = sizes.reduce((sum, size) => sum + roundRobinMatches(size, groupMatches), 0);
-
-      // uwaga: awans nie może przekroczyć wielkości najmniejszej grupy
       const minSize = sizes.length ? Math.min(...sizes) : 2;
       const adv = clampInt(advanceFromGroup, 1, Math.max(1, minSize));
       const advancing = sizes.length * adv;
@@ -323,7 +312,6 @@ export default function TournamentBasicsSetup() {
         advancing,
       };
     }
-
     return null;
   }, [
     format,
@@ -366,8 +354,6 @@ export default function TournamentBasicsSetup() {
 
       const advancing = g * adv;
 
-      // to nie musi być błąd, bo backend może robić BYE,
-      // ale UX-owo ostrzegamy – w praktyce drabinka jest najczytelniejsza dla 2^k
       if (advancing >= 2 && !isPowerOfTwo(advancing)) {
         return `Uwaga: awansujących jest ${advancing}. To nie jest potęga 2, więc w drabince mogą pojawić się wolne losy (BYE).`;
       }
@@ -384,24 +370,19 @@ export default function TournamentBasicsSetup() {
 
   const buildFormatConfig = () => {
     const safeParticipants = clampInt(participants, 2, 10_000);
-
-    // MIXED: pilnujemy min. 2 na grupę
     const maxGroups = Math.max(1, Math.floor(safeParticipants / 2));
     const safeGroups = clampInt(groupsCount, 1, Math.max(1, maxGroups));
     const sizes = splitIntoGroups(safeParticipants, safeGroups);
-
     const computedTeamsPerGroup = Math.max(2, ...(sizes.length ? sizes : [2]));
     const minSize = sizes.length ? Math.min(...sizes) : 2;
     const safeAdvance = clampInt(advanceFromGroup, 1, Math.max(1, minSize));
 
     const rawConfig: Record<string, any> = {
       league_matches: leagueMatches,
-
       groups_count: safeGroups,
       teams_per_group: computedTeamsPerGroup,
       group_matches: groupMatches,
       advance_from_group: safeAdvance,
-
       cup_matches: isTennis ? 1 : cupMatches,
       final_matches: isTennis ? 1 : finalMatches,
       third_place: thirdPlace,
@@ -416,7 +397,6 @@ export default function TournamentBasicsSetup() {
 
     if (isTennis) {
       rawConfig.tennis_best_of = tennisBestOf;
-      // Dotyczy tabeli (LEAGUE/MIXED). W CUP i tak wyczyścimy.
       rawConfig.tennis_points_mode = tennisPointsMode;
     }
 
@@ -432,8 +412,6 @@ export default function TournamentBasicsSetup() {
       delete finalConfig.teams_per_group;
       delete finalConfig.group_matches;
       delete finalConfig.handball_knockout_tiebreak;
-      // w LEAGUE handball_table_draw_mode / points_mode zostają (mają sens)
-      // tenis_best_of zostaje (dotyczy meczu), tennis_points_mode zostaje (dotyczy tabeli)
     }
 
     if (format === "CUP") {
@@ -444,14 +422,11 @@ export default function TournamentBasicsSetup() {
       delete finalConfig.advance_from_group;
       delete finalConfig.handball_table_draw_mode;
       delete finalConfig.handball_points_mode;
-
-      // CUP nie ma tabeli – usuń tryb punktów tenisowych, żeby config był czysty
       delete finalConfig.tennis_points_mode;
     }
 
     if (format === "MIXED") {
       delete finalConfig.league_matches;
-      // tenis_points_mode zostaje (tabela grup)
     }
 
     return finalConfig;
@@ -459,9 +434,15 @@ export default function TournamentBasicsSetup() {
 
   /* ====== SAVE ACTION ====== */
   const saveAll = useCallback(async (): Promise<{ tournamentId: number }> => {
+    /* --- ZMIANA D: zablokowanie zapisu dla asystenta --- */
+    if (isAssistantReadOnly) {
+      const msg = "Tryb podglądu: asystent nie może zmieniać konfiguracji turnieju.";
+      setError(msg);
+      throw new Error(msg);
+    }
+
     const localMsg = validateLocalBeforeSave();
     if (localMsg) {
-      // jeżeli to ostrzeżenie o potędze 2 – pozwól kontynuować po potwierdzeniu
       if (localMsg.startsWith("Uwaga:")) {
         if (!window.confirm(`${localMsg}\n\nKontynuować zapis?`)) {
           setError("Anulowano zapis konfiguracji.");
@@ -483,7 +464,6 @@ export default function TournamentBasicsSetup() {
       const trimmedName = name.trim();
       let tournamentId = Number(id);
 
-      // 1) CREATE
       if (isCreateMode) {
         const createRes = await apiFetch("/api/tournaments/", {
           method: "POST",
@@ -503,7 +483,6 @@ export default function TournamentBasicsSetup() {
         setInitialName(trimmedName);
         setInitialDiscipline(discipline);
       } else {
-        // 2) EDIT DISCIPLINE
         if (discipline !== initialDiscipline) {
           if (!confirmDisciplineChange()) {
             setDiscipline(initialDiscipline);
@@ -518,7 +497,6 @@ export default function TournamentBasicsSetup() {
           }
         }
 
-        // 3) EDIT NAME
         if (trimmedName !== initialName) {
           const res = await apiFetch(`/api/tournaments/${tournamentId}/`, {
             method: "PATCH",
@@ -530,7 +508,6 @@ export default function TournamentBasicsSetup() {
         }
       }
 
-      // 4) SETUP CHANGE (dry-run)
       const format_config = buildFormatConfig();
 
       const dry = await apiFetch(`/api/tournaments/${tournamentId}/change-setup/?dry_run=true`, {
@@ -556,7 +533,6 @@ export default function TournamentBasicsSetup() {
       });
       if (!res.ok) throw new Error("Błąd zapisu konfiguracji.");
 
-      // 5) TEAMS COUNT
       const safeParticipants = clampInt(participants, 2, 10_000);
       const participantsChanged = safeParticipants !== initialParticipantsRef.current;
 
@@ -612,15 +588,22 @@ export default function TournamentBasicsSetup() {
     isHandball,
     isTennis,
     navigate,
+    isAssistantReadOnly, // Dodano zależność
   ]);
 
+  /* --- ZMIANA E: wyłączenie flow guard dla asystenta --- */
   useEffect(() => {
+    if (isAssistantReadOnly) {
+      registerSave(null);
+      return () => registerSave(null);
+    }
+
     registerSave(async () => {
       const { tournamentId } = await saveAll();
       createdIdRef.current = String(tournamentId);
     });
     return () => registerSave(null);
-  }, [registerSave, saveAll]);
+  }, [registerSave, saveAll, isAssistantReadOnly]);
 
   if (loading) return <p style={{ padding: "2rem" }}>Ładowanie…</p>;
 
@@ -632,382 +615,365 @@ export default function TournamentBasicsSetup() {
       {isCreateMode && <TournamentFlowNav getCreatedId={() => createdIdRef.current} />}
 
       <h1>Konfiguracja turnieju</h1>
+
+      {/* --- ZMIANA E: Baner informacyjny --- */}
+      {isAssistantReadOnly && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: "0.75rem 1rem",
+            border: "1px solid #555",
+            borderRadius: 10,
+            background: "rgba(255, 193, 7, 0.08)",
+          }}
+        >
+          <strong>Tryb podglądu.</strong> Jako asystent możesz przeglądać konfigurację, ale nie możesz jej zmieniać.
+          Zmiany wykonuje organizator.
+        </div>
+      )}
+
       {error && <p style={{ color: "crimson" }}>{error}</p>}
 
-      {/* ===== 1. DANE TURNIEJU ===== */}
-      <section style={{ marginTop: "1.5rem" }}>
-        <h3>Dane turnieju</h3>
+      {/* --- ZMIANA E: Fieldset blokujący formularz --- */}
+      <fieldset
+        disabled={saving || isAssistantReadOnly}
+        style={{
+          border: 0,
+          padding: 0,
+          margin: 0,
+          opacity: saving || isAssistantReadOnly ? 0.9 : 1,
+        }}
+      >
+        {/* ===== 1. DANE TURNIEJU ===== */}
+        <section style={{ marginTop: "1.5rem" }}>
+          <h3>Dane turnieju</h3>
 
-        <div style={{ marginBottom: 12 }}>
-          <label>Nazwa</label>
-          <input
-            style={{ width: "100%", padding: 8 }}
-            value={name}
-            required
-            onChange={(e) => {
-              setName(e.target.value);
-              markDirty();
-              if (error) setError(null);
-            }}
-          />
-        </div>
-
-        <div style={{ marginBottom: 12 }}>
-          <label>Dyscyplina</label>
-          <select
-            style={{ width: "100%", padding: 8 }}
-            value={discipline}
-            onChange={(e) => {
-              setDiscipline(e.target.value as Discipline);
-              markDirty();
-            }}
-          >
-            <option value="football">Piłka nożna</option>
-            <option value="volleyball">Siatkówka</option>
-            <option value="basketball">Koszykówka</option>
-            <option value="handball">Piłka ręczna</option>
-            <option value="tennis">Tenis</option>
-            <option value="wrestling">Zapasy</option>
-          </select>
-        </div>
-
-        {/* TENNIS: best-of */}
-        {isTennis && (
           <div style={{ marginBottom: 12 }}>
-            <label>Tenis – format meczu</label>
+            <label>Nazwa</label>
+            <input
+              style={{ width: "100%", padding: 8 }}
+              value={name}
+              required
+              onChange={(e) => {
+                setName(e.target.value);
+                markDirty();
+                if (error) setError(null);
+              }}
+            />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label>Dyscyplina</label>
             <select
               style={{ width: "100%", padding: 8 }}
-              value={tennisBestOf}
-              disabled={saving}
+              value={discipline}
               onChange={(e) => {
-                setTennisBestOf(Number(e.target.value) as TennisBestOf);
+                setDiscipline(e.target.value as Discipline);
                 markDirty();
               }}
             >
-              {TENNIS_BEST_OF_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
+              <option value="football">Piłka nożna</option>
+              <option value="volleyball">Siatkówka</option>
+              <option value="basketball">Koszykówka</option>
+              <option value="handball">Piłka ręczna</option>
+              <option value="tennis">Tenis</option>
+              <option value="wrestling">Zapasy</option>
             </select>
-
-            <div style={{ marginTop: 6, fontSize: "0.9em", color: "#666" }}>
-              Wyniki będziesz wpisywać w <strong>gemach per set</strong> w ekranie „Wprowadzanie wyników”.
-            </div>
           </div>
-        )}
-      </section>
 
-      {/* ===== 2. RODZAJ TURNIEJU (MASTER SWITCH) ===== */}
-      <section style={{ marginTop: "2rem" }}>
-        <h3>Rodzaj turnieju</h3>
-
-        <select
-          style={{ width: "100%", padding: 8 }}
-          value={format}
-          onChange={(e) => {
-            setFormat(e.target.value as TournamentFormat);
-            markDirty();
-          }}
-          disabled={saving}
-        >
-          <option value="LEAGUE">Liga</option>
-          <option value="CUP">Puchar (KO)</option>
-          <option value="MIXED">Grupy + puchar</option>
-        </select>
-
-        <p style={{ marginTop: 8, fontSize: "0.9em", color: "#666" }}>
-          Liczba uczestników:{" "}
-          <input
-            type="number"
-            min={2}
-            style={{ width: 80, marginLeft: 8 }}
-            value={participants}
-            disabled={saving}
-            onChange={(e) => {
-              const p = clampInt(Number(e.target.value), 2, 10_000);
-              setParticipants(p);
-              markDirty();
-
-              // jeśli MIXED: automatycznie popraw groupsCount, żeby nie było grup 1-osobowych
-              if (format === "MIXED") {
-                const gMax = Math.max(1, Math.floor(p / 2));
-                setGroupsCount((prev) => clampInt(prev, 1, gMax));
-              }
-            }}
-          />
-        </p>
-      </section>
-
-      {/* ===== 3. FAZA LIGOWA / GRUPOWA ===== */}
-      {showLeagueOrGroupConfig && (
-        <section style={{ marginTop: "1.5rem" }}>
-          <h3>Faza {format === "LEAGUE" ? "ligowa" : "grupowa"}</h3>
-
-          {/* TENNIS: tryb punktów w tabeli */}
           {isTennis && (
-            <div style={{ marginBottom: "1rem" }}>
-              <strong>Tenis – tabela</strong>
-              <div style={{ marginTop: 8 }}>
-                <label style={{ display: "block", marginBottom: 8 }}>
-                  System klasyfikacji:
-                  <select
-                    style={{ marginLeft: 8 }}
-                    value={tennisPointsMode}
-                    disabled={saving}
-                    onChange={(e) => {
-                      setTennisPointsMode(e.target.value as TennisPointsMode);
-                      markDirty();
-                    }}
-                  >
-                    {TENNIS_POINTS_MODE_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+            <div style={{ marginBottom: 12 }}>
+              <label>Tenis – format meczu</label>
+              <select
+                style={{ width: "100%", padding: 8 }}
+                value={tennisBestOf}
+                disabled={saving || isAssistantReadOnly}
+                onChange={(e) => {
+                  setTennisBestOf(Number(e.target.value) as TennisBestOf);
+                  markDirty();
+                }}
+              >
+                {TENNIS_BEST_OF_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
 
-                <div style={{ fontSize: "0.9em", color: "#666" }}>
-                  {tennisPointsMode === "PLT"
-                    ? "Tabela pokaże kolumnę Pkt (liczone wg ustawień w backendzie)."
-                    : "Tabela będzie bez punktów – o kolejności decydują: zwycięstwa, RS, RG i H2H (gdy etap zakończony)."}
+              <div style={{ marginTop: 6, fontSize: "0.9em", color: "#666" }}>
+                Wyniki będziesz wpisywać w <strong>gemach per set</strong> w ekranie „Wprowadzanie wyników”.
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* ===== 2. RODZAJ TURNIEJU (MASTER SWITCH) ===== */}
+        <section style={{ marginTop: "2rem" }}>
+          <h3>Rodzaj turnieju</h3>
+
+          <select
+            style={{ width: "100%", padding: 8 }}
+            value={format}
+            onChange={(e) => {
+              setFormat(e.target.value as TournamentFormat);
+              markDirty();
+            }}
+            disabled={saving || isAssistantReadOnly}
+          >
+            <option value="LEAGUE">Liga</option>
+            <option value="CUP">Puchar (KO)</option>
+            <option value="MIXED">Grupy + puchar</option>
+          </select>
+
+          <p style={{ marginTop: 8, fontSize: "0.9em", color: "#666" }}>
+            Liczba uczestników:{" "}
+            <input
+              type="number"
+              min={2}
+              style={{ width: 80, marginLeft: 8 }}
+              value={participants}
+              disabled={saving || isAssistantReadOnly}
+              onChange={(e) => {
+                const p = clampInt(Number(e.target.value), 2, 10_000);
+                setParticipants(p);
+                markDirty();
+
+                if (format === "MIXED") {
+                  const gMax = Math.max(1, Math.floor(p / 2));
+                  setGroupsCount((prev) => clampInt(prev, 1, gMax));
+                }
+              }}
+            />
+          </p>
+        </section>
+
+        {/* ===== 3. FAZA LIGOWA / GRUPOWA ===== */}
+        {showLeagueOrGroupConfig && (
+          <section style={{ marginTop: "1.5rem" }}>
+            <h3>Faza {format === "LEAGUE" ? "ligowa" : "grupowa"}</h3>
+
+            {isTennis && (
+              <div style={{ marginBottom: "1rem" }}>
+                <strong>Tenis – tabela</strong>
+                <div style={{ marginTop: 8 }}>
+                  <label style={{ display: "block", marginBottom: 8 }}>
+                    System klasyfikacji:
+                    <select
+                      style={{ marginLeft: 8 }}
+                      value={tennisPointsMode}
+                      disabled={saving || isAssistantReadOnly}
+                      onChange={(e) => {
+                        setTennisPointsMode(e.target.value as TennisPointsMode);
+                        markDirty();
+                      }}
+                    >
+                      {TENNIS_POINTS_MODE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <div style={{ fontSize: "0.9em", color: "#666" }}>
+                    {tennisPointsMode === "PLT"
+                      ? "Tabela pokaże kolumnę Pkt (liczone wg ustawień w backendzie)."
+                      : "Tabela będzie bez punktów – o kolejności decydują: zwycięstwa, RS, RG i H2H (gdy etap zakończony)."}
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* A) Handball – tabela */}
-          {isHandball && (
-            <div style={{ marginBottom: "1rem" }}>
-              <strong>Ustawienia punktacji (Piłka ręczna)</strong>
+            {isHandball && (
+              <div style={{ marginBottom: "1rem" }}>
+                <strong>Ustawienia punktacji (Piłka ręczna)</strong>
 
-              <div style={{ marginTop: 8 }}>
-                <label style={{ display: "block", marginBottom: 8 }}>
-                  Punktacja (tabela):
+                <div style={{ marginTop: 8 }}>
+                  <label style={{ display: "block", marginBottom: 8 }}>
+                    Punktacja (tabela):
+                    <select
+                      style={{ marginLeft: 8 }}
+                      value={hbPointsMode}
+                      disabled={saving || isAssistantReadOnly}
+                      onChange={(e) => {
+                        setHbPointsMode(e.target.value as HandballPointsMode);
+                        markDirty();
+                      }}
+                    >
+                      {HB_POINTS_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label style={{ display: "block", marginBottom: 8 }}>
+                    Rozstrzyganie meczów:
+                    <select
+                      style={{ marginLeft: 8 }}
+                      value={hbTableDrawMode}
+                      disabled={saving || isAssistantReadOnly || hbPointsMode === "3_2_1_0"}
+                      onChange={(e) => {
+                        setHbTableDrawMode(e.target.value as HandballTableDrawMode);
+                        markDirty();
+                      }}
+                    >
+                      <option value="ALLOW_DRAW">Remis dopuszczalny</option>
+                      <option value="PENALTIES">Remis → karne</option>
+                      <option value="OVERTIME_PENALTIES">Remis → dogrywka + karne</option>
+                    </select>
+                    {hbPointsMode === "3_2_1_0" && (
+                      <span style={{ fontSize: "0.8em", color: "orange", marginLeft: 8 }}>
+                        (Wymagane przy 3-2-1-0)
+                      </span>
+                    )}
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {format === "LEAGUE" && (
+              <div>
+                <label>
+                  Mecze każdy z każdym:
                   <select
                     style={{ marginLeft: 8 }}
-                    value={hbPointsMode}
-                    disabled={saving}
+                    value={leagueMatches}
+                    disabled={saving || isAssistantReadOnly}
                     onChange={(e) => {
-                      setHbPointsMode(e.target.value as HandballPointsMode);
+                      setLeagueMatches(Number(e.target.value) as 1 | 2);
                       markDirty();
                     }}
                   >
-                    {HB_POINTS_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
+                    <option value={1}>1 mecz (bez rewanżu)</option>
+                    <option value={2}>2 mecze (rewanż)</option>
+                  </select>
+                </label>
+              </div>
+            )}
+
+            {format === "MIXED" && (
+              <div style={{ display: "flex", gap: "20px", flexWrap: "wrap" }}>
+                <label>
+                  Liczba grup:
+                  <input
+                    type="number"
+                    min={1}
+                    max={maxGroupsForMin2PerGroup}
+                    style={{ width: 70, marginLeft: 8 }}
+                    value={groupsCount}
+                    disabled={saving || isAssistantReadOnly}
+                    onChange={(e) => {
+                      setGroupsCount(clampInt(Number(e.target.value), 1, maxGroupsForMin2PerGroup));
+                      markDirty();
+                    }}
+                  />
+                </label>
+
+                <label>
+                  Mecze w grupach:
+                  <select
+                    style={{ marginLeft: 8 }}
+                    value={groupMatches}
+                    disabled={saving || isAssistantReadOnly}
+                    onChange={(e) => {
+                      setGroupMatches(Number(e.target.value) as 1 | 2);
+                      markDirty();
+                    }}
+                  >
+                    <option value={1}>1 mecz</option>
+                    <option value={2}>2 mecze</option>
+                  </select>
+                </label>
+
+                <label>
+                  Awans z grupy:
+                  <select
+                    style={{ marginLeft: 8 }}
+                    value={advanceFromGroup}
+                    disabled={saving || isAssistantReadOnly || minGroupSize < 2}
+                    onChange={(e) => {
+                      setAdvanceFromGroup(Number(e.target.value));
+                      markDirty();
+                    }}
+                  >
+                    {advanceOptions.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
                       </option>
                     ))}
                   </select>
                 </label>
 
-                <label style={{ display: "block", marginBottom: 8 }}>
-                  Rozstrzyganie meczów:
-                  <select
-                    style={{ marginLeft: 8 }}
-                    value={hbTableDrawMode}
-                    disabled={saving || hbPointsMode === "3_2_1_0"}
-                    onChange={(e) => {
-                      setHbTableDrawMode(e.target.value as HandballTableDrawMode);
-                      markDirty();
-                    }}
-                  >
-                    <option value="ALLOW_DRAW">Remis dopuszczalny</option>
-                    <option value="PENALTIES">Remis → karne</option>
-                    <option value="OVERTIME_PENALTIES">Remis → dogrywka + karne</option>
-                  </select>
-                  {hbPointsMode === "3_2_1_0" && (
-                    <span style={{ fontSize: "0.8em", color: "orange", marginLeft: 8 }}>
-                      (Wymagane przy 3-2-1-0)
-                    </span>
-                  )}
-                </label>
+                {groupSizes.length > 0 && (
+                  <div style={{ fontSize: "0.9em", color: "#666", alignSelf: "center" }}>
+                    Rozmiary grup: {groupSizes.join(", ")} (min: {minGroupSize})
+                  </div>
+                )}
               </div>
-            </div>
-          )}
+            )}
+          </section>
+        )}
 
-          {/* B) Liga */}
-          {format === "LEAGUE" && (
-            <div>
-              <label>
-                Mecze każdy z każdym:
-                <select
-                  style={{ marginLeft: 8 }}
-                  value={leagueMatches}
-                  disabled={saving}
-                  onChange={(e) => {
-                    setLeagueMatches(Number(e.target.value) as 1 | 2);
-                    markDirty();
-                  }}
-                >
-                  <option value={1}>1 mecz (bez rewanżu)</option>
-                  <option value={2}>2 mecze (rewanż)</option>
-                </select>
-              </label>
-            </div>
-          )}
+        {/* ===== 4. FAZA PUCHAROWA ===== */}
+        {showKnockoutConfig && (
+          <section style={{ marginTop: "1.5rem" }}>
+            <h3>Faza pucharowa</h3>
 
-          {/* C) Grupy (MIXED) */}
-          {format === "MIXED" && (
+            {isHandball && (
+              <div style={{ marginBottom: "1rem" }}>
+                <strong>Dogrywki i karne (Puchar)</strong>
+                <div style={{ marginTop: 8 }}>
+                  <label>
+                    Sposób rozstrzygania remisów:
+                    <select
+                      style={{ marginLeft: 8 }}
+                      value={hbKnockoutTiebreak}
+                      disabled={saving || isAssistantReadOnly}
+                      onChange={(e) => {
+                        setHbKnockoutTiebreak(e.target.value as HandballKnockoutTiebreak);
+                        markDirty();
+                      }}
+                    >
+                      <option value="OVERTIME_PENALTIES">Dogrywka + karne</option>
+                      <option value="PENALTIES">Od razu karne</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+            )}
+
             <div style={{ display: "flex", gap: "20px", flexWrap: "wrap" }}>
               <label>
-                Liczba grup:
-                <input
-                  type="number"
-                  min={1}
-                  max={maxGroupsForMin2PerGroup}
-                  style={{ width: 70, marginLeft: 8 }}
-                  value={groupsCount}
-                  disabled={saving}
-                  onChange={(e) => {
-                    setGroupsCount(clampInt(Number(e.target.value), 1, maxGroupsForMin2PerGroup));
-                    markDirty();
-                  }}
-                />
-              </label>
-
-              <label>
-                Mecze w grupach:
+                Rundy (mecze):
                 <select
                   style={{ marginLeft: 8 }}
-                  value={groupMatches}
-                  disabled={saving}
+                  value={cupMatches}
+                  disabled={saving || isAssistantReadOnly || isTennis}
                   onChange={(e) => {
-                    setGroupMatches(Number(e.target.value) as 1 | 2);
+                    setCupMatches(Number(e.target.value) as 1 | 2);
                     markDirty();
                   }}
                 >
                   <option value={1}>1 mecz</option>
-                  <option value={2}>2 mecze</option>
+                  <option value={2}>2 mecze (dwumecz)</option>
                 </select>
+                {isTennis && (
+                  <span style={{ fontSize: "0.8em", color: "orange", marginLeft: 8 }}>
+                    (Tenis: brak dwumeczu)
+                  </span>
+                )}
               </label>
 
               <label>
-                Awans z grupy:
+                Finał:
                 <select
                   style={{ marginLeft: 8 }}
-                  value={advanceFromGroup}
-                  disabled={saving || minGroupSize < 2}
+                  value={finalMatches}
+                  disabled={saving || isAssistantReadOnly || isTennis}
                   onChange={(e) => {
-                    setAdvanceFromGroup(Number(e.target.value));
-                    markDirty();
-                  }}
-                >
-                  {advanceOptions.map((v) => (
-                    <option key={v} value={v}>
-                      {v}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              {groupSizes.length > 0 && (
-                <div style={{ fontSize: "0.9em", color: "#666", alignSelf: "center" }}>
-                  Rozmiary grup: {groupSizes.join(", ")} (min: {minGroupSize})
-                </div>
-              )}
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* ===== 4. FAZA PUCHAROWA ===== */}
-      {showKnockoutConfig && (
-        <section style={{ marginTop: "1.5rem" }}>
-          <h3>Faza pucharowa</h3>
-
-          {/* A) Handball KO */}
-          {isHandball && (
-            <div style={{ marginBottom: "1rem" }}>
-              <strong>Dogrywki i karne (Puchar)</strong>
-              <div style={{ marginTop: 8 }}>
-                <label>
-                  Sposób rozstrzygania remisów:
-                  <select
-                    style={{ marginLeft: 8 }}
-                    value={hbKnockoutTiebreak}
-                    disabled={saving}
-                    onChange={(e) => {
-                      setHbKnockoutTiebreak(e.target.value as HandballKnockoutTiebreak);
-                      markDirty();
-                    }}
-                  >
-                    <option value="OVERTIME_PENALTIES">Dogrywka + karne</option>
-                    <option value="PENALTIES">Od razu karne</option>
-                  </select>
-                </label>
-              </div>
-            </div>
-          )}
-
-          {/* B) Struktura KO */}
-          <div style={{ display: "flex", gap: "20px", flexWrap: "wrap" }}>
-            <label>
-              Rundy (mecze):
-              <select
-                style={{ marginLeft: 8 }}
-                value={cupMatches}
-                disabled={saving || isTennis}
-                onChange={(e) => {
-                  setCupMatches(Number(e.target.value) as 1 | 2);
-                  markDirty();
-                }}
-              >
-                <option value={1}>1 mecz</option>
-                <option value={2}>2 mecze (dwumecz)</option>
-              </select>
-              {isTennis && (
-                <span style={{ fontSize: "0.8em", color: "orange", marginLeft: 8 }}>
-                  (Tenis: brak dwumeczu)
-                </span>
-              )}
-            </label>
-
-            <label>
-              Finał:
-              <select
-                style={{ marginLeft: 8 }}
-                value={finalMatches}
-                disabled={saving || isTennis}
-                onChange={(e) => {
-                  setFinalMatches(Number(e.target.value) as 1 | 2);
-                  markDirty();
-                }}
-              >
-                <option value={1}>1 mecz</option>
-                <option value={2}>2 mecze</option>
-              </select>
-              {isTennis && (
-                <span style={{ fontSize: "0.8em", color: "orange", marginLeft: 8 }}>
-                  (Tenis: zawsze 1)
-                </span>
-              )}
-            </label>
-
-            <label style={{ display: "flex", alignItems: "center" }}>
-              <input
-                type="checkbox"
-                checked={thirdPlace}
-                disabled={saving}
-                onChange={(e) => {
-                  setThirdPlace(e.target.checked);
-                  markDirty();
-                }}
-                style={{ marginRight: 8 }}
-              />
-              Mecz o 3. miejsce
-            </label>
-
-            {thirdPlace && (
-              <label>
-                Mecz o 3. msc:
-                <select
-                  style={{ marginLeft: 8 }}
-                  value={thirdPlaceMatches}
-                  disabled={saving || isTennis}
-                  onChange={(e) => {
-                    setThirdPlaceMatches(Number(e.target.value) as 1 | 2);
+                    setFinalMatches(Number(e.target.value) as 1 | 2);
                     markDirty();
                   }}
                 >
@@ -1020,12 +986,49 @@ export default function TournamentBasicsSetup() {
                   </span>
                 )}
               </label>
-            )}
-          </div>
-        </section>
-      )}
 
-      {/* ===== PODGLĄD ===== */}
+              <label style={{ display: "flex", alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={thirdPlace}
+                  disabled={saving || isAssistantReadOnly}
+                  onChange={(e) => {
+                    setThirdPlace(e.target.checked);
+                    markDirty();
+                  }}
+                  style={{ marginRight: 8 }}
+                />
+                Mecz o 3. miejsce
+              </label>
+
+              {thirdPlace && (
+                <label>
+                  Mecz o 3. msc:
+                  <select
+                    style={{ marginLeft: 8 }}
+                    value={thirdPlaceMatches}
+                    disabled={saving || isAssistantReadOnly || isTennis}
+                    onChange={(e) => {
+                      setThirdPlaceMatches(Number(e.target.value) as 1 | 2);
+                      markDirty();
+                    }}
+                  >
+                    <option value={1}>1 mecz</option>
+                    <option value={2}>2 mecze</option>
+                  </select>
+                  {isTennis && (
+                    <span style={{ fontSize: "0.8em", color: "orange", marginLeft: 8 }}>
+                      (Tenis: zawsze 1)
+                    </span>
+                  )}
+                </label>
+              )}
+            </div>
+          </section>
+        )}
+      </fieldset>
+
+      {/* ===== PODGLĄD (zawsze widoczny) ===== */}
       {preview && (
         <section style={{ marginTop: "2rem" }}>
           <h4 style={{ margin: "0 0 10px 0" }}>Podsumowanie struktury</h4>

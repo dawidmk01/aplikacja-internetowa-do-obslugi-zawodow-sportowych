@@ -1,5 +1,31 @@
 import { useEffect, useMemo, useState } from "react";
-import { displayGroupName, isByeMatch } from "../../flow/stagePresentation";
+import { apiFetch } from "../api";
+import { displayGroupName, isByeMatch } from "../flow/stagePresentation";
+
+/* =========================
+   HELPERY AUTH
+   ========================= */
+
+function hasAccessToken(): boolean {
+  try {
+    const keys = ["access", "accessToken", "access_token", "jwt_access", "token"];
+    for (const k of keys) {
+      const v = localStorage.getItem(k);
+      if (v && v.trim()) return true;
+    }
+    // heurystyka: cokolwiek z "access" i nie "refresh"
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k) continue;
+      const lk = k.toLowerCase();
+      if (lk.includes("access") && !lk.includes("refresh")) {
+        const v = localStorage.getItem(k);
+        if (v && v.trim()) return true;
+      }
+    }
+  } catch {}
+  return false;
+}
 
 /* =========================
    TYPY
@@ -121,6 +147,148 @@ export type StandingsResponse = {
 };
 
 /* =========================
+   PROPS
+   ========================= */
+
+type StandingsBracketProps = {
+  tournamentId: number;
+  accessCode?: string;
+  /** Na publicznej stronie zwykle masz już tytuł turnieju wyżej */
+  showHeader?: boolean;
+};
+
+/* =========================
+   KOMPONENT (fetch + render)
+   ========================= */
+
+export default function StandingsBracket({
+  tournamentId,
+  accessCode,
+  showHeader = true,
+}: StandingsBracketProps) {
+  const [tournament, setTournament] = useState<Tournament | null>(null);
+  const [matches, setMatches] = useState<MatchDto[]>([]);
+  const [standings, setStandings] = useState<StandingsResponse | null>(null);
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const qs = useMemo(() => {
+    const c = (accessCode ?? "").trim();
+    return c ? `?code=${encodeURIComponent(c)}` : "";
+  }, [accessCode]);
+
+  const url = (p: string) => `${p}${qs}`;
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      setError(null);
+
+      try {
+        // 1) Turniej (u Ciebie publiczny, 200 bez logowania)
+        const tRes = await apiFetch(url(`/api/tournaments/${tournamentId}/`));
+        if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
+        const tData = await tRes.json();
+
+        const t: Tournament = {
+          id: tData.id,
+          name: tData.name,
+          discipline: tData.discipline ?? undefined,
+          tournament_format: (tData.tournament_format ?? "LEAGUE") as Tournament["tournament_format"],
+          format_config: tData.format_config ?? undefined,
+        };
+        setTournament(t);
+
+        // 2) Standings — najpierw prywatny, potem publiczny fallback
+        let sData: StandingsResponse | null = null;
+
+        const sRes = await apiFetch(url(`/api/tournaments/${tournamentId}/standings/`));
+        if (sRes.ok) {
+          sData = await sRes.json();
+        } else {
+          // fallback publiczny
+          const spRes = await apiFetch(url(`/api/tournaments/${tournamentId}/public/standings/`));
+          if (spRes.ok) sData = await spRes.json();
+          else sData = null;
+        }
+        setStandings(sData);
+
+        // 3) Mecze — inteligentny wybór endpointu
+        const authed = hasAccessToken();
+        // jeśli dostaliśmy accessCode z TournamentPublic LUB brak tokena -> to jest widok publiczny
+        const isPublicContext = !!accessCode || !authed;
+
+        // Pomocnicza funkcja do mapowania publicznych danych na MatchDto
+        const fetchAndMapPublicMatches = async () => {
+          const mpRes = await apiFetch(url(`/api/tournaments/${tournamentId}/public/matches/`));
+          if (!mpRes.ok) throw new Error("Nie udało się pobrać meczów publicznych.");
+          const raw = await mpRes.json();
+          const list = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? raw.results : [];
+
+          // map public dto -> MatchDto (fallbacki)
+          return list.map((m: any) => ({
+            id: Number(m.id),
+            stage_type: (m.stage_type ?? "LEAGUE") as MatchDto["stage_type"],
+            stage_id: Number(m.stage_id ?? 0),
+            stage_order: Number(m.stage_order ?? 0),
+            round_number: m.round_number ?? null,
+            group_name: m.group_name ?? null,
+            home_team_id: Number(m.home_team_id ?? 0),
+            away_team_id: Number(m.away_team_id ?? 0),
+            home_team_name: String(m.home_team_name ?? ""),
+            away_team_name: String(m.away_team_name ?? ""),
+            home_score: m.home_score ?? null,
+            away_score: m.away_score ?? null,
+            winner_id: m.winner_id ?? null,
+            status: (m.status ?? "SCHEDULED") as MatchDto["status"],
+          }));
+        };
+
+        if (isPublicContext) {
+          // 1) W kontekście publicznym: nie dotykamy /matches/ (żadnych 401 w konsoli)
+          const publicMatches = await fetchAndMapPublicMatches();
+          setMatches(publicMatches);
+        } else {
+          // 2) W kontekście zalogowanym: próbujemy /matches/ (manager)
+          const mRes = await apiFetch(url(`/api/tournaments/${tournamentId}/matches/`));
+
+          // jeśli token wygasł / brak uprawnień i poleci 401/403, robimy fallback na public
+          if (mRes.status === 401 || mRes.status === 403) {
+            const publicMatches = await fetchAndMapPublicMatches();
+            setMatches(publicMatches);
+          } else {
+            if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
+            const raw = await mRes.json();
+            const list = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? raw.results : [];
+            setMatches(list);
+          }
+        }
+      } catch (e: any) {
+        setError(e?.message || "Wystąpił błąd");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, [tournamentId, qs, accessCode]);
+
+  if (loading) return <p style={{ padding: "1rem" }}>Ładowanie…</p>;
+  if (error) return <p style={{ padding: "1rem", color: "crimson" }}>{error}</p>;
+  if (!tournament) return null;
+
+  return (
+    <TournamentStandingsView
+      tournament={tournament}
+      matches={matches}
+      standings={standings}
+      showHeader={showHeader}
+    />
+  );
+}
+
+/* =========================
    HELPERY
    ========================= */
 
@@ -159,13 +327,6 @@ function last5Form(teamId: number, matches: MatchDto[]): FormResult[] {
     });
 }
 
-/**
- * Tenis: tennis_sets = [
- *  {home_games:6, away_games:4},
- *  {home_games:7, away_games:6, home_tiebreak:7, away_tiebreak:5}
- * ]
- * -> "6-4, 7-6(7-5)"
- */
 function formatTennisSets(tennisSets: any): string | null {
   if (!Array.isArray(tennisSets) || tennisSets.length === 0) return null;
 
@@ -190,10 +351,7 @@ function formatTennisSets(tennisSets: any): string | null {
   return parts.length ? parts.join(", ") : null;
 }
 
-function formatPenalties(
-  ph: number | null | undefined,
-  pa: number | null | undefined
-): string | null {
+function formatPenalties(ph: number | null | undefined, pa: number | null | undefined): string | null {
   if (ph == null || pa == null) return null;
   return `k. ${ph}:${pa}`;
 }
@@ -203,19 +361,12 @@ function safeNum(v: any, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function getTennisPointsMode(
-  tournament: Tournament | null,
-  standings: StandingsResponse | null
-): "PLT" | "NONE" {
-  const tMode = (tournament?.format_config?.tennis_points_mode ?? "")
-    .toString()
-    .toUpperCase();
+function getTennisPointsMode(tournament: Tournament | null, standings: StandingsResponse | null): "PLT" | "NONE" {
+  const tMode = (tournament?.format_config?.tennis_points_mode ?? "").toString().toUpperCase();
   if (tMode === "PLT") return "PLT";
   if (tMode === "NONE") return "NONE";
 
-  const sMode = (standings?.meta?.tennis_points_mode ?? "")
-    .toString()
-    .toUpperCase();
+  const sMode = (standings?.meta?.tennis_points_mode ?? "").toString().toUpperCase();
   if (sMode === "PLT") return "PLT";
   if (sMode === "NONE") return "NONE";
 
@@ -223,22 +374,22 @@ function getTennisPointsMode(
 }
 
 /* =========================
-   KOMPONENT: WIDOK (tabela + drabinka)
+   WIDOK: tabela + drabinka
    ========================= */
 
-export default function TournamentStandingsView({
+function TournamentStandingsView({
   tournament,
   matches,
   standings,
+  showHeader,
 }: {
   tournament: Tournament;
   matches: MatchDto[];
   standings: StandingsResponse | null;
+  showHeader: boolean;
 }) {
   const [tab, setTab] = useState<"TABLE" | "BRACKET">("TABLE");
-  const [layoutMode, setLayoutMode] = useState<"STANDARD" | "CENTERED">(
-    "STANDARD"
-  );
+  const [layoutMode, setLayoutMode] = useState<"STANDARD" | "CENTERED">("STANDARD");
 
   useEffect(() => {
     if (tournament?.tournament_format === "CUP") setTab("BRACKET");
@@ -289,8 +440,8 @@ export default function TournamentStandingsView({
   } = derived;
 
   return (
-    <div style={{ padding: "2rem", maxWidth: 1400 }}>
-      <h1 style={{ marginBottom: "0.5rem" }}>Wyniki: {tournament.name}</h1>
+    <div style={{ padding: showHeader ? "2rem" : "0", maxWidth: 1400 }}>
+      {showHeader && <h1 style={{ marginBottom: "0.5rem" }}>Wyniki: {tournament.name}</h1>}
 
       {(isMixed || (hasTableData && hasBracketData)) && (
         <div style={{ display: "flex", gap: "10px", marginBottom: "1.5rem" }}>
@@ -301,10 +452,7 @@ export default function TournamentStandingsView({
               padding: "8px 16px",
               cursor: tab === "TABLE" ? "default" : "pointer",
               fontWeight: tab === "TABLE" ? "bold" : "normal",
-              borderBottom:
-                tab === "TABLE"
-                  ? "2px solid #3498db"
-                  : "2px solid transparent",
+              borderBottom: tab === "TABLE" ? "2px solid #3498db" : "2px solid transparent",
               background: "transparent",
               color: "#ccc",
             }}
@@ -319,10 +467,7 @@ export default function TournamentStandingsView({
               padding: "8px 16px",
               cursor: tab === "BRACKET" ? "default" : "pointer",
               fontWeight: tab === "BRACKET" ? "bold" : "normal",
-              borderBottom:
-                tab === "BRACKET"
-                  ? "2px solid #3498db"
-                  : "2px solid transparent",
+              borderBottom: tab === "BRACKET" ? "2px solid #3498db" : "2px solid transparent",
               background: "transparent",
               color: "#ccc",
             }}
@@ -344,9 +489,7 @@ export default function TournamentStandingsView({
 
                 const groupKey = normalizeGroupKey(g.group_name);
                 const groupMatches = matches.filter(
-                  (m) =>
-                    m.stage_type === "GROUP" &&
-                    normalizeGroupKey(m.group_name) === groupKey
+                  (m) => m.stage_type === "GROUP" && normalizeGroupKey(m.group_name) === groupKey
                 );
 
                 return (
@@ -389,20 +532,12 @@ export default function TournamentStandingsView({
         <>
           {hasBracketData ? (
             <div>
-              <div
-                style={{
-                  marginBottom: "20px",
-                  display: "flex",
-                  justifyContent: "flex-end",
-                  gap: "10px",
-                }}
-              >
+              <div style={{ marginBottom: "20px", display: "flex", justifyContent: "flex-end", gap: "10px" }}>
                 <button
                   onClick={() => setLayoutMode("STANDARD")}
                   style={{
                     padding: "6px 12px",
-                    backgroundColor:
-                      layoutMode === "STANDARD" ? "#3498db" : "#444",
+                    backgroundColor: layoutMode === "STANDARD" ? "#3498db" : "#444",
                     color: "#fff",
                     border: "none",
                     borderRadius: "4px",
@@ -417,8 +552,7 @@ export default function TournamentStandingsView({
                   onClick={() => setLayoutMode("CENTERED")}
                   style={{
                     padding: "6px 12px",
-                    backgroundColor:
-                      layoutMode === "CENTERED" ? "#3498db" : "#444",
+                    backgroundColor: layoutMode === "CENTERED" ? "#3498db" : "#444",
                     color: "#fff",
                     border: "none",
                     borderRadius: "4px",
@@ -431,15 +565,9 @@ export default function TournamentStandingsView({
               </div>
 
               {layoutMode === "STANDARD" ? (
-                <StandardBracketView
-                  data={standings!.bracket!}
-                  discipline={discipline}
-                />
+                <StandardBracketView data={standings!.bracket!} discipline={discipline} />
               ) : (
-                <CenteredBracketView
-                  data={standings!.bracket!}
-                  discipline={discipline}
-                />
+                <CenteredBracketView data={standings!.bracket!} discipline={discipline} />
               )}
             </div>
           ) : (
@@ -452,7 +580,7 @@ export default function TournamentStandingsView({
 }
 
 /* =========================
-   KOMPONENTY: TABELA
+   TABELA
    ========================= */
 
 function Table({
@@ -468,16 +596,17 @@ function Table({
 }) {
   const minWidth = isTennis ? (showTennisPoints ? "950px" : "900px") : "600px";
 
+  const formDot = (f: FormResult) => {
+    const bg =
+      f === "W" ? "#2ecc71" :
+      f === "D" ? "#95a5a6" :
+      "#e74c3c";
+    return { backgroundColor: bg };
+  };
+
   return (
     <div style={{ overflowX: "auto" }}>
-      <table
-        style={{
-          width: "100%",
-          borderCollapse: "collapse",
-          minWidth,
-          color: "#ddd",
-        }}
-      >
+      <table style={{ width: "100%", borderCollapse: "collapse", minWidth, color: "#ddd" }}>
         <thead>
           {isTennis ? (
             <tr style={{ borderBottom: "2px solid #444", textAlign: "left" }}>
@@ -518,28 +647,17 @@ function Table({
 
             if (isTennis) {
               const setsFor = safeNum(r.sets_for, safeNum(r.goals_for, 0));
-              const setsAgainst = safeNum(
-                r.sets_against,
-                safeNum(r.goals_against, 0)
-              );
-              const setsDiff = safeNum(
-                r.sets_diff,
-                safeNum(r.goal_difference, setsFor - setsAgainst)
-              );
+              const setsAgainst = safeNum(r.sets_against, safeNum(r.goals_against, 0));
+              const setsDiff = safeNum(r.sets_diff, safeNum(r.goal_difference, setsFor - setsAgainst));
 
               const gamesFor = safeNum(r.games_for, 0);
               const gamesAgainst = safeNum(r.games_against, 0);
-              const gamesDiff = safeNum(
-                r.games_diff,
-                safeNum(r.games_difference, gamesFor - gamesAgainst)
-              );
+              const gamesDiff = safeNum(r.games_diff, safeNum(r.games_difference, gamesFor - gamesAgainst));
 
               return (
                 <tr key={r.team_id} style={{ borderBottom: "1px solid #333" }}>
                   <td style={{ padding: "10px" }}>{i + 1}</td>
-                  <td style={{ padding: "10px", fontWeight: "bold" }}>
-                    {r.team_name}
-                  </td>
+                  <td style={{ padding: "10px", fontWeight: "bold" }}>{r.team_name}</td>
                   <td>{r.played}</td>
                   <td>{r.wins}</td>
                   <td>{r.losses}</td>
@@ -571,12 +689,7 @@ function Table({
                             justifyContent: "center",
                             fontWeight: "bold",
                             color: "#fff",
-                            backgroundColor:
-                              f === "W"
-                                ? "#2ecc71"
-                                : f === "D"
-                                  ? "#95a5a6"
-                                  : "#e74c3c",
+                            ...formDot(f),
                           }}
                         >
                           {f}
@@ -591,9 +704,7 @@ function Table({
             return (
               <tr key={r.team_id} style={{ borderBottom: "1px solid #333" }}>
                 <td style={{ padding: "10px" }}>{i + 1}</td>
-                <td style={{ padding: "10px", fontWeight: "bold" }}>
-                  {r.team_name}
-                </td>
+                <td style={{ padding: "10px", fontWeight: "bold" }}>{r.team_name}</td>
                 <td>{r.played}</td>
                 <td>{r.wins}</td>
                 <td>{r.draws}</td>
@@ -619,12 +730,7 @@ function Table({
                           justifyContent: "center",
                           fontWeight: "bold",
                           color: "#fff",
-                          backgroundColor:
-                            f === "W"
-                              ? "#2ecc71"
-                              : f === "D"
-                                ? "#95a5a6"
-                                : "#e74c3c",
+                          ...formDot(f),
                         }}
                       >
                         {f}
@@ -642,16 +748,10 @@ function Table({
 }
 
 /* =========================
-   KOMPONENTY: DRABINKA (Widoki)
+   DRABINKA (Widoki)
    ========================= */
 
-function StandardBracketView({
-  data,
-  discipline,
-}: {
-  data: BracketData;
-  discipline: string;
-}) {
+function StandardBracketView({ data, discipline }: { data: BracketData; discipline: string }) {
   const { rounds, third_place } = data;
 
   return (
@@ -688,18 +788,9 @@ function StandardBracketView({
             >
               Mecz o 3. miejsce
             </h3>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <BracketMatchCard
-                item={third_place}
-                isThirdPlace
-                discipline={discipline}
-              />
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <BracketMatchCard item={third_place} isThirdPlace discipline={discipline} />
             </div>
           </div>
         )}
@@ -708,13 +799,7 @@ function StandardBracketView({
   );
 }
 
-function CenteredBracketView({
-  data,
-  discipline,
-}: {
-  data: BracketData;
-  discipline: string;
-}) {
+function CenteredBracketView({ data, discipline }: { data: BracketData; discipline: string }) {
   const { rounds, third_place } = data;
   if (rounds.length === 0) return null;
 
@@ -722,14 +807,7 @@ function CenteredBracketView({
   const preFinalRounds = rounds.slice(0, rounds.length - 1);
 
   return (
-    <div
-      style={{
-        overflowX: "auto",
-        paddingBottom: "20px",
-        display: "flex",
-        justifyContent: "center",
-      }}
-    >
+    <div style={{ overflowX: "auto", paddingBottom: "20px", display: "flex", justifyContent: "center" }}>
       <div style={{ display: "flex", alignItems: "stretch" }}>
         <div style={{ display: "flex", gap: "20px" }}>
           {preFinalRounds.map((round) => {
@@ -747,23 +825,8 @@ function CenteredBracketView({
           })}
         </div>
 
-        <div
-          style={{
-            margin: "0 40px",
-            display: "flex",
-            flexDirection: "column",
-            justifyContent: "center",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              height: "100%",
-            }}
-          >
+        <div style={{ margin: "0 40px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%" }}>
             <div style={{ fontSize: "2rem", marginBottom: "10px" }}>🏆</div>
 
             <RoundColumn
@@ -774,29 +837,11 @@ function CenteredBracketView({
             />
 
             {third_place && (
-              <div
-                style={{
-                  marginTop: "50px",
-                  opacity: 0.9,
-                  transform: "scale(0.95)",
-                }}
-              >
-                <h4
-                  style={{
-                    textAlign: "center",
-                    margin: "0 0 10px 0",
-                    fontSize: "0.75rem",
-                    color: "#e67e22",
-                    textTransform: "uppercase",
-                  }}
-                >
+              <div style={{ marginTop: "50px", opacity: 0.9, transform: "scale(0.95)" }}>
+                <h4 style={{ textAlign: "center", margin: "0 0 10px 0", fontSize: "0.75rem", color: "#e67e22", textTransform: "uppercase" }}>
                   Mecz o 3. miejsce
                 </h4>
-                <BracketMatchCard
-                  item={third_place}
-                  isThirdPlace
-                  discipline={discipline}
-                />
+                <BracketMatchCard item={third_place} isThirdPlace discipline={discipline} />
               </div>
             )}
           </div>
@@ -822,10 +867,6 @@ function CenteredBracketView({
     </div>
   );
 }
-
-/* =========================
-   KOMPONENTY POMOCNICZE DRABINKI
-   ========================= */
 
 function RoundColumn({
   label,
@@ -855,15 +896,7 @@ function RoundColumn({
         {label}
       </h3>
 
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          justifyContent: "space-around",
-          flexGrow: 1,
-          gap: "20px",
-        }}
-      >
+      <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-around", flexGrow: 1, gap: "20px" }}>
         {items.map((item) => (
           <BracketMatchCard key={item.id} item={item} discipline={discipline} />
         ))}
@@ -887,13 +920,11 @@ function BracketMatchCard({
   const awayWin = item.winner_id !== null && item.winner_id === item.away_team_id;
 
   const aggHome = item.is_two_legged
-    ? (item.aggregate_home ??
-        ((item.score_leg1_home ?? 0) + (item.score_leg2_home ?? 0)))
+    ? (item.aggregate_home ?? ((item.score_leg1_home ?? 0) + (item.score_leg2_home ?? 0)))
     : null;
 
   const aggAway = item.is_two_legged
-    ? (item.aggregate_away ??
-        ((item.score_leg1_away ?? 0) + (item.score_leg2_away ?? 0)))
+    ? (item.aggregate_away ?? ((item.score_leg1_away ?? 0) + (item.score_leg2_away ?? 0)))
     : null;
 
   const canShowDetails = item.status !== "SCHEDULED";
@@ -921,70 +952,32 @@ function BracketMatchCard({
       }}
     >
       {item.is_two_legged && (
-        <div
-          style={{
-            fontSize: "0.6rem",
-            color: "#888",
-            marginBottom: "6px",
-            textAlign: "center",
-            textTransform: "uppercase",
-            letterSpacing: "0.5px",
-          }}
-        >
+        <div style={{ fontSize: "0.6rem", color: "#888", marginBottom: "6px", textAlign: "center", textTransform: "uppercase", letterSpacing: "0.5px" }}>
           Dwumecz
         </div>
       )}
 
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          marginBottom: "6px",
-          alignItems: "center",
-        }}
-      >
-        <span
-          style={{
-            fontWeight: homeWin ? "bold" : "normal",
-            color: "#000",
-            overflow: "hidden",
-            whiteSpace: "nowrap",
-            textOverflow: "ellipsis",
-            maxWidth: "110px",
-          }}
-        >
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", alignItems: "center" }}>
+        <span style={{ fontWeight: homeWin ? "bold" : "normal", color: "#000", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", maxWidth: "110px" }}>
           {item.home_team_name || "TBD"}
         </span>
 
         <div style={{ display: "flex", gap: "3px" }}>
           <ScoreBox score={item.score_leg1_home} isAgg={false} />
           {item.is_two_legged && <ScoreBox score={item.score_leg2_home} isAgg={false} />}
-          {item.is_two_legged && (
-            <ScoreBox score={aggHome} isAgg={true} highlight={homeWin} />
-          )}
+          {item.is_two_legged && <ScoreBox score={aggHome} isAgg={true} highlight={homeWin} />}
         </div>
       </div>
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span
-          style={{
-            fontWeight: awayWin ? "bold" : "normal",
-            color: "#000",
-            overflow: "hidden",
-            whiteSpace: "nowrap",
-            textOverflow: "ellipsis",
-            maxWidth: "110px",
-          }}
-        >
+        <span style={{ fontWeight: awayWin ? "bold" : "normal", color: "#000", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", maxWidth: "110px" }}>
           {item.away_team_name || "TBD"}
         </span>
 
         <div style={{ display: "flex", gap: "3px" }}>
           <ScoreBox score={item.score_leg1_away} isAgg={false} />
           {item.is_two_legged && <ScoreBox score={item.score_leg2_away} isAgg={false} />}
-          {item.is_two_legged && (
-            <ScoreBox score={aggAway} isAgg={true} highlight={awayWin} />
-          )}
+          {item.is_two_legged && <ScoreBox score={aggAway} isAgg={true} highlight={awayWin} />}
         </div>
       </div>
 
@@ -998,8 +991,7 @@ function BracketMatchCard({
 
           {item.is_two_legged && (tennisLeg1 || tennisLeg2) && (
             <div>
-              <strong>Sety (gemy):</strong> {tennisLeg1 ? tennisLeg1 : "-"} {" | "}{" "}
-              {tennisLeg2 ? tennisLeg2 : "-"}
+              <strong>Sety (gemy):</strong> {tennisLeg1 ? tennisLeg1 : "-"} {" | "} {tennisLeg2 ? tennisLeg2 : "-"}
             </div>
           )}
 
@@ -1012,15 +1004,7 @@ function BracketMatchCard({
       )}
 
       {item.status === "FINISHED" && (
-        <div
-          style={{
-            fontSize: "0.65rem",
-            color: "#666",
-            marginTop: "6px",
-            textAlign: "right",
-            fontStyle: "italic",
-          }}
-        >
+        <div style={{ fontSize: "0.65rem", color: "#666", marginTop: "6px", textAlign: "right", fontStyle: "italic" }}>
           Zakończony
         </div>
       )}

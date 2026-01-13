@@ -33,6 +33,10 @@ from .stages import (
     AdvanceFromGroupsView,
 )
 
+from .standings import (
+    TournamentStandingsView,
+)
+
 __all__ = [
     # tournaments
     "TournamentListView",
@@ -63,4 +67,7 @@ __all__ = [
 
     # stages
     "AdvanceFromGroupsView",
+
+    # standings
+    "TournamentStandingsView",
 ]

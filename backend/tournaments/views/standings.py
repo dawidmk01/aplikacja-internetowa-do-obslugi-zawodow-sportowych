@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from django.shortcuts import get_object_or_404
-from rest_framework.permissions import IsAuthenticated
+
+from rest_framework import status
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -9,6 +11,8 @@ from tournaments.models import Tournament, Stage
 from tournaments.services.standings.compute import compute_stage_standings
 from tournaments.services.standings.knockout_bracket import get_knockout_bracket
 from tournaments.services.standings.types import StandingRow
+
+from tournaments.views._helpers import user_can_manage_tournament
 
 
 class TournamentStandingsView(APIView):
@@ -22,14 +26,21 @@ class TournamentStandingsView(APIView):
 
     Dodatkowo zwraca:
     - meta.discipline
-    - meta.table_schema (np. "FOOTBALL" / "TENNIS")
+    - meta.table_schema (np. "DEFAULT" / "TENNIS")
+    - meta.tennis_points_mode (np. "PLT" / "NONE") jeśli dyscyplina tennis
     """
-    permission_classes = [IsAuthenticated]
+
+    # Publiczny endpoint (ale kontrola dostępu w _public_access_or_403)
+    permission_classes = [AllowAny]
 
     def get(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
-        fmt = tournament.tournament_format
 
+        denied = self._public_access_or_403(request, tournament)
+        if denied is not None:
+            return denied
+
+        fmt = tournament.tournament_format
         discipline = (getattr(tournament, "discipline", "") or "").lower()
 
         response_data: dict = {
@@ -39,8 +50,14 @@ class TournamentStandingsView(APIView):
             }
         }
 
+        # meta: tenis_points_mode (frontend to wykorzystuje)
+        if discipline == "tennis":
+            cfg = tournament.format_config or {}
+            mode = (cfg.get("tennis_points_mode") or "NONE")
+            response_data["meta"]["tennis_points_mode"] = mode
+
         # =====================================================
-        # 1. FORMAT LIGA (Pojedyncza tabela)
+        # 1) FORMAT LIGA (pojedyncza tabela)
         # =====================================================
         if fmt == Tournament.TournamentFormat.LEAGUE:
             stage = tournament.stages.filter(stage_type=Stage.StageType.LEAGUE).first()
@@ -49,7 +66,7 @@ class TournamentStandingsView(APIView):
                 response_data["table"] = [self._serialize_row(r, discipline) for r in table]
 
         # =====================================================
-        # 2. FORMAT MIXED (Grupy - wiele tabel)
+        # 2) FORMAT MIXED (grupy – wiele tabel)
         # =====================================================
         elif fmt == Tournament.TournamentFormat.MIXED:
             stage = tournament.stages.filter(stage_type=Stage.StageType.GROUP).first()
@@ -70,26 +87,47 @@ class TournamentStandingsView(APIView):
                 response_data["groups"] = groups_payload
 
         # =====================================================
-        # 3. FORMAT PUCHAROWY ORAZ MIXED (Drabinka)
+        # 3) FORMAT CUP oraz MIXED (drabinka)
         # =====================================================
         if fmt in (Tournament.TournamentFormat.CUP, Tournament.TournamentFormat.MIXED):
             bracket_data = get_knockout_bracket(tournament)
             if bracket_data and bracket_data.get("rounds"):
                 response_data["bracket"] = bracket_data
 
-        return Response(response_data)
+        return Response(response_data, status=status.HTTP_200_OK)
+
+    @staticmethod
+    def _public_access_or_403(request, tournament: Tournament) -> Response | None:
+        """
+        Zasady dostępu spójne z TournamentDetailView i TournamentPublicMatchListView:
+        - manager (organizator/asystent) -> zawsze OK
+        - public:
+          - tournament.is_published == True
+          - jeśli tournament.access_code ustawione -> wymagamy ?code=...
+        """
+        user = getattr(request, "user", None)
+        if user and getattr(user, "is_authenticated", False) and user_can_manage_tournament(user, tournament):
+            return None
+
+        if not getattr(tournament, "is_published", False):
+            return Response({"detail": "Turniej nie jest dostępny."}, status=status.HTTP_403_FORBIDDEN)
+
+        access_code = getattr(tournament, "access_code", None)
+        if access_code:
+            if request.query_params.get("code") != access_code:
+                return Response({"detail": "Wymagany poprawny kod dostępu."}, status=status.HTTP_403_FORBIDDEN)
+
+        return None
 
     @staticmethod
     def _serialize_row(row: StandingRow, discipline: str) -> dict:
         """
-        Serializacja tabeli:
-
         DEFAULT:
-          - kompatybilna z piłkarską tabelą (goals_for/goals_against itd.)
+          - kompatybilna tabela (goals_for/goals_against itd.)
 
         TENIS:
           - zwraca tenisowe pola: sets_for/sets_against, games_for/games_against
-          - zachowuje też legacy goals_* jako aliasy (nie musisz, ale pomaga w migracji frontu)
+          - zostawia też legacy goals_* jako aliasy (dla kompatybilności)
         """
         base = {
             "team_id": row.team_id,
@@ -101,7 +139,7 @@ class TournamentStandingsView(APIView):
             "points": row.points,
         }
 
-        # Legacy / default (piłka/ręczna/kosz) – zostawiamy jako wspólne API
+        # Legacy / default (wspólne API)
         base.update(
             {
                 "goals_for": row.goals_for,
@@ -110,7 +148,7 @@ class TournamentStandingsView(APIView):
             }
         )
 
-        # Jeśli masz w StandingRow pola games_* (u Ciebie są), to dokładamy je zawsze (są przydatne też poza tenisem)
+        # games_* (jeśli istnieją)
         base.update(
             {
                 "games_for": getattr(row, "games_for", 0),
@@ -119,11 +157,11 @@ class TournamentStandingsView(APIView):
             }
         )
 
-        # TENIS: docelowe nazwy kolumn (bliższe realnym tabelom)
+        # TENIS: docelowe nazwy kolumn
         if discipline == "tennis":
             base.update(
                 {
-                    # sety
+                    # sety (trzymane u Ciebie jako goals_* w StandingRow)
                     "sets_for": row.goals_for,
                     "sets_against": row.goals_against,
                     "sets_diff": row.goal_difference,
