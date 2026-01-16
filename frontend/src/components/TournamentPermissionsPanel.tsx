@@ -3,19 +3,29 @@ import { apiFetch } from "../api";
 import AddAssistantForm from "./AddAssistantForm";
 import AssistantsList from "./AssistantsList";
 
-type EntryMode = "MANAGER" | "ORGANIZER_ONLY" | "SELF_REGISTER";
+/**
+ * Nowa strategia:
+ * - entry_mode: tylko MANAGER | ORGANIZER_ONLY (steruje panelem zarządzania)
+ * - dołączanie (join link + code): toggle join_enabled + registration_code
+ * - SELF_REGISTER jeśli istnieje w bazie traktujemy jako legacy (UI go nie pokazuje)
+ */
+type EntryMode = "MANAGER" | "ORGANIZER_ONLY";
 
 type TournamentDTO = {
   id: number;
   name: string;
+
   status?: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
   is_published?: boolean;
 
-  // dostęp
+  // kod dostępu do podglądu publicznego (opcjonalnie)
   access_code?: string | null;
 
-  // rejestracja
-  entry_mode?: EntryMode;
+  // tryb panelu
+  entry_mode?: EntryMode | "SELF_REGISTER"; // legacy może przyjść z API
+
+  // join toggle (konto + kod)
+  join_enabled?: boolean;
   registration_code?: string | null;
 
   my_role?: "ORGANIZER" | "ASSISTANT" | "PARTICIPANT" | null;
@@ -30,11 +40,20 @@ function genCode(len = 8) {
   return out;
 }
 
-export default function TournamentPermissionsPanel({
-  tournamentId,
-}: {
-  tournamentId: number;
-}) {
+function normalizeEntryMode(v: TournamentDTO["entry_mode"]): EntryMode {
+  // SELF_REGISTER traktujemy jako legacy -> MANAGER
+  if (v === "ORGANIZER_ONLY") return "ORGANIZER_ONLY";
+  return "MANAGER";
+}
+
+function entryModeLabel(v: TournamentDTO["entry_mode"]) {
+  const m = normalizeEntryMode(v);
+  if (m === "MANAGER") return "Organizator + asystenci";
+  if (m === "ORGANIZER_ONLY") return "Tylko organizator";
+  return "—";
+}
+
+export default function TournamentPermissionsPanel({ tournamentId }: { tournamentId: number }) {
   const [t, setT] = useState<TournamentDTO | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -44,13 +63,20 @@ export default function TournamentPermissionsPanel({
   const [assistantsKey, setAssistantsKey] = useState(0);
 
   const isOrganizer = t?.my_role === "ORGANIZER";
-  const canManage = t?.my_role === "ORGANIZER" || t?.my_role === "ASSISTANT";
+  const isAssistant = t?.my_role === "ASSISTANT";
+
+  // Panel pokazujemy dla ORGANIZER i ASSISTANT (asystent zobaczy część informacyjną),
+  // ale edycja i zarządzanie uprawnieniami jest tylko dla ORGANIZER.
+  const canSeePanel = isOrganizer || isAssistant;
 
   const basePublicLink = useMemo(() => {
     return `${window.location.origin}/tournaments/${tournamentId}`;
   }, [tournamentId]);
 
   const joinLink = useMemo(() => {
+    // Link do dołączania NIE zależy od entry_mode.
+    // Kod dostępu (access_code) może być wymagany do wejścia na publiczny widok,
+    // dlatego dopinamy go do URL jeśli istnieje.
     const ac = (t?.access_code ?? "").trim();
     if (ac) return `${basePublicLink}?join=1&code=${encodeURIComponent(ac)}`;
     return `${basePublicLink}?join=1`;
@@ -65,7 +91,12 @@ export default function TournamentPermissionsPanel({
       const res = await apiFetch(`/api/tournaments/${tournamentId}/`);
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.detail || "Nie udało się pobrać danych turnieju.");
-      setT(data as TournamentDTO);
+
+      // Defensive: normalizujemy legacy
+      const dto = data as TournamentDTO;
+      dto.entry_mode = normalizeEntryMode(dto.entry_mode);
+
+      setT(dto);
     } catch (e: any) {
       setError(e?.message ?? "Błąd ładowania.");
     } finally {
@@ -91,7 +122,11 @@ export default function TournamentPermissionsPanel({
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.detail || "Nie udało się zapisać zmian.");
-      setT(data as TournamentDTO);
+
+      const dto = data as TournamentDTO;
+      dto.entry_mode = normalizeEntryMode(dto.entry_mode);
+
+      setT(dto);
       setInfo("Zapisano.");
     } catch (e: any) {
       setError(e?.message ?? "Błąd zapisu.");
@@ -101,7 +136,7 @@ export default function TournamentPermissionsPanel({
     }
   };
 
-  if (!canManage) return null;
+  if (!canSeePanel) return null;
 
   return (
     <aside
@@ -113,7 +148,7 @@ export default function TournamentPermissionsPanel({
         top: 18,
       }}
     >
-      <div style={{ fontWeight: 800, marginBottom: 8 }}>Uprawnienia</div>
+      <div style={{ fontWeight: 800, marginBottom: 8 }}>Uprawnienia i dostęp</div>
 
       {loading ? <div>Ładowanie…</div> : null}
       {error ? <div style={{ color: "crimson", marginTop: 8 }}>{error}</div> : null}
@@ -126,37 +161,66 @@ export default function TournamentPermissionsPanel({
             <div style={{ opacity: 0.8, marginTop: 4 }}>Rola: {t.my_role ?? "—"}</div>
           </div>
 
-          {/* Tryb dodawania uczestników */}
+          {/* Tryb panelu (entry_mode) */}
           <section style={{ borderTop: "1px solid #333", paddingTop: 10 }}>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>Dodawanie uczestników</div>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Tryb panelu zarządzania</div>
 
             <div style={{ opacity: 0.85, fontSize: "0.9rem", marginBottom: 8 }}>
-              MANAGER: organizator + asystenci • ORGANIZER_ONLY: tylko organizator • SELF_REGISTER: link + kod dla zawodników/drużyn
+              Steruje tym, kto może edytować w panelu. Dołączanie uczestników jest osobnym przełącznikiem (poniżej).
+            </div>
+
+            <div style={{ opacity: 0.85, fontSize: "0.9rem", marginBottom: 8 }}>
+              Aktualnie: <b>{entryModeLabel(t.entry_mode)}</b>
             </div>
 
             <select
               disabled={!isOrganizer || busy}
-              value={t.entry_mode ?? "MANAGER"}
+              value={normalizeEntryMode(t.entry_mode)}
               onChange={(e) => patchTournament({ entry_mode: e.target.value as EntryMode })}
               style={{ width: "100%", padding: "0.5rem" }}
             >
               <option value="MANAGER">MANAGER</option>
               <option value="ORGANIZER_ONLY">ORGANIZER_ONLY</option>
-              <option value="SELF_REGISTER">SELF_REGISTER</option>
             </select>
 
-            {/* SELF_REGISTER: kod + link */}
-            {t.entry_mode === "SELF_REGISTER" ? (
+            {!isOrganizer && (
+              <div style={{ marginTop: 8, opacity: 0.85 }}>
+                Zmiana trybu panelu jest dostępna tylko dla organizatora.
+              </div>
+            )}
+          </section>
+
+          {/* Toggle dołączania (join_enabled) */}
+          <section style={{ borderTop: "1px solid #333", paddingTop: 10 }}>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Dołączanie uczestników (konto + kod)</div>
+
+            <div style={{ opacity: 0.85, fontSize: "0.9rem", marginBottom: 8 }}>
+              To NIE jest entry_mode. To osobny przełącznik: użytkownik (zalogowany) może wejść przez link + kod.
+            </div>
+
+            <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="checkbox"
+                disabled={!isOrganizer || busy}
+                checked={!!t.join_enabled}
+                onChange={(e) => patchTournament({ join_enabled: e.target.checked })}
+              />
+              <span>Zezwól uczestnikom dołączać przez konto i kod</span>
+            </label>
+
+            {!t.join_enabled ? (
+              <div style={{ marginTop: 8, opacity: 0.85 }}>
+                Dołączanie jest wyłączone.
+              </div>
+            ) : (
               <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                <div style={{ opacity: 0.85, fontSize: "0.9rem" }}>
-                  Link do rejestracji (wymaga loginu):
-                </div>
+                <div style={{ opacity: 0.85, fontSize: "0.9rem" }}>Link do dołączenia (wymaga loginu):</div>
 
                 <code style={{ padding: "0.45rem 0.6rem", border: "1px solid #333", borderRadius: 8 }}>
                   {joinLink}
                 </code>
 
-                <div style={{ opacity: 0.85, fontSize: "0.9rem" }}>Kod rejestracyjny:</div>
+                <div style={{ opacity: 0.85, fontSize: "0.9rem" }}>Kod dołączania:</div>
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <code style={{ padding: "0.45rem 0.6rem", border: "1px solid #333", borderRadius: 8 }}>
@@ -179,11 +243,17 @@ export default function TournamentPermissionsPanel({
                     </button>
                   )}
                 </div>
+
+                {!isOrganizer && (
+                  <div style={{ opacity: 0.85 }}>
+                    Kod i ustawienia dołączania może zmieniać tylko organizator.
+                  </div>
+                )}
               </div>
-            ) : null}
+            )}
           </section>
 
-          {/* Asystenci */}
+          {/* Asystenci + panel uprawnień per-asystent (punkt 5) */}
           <section style={{ borderTop: "1px solid #333", paddingTop: 10 }}>
             <div style={{ fontWeight: 700, marginBottom: 8 }}>Asystenci</div>
 
@@ -204,6 +274,13 @@ export default function TournamentPermissionsPanel({
                 tournamentId={tournamentId}
                 canRemove={!!isOrganizer}
               />
+            </div>
+
+            {/* Punkt 5: przypomnienie w UI (konkrety) */}
+            <div style={{ marginTop: 10, opacity: 0.85, fontSize: "0.9rem" }}>
+              Uprawnienia per-asystent (granularne) konfigurujesz w sekcji „Uprawnienia asystentów” na stronie turnieju
+              (TournamentTeams / TournamentSchedule / TournamentResults / TournamentDetail będą disable’ować akcje wg PERM_*).
+              Ten panel nie blokuje stron — ogranicza tylko działania.
             </div>
           </section>
         </div>

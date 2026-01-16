@@ -1,39 +1,229 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any, Dict
 
 from django.db.models import Q
 
 from tournaments.services.generators.knockout import generate_next_knockout_stage
 from tournaments.services.match_outcome import team_goals_in_match, penalty_winner_id
 
-from ..models import Match, Stage, Team, Tournament, TournamentMembership
+from ..models import Match, Stage, Team, Tournament, TournamentMembership, TournamentRegistration
 
 
 # ============================================================
-# UPRAWNIENIA
+# UPRAWNIENIA (NOWY SYSTEM)
 # ============================================================
 
-def user_can_manage_tournament(user, tournament: Tournament) -> bool:
+def _normalize_args(user_or_tournament: Any, tournament_or_user: Any) -> tuple[Any, Tournament]:
     """
-    Sprawdza, czy użytkownik ma uprawnienia do zarządzania turniejem (edycja, dodawanie drużyn).
+    Ujednolica stare/nowe wywołania:
+    - user_can_manage_tournament(user, tournament)
+    - user_can_manage_tournament(tournament, user)
     """
-    if not user or not user.is_authenticated:
+    if isinstance(user_or_tournament, Tournament):
+        tournament = user_or_tournament
+        user = tournament_or_user
+    else:
+        user = user_or_tournament
+        tournament = tournament_or_user
+    return user, tournament
+
+
+def get_membership(user, tournament: Tournament) -> Optional[TournamentMembership]:
+    if not user or not getattr(user, "is_authenticated", False):
+        return None
+    return TournamentMembership.objects.filter(
+        tournament=tournament,
+        user=user,
+        role=TournamentMembership.Role.ASSISTANT,
+    ).first()
+
+
+def user_is_assistant(user, tournament: Tournament) -> bool:
+    return get_membership(user, tournament) is not None
+
+
+def user_is_registered_participant(user, tournament: Tournament) -> bool:
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    return TournamentRegistration.objects.filter(tournament=tournament, user=user).exists()
+
+
+def user_can_view_tournament(user, tournament: Tournament) -> bool:
+    """
+    Widoczność (podgląd):
+    - organizator: tak
+    - asystent (membership): tak
+    - zarejestrowany uczestnik: tak
+    - public: rozstrzygane w TournamentDetailView (published + code)
+    """
+    if not user or not getattr(user, "is_authenticated", False):
         return False
 
-    # 1. Organizator zawsze ma pełne prawo
     if tournament.organizer_id == user.id:
         return True
 
-    # 2. Asystent ma prawo tylko w trybie MANAGER.
-    # W trybach ORGANIZER_ONLY i SELF_REGISTER (konto) asystent nie zarządza.
-    if tournament.entry_mode == Tournament.EntryMode.MANAGER:
-        return tournament.memberships.filter(
-            user=user,
-            role=TournamentMembership.Role.ASSISTANT,
-        ).exists()
+    if user_is_assistant(user, tournament):
+        return True
+
+    if user_is_registered_participant(user, tournament):
+        return True
 
     return False
+
+
+def get_my_permissions(user, tournament: Tournament) -> Dict[str, bool]:
+    """
+    Zwraca uprawnienia dla frontu:
+    - organizator: wszystko True (w tym "organizer-only" rzeczy)
+    - asystent: effective_permissions() (ale twardo blokujemy edycję w ORGANIZER_ONLY)
+    - inni: wszystko False
+    """
+    # Organizer: full
+    if user and getattr(user, "is_authenticated", False) and tournament.organizer_id == user.id:
+        return {
+            TournamentMembership.PERM_TEAMS_EDIT: True,
+            TournamentMembership.PERM_SCHEDULE_EDIT: True,
+            TournamentMembership.PERM_RESULTS_EDIT: True,
+            TournamentMembership.PERM_BRACKET_EDIT: True,
+            TournamentMembership.PERM_TOURNAMENT_EDIT: True,
+            # organizer-only:
+            TournamentMembership.PERM_PUBLISH: True,
+            TournamentMembership.PERM_ARCHIVE: True,
+            TournamentMembership.PERM_MANAGE_ASSISTANTS: True,
+            TournamentMembership.PERM_JOIN_SETTINGS: True,
+        }
+
+    m = get_membership(user, tournament)
+    if not m:
+        return {
+            TournamentMembership.PERM_TEAMS_EDIT: False,
+            TournamentMembership.PERM_SCHEDULE_EDIT: False,
+            TournamentMembership.PERM_RESULTS_EDIT: False,
+            TournamentMembership.PERM_BRACKET_EDIT: False,
+            TournamentMembership.PERM_TOURNAMENT_EDIT: False,
+            TournamentMembership.PERM_PUBLISH: False,
+            TournamentMembership.PERM_ARCHIVE: False,
+            TournamentMembership.PERM_MANAGE_ASSISTANTS: False,
+            TournamentMembership.PERM_JOIN_SETTINGS: False,
+        }
+
+    # Asystent: w ORGANIZER_ONLY zawsze tylko podgląd (twarda zasada)
+    if tournament.entry_mode == Tournament.EntryMode.ORGANIZER_ONLY:
+        return {
+            TournamentMembership.PERM_TEAMS_EDIT: False,
+            TournamentMembership.PERM_SCHEDULE_EDIT: False,
+            TournamentMembership.PERM_RESULTS_EDIT: False,
+            TournamentMembership.PERM_BRACKET_EDIT: False,
+            TournamentMembership.PERM_TOURNAMENT_EDIT: False,
+            TournamentMembership.PERM_PUBLISH: False,
+            TournamentMembership.PERM_ARCHIVE: False,
+            TournamentMembership.PERM_MANAGE_ASSISTANTS: False,
+            TournamentMembership.PERM_JOIN_SETTINGS: False,
+        }
+
+    # MANAGER: bazowe True + override z JSON
+    perms = m.effective_permissions()
+
+    # Jawnie dopiszmy organizer-only = False (front ma spójny kontrakt)
+    perms[TournamentMembership.PERM_PUBLISH] = False
+    perms[TournamentMembership.PERM_ARCHIVE] = False
+    perms[TournamentMembership.PERM_MANAGE_ASSISTANTS] = False
+    perms[TournamentMembership.PERM_JOIN_SETTINGS] = False
+
+    # Domknij brakujące klucze (zabezpieczenie przed undefined na froncie)
+    required_keys = [
+        TournamentMembership.PERM_TEAMS_EDIT,
+        TournamentMembership.PERM_SCHEDULE_EDIT,
+        TournamentMembership.PERM_RESULTS_EDIT,
+        TournamentMembership.PERM_BRACKET_EDIT,
+        TournamentMembership.PERM_TOURNAMENT_EDIT,
+        TournamentMembership.PERM_PUBLISH,
+        TournamentMembership.PERM_ARCHIVE,
+        TournamentMembership.PERM_MANAGE_ASSISTANTS,
+        TournamentMembership.PERM_JOIN_SETTINGS,
+    ]
+
+    for k in required_keys:
+        perms[k] = bool(perms.get(k, False))
+
+    return perms
+
+
+def assistant_has_perm(user, tournament: Tournament, perm_key: str) -> bool:
+    """
+    Sprawdza uprawnienie asystenta do KONKRETNEJ AKCJI.
+    - w ORGANIZER_ONLY: zawsze False dla edycji (podgląd zostaje)
+    """
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+
+    # organizer zawsze może
+    if tournament.organizer_id == user.id:
+        return True
+
+    m = get_membership(user, tournament)
+    if not m:
+        return False
+
+    if tournament.entry_mode != Tournament.EntryMode.MANAGER:
+        return False
+
+    perms = m.effective_permissions()
+    return bool(perms.get(perm_key))
+
+
+# Backward compatible: w starym kodzie ta funkcja bywała używana do "czy może edytować"
+def user_can_manage_tournament(user_or_tournament, tournament_or_user) -> bool:
+    """
+    W NOWYM SYSTEMIE rozumiemy to jako: "czy ma ogólne prawo do edycji" (MANAGER + membership).
+    Uwaga: to jest funkcja legacy — docelowo powinieneś przejść na assistant_has_perm(..., PERM_*).
+    """
+    user, tournament = _normalize_args(user_or_tournament, tournament_or_user)
+
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+
+    if tournament.organizer_id == user.id:
+        return True
+
+    if tournament.entry_mode != Tournament.EntryMode.MANAGER:
+        return False
+
+    return TournamentMembership.objects.filter(
+        tournament=tournament,
+        user=user,
+        role=TournamentMembership.Role.ASSISTANT,
+    ).exists()
+
+
+# Wygodne skróty (do użycia w widokach PATCH/POST)
+def can_edit_teams(user, tournament: Tournament) -> bool:
+    return assistant_has_perm(user, tournament, TournamentMembership.PERM_TEAMS_EDIT)
+
+
+def can_edit_schedule(user, tournament: Tournament) -> bool:
+    return assistant_has_perm(user, tournament, TournamentMembership.PERM_SCHEDULE_EDIT)
+
+
+def can_edit_results(user, tournament: Tournament) -> bool:
+    return assistant_has_perm(user, tournament, TournamentMembership.PERM_RESULTS_EDIT)
+
+
+def can_edit_bracket(user, tournament: Tournament) -> bool:
+    return assistant_has_perm(user, tournament, TournamentMembership.PERM_BRACKET_EDIT)
+
+
+def can_edit_tournament_detail(user, tournament: Tournament) -> bool:
+    return assistant_has_perm(user, tournament, TournamentMembership.PERM_TOURNAMENT_EDIT)
+
+
+def can_manage_assistants(user, tournament: Tournament) -> bool:
+    return bool(user and getattr(user, "is_authenticated", False) and tournament.organizer_id == user.id)
+
+
+def can_manage_join_settings(user, tournament: Tournament) -> bool:
+    return bool(user and getattr(user, "is_authenticated", False) and tournament.organizer_id == user.id)
 
 
 # ============================================================
@@ -146,7 +336,7 @@ def _knockout_downstream_stages(tournament: Tournament, after_order: int):
 
 def _knockout_downstream_has_results(tournament: Tournament, after_order: int) -> bool:
     """
-    Czy w downstream KO są już wyniki? (FINISHED lub wprowadzone bramki/winner)
+    Czy w downstream KO są już wyniki? (FINISHED / result_entered / winner)
     Jeśli tak -> nie wolno soft-resetować, trzeba hard-rollback.
     """
     qs = Match.objects.filter(
@@ -156,8 +346,7 @@ def _knockout_downstream_has_results(tournament: Tournament, after_order: int) -
     )
     return qs.filter(
         Q(status=Match.Status.FINISHED)
-        | Q(home_score__isnull=False)
-        | Q(away_score__isnull=False)
+        | Q(result_entered=True)
         | Q(winner__isnull=False)
     ).exists()
 
@@ -175,7 +364,6 @@ def _soft_reset_downstream_for_team_change(
     - czyści wynik/winner/status w dotkniętych meczach
     - otwiera etapy (OPEN) po danym order
     """
-    # Dotykamy zarówno KO jak i THIRD_PLACE, bo 3. miejsce zależy od półfinałów.
     downstream_matches = (
         Match.objects.filter(
             tournament=tournament,
@@ -200,15 +388,23 @@ def _soft_reset_downstream_for_team_change(
             continue
 
         if m.home_team_id == m.away_team_id:
-            # To jest stan niemożliwy -> w takiej sytuacji nie próbujemy „magii”
             raise ValueError("Kolizja w KO: po podmianie drużyn mecz stał się home==away.")
 
-        # Czyścimy wynik i stan meczu – bo to już inna para.
-        m.home_score = None
-        m.away_score = None
+        # U Ciebie score są int NOT NULL -> reset do 0
+        m.home_score = 0
+        m.away_score = 0
         m.winner = None
         m.status = Match.Status.SCHEDULED
         m.result_entered = False
+
+        # defensywnie czyścimy per-discipline pola
+        m.tennis_sets = None
+        m.went_to_extra_time = False
+        m.home_extra_time_score = None
+        m.away_extra_time_score = None
+        m.decided_by_penalties = False
+        m.home_penalty_score = None
+        m.away_penalty_score = None
 
         to_update.append(m)
 
@@ -223,17 +419,22 @@ def _soft_reset_downstream_for_team_change(
                 "winner",
                 "status",
                 "result_entered",
+                "tennis_sets",
+                "went_to_extra_time",
+                "home_extra_time_score",
+                "away_extra_time_score",
+                "decided_by_penalties",
+                "home_penalty_score",
+                "away_penalty_score",
             ],
         )
 
-    # Otwieramy downstream etapy (KO i 3 miejsce)
     Stage.objects.filter(
         tournament=tournament,
         order__gt=after_order,
         stage_type__in=[Stage.StageType.KNOCKOUT, Stage.StageType.THIRD_PLACE],
     ).exclude(status=Stage.Status.OPEN).update(status=Stage.Status.OPEN)
 
-    # Jeśli turniej był FINISHED, a grzebiemy w drabince -> wraca do CONFIGURED
     if tournament.status == Tournament.Status.FINISHED:
         tournament.status = Tournament.Status.CONFIGURED
         tournament.save(update_fields=["status"])
@@ -271,13 +472,9 @@ def handle_knockout_winner_change(
     Centralna decyzja po zmianie zwycięzcy (KO):
     - jeśli winner się nie zmienił -> nic
     - jeśli nie ma downstream -> nic
-    - jeśli new_winner_id jest None -> hard rollback (downstream nieważny)
+    - jeśli new_winner_id jest None -> hard rollback
     - jeśli downstream ma wyniki -> hard rollback
     - w innym przypadku -> soft reset (podmień drużynę w downstream i wyczyść tylko dotknięte mecze)
-
-    Uwaga:
-    - Wywołuj TYLKO dla stage_type == KNOCKOUT.
-    - Dla THIRD_PLACE nie propagujemy nic dalej (bo to koniec ścieżki).
     """
     if stage.stage_type != Stage.StageType.KNOCKOUT:
         return
@@ -288,17 +485,14 @@ def handle_knockout_winner_change(
     if not _knockout_downstream_stages(tournament, stage.order).exists():
         return
 
-    # Jeśli nie ma rozstrzygnięcia po zmianie -> downstream staje się nieważny
     if new_winner_id is None:
         rollback_knockout_after_stage(stage)
         return
 
-    # Jeśli downstream ma już wyniki -> rollback (bezpieczniej)
     if _knockout_downstream_has_results(tournament, stage.order):
         rollback_knockout_after_stage(stage)
         return
 
-    # Soft reset: zamiana drużyny w downstream
     new_team = Team.objects.filter(pk=new_winner_id).first()
     if not new_team:
         rollback_knockout_after_stage(stage)
@@ -325,9 +519,6 @@ def _try_auto_advance_knockout(stage: Stage) -> None:
     - jeśli etap KO ma komplet rozstrzygniętych meczów (FINISHED + winner),
       i nie ma jeszcze następnego etapu KO,
       generujemy kolejny etap.
-
-    Ważne: generator może rzucić ValueError (np. niespójni zwycięzcy w dwumeczu).
-    To NIE może robić 500.
     """
     tournament = stage.tournament
 

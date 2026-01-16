@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.db import transaction
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 
 from rest_framework import status
@@ -12,7 +13,13 @@ from rest_framework.views import APIView
 from ..models import Match, Stage, Team, Tournament, TournamentMembership
 from ..serializers import TeamSerializer, TeamUpdateSerializer, TournamentSerializer
 from ..services.match_generation import ensure_matches_generated
-from ._helpers import user_can_manage_tournament
+
+# NOWA STRATEGIA: podgląd != edycja
+from ._helpers import (
+    user_can_view_tournament,
+    can_edit_teams,
+    get_membership,
+)
 
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
 
@@ -23,29 +30,11 @@ def _tournament_real_started(tournament: Tournament) -> bool:
     który jest IN_PROGRESS albo FINISHED.
     """
     return (
-        tournament.matches.exclude(home_team__name=BYE_TEAM_NAME)
-        .exclude(away_team__name=BYE_TEAM_NAME)
+        Match.objects.filter(tournament=tournament)
+        .exclude(Q(home_team__name__iexact=BYE_TEAM_NAME) | Q(away_team__name__iexact=BYE_TEAM_NAME))
         .filter(status__in=(Match.Status.IN_PROGRESS, Match.Status.FINISHED))
         .exists()
     )
-
-
-def _can_edit_teams(user, tournament: Tournament) -> bool:
-    """
-    Sprawdza uprawnienia do edycji uczestników (nazwy, liczba).
-    Zasada:
-    1. Musi być managerem (organizator lub asystent).
-    2. Jeśli entry_mode == ORGANIZER_ONLY -> tylko organizator może edytować.
-    """
-    # podstawowy warunek
-    if not user_can_manage_tournament(user, tournament):
-        return False
-
-    # ORGANIZER_ONLY: tylko organizator może edytować teams
-    if tournament.entry_mode == Tournament.EntryMode.ORGANIZER_ONLY:
-        return tournament.organizer_id == user.id
-
-    return True
 
 
 class TournamentTeamListView(ListAPIView):
@@ -54,9 +43,11 @@ class TournamentTeamListView(ListAPIView):
 
     def get_queryset(self):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
-        # Do podglądu listy wystarczy rola w turnieju (nawet w ORGANIZER_ONLY asystent musi widzieć teams)
-        if not user_can_manage_tournament(self.request.user, tournament):
+
+        # PODGLĄD: organizer/asystent/uczestnik z rejestracją -> widzi
+        if not user_can_view_tournament(self.request.user, tournament):
             return Team.objects.none()
+
         return (
             tournament.teams.filter(is_active=True)
             .exclude(name=BYE_TEAM_NAME)
@@ -70,11 +61,11 @@ class TournamentTeamUpdateView(APIView):
     def patch(self, request, pk, team_id):
         tournament = get_object_or_404(Tournament, pk=pk)
 
-        # ZMIANA: użycie _can_edit_teams zamiast user_can_manage_tournament
-        if not _can_edit_teams(request.user, tournament):
+        # PODGLĄD jest osobno, ale PATCH to edycja -> granularnie
+        if not can_edit_teams(request.user, tournament):
             return Response(
-                {"detail": "Brak uprawnień do edycji uczestników (tryb: tylko organizator)."},
-                status=status.HTTP_403_FORBIDDEN
+                {"detail": "Nie masz uprawnień do edycji uczestników. Dostępny jest tylko podgląd."},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         team = get_object_or_404(
@@ -104,11 +95,10 @@ class TournamentTeamSetupView(APIView):
     - Ustawia liczbę aktywnych Team (bez aktywowania __SYSTEM_BYE__).
     - Jeżeli liczba aktywnych Team się zmienia -> reset Stage/Match + regeneracja.
 
-    Uprawnienia:
-    - organizer: może zmieniać także po rozpoczęciu (ale to resetuje wyniki)
-    - assistant:
-        1. Może zmieniać, CHYBA ŻE tryb to ORGANIZER_ONLY.
-        2. Może zmieniać tylko do REALNEGO startu (bez liczenia BYE jako start).
+    Uprawnienia (NOWA STRATEGIA):
+    - Organizer: może zawsze (z ostrzeżeniem, jeśli po starcie).
+    - Asystent: tylko jeśli ma perm teams_edit i tylko w trybie MANAGER.
+      W ORGANIZER_ONLY asystent ma podgląd, ale edycja jest wyłączona.
     """
 
     permission_classes = [IsAuthenticated]
@@ -117,21 +107,15 @@ class TournamentTeamSetupView(APIView):
     def post(self, request, pk):
         tournament = get_object_or_404(Tournament, pk=pk)
 
-        # ZMIANA: Blokada asystenta w trybie ORGANIZER_ONLY na samym wstępie
-        if not _can_edit_teams(request.user, tournament):
+        if not can_edit_teams(request.user, tournament):
             return Response(
-                {"detail": "Brak uprawnień do edycji uczestników (tryb: tylko organizator)."},
-                status=status.HTTP_403_FORBIDDEN
+                {"detail": "Nie masz uprawnień do edycji uczestników. Dostępny jest tylko podgląd."},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Role
         is_organizer = tournament.organizer_id == request.user.id
-        is_assistant = tournament.memberships.filter(
-            user=request.user,
-            role=TournamentMembership.Role.ASSISTANT,
-        ).exists()
+        is_assistant = get_membership(request.user, tournament) is not None
 
-        # FINISHED blokujemy dla wszystkich (to i tak „archiwum”)
         if tournament.status == Tournament.Status.FINISHED:
             return Response(
                 {"detail": "Nie można zmieniać liczby uczestników w zakończonym turnieju."},
@@ -140,11 +124,10 @@ class TournamentTeamSetupView(APIView):
 
         real_started = _tournament_real_started(tournament)
 
-        # Klucz: po REALNYM starcie blokujemy TYLKO asystenta.
+        # Po REALNYM starcie blokujemy tylko asystenta (organizer może, ale to resetuje).
         if is_assistant and real_started:
             return Response(
-                {
-                    "detail": "Turniej już się rozpoczął (są mecze w trakcie lub zakończone) — asystent nie może zmieniać liczby uczestników."},
+                {"detail": "Turniej już się rozpoczął — asystent nie może zmieniać liczby uczestników."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -155,16 +138,25 @@ class TournamentTeamSetupView(APIView):
         try:
             requested_count = int(raw_count)
         except (TypeError, ValueError):
-            return Response({"detail": "Nieprawidłowa liczba uczestników."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Nieprawidłowa liczba uczestników."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if requested_count < 2:
-            return Response({"detail": "Liczba uczestników musi wynosić co najmniej 2."},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Liczba uczestników musi wynosić co najmniej 2."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # Wymuś: BYE zawsze nieaktywny
+        # BYE zawsze nieaktywny
         Team.objects.filter(tournament=tournament, name=BYE_TEAM_NAME).update(is_active=False)
 
-        active_before = Team.objects.filter(tournament=tournament, is_active=True).exclude(name=BYE_TEAM_NAME).count()
+        active_before = (
+            Team.objects.filter(tournament=tournament, is_active=True)
+            .exclude(name=BYE_TEAM_NAME)
+            .count()
+        )
         had_structure = Stage.objects.filter(tournament=tournament).exists()
 
         all_real_teams = list(tournament.teams.exclude(name=BYE_TEAM_NAME).order_by("id"))
@@ -195,7 +187,11 @@ class TournamentTeamSetupView(APIView):
         if changed:
             Team.objects.bulk_update(changed, ["is_active"])
 
-        active_after = Team.objects.filter(tournament=tournament, is_active=True).exclude(name=BYE_TEAM_NAME).count()
+        active_after = (
+            Team.objects.filter(tournament=tournament, is_active=True)
+            .exclude(name=BYE_TEAM_NAME)
+            .count()
+        )
 
         count_changed = active_after != active_before
         should_upgrade = (active_after >= 2) and (count_changed or not had_structure)
@@ -220,7 +216,6 @@ class TournamentTeamSetupView(APIView):
         else:
             detail += " (Bez przebudowy rozgrywek.)"
 
-        # Mocniejsze ostrzeżenie dla organizatora, jeśli zmienił po REALNYM starcie
         if is_organizer and real_started and should_upgrade:
             detail += (
                 " UWAGA: turniej był już rozpoczęty — zmiana liczby uczestników usuwa istniejące mecze, wyniki i harmonogram."

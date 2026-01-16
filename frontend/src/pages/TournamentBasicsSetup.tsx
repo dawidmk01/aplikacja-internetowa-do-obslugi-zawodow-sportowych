@@ -19,7 +19,7 @@ type HandballPointsMode = "2_1_0" | "3_1_0" | "3_2_1_0";
 type TennisBestOf = 3 | 5;
 type TennisPointsMode = "NONE" | "PLT";
 
-/* --- ZMIANA A: dodanie my_role do DTO --- */
+/* --- ZMIANA A: dodanie my_role i my_permissions do DTO --- */
 type TournamentDTO = {
   id: number;
   name: string;
@@ -28,6 +28,8 @@ type TournamentDTO = {
   format_config: Record<string, any>;
   status?: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
   my_role?: "ORGANIZER" | "ASSISTANT" | null;
+  // Nowe pole uprawnień
+  my_permissions?: Record<string, boolean>;
 };
 
 type TeamDTO = { id: number; name: string };
@@ -137,27 +139,19 @@ function buildInfoBoxes(params: {
   discipline: Discipline;
   format: TournamentFormat;
   participants: number;
-
-  // league/group config
   leagueMatches: 1 | 2;
   groupsCount: number;
   groupMatches: 1 | 2;
   advanceFromGroup: number;
   minGroupSize: number;
-
-  // cup config
   cupMatches: 1 | 2;
   finalMatches: 1 | 2;
   thirdPlace: boolean;
   thirdPlaceMatches: 1 | 2;
-
-  // handball
   isHandball: boolean;
   hbPointsMode: HandballPointsMode;
   hbTableDrawMode: HandballTableDrawMode;
   hbKnockoutTiebreak: HandballKnockoutTiebreak;
-
-  // tennis
   isTennis: boolean;
   tennisBestOf: TennisBestOf;
   tennisPointsMode: TennisPointsMode;
@@ -263,7 +257,7 @@ function buildInfoBoxes(params: {
     });
   }
 
-  // 2) TYP ROZGRYWEK (format)
+  // 2) TYP ROZGRYWEK
   boxes.push({
     id: "format",
     title: `Typ rozgrywek: ${formatLabel(format)}`,
@@ -329,7 +323,7 @@ function buildInfoBoxes(params: {
     ),
   });
 
-  // 3) TABELA I AWANS (Liga lub Mixed)
+  // 3) TABELA I AWANS
   const showTable = format === "LEAGUE" || format === "MIXED";
   if (showTable) {
     if (isTennis) {
@@ -406,7 +400,6 @@ function buildInfoBoxes(params: {
         ),
       });
 
-      // punktacja-specyficzna wskazówka
       if (hbPointsMode === "3_2_1_0") {
         boxes.push({
           id: "hb-3210",
@@ -459,7 +452,6 @@ function buildInfoBoxes(params: {
       });
     }
 
-    // Mixed — doprecyzowanie awansu
     if (format === "MIXED") {
       boxes.push({
         id: "mixed-advance",
@@ -481,8 +473,7 @@ function buildInfoBoxes(params: {
     }
   }
 
-  // 4) OSTRZEŻENIA / OGRANICZENIA zależne od ustawień
-  // - tenis: brak dwumeczu już opisany, ale zostawimy też lekki alert jeśli user próbuje ustawić
+  // 4) OSTRZEŻENIA / OGRANICZENIA
   if (isTennis && (cupMatches !== 1 || finalMatches !== 1 || thirdPlaceMatches !== 1)) {
     boxes.push({
       id: "warn-tennis-ko",
@@ -496,7 +487,6 @@ function buildInfoBoxes(params: {
     });
   }
 
-  // - Mixed: minimalna grupa
   if (format === "MIXED" && minGroupSize > 0 && minGroupSize < 2) {
     boxes.push({
       id: "warn-mixed-minsize",
@@ -511,7 +501,6 @@ function buildInfoBoxes(params: {
     });
   }
 
-  // - KO: dwumecz jako zasada turniejowa (nie obiecujemy automatyki, tylko regułę)
   if (!isTennis && format === "CUP" && cupMatches === 2) {
     boxes.push({
       id: "note-aggregate",
@@ -526,7 +515,6 @@ function buildInfoBoxes(params: {
     });
   }
 
-  // 5) Krótkie podsumowanie parametrów „dla organizatora”
   boxes.push({
     id: "summary-settings",
     title: "Szybkie podsumowanie wybranych ustawień",
@@ -614,9 +602,13 @@ export default function TournamentBasicsSetup() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  /* --- ZMIANA B: stan roli + flaga read-only --- */
+  /* --- ZMIANA B: stan roli + uprawnienia --- */
   const [myRole, setMyRole] = useState<"ORGANIZER" | "ASSISTANT" | null>(null);
-  const isAssistantReadOnly = !isCreateMode && myRole === "ASSISTANT";
+  const [myPerms, setMyPerms] = useState<Record<string, boolean>>({});
+
+  // Asystent może edytować tylko jeśli ma flagę 'tournament_edit'
+  const canEditTournament = myRole === "ORGANIZER" || Boolean(myPerms?.tournament_edit);
+  const isAssistantReadOnly = !isCreateMode && !canEditTournament;
 
   /* ====== KROK 1 (dane podstawowe) ====== */
   const [name, setName] = useState("");
@@ -732,6 +724,8 @@ export default function TournamentBasicsSetup() {
         const teams: TeamDTO[] = await teamsRes.json();
 
         setMyRole(t.my_role ?? null);
+        // Zapisujemy uprawnienia z backendu (zakładamy, że to mapa string->bool lub podobna struktura)
+        setMyPerms(t.my_permissions ?? {});
 
         setName(t.name);
         setInitialName(t.name);
@@ -945,7 +939,7 @@ export default function TournamentBasicsSetup() {
   /* ====== SAVE ACTION ====== */
   const saveAll = useCallback(async (): Promise<{ tournamentId: number }> => {
     if (isAssistantReadOnly) {
-      const msg = "Tryb podglądu: asystent nie może zmieniać konfiguracji turnieju.";
+      const msg = "Tryb podglądu: brak uprawnień do zmiany konfiguracji.";
       setError(msg);
       throw new Error(msg);
     }
@@ -991,6 +985,10 @@ export default function TournamentBasicsSetup() {
 
         setInitialName(trimmedName);
         setInitialDiscipline(discipline);
+
+        // ZMIANA: Po utworzeniu od razu nawigujemy do szczegółów (krok 2)
+        navigate(`/tournaments/${created.id}/detail`, { replace: true });
+        return { tournamentId: created.id };
       } else {
         if (discipline !== initialDiscipline) {
           if (!confirmDisciplineChange()) {
@@ -1099,6 +1097,13 @@ export default function TournamentBasicsSetup() {
     isTennis,
   ]);
 
+  // ZMIANA: Handler 'goNext' do stopki – na wszelki wypadek, choć saveAll sam nawiguje
+  const goNext = useCallback(async () => {
+    const { tournamentId } = await saveAll();
+    createdIdRef.current = String(tournamentId);
+    navigate(`/tournaments/${tournamentId}/detail`);
+  }, [saveAll, navigate]);
+
   useEffect(() => {
     if (isAssistantReadOnly) {
       registerSave(null);
@@ -1178,8 +1183,8 @@ export default function TournamentBasicsSetup() {
             background: "rgba(255, 193, 7, 0.08)",
           }}
         >
-          <strong>Tryb podglądu.</strong> Jako asystent możesz przeglądać konfigurację, ale nie możesz jej zmieniać.
-          Zmiany wykonuje organizator.
+          <strong>Tryb podglądu.</strong> Jako asystent możesz przeglądać konfigurację, ale nie możesz jej zmieniać,
+          chyba że masz nadane uprawnienie "Edycja turnieju".
         </div>
       )}
 
@@ -1620,7 +1625,9 @@ export default function TournamentBasicsSetup() {
         </section>
       )}
 
-      {isCreateMode ? <TournamentStepFooter getCreatedId={() => createdIdRef.current} /> : null}
+      {isCreateMode ? (
+        <TournamentStepFooter getCreatedId={() => createdIdRef.current} onNext={goNext} />
+      ) : null}
     </div>
   );
 }

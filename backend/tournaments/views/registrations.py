@@ -22,10 +22,15 @@ def _norm_name(s: str) -> str:
     return " ".join((s or "").strip().split())
 
 
-def _self_register_or_400(tournament: Tournament) -> Optional[Response]:
-    if tournament.entry_mode != Tournament.EntryMode.SELF_REGISTER:
+def _join_enabled_or_400(tournament: Tournament) -> Optional[Response]:
+    """
+    NOWA STRATEGIA:
+    - join działa, gdy tournament.join_enabled == True
+    - NIE patrzymy na entry_mode=SELF_REGISTER (legacy ignorujemy)
+    """
+    if not getattr(tournament, "join_enabled", False):
         return Response(
-            {"detail": "Samodzielna rejestracja (SELF_REGISTER) nie jest włączona dla tego turnieju."},
+            {"detail": "Dołączanie przez konto i kod jest wyłączone dla tego turnieju."},
             status=status.HTTP_400_BAD_REQUEST,
         )
     return None
@@ -34,18 +39,21 @@ def _self_register_or_400(tournament: Tournament) -> Optional[Response]:
 def _validate_code_or_400(tournament: Tournament, code: str) -> Optional[Response]:
     if not tournament.registration_code:
         return Response(
-            {"detail": "Turniej nie ma ustawionego kodu rejestracyjnego."},
+            {"detail": "Turniej nie ma ustawionego kodu dołączania."},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if (code or "").strip() != (tournament.registration_code or "").strip():
         return Response(
-            {"detail": "Nieprawidłowy kod rejestracyjny."},
+            {"detail": "Nieprawidłowy kod dołączania."},
             status=status.HTTP_400_BAD_REQUEST,
         )
     return None
 
 
 def _tournament_real_started(tournament: Tournament) -> bool:
+    """
+    Realny start = wynik wpisany w meczu nie-BYE.
+    """
     qs = Match.objects.filter(tournament=tournament).exclude(
         Q(home_team__name__iexact=BYE_TEAM_NAME) | Q(away_team__name__iexact=BYE_TEAM_NAME)
     )
@@ -111,7 +119,7 @@ class TournamentRegistrationVerifyView(APIView):
     def post(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
 
-        denied = _self_register_or_400(tournament)
+        denied = _join_enabled_or_400(tournament)
         if denied:
             return denied
 
@@ -136,7 +144,7 @@ class TournamentRegistrationJoinView(APIView):
     def post(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
 
-        denied = _self_register_or_400(tournament)
+        denied = _join_enabled_or_400(tournament)
         if denied:
             return denied
 
@@ -246,7 +254,7 @@ class TournamentRegistrationMyMatchesView(ListAPIView):
         )
 
 
-# Alias dla kompatybilności (stare /self-register/)
+# (Opcjonalnie) Aliasy dla kompatybilności starych frontów/URL-i:
 TournamentSelfRegisterView = TournamentRegistrationJoinView
 TournamentSelfRegisterMeView = TournamentRegistrationMeView
 TournamentSelfRegisterMyMatchesView = TournamentRegistrationMyMatchesView

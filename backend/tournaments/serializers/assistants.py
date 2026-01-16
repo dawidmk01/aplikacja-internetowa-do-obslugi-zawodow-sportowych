@@ -41,7 +41,40 @@ class AddAssistantSerializer(serializers.Serializer):
             raise serializers.ValidationError("Organizator nie może dodać samego siebie.")
 
         if TournamentMembership.objects.filter(tournament=tournament, user=user).exists():
-            raise serializers.ValidationError("Użytkownik jest już współorganizatorem.")
+            raise serializers.ValidationError("Użytkownik jest już asystentem w tym turnieju.")
 
         attrs["user"] = user
+        return attrs
+
+class AssistantPermissionsSerializer(serializers.Serializer):
+    """
+    Punkt 5: granularne uprawnienia per-asystent.
+
+    Kontrakt dla frontu:
+      - teams_edit, schedule_edit, results_edit, bracket_edit, tournament_edit
+      - organizer-only klucze mogą być zwracane (false), ale NIE zapisujemy ich z PATCH.
+    """
+
+    teams_edit = serializers.BooleanField(required=False)
+    schedule_edit = serializers.BooleanField(required=False)
+    results_edit = serializers.BooleanField(required=False)
+    bracket_edit = serializers.BooleanField(required=False)
+    tournament_edit = serializers.BooleanField(required=False)
+
+    # organizer-only (dla spójności kontraktu; w PATCH ignorowane)
+    publish = serializers.BooleanField(required=False)
+    archive = serializers.BooleanField(required=False)
+    manage_assistants = serializers.BooleanField(required=False)
+    join_settings = serializers.BooleanField(required=False)
+
+    EDITABLE_KEYS = {
+        TournamentMembership.PERM_TEAMS_EDIT: "teams_edit",
+        TournamentMembership.PERM_SCHEDULE_EDIT: "schedule_edit",
+        TournamentMembership.PERM_RESULTS_EDIT: "results_edit",
+        TournamentMembership.PERM_BRACKET_EDIT: "bracket_edit",
+        TournamentMembership.PERM_TOURNAMENT_EDIT: "tournament_edit",
+    }
+
+    def validate(self, attrs):
+        # twardo ignorujemy organizer-only w walidacji zapisu (backend i tak je odrzuci w widoku)
         return attrs

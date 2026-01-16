@@ -1,10 +1,12 @@
-
+// frontend/src/pages/TournamentPublic.tsx
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useParams, useSearchParams, useNavigate } from "react-router-dom";
 import { apiFetch } from "../api";
 import PublicMatchesPanel from "../components/PublicMatchesPanel";
 import type { MatchPublicDTO } from "../components/PublicMatchesPanel";
 import StandingsBracket from "../components/StandingsBracket";
+
+type EntryMode = "MANAGER" | "ORGANIZER_ONLY";
 
 type TournamentPublicDTO = {
   id: number;
@@ -15,8 +17,15 @@ type TournamentPublicDTO = {
   location: string | null;
   is_published?: boolean;
 
-  entry_mode?: "MANAGER" | "ORGANIZER_ONLY" | "SELF_REGISTER";
+  // zarządzanie uczestnikami (bez SELF_REGISTER)
+  entry_mode?: EntryMode;
   competition_type?: "TEAM" | "INDIVIDUAL";
+
+  // ✅ toggle dołączania przez konto + kod
+  allow_join_by_code?: boolean;
+  // opcjonalnie – jeśli backend zwraca (nie jest wymagane do działania UI)
+  join_code?: string | null;
+
   my_role?: "ORGANIZER" | "ASSISTANT" | "PARTICIPANT" | null;
 };
 
@@ -66,15 +75,13 @@ function normalizeName(s: string) {
   return (s ?? "").trim().replace(/\s+/g, " ");
 }
 
-export default function TournamentPublic(
-  { initialView = "MATCHES" }: { initialView?: ViewTab } = {}
-) {
+export default function TournamentPublic({ initialView = "MATCHES" }: { initialView?: ViewTab } = {}) {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  // TWOJA ZMIANA: Pobranie kodu z URL i synchronizacja ze stanem
+  // kod dostępu do podglądu (public access code)
   const urlAccessCode = searchParams.get("code") ?? "";
   const [code, setCode] = useState("");
 
@@ -83,16 +90,18 @@ export default function TournamentPublic(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlAccessCode]);
 
+  // flaga wejścia "z linku do dołączania"
   const joinFlag = searchParams.get("join") === "1";
+
+  // opcjonalnie: prefill kodu dołączania z URL (jeśli kiedyś dodasz do linku)
+  const urlJoinCode = searchParams.get("join_code") ?? searchParams.get("joinCode") ?? "";
 
   const [tournament, setTournament] = useState<TournamentPublicDTO | null>(null);
   const [matches, setMatches] = useState<MatchPublicDTO[]>([]);
   const [myMatches, setMyMatches] = useState<MatchPublicDTO[]>([]);
 
   const [error, setError] = useState<string | null>(null);
-
   const [needsCode, setNeedsCode] = useState(false);
-
   const [view, setView] = useState<ViewTab>(initialView);
 
   // rejestracja
@@ -106,6 +115,19 @@ export default function TournamentPublic(
   const [verified, setVerified] = useState(false);
   const [displayName, setDisplayName] = useState("");
 
+  // prefill kodu dołączania z URL (jeśli join=1)
+  useEffect(() => {
+    if (joinFlag && urlJoinCode && !regCode) setRegCode(urlJoinCode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [joinFlag, urlJoinCode]);
+
+  // po zmianie kodu resetujemy weryfikację
+  useEffect(() => {
+    setVerified(false);
+    setRegInfo(null);
+    setRegError(null);
+  }, [regCode]);
+
   const nextParam = encodeURIComponent(location.pathname + location.search);
 
   const qs = useMemo(() => {
@@ -113,10 +135,7 @@ export default function TournamentPublic(
     return c ? `?code=${encodeURIComponent(c)}` : "";
   }, [code]);
 
-  const publicMatches = useMemo(
-    () => matches.filter((m) => !isByePublic(m)),
-    [matches]
-  );
+  const publicMatches = useMemo(() => matches.filter((m) => !isByePublic(m)), [matches]);
 
   const loadMyMatches = async () => {
     if (!id || !isLogged) return;
@@ -137,7 +156,7 @@ export default function TournamentPublic(
 
     setError(null);
 
-    // 1) turniej
+    // 1) turniej publiczny
     const tRes = await apiFetch(`/api/tournaments/${id}/${qs}`);
     if (tRes.status === 403) {
       const data = await tRes.json().catch(() => null);
@@ -158,13 +177,18 @@ export default function TournamentPublic(
       end_date: tData.end_date ?? null,
       location: tData.location ?? null,
       is_published: tData.is_published,
+
       entry_mode: tData.entry_mode,
       competition_type: tData.competition_type,
       my_role: tData.my_role ?? null,
+
+      // ✅ toggle dołączania przez konto + kod (NOWY KONTRAKT)
+      allow_join_by_code: Boolean(tData.allow_join_by_code),
+      join_code: tData.join_code ?? null,
     };
     setTournament(t);
 
-    // 2) mecze publiczne (uczestnik approved może dostać 200 nawet przed publikacją)
+    // 2) mecze publiczne
     const mRes = await apiFetch(`/api/tournaments/${id}/public/matches/${qs}`);
     if (mRes.status === 403) {
       const data = await mRes.json().catch(() => null);
@@ -176,11 +200,7 @@ export default function TournamentPublic(
     if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
 
     const raw = await mRes.json();
-    const list: MatchPublicDTO[] = Array.isArray(raw)
-      ? raw
-      : Array.isArray(raw?.results)
-      ? raw.results
-      : [];
+    const list: MatchPublicDTO[] = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? raw.results : [];
     setMatches(list);
   };
 
@@ -213,7 +233,7 @@ export default function TournamentPublic(
   useEffect(() => {
     loadTournamentAndMatches().catch((e: any) => setError(e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, qs]); // Dodano qs do zależności, aby odświeżyć po zmianie kodu
+  }, [id, qs]);
 
   useEffect(() => {
     loadRegistrationMe();
@@ -230,7 +250,7 @@ export default function TournamentPublic(
 
     const c = regCode.trim();
     if (!c) {
-      setRegError("Wpisz kod rejestracyjny.");
+      setRegError("Wpisz kod dołączania.");
       return;
     }
 
@@ -246,8 +266,7 @@ export default function TournamentPublic(
       if (!res.ok) throw new Error(data?.detail || "Nie udało się zweryfikować kodu.");
 
       setVerified(true);
-      await loadRegistrationMe();
-      setRegInfo("Kod poprawny. Uzupełnij nazwę i zarejestruj się.");
+      setRegInfo("Kod poprawny. Uzupełnij nazwę i zapisz się do turnieju.");
     } catch (e: any) {
       setVerified(false);
       setRegError(e?.message ?? "Błąd weryfikacji kodu.");
@@ -266,13 +285,15 @@ export default function TournamentPublic(
     const dn = normalizeName(displayName);
 
     if (!c) {
-      setRegError("Wpisz kod rejestracyjny.");
+      setRegError("Wpisz kod dołączania.");
       return;
     }
     if (!dn) {
       setRegError("Podaj nazwę drużyny / imię i nazwisko.");
       return;
     }
+
+    const wasRegistered = !!regMe;
 
     setRegBusy(true);
     try {
@@ -287,14 +308,13 @@ export default function TournamentPublic(
 
       await loadRegistrationMe();
 
-      setRegInfo(regMe ? "Zmieniono nazwę." : "Zapisano do turnieju.");
+      setRegInfo(wasRegistered ? "Zmieniono nazwę." : "Zapisano do turnieju.");
       setRegError(null);
 
+      // jeśli weszliśmy przez join=1, czyścimy tylko flagę (zostawiamy ewentualny code= do podglądu)
       if (joinFlag) {
-        navigate(
-          location.pathname + (code.trim() ? `?code=${encodeURIComponent(code.trim())}` : ""),
-          { replace: true }
-        );
+        const keepAccess = code.trim() ? `?code=${encodeURIComponent(code.trim())}` : "";
+        navigate(location.pathname + keepAccess, { replace: true });
       }
     } catch (e: any) {
       setRegError(e?.message ?? "Błąd rejestracji.");
@@ -302,6 +322,8 @@ export default function TournamentPublic(
       setRegBusy(false);
     }
   };
+
+  const showJoinPanel = Boolean(tournament?.allow_join_by_code) && (joinFlag || !!regMe);
 
   return (
     <div style={{ padding: "2rem", maxWidth: 980 }}>
@@ -327,7 +349,7 @@ export default function TournamentPublic(
           ) : null}
         </div>
 
-        {(joinFlag || !!regMe) && (
+        {showJoinPanel && (
           <section
             style={{
               marginTop: "1.25rem",
@@ -337,25 +359,35 @@ export default function TournamentPublic(
               maxWidth: 560,
             }}
           >
-            <h3 style={{ marginTop: 0, marginBottom: 6 }}>Rejestracja do turnieju</h3>
+            <h3 style={{ marginTop: 0, marginBottom: 6 }}>Dołącz do turnieju</h3>
 
-            {tournament?.entry_mode !== "SELF_REGISTER" ? (
-              <div style={{ opacity: 0.85 }}>Samodzielna rejestracja nie jest włączona dla tego turnieju.</div>
-            ) : !isLogged ? (
+            {!isLogged ? (
               <div style={{ display: "grid", gap: 10 }}>
                 <div style={{ opacity: 0.85 }}>
-                  Aby zapisać się do turnieju, musisz się zalogować lub utworzyć konto.
+                  Aby dołączyć, musisz się zalogować lub utworzyć konto.
                 </div>
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                   <Link
                     to={`/login?next=${nextParam}`}
-                    style={{ border: "1px solid #444", padding: "0.45rem 0.75rem", borderRadius: 10, textDecoration: "none", display: "inline-block" }}
+                    style={{
+                      border: "1px solid #444",
+                      padding: "0.45rem 0.75rem",
+                      borderRadius: 10,
+                      textDecoration: "none",
+                      display: "inline-block",
+                    }}
                   >
                     Zaloguj
                   </Link>
                   <Link
                     to={`/login?mode=register&next=${nextParam}`}
-                    style={{ border: "1px solid #444", padding: "0.45rem 0.75rem", borderRadius: 10, textDecoration: "none", display: "inline-block" }}
+                    style={{
+                      border: "1px solid #444",
+                      padding: "0.45rem 0.75rem",
+                      borderRadius: 10,
+                      textDecoration: "none",
+                      display: "inline-block",
+                    }}
                   >
                     Zarejestruj konto
                   </Link>
@@ -365,22 +397,24 @@ export default function TournamentPublic(
               <div style={{ display: "grid", gap: 10 }}>
                 {regMe ? (
                   <div style={{ opacity: 0.9 }}>
-                    Jesteś zarejestrowany jako: <strong>{regMe.display_name}</strong>
+                    Jesteś zapisany jako: <strong>{regMe.display_name}</strong>
                     {!tournament?.is_published && (
                       <div style={{ marginTop: 6, opacity: 0.75 }}>
-                        Turniej nie jest jeszcze opublikowany — widok publiczny może być ograniczony.
+                        Turniej nie jest opublikowany — widok publiczny może być ograniczony.
                       </div>
                     )}
                   </div>
                 ) : (
-                  <div style={{ opacity: 0.9 }}>Wpisz kod rejestracyjny i uzupełnij nazwę uczestnika.</div>
+                  <div style={{ opacity: 0.9 }}>
+                    Wpisz kod dołączania i uzupełnij nazwę uczestnika.
+                  </div>
                 )}
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <input
                     value={regCode}
                     onChange={(e) => setRegCode(e.target.value)}
-                    placeholder="Kod rejestracyjny"
+                    placeholder="Kod dołączania"
                     style={{ flex: 1, minWidth: 220, padding: "0.55rem" }}
                   />
                   <button onClick={verifyRegistrationCode} disabled={regBusy} style={{ padding: "0.55rem 0.9rem" }}>
@@ -397,7 +431,7 @@ export default function TournamentPublic(
                       style={{ flex: 1, minWidth: 220, padding: "0.55rem" }}
                     />
                     <button onClick={joinOrRename} disabled={regBusy} style={{ padding: "0.55rem 0.9rem" }}>
-                      {regBusy ? "…" : regMe ? "Zmień nazwę" : "Zarejestruj się"}
+                      {regBusy ? "…" : regMe ? "Zmień nazwę" : "Dołącz"}
                     </button>
                   </div>
                 )}
@@ -406,6 +440,22 @@ export default function TournamentPublic(
                 {regInfo && <div style={{ opacity: 0.85 }}>{regInfo}</div>}
               </div>
             )}
+          </section>
+        )}
+
+        {(joinFlag || !!regMe) && !tournament?.allow_join_by_code && (
+          <section
+            style={{
+              marginTop: "1.25rem",
+              padding: "1rem",
+              border: "1px solid #333",
+              borderRadius: 12,
+              maxWidth: 560,
+              opacity: 0.9,
+            }}
+          >
+            <h3 style={{ marginTop: 0, marginBottom: 6 }}>Dołączanie do turnieju</h3>
+            <div>Dołączanie przez konto i kod nie jest włączone dla tego turnieju.</div>
           </section>
         )}
 
@@ -445,13 +495,29 @@ export default function TournamentPublic(
       {error && <div style={{ marginBottom: "1rem", color: "crimson" }}>{error}</div>}
 
       {needsCode && (
-        <section style={{ marginBottom: "1.25rem", padding: "1rem", border: "1px solid #333", borderRadius: 10, maxWidth: 420 }}>
+        <section
+          style={{
+            marginBottom: "1.25rem",
+            padding: "1rem",
+            border: "1px solid #333",
+            borderRadius: 10,
+            maxWidth: 420,
+          }}
+        >
           <h3 style={{ marginTop: 0 }}>Kod dostępu</h3>
           <p style={{ opacity: 0.8, marginTop: 0 }}>Ten turniej wymaga kodu. Wpisz kod i odśwież dane.</p>
 
           <div style={{ display: "flex", gap: 8 }}>
-            <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="Wpisz kod" style={{ flex: 1, padding: "0.5rem" }} />
-            <button onClick={() => loadTournamentAndMatches().catch((e: any) => setError(e.message))} style={{ padding: "0.5rem 0.9rem" }}>
+            <input
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="Wpisz kod"
+              style={{ flex: 1, padding: "0.5rem" }}
+            />
+            <button
+              onClick={() => loadTournamentAndMatches().catch((e: any) => setError(e.message))}
+              style={{ padding: "0.5rem 0.9rem" }}
+            >
               Otwórz
             </button>
           </div>

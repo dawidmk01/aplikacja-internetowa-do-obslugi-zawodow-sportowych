@@ -16,7 +16,9 @@ from tournaments.models import Team, Tournament, TournamentMembership, Tournamen
 from tournaments.permissions import IsTournamentOrganizer
 from tournaments.serializers import TournamentSerializer, TournamentMetaUpdateSerializer
 from tournaments.services.match_generation import ensure_matches_generated
-from tournaments.views._helpers import user_can_manage_tournament
+
+# Nowy import zgodnie z poleceniem
+from tournaments.views._helpers import can_edit_tournament_detail
 
 
 # =========================
@@ -93,6 +95,46 @@ def clear_standings_cache(tournament: Tournament) -> None:
 
 
 # =========================
+# UPRAWNIENIA (lokalne helpery)
+# =========================
+def _is_organizer(user, tournament: Tournament) -> bool:
+    return bool(user and user.is_authenticated and tournament.organizer_id == user.id)
+
+
+def _membership(user, tournament: Tournament) -> TournamentMembership | None:
+    if not user or not user.is_authenticated:
+        return None
+    return TournamentMembership.objects.filter(
+        tournament=tournament,
+        user=user,
+        role=TournamentMembership.Role.ASSISTANT,
+    ).first()
+
+
+def _is_participant(user, tournament: Tournament) -> bool:
+    if not user or not user.is_authenticated:
+        return False
+    return TournamentRegistration.objects.filter(tournament=tournament, user=user).exists()
+
+
+def _assistant_can_edit_tournament_meta(user, tournament: Tournament) -> bool:
+    """
+    Docelowo:
+    - w ORGANIZER_ONLY: asystent ma podgląd (meta tylko organizer)
+    - w MANAGER: asystent może edytować meta jeśli ma perm tournament_edit
+    """
+    m = _membership(user, tournament)
+    if not m:
+        return False
+
+    if tournament.entry_mode == Tournament.EntryMode.ORGANIZER_ONLY:
+        return False
+
+    eff = m.effective_permissions()
+    return bool(eff.get(TournamentMembership.PERM_TOURNAMENT_EDIT))
+
+
+# =========================
 # LIST / CREATE
 # =========================
 class TournamentListView(ListCreateAPIView):
@@ -134,7 +176,6 @@ class MyTournamentListView(ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        # ZMIANA: Użycie Q i distinct() zamiast union(), obsługa registrations
         return (
             Tournament.objects.filter(
                 Q(organizer=user)
@@ -154,34 +195,30 @@ class TournamentDetailView(RetrieveUpdateAPIView):
     serializer_class = TournamentSerializer
 
     def get_permissions(self):
+        # GET ma AllowAny, ale retrieve() i tak sprawdzi warunki widoczności
         if self.request.method in ("GET", "HEAD", "OPTIONS"):
             return [AllowAny()]
         return [IsAuthenticated(), IsTournamentOrganizer()]
 
     def retrieve(self, request, *args, **kwargs):
         tournament = self.get_object()
+        user = request.user if request.user.is_authenticated else None
 
         serializer = self.get_serializer(tournament, context={"request": request})
 
-        # 1) Organizator lub asystent (w trybie MANAGER) -> pełny dostęp jak dotychczas
-        if request.user.is_authenticated and user_can_manage_tournament(request.user, tournament):
+        # 1) Organizer zawsze widzi
+        if _is_organizer(user, tournament):
             return Response(serializer.data)
 
-        # 2) Asystent (membership) -> PODGLĄD, nawet gdy entry_mode blokuje panel
-        is_member = (
-            request.user.is_authenticated
-            and TournamentMembership.objects.filter(tournament=tournament, user=request.user).exists()
-        )
-        if is_member:
+        # 2) Asystent (membership) -> PODGLĄD zawsze (nie blokujemy strony)
+        if _membership(user, tournament):
             return Response(serializer.data)
 
         # 3) Zarejestrowany uczestnik -> podgląd
-        if request.user.is_authenticated and TournamentRegistration.objects.filter(
-            tournament=tournament, user=request.user
-        ).exists():
+        if _is_participant(user, tournament):
             return Response(serializer.data)
 
-        # 4) Public (opublikowany + ewentualny kod)
+        # 4) Public: tylko jeśli opublikowany + ewentualny access_code
         if tournament.is_published:
             if tournament.access_code:
                 provided_code = request.query_params.get("code")
@@ -197,16 +234,14 @@ class TournamentDetailView(RetrieveUpdateAPIView):
 # =========================
 class TournamentMetaUpdateView(APIView):
     """
-    Edycja metadanych turnieju (harmonogram + opis) bez otwierania pełnego PATCH.
+    Edycja metadanych turnieju (harmonogram + opis).
 
     Endpoint:
       PATCH /api/tournaments/<id>/meta/
 
     Uprawnienia:
-    - organizator LUB asystent (user_can_manage_tournament)
-
-    Obsługiwane pola:
-    - start_date, end_date, location, description
+    - organizer zawsze
+    - asystent: tylko gdy entry_mode=MANAGER i ma perm: tournament_edit
     """
 
     permission_classes = [IsAuthenticated]
@@ -214,7 +249,8 @@ class TournamentMetaUpdateView(APIView):
     def patch(self, request, pk: int, *args, **kwargs):
         tournament = get_object_or_404(Tournament, pk=pk)
 
-        if not user_can_manage_tournament(request.user, tournament):
+        # ZMIANA: użycie can_edit_tournament_detail zamiast starej logiki
+        if not can_edit_tournament_detail(request.user, tournament):
             return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = TournamentMetaUpdateSerializer(
@@ -226,7 +262,6 @@ class TournamentMetaUpdateView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
-        # Zwracamy pełny widok turnieju (spójny z resztą UI)
         return Response(TournamentSerializer(tournament, context={"request": request}).data)
 
 
@@ -281,6 +316,8 @@ class ChangeDisciplineView(APIView):
 
     TEAM <-> INDIVIDUAL:
       - FULL RESET: usuwa etapy/mecze/uczestników i resetuje setup.
+
+    Uprawnienia: tylko organizer.
     """
     permission_classes = [IsAuthenticated, IsTournamentOrganizer]
 
@@ -348,12 +385,10 @@ class ChangeDisciplineView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        # minimalny reset (wyniki out), typ bez zmiany
         tournament.discipline = new_discipline
         tournament.competition_type = new_comp_type
         tournament.format_config = normalize_format_config(new_discipline, tournament.format_config or {})
 
-        # defensywnie czyścimy pola „specyficzne”
         MatchModel.objects.filter(tournament=tournament).update(
             home_score=0,
             away_score=0,
@@ -412,6 +447,8 @@ class ChangeSetupView(APIView):
     - zmiana FORMAT lub struktury config -> reset Stage/Match
     - zmiana tennis_points_mode (tenis) -> bez resetu Stage/Match, tylko czyszczenie cache standings
     - dry_run=true zwraca requires_reset / reset_needed
+
+    Uprawnienia: tylko organizer.
     """
     permission_classes = [IsAuthenticated, IsTournamentOrganizer]
 
@@ -465,7 +502,6 @@ class ChangeSetupView(APIView):
             reset_performed = True
             clear_standings_cache(tournament)
 
-        # jeśli nie resetujemy, ale zmienił się cfg (np. tennis_points_mode) -> czyścimy cache tabel
         if changed and (not reset_performed) and cfg_changed:
             clear_standings_cache(tournament)
 

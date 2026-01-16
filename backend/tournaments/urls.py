@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    # tournaments
     TournamentListView,
     TournamentDetailView,
     TournamentMetaUpdateView,
@@ -10,30 +11,32 @@ from .views import (
     ChangeDisciplineView,
     ChangeSetupView,
 
+    # assistants
     TournamentAssistantListView,
     AddAssistantView,
     RemoveAssistantView,
+    AssistantPermissionsView,
 
+    # teams
     TournamentTeamSetupView,
     TournamentTeamListView,
     TournamentTeamUpdateView,
 
+    # matches
     TournamentMatchListView,
     TournamentPublicMatchListView,
     MatchScheduleUpdateView,
     MatchResultUpdateView,
     FinishMatchView,
 
+    # standings
     TournamentStandingsView,
 
+    # registrations (join toggle + code)
     TournamentRegistrationVerifyView,
     TournamentRegistrationJoinView,
     TournamentRegistrationMeView,
     TournamentRegistrationMyMatchesView,
-
-    TournamentSelfRegisterView,
-    TournamentSelfRegisterMeView,
-    TournamentSelfRegisterMyMatchesView,
 )
 
 urlpatterns = [
@@ -45,7 +48,7 @@ urlpatterns = [
     path("tournaments/<int:pk>/archive/", ArchiveTournamentView.as_view()),
     path("tournaments/<int:pk>/unarchive/", UnarchiveTournamentView.as_view()),
 
-    # nowe (kanoniczne)
+    # kanoniczne
     path("tournaments/<int:pk>/discipline/", ChangeDisciplineView.as_view()),
     path("tournaments/<int:pk>/setup/", ChangeSetupView.as_view()),
 
@@ -57,6 +60,7 @@ urlpatterns = [
     path("tournaments/<int:pk>/assistants/", TournamentAssistantListView.as_view()),
     path("tournaments/<int:pk>/assistants/add/", AddAssistantView.as_view()),
     path("tournaments/<int:pk>/assistants/<int:user_id>/remove/", RemoveAssistantView.as_view()),
+    path("tournaments/<int:pk>/assistants/<int:user_id>/permissions/", AssistantPermissionsView.as_view()),
 
     # --- TEAMS ---
     path("tournaments/<int:pk>/teams/setup/", TournamentTeamSetupView.as_view()),
@@ -74,14 +78,9 @@ urlpatterns = [
     path("tournaments/<int:pk>/standings/", TournamentStandingsView.as_view()),
     path("tournaments/<int:pk>/public/standings/", TournamentStandingsView.as_view()),
 
-    # --- REGISTRATIONS ---
+    # --- REGISTRATIONS (join toggle + code) ---
     path("tournaments/<int:pk>/registrations/verify/", TournamentRegistrationVerifyView.as_view()),
     path("tournaments/<int:pk>/registrations/join/", TournamentRegistrationJoinView.as_view()),
     path("tournaments/<int:pk>/registrations/me/", TournamentRegistrationMeView.as_view()),
     path("tournaments/<int:pk>/registrations/my/matches/", TournamentRegistrationMyMatchesView.as_view()),
-
-    # --- SELF-REGISTER ---
-    path("tournaments/<int:pk>/self-register/", TournamentSelfRegisterView.as_view()),
-    path("tournaments/<int:pk>/self-register/me/", TournamentSelfRegisterMeView.as_view()),
-    path("tournaments/<int:pk>/self-register/my/matches/", TournamentSelfRegisterMyMatchesView.as_view()),
 ]

@@ -1,3 +1,4 @@
+// frontend/src/components/TournamentStepFooter.tsx
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { useTournamentFlowGuard } from "../flow/TournamentFlowGuardContext";
 import { FLOW_STEPS, getCurrentStepIndex } from "../flow/flowSteps";
@@ -15,7 +16,7 @@ export default function TournamentStepFooter({ getCreatedId }: Props) {
 
   const resolvedId = id ?? getCreatedId?.() ?? null;
 
-  // 1. Wykrycie strony Standings
+  // 1) Wykrycie strony Standings (poza flow managementu)
   const isStandings = location.pathname.endsWith("/standings");
 
   // =========================
@@ -32,14 +33,14 @@ export default function TournamentStepFooter({ getCreatedId }: Props) {
         }}
       >
         <button
-          // Wróć do wyników (ostatni krok flow)
-          onClick={() => navigate(`/tournaments/${resolvedId}/results`)}
+          onClick={() => navigate(`/tournaments/${resolvedId}/detail/results`)}
+          disabled={saving}
         >
-          Wyniki
+          ← Wyniki
         </button>
 
-        <button onClick={() => navigate("/")}>
-          Home
+        <button onClick={() => navigate("/")} disabled={saving}>
+          Home →
         </button>
       </div>
     );
@@ -58,9 +59,7 @@ export default function TournamentStepFooter({ getCreatedId }: Props) {
   const isLast = idx === FLOW_STEPS.length - 1;
 
   /* --- POPRZEDNIA STRONA --- */
-  const backLabel = isFirst
-    ? "Home"
-    : FLOW_STEPS[idx - 1].label;
+  const backLabel = isFirst ? "Home" : FLOW_STEPS[idx - 1].label;
 
   const backPath = isFirst
     ? "/"
@@ -69,9 +68,7 @@ export default function TournamentStepFooter({ getCreatedId }: Props) {
       : null;
 
   /* --- NASTĘPNA STRONA --- */
-  const nextLabel = isLast
-    ? "Tabela / Drabinka"
-    : FLOW_STEPS[idx + 1].label;
+  const nextLabel = isLast ? "Tabela / Drabinka" : FLOW_STEPS[idx + 1].label;
 
   const nextPath = isLast
     ? resolvedId
@@ -85,7 +82,7 @@ export default function TournamentStepFooter({ getCreatedId }: Props) {
   const goBack = async () => {
     if (!backPath) return;
 
-    // WYJŚCIE DO HOME → BEZ ZAPISU
+    // Wyjście do Home → bez zapisu
     if (isFirst) {
       navigate(backPath);
       return;
@@ -98,8 +95,7 @@ export default function TournamentStepFooter({ getCreatedId }: Props) {
   };
 
   const goNext = async () => {
-    // KROK 1: CREATE → MUSIMY NAJPIERW ZAPISAĆ I UZYSKAĆ ID
-    // (W tym momencie resolvedId jest jeszcze null, więc nextPath też jest null)
+    // CREATE → musimy zapisać i uzyskać ID
     if (!resolvedId) {
       const ok = await saveIfDirty();
       if (!ok) return;
@@ -107,12 +103,12 @@ export default function TournamentStepFooter({ getCreatedId }: Props) {
       const newId = getCreatedId?.();
       if (!newId) return;
 
-      // Przechodzimy do kroku 2 (Teams) z nowym ID
+      // Przechodzimy do kroku 2 (czyli FLOW_STEPS[1]) zgodnie z Twoją kolejnością w flowSteps.ts
       navigate(FLOW_STEPS[1].path(newId));
       return;
     }
 
-    // POZOSTAŁE KROKI FLOW (Gdy mamy już ID)
+    // Pozostałe kroki flow (gdy mamy już ID)
     if (!nextPath) return;
 
     const ok = await saveIfDirty();
@@ -131,11 +127,11 @@ export default function TournamentStepFooter({ getCreatedId }: Props) {
       }}
     >
       <button onClick={goBack} disabled={saving}>
-        {backLabel}
+        ← {backLabel}
       </button>
 
       <button onClick={goNext} disabled={saving}>
-        {nextLabel}
+        {nextLabel} →
       </button>
     </div>
   );

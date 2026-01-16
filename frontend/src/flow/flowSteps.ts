@@ -1,4 +1,4 @@
-export type FlowStepKey = "setup" | "teams" | "schedule" | "results" | "detail";
+export type FlowStepKey = "setup" | "detail" | "teams" | "schedule" | "results";
 
 export type FlowStep = {
   key: FlowStepKey;
@@ -33,6 +33,12 @@ export const FLOW_STEPS: FlowStep[] = [
     },
   },
   {
+    key: "detail",
+    label: "Szczegóły",
+    path: (id) => `/tournaments/${id}/detail`,
+    match: (p) => cleanPath(p).endsWith("/detail"),
+  },
+  {
     key: "teams",
     label: "Uczestnicy",
     path: (id) => `/tournaments/${id}/detail/teams`,
@@ -45,18 +51,11 @@ export const FLOW_STEPS: FlowStep[] = [
     match: (p) => cleanPath(p).endsWith("/detail/schedule"),
   },
   {
-    key: "detail",
-    label: "Szczegóły",
-    path: (id) => `/tournaments/${id}/detail`,
-    match: (p) => cleanPath(p).endsWith("/detail"),
-  },
-  {
     key: "results",
     label: "Wyniki",
     path: (id) => `/tournaments/${id}/detail/results`,
     match: (p) => cleanPath(p).endsWith("/detail/results"),
   },
-
 ];
 
 export function getCurrentStepIndex(pathname: string): number {

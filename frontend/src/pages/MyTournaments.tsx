@@ -10,11 +10,17 @@ type Tournament = {
   participants_count?: number;
   status?: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
   is_published?: boolean;
+
+  // Public view code (opcjonalny)
   access_code?: string | null;
 
   is_archived?: boolean;
 
-  entry_mode?: "MANAGER" | "ORGANIZER_ONLY" | "SELF_REGISTER";
+  // Panel management mode – tylko te dwa
+  entry_mode?: "MANAGER" | "ORGANIZER_ONLY";
+
+  // Toggle dołączania (join link + kod)
+  join_enabled?: boolean;
   registration_code?: string | null;
 
   my_role: "ORGANIZER" | "ASSISTANT" | "PARTICIPANT" | null;
@@ -28,6 +34,8 @@ function disciplineLabel(code: string | undefined) {
       return "Siatkówka";
     case "basketball":
       return "Koszykówka";
+    case "handball":
+      return "Piłka ręczna";
     case "tennis":
       return "Tenis";
     case "wrestling":
@@ -54,9 +62,8 @@ function statusLabel(v?: Tournament["status"]) {
 
 function entryModeLabel(v?: Tournament["entry_mode"]) {
   const m = v ?? "MANAGER"; // kompatybilność wsteczna
-  if (m === "MANAGER") return "Organizator + asystent";
+  if (m === "MANAGER") return "Organizator + asystenci";
   if (m === "ORGANIZER_ONLY") return "Tylko organizator";
-  if (m === "SELF_REGISTER") return "Self-register";
   return "—";
 }
 
@@ -88,20 +95,25 @@ async function copyToClipboard(text: string) {
   }
 }
 
+/**
+ * Docelowo: nie blokujemy wejścia do panelu asystentom.
+ * Ograniczenia są granularne i realizowane przez disabled/ukrycie akcji w stronach.
+ */
 function canUsePanel(t: Tournament) {
-  const mode = t.entry_mode ?? "MANAGER";
-  if (t.my_role === "ORGANIZER") return true;
-  if (t.my_role === "ASSISTANT") return mode === "MANAGER";
-  return false;
+  return t.my_role === "ORGANIZER" || t.my_role === "ASSISTANT";
 }
 
-function panelDisabledReason(t: Tournament) {
+/**
+ * Informacyjna notka (nie blokada).
+ * W ORGANIZER_ONLY asystent ma nadal dostęp do panelu, ale część akcji będzie tylko do podglądu.
+ */
+function panelNote(t: Tournament) {
   if (t.my_role !== "ASSISTANT") return null;
   const mode = t.entry_mode ?? "MANAGER";
-  if (mode === "MANAGER") return null;
-  if (mode === "ORGANIZER_ONLY") return "Panel wyłączony (tryb: tylko organizator). Masz podgląd.";
-  if (mode === "SELF_REGISTER") return "Panel wyłączony (tryb: self-register). Masz podgląd.";
-  return "Panel wyłączony. Masz podgląd.";
+  if (mode === "ORGANIZER_ONLY") {
+    return "Tryb: tylko organizator. Masz podgląd w panelu; elementy edycji mogą być ograniczone.";
+  }
+  return null;
 }
 
 export default function MyTournaments() {
@@ -154,6 +166,9 @@ export default function MyTournaments() {
         const arch = normalizePL(t.is_archived ? "archiwum" : "");
         const mode = normalizePL(entryModeLabel(t.entry_mode));
         const role = normalizePL(t.my_role ?? "");
+        const join = normalizePL(
+          t.join_enabled ? "dolaczanie wlaczone join" : "dolaczanie wylaczone"
+        );
 
         let score = 0;
 
@@ -170,8 +185,9 @@ export default function MyTournaments() {
         if (arch.includes(q)) score += 6;
         if (mode.includes(q)) score += 6;
         if (role.includes(q)) score += 6;
+        if (join.includes(q)) score += 4;
 
-        const hay = [name, discipline, format, st, vis, arch, mode, role].join(" ");
+        const hay = [name, discipline, format, st, vis, arch, mode, role, join].join(" ");
         if (score === 0 && hay.includes(q)) score = 1;
 
         return { t, score };
@@ -188,12 +204,8 @@ export default function MyTournaments() {
     const notArchived = filtered.filter((t) => !t.is_archived);
 
     const draft = notArchived.filter((t) => (t.status ?? "DRAFT") === "DRAFT");
-    const ready = notArchived.filter(
-      (t) => (t.status ?? "DRAFT") !== "DRAFT" && !t.is_published
-    );
-    const published = notArchived.filter(
-      (t) => (t.status ?? "DRAFT") !== "DRAFT" && !!t.is_published
-    );
+    const ready = notArchived.filter((t) => (t.status ?? "DRAFT") !== "DRAFT" && !t.is_published);
+    const published = notArchived.filter((t) => (t.status ?? "DRAFT") !== "DRAFT" && !!t.is_published);
 
     return { draft, ready, published, archived };
   }, [filtered]);
@@ -270,17 +282,16 @@ export default function MyTournaments() {
 
             const baseLink = `${window.location.origin}/tournaments/${t.id}`;
 
-            const joinLink =
-              t.access_code && t.access_code.trim()
-                ? `${baseLink}?code=${encodeURIComponent(t.access_code)}&join=1`
-                : `${baseLink}?join=1`;
+            // Link do dołączenia (kod przekazujesz osobno)
+            const joinLink = `${baseLink}?join=1`;
 
-            const linkWithCode =
+            // Link do podglądu publicznego z kodem dostępu (jeśli access_code istnieje)
+            const viewLinkWithCode =
               t.access_code && t.access_code.trim()
                 ? `${baseLink}?code=${encodeURIComponent(t.access_code)}`
                 : baseLink;
 
-            const panelNote = panelDisabledReason(t);
+            const note = panelNote(t);
 
             return (
               <div
@@ -301,37 +312,26 @@ export default function MyTournaments() {
                 >
                   <div style={{ minWidth: 280 }}>
                     <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
-                      <span style={{ fontSize: "1.05rem", fontWeight: 700 }}>
-                        {t.name}
-                      </span>
+                      <span style={{ fontSize: "1.05rem", fontWeight: 700 }}>{t.name}</span>
                       <span style={{ opacity: 0.85 }}>{disciplineLabel(t.discipline)}</span>
                     </div>
 
                     <div style={{ marginTop: 6, display: "flex", gap: 10, flexWrap: "wrap", opacity: 0.9 }}>
                       <span>Format: {formatLabel(t.tournament_format)}</span>
-                      {typeof t.participants_count === "number" && (
-                        <span>Uczestnicy: {t.participants_count}</span>
-                      )}
+                      {typeof t.participants_count === "number" && <span>Uczestnicy: {t.participants_count}</span>}
                       <span>Status: {statusLabel(t.status)}</span>
-                      {!t.is_archived && (
-                        <span>Widoczność: {t.is_published ? "Opublikowany" : "Nieopublikowany"}</span>
-                      )}
+                      {!t.is_archived && <span>Widoczność: {t.is_published ? "Opublikowany" : "Nieopublikowany"}</span>}
                       {t.is_archived && <span>Stan: Archiwum</span>}
-                      <span>Tryb: {entryModeLabel(t.entry_mode)}</span>
+                      <span>Tryb panelu: {entryModeLabel(t.entry_mode)}</span>
+                      <span>Dołączanie: {t.join_enabled ? "Włączone" : "Wyłączone"}</span>
                     </div>
 
                     <div style={{ marginTop: 6, opacity: 0.85 }}>Rola: {t.my_role ?? "—"}</div>
 
-                    {panelNote && (
-                      <div style={{ marginTop: 8, opacity: 0.9 }}>
-                        {panelNote}
-                      </div>
-                    )}
+                    {note && <div style={{ marginTop: 8, opacity: 0.9 }}>{note}</div>}
                   </div>
 
                   <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    {/* Panel: zawsze pokazujemy dla ORGANIZER i ASSISTANT (wejście pokaże gate w layout),
-                        ale dla braku uprawnień gate wyświetli komunikat i link do podglądu. */}
                     {(t.my_role === "ORGANIZER" || t.my_role === "ASSISTANT") && (
                       <Link
                         to={`/tournaments/${t.id}/detail`}
@@ -345,11 +345,7 @@ export default function MyTournaments() {
                           color: panelEnabled ? "white" : "inherit",
                           opacity: panelEnabled ? 1 : 0.85,
                         }}
-                        title={
-                          panelEnabled
-                            ? "Panel zarządzania"
-                            : "Panel jest wyłączony w tym trybie. Zobaczysz komunikat i przejdziesz do podglądu."
-                        }
+                        title={"Panel zarządzania (uprawnienia do edycji zależą od roli i ustawień organizatora)."}
                       >
                         Panel
                       </Link>
@@ -463,7 +459,7 @@ export default function MyTournaments() {
                     {t.access_code && t.access_code.trim() && (
                       <>
                         <div style={{ display: "grid", gap: 6 }}>
-                          <div style={{ opacity: 0.9, fontWeight: 600 }}>Kod dostępu</div>
+                          <div style={{ opacity: 0.9, fontWeight: 600 }}>Kod dostępu (podgląd)</div>
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                             <code style={{ padding: "0.35rem 0.5rem", border: "1px solid #333", borderRadius: 8 }}>
                               {t.access_code}
@@ -471,7 +467,7 @@ export default function MyTournaments() {
                             <button
                               onClick={async () => {
                                 const ok = await copyToClipboard(t.access_code ?? "");
-                                setToastSafe(ok ? "Skopiowano kod." : "Nie udało się skopiować.");
+                                setToastSafe(ok ? "Skopiowano kod dostępu." : "Nie udało się skopiować.");
                               }}
                               style={{
                                 border: "1px solid #444",
@@ -487,14 +483,14 @@ export default function MyTournaments() {
                         </div>
 
                         <div style={{ display: "grid", gap: 6 }}>
-                          <div style={{ opacity: 0.9, fontWeight: 600 }}>Link z kodem</div>
+                          <div style={{ opacity: 0.9, fontWeight: 600 }}>Link z kodem (podgląd)</div>
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                             <code style={{ padding: "0.35rem 0.5rem", border: "1px solid #333", borderRadius: 8 }}>
-                              {linkWithCode}
+                              {viewLinkWithCode}
                             </code>
                             <button
                               onClick={async () => {
-                                const ok = await copyToClipboard(linkWithCode);
+                                const ok = await copyToClipboard(viewLinkWithCode);
                                 setToastSafe(ok ? "Skopiowano link z kodem." : "Nie udało się skopiować.");
                               }}
                               style={{
@@ -512,12 +508,20 @@ export default function MyTournaments() {
                       </>
                     )}
 
-                    {isOrganizer && (t.entry_mode ?? "MANAGER") === "SELF_REGISTER" && (
-                      <div style={{ display: "grid", gap: 10, marginTop: 10, borderTop: "1px solid #444", paddingTop: 10 }}>
-                        <div style={{ opacity: 0.9, fontWeight: 700 }}>Rejestracja uczestników</div>
+                    {isOrganizer && t.join_enabled && (
+                      <div
+                        style={{
+                          display: "grid",
+                          gap: 10,
+                          marginTop: 10,
+                          borderTop: "1px solid #444",
+                          paddingTop: 10,
+                        }}
+                      >
+                        <div style={{ opacity: 0.9, fontWeight: 700 }}>Dołączanie uczestników (konto + kod)</div>
 
                         <div style={{ display: "grid", gap: 6 }}>
-                          <div style={{ opacity: 0.9, fontWeight: 600 }}>Link do rejestracji</div>
+                          <div style={{ opacity: 0.9, fontWeight: 600 }}>Link do dołączenia</div>
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                             <code style={{ padding: "0.35rem 0.5rem", border: "1px solid #333", borderRadius: 8 }}>
                               {joinLink}
@@ -525,9 +529,15 @@ export default function MyTournaments() {
                             <button
                               onClick={async () => {
                                 const ok = await copyToClipboard(joinLink);
-                                setToastSafe(ok ? "Skopiowano link rejestracji." : "Nie udało się skopiować.");
+                                setToastSafe(ok ? "Skopiowano link do dołączenia." : "Nie udało się skopiować.");
                               }}
-                              style={{ border: "1px solid #444", padding: "0.35rem 0.6rem", borderRadius: 8, background: "transparent", cursor: "pointer" }}
+                              style={{
+                                border: "1px solid #444",
+                                padding: "0.35rem 0.6rem",
+                                borderRadius: 8,
+                                background: "transparent",
+                                cursor: "pointer",
+                              }}
                             >
                               Kopiuj
                             </button>
@@ -535,7 +545,7 @@ export default function MyTournaments() {
                         </div>
 
                         <div style={{ display: "grid", gap: 6 }}>
-                          <div style={{ opacity: 0.9, fontWeight: 600 }}>Kod rejestracyjny</div>
+                          <div style={{ opacity: 0.9, fontWeight: 600 }}>Kod dołączania</div>
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                             <code style={{ padding: "0.35rem 0.5rem", border: "1px solid #333", borderRadius: 8 }}>
                               {t.registration_code ?? "—"}
@@ -544,9 +554,16 @@ export default function MyTournaments() {
                               disabled={!t.registration_code}
                               onClick={async () => {
                                 const ok = await copyToClipboard(t.registration_code ?? "");
-                                setToastSafe(ok ? "Skopiowano kod rejestracyjny." : "Nie udało się skopiować.");
+                                setToastSafe(ok ? "Skopiowano kod dołączania." : "Nie udało się skopiować.");
                               }}
-                              style={{ border: "1px solid #444", padding: "0.35rem 0.6rem", borderRadius: 8, background: "transparent", cursor: "pointer", opacity: t.registration_code ? 1 : 0.6 }}
+                              style={{
+                                border: "1px solid #444",
+                                padding: "0.35rem 0.6rem",
+                                borderRadius: 8,
+                                background: "transparent",
+                                cursor: "pointer",
+                                opacity: t.registration_code ? 1 : 0.6,
+                              }}
                             >
                               Kopiuj
                             </button>
@@ -582,7 +599,7 @@ export default function MyTournaments() {
             display: "inline-block",
           }}
         >
-          ➕ Utwórz turniej
+          Utwórz turniej
         </Link>
       </div>
 

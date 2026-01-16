@@ -10,6 +10,9 @@ User = get_user_model()
 TENIS_POINTS_MODES = ("NONE", "PLT")
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
 
+# Docelowo aktywne tylko te dwa:
+ACTIVE_ENTRY_MODES = (Tournament.EntryMode.MANAGER, Tournament.EntryMode.ORGANIZER_ONLY)
+
 
 def _normalize_format_config(discipline: str | None, cfg) -> dict:
     """
@@ -47,17 +50,28 @@ def _normalize_format_config(discipline: str | None, cfg) -> dict:
     return cfg
 
 
+def _safe_entry_mode(value: str | None) -> str:
+    """
+    Defensive read:
+    Jeśli w DB istnieje legacy entry_mode (np. SELF_REGISTER),
+    to na wyjściu mapujemy go do MANAGER (żeby ChoiceField nie powodował 500).
+    """
+    if value in ACTIVE_ENTRY_MODES:
+        return value
+    return Tournament.EntryMode.MANAGER
+
+
 class TournamentSerializer(serializers.ModelSerializer):
     """
     Zasady:
-    - name: zawsze edytowalne
-    - discipline: po DRAFT tylko przez /change-discipline/
-    - setup (format/config): po DRAFT tylko przez /change-setup/
-    - liczba uczestników NIE jest częścią konfiguracji (pochodzi z Team)
+    - entry_mode steruje WYŁĄCZNIE panelem (MANAGER / ORGANIZER_ONLY)
+    - join_enabled to osobny toggle dołączania uczestników (tylko organizer może zmieniać)
+    - kody (access_code, registration_code) zwracamy TYLKO organizerowi
     """
 
     my_role = serializers.SerializerMethodField()
     matches_started = serializers.SerializerMethodField()
+    my_permissions = serializers.SerializerMethodField()
 
     class Meta:
         model = Tournament
@@ -68,17 +82,22 @@ class TournamentSerializer(serializers.ModelSerializer):
             "created_at",
             "my_role",
             "matches_started",
+            "my_permissions",
         )
 
     # ============================================================
-    # UKRYWANIE PÓL WRAŻLIWYCH (READ)
+    # UKRYWANIE / NORMALIZACJA PÓL (READ)
     # ============================================================
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
         request = self.context.get("request")
 
-        # Kody (access + registration) widoczne tylko dla organizatora
+        # Defensive: entry_mode z DB może mieć legacy wartość -> mapujemy na MANAGER
+        if "entry_mode" in data:
+            data["entry_mode"] = _safe_entry_mode(data.get("entry_mode"))
+
+        # Kody (access + join) widoczne tylko dla organizatora
         if not request or not request.user.is_authenticated or instance.organizer_id != request.user.id:
             data.pop("access_code", None)
             data.pop("registration_code", None)
@@ -110,6 +129,12 @@ class TournamentSerializer(serializers.ModelSerializer):
         )
         return _normalize_format_config(discipline, value)
 
+    def validate_entry_mode(self, value: str):
+        # Docelowo akceptujemy TYLKO aktywne tryby panelu.
+        if value not in ACTIVE_ENTRY_MODES:
+            raise serializers.ValidationError("Nieprawidłowy tryb panelu. Dozwolone: MANAGER, ORGANIZER_ONLY.")
+        return value
+
     # ============================================================
     # WALIDACJA KONTEKSTOWA (STATUS / ROLE)
     # ============================================================
@@ -118,17 +143,16 @@ class TournamentSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         instance = self.instance
 
-        # Ujednolicamy format_config także wtedy, gdy przychodzi w PATCH/POST
+        # Normalizacja format_config gdy przychodzi w PATCH/POST
         if "format_config" in attrs:
-            discipline = attrs.get("discipline") or (
-                instance.discipline if instance else None
-            )
-            attrs["format_config"] = _normalize_format_config(
-                discipline, attrs.get("format_config")
-            )
+            discipline = attrs.get("discipline") or (instance.discipline if instance else None)
+            attrs["format_config"] = _normalize_format_config(discipline, attrs.get("format_config"))
 
-        # Jeśli to CREATE (instance None) lub brak usera, nie narzucamy reguł zmian po DRAFT
+        # CREATE lub brak usera: nie narzucamy reguł zmian po DRAFT
         if not request or not request.user.is_authenticated or not instance:
+            # Przy CREATE też pilnujemy entry_mode (jeśli podany)
+            if "entry_mode" in attrs:
+                attrs["entry_mode"] = self.validate_entry_mode(attrs["entry_mode"])
             return attrs
 
         # --------------------------------------------
@@ -161,7 +185,7 @@ class TournamentSerializer(serializers.ModelSerializer):
             )
 
         # ============================================================
-        # UPRAWNIENIA
+        # UPRAWNIENIA (WRITE)
         # ============================================================
 
         is_organizer = instance.organizer_id == request.user.id
@@ -170,15 +194,19 @@ class TournamentSerializer(serializers.ModelSerializer):
             role=TournamentMembership.Role.ASSISTANT,
         ).exists()
 
-        # Widoczność / kody / tryby – tylko organizator
+        # Pola organizer-only:
+        # - publikacja, kody, tryb panelu, toggle join, join-code
         if not is_organizer:
-            attrs.pop("is_published", None)
-            attrs.pop("access_code", None)
-            attrs.pop("registration_code", None)
-            attrs.pop("entry_mode", None)
+            for field in (
+                "is_published",
+                "access_code",
+                "entry_mode",
+                "join_enabled",     # <--- DODANO BLOKADĘ EDYCJI join_enabled
+                "registration_code",
+            ):
+                attrs.pop(field, None)
 
-        # Konfiguracja sportowa – organizator lub asystent
-        # (entry_mode usunięte stąd, bo jest wyżej - tylko organizer)
+        # Konfiguracja sportowa: organizer lub asystent (podgląd/zmiana zależy potem od endpointów)
         if not (is_organizer or is_assistant):
             for field in (
                 "competition_type",
@@ -186,6 +214,10 @@ class TournamentSerializer(serializers.ModelSerializer):
                 "format_config",
             ):
                 attrs.pop(field, None)
+
+        # Jeśli organizer zmienia entry_mode, to pilnujemy tylko 2 trybów
+        if is_organizer and "entry_mode" in attrs:
+            attrs["entry_mode"] = self.validate_entry_mode(attrs["entry_mode"])
 
         return attrs
 
@@ -195,10 +227,8 @@ class TournamentSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         if "competition_type" not in validated_data:
-            validated_data["competition_type"] = (
-                Tournament.infer_default_competition_type(
-                    validated_data.get("discipline")
-                )
+            validated_data["competition_type"] = Tournament.infer_default_competition_type(
+                validated_data.get("discipline")
             )
 
         discipline = (validated_data.get("discipline") or "").lower()
@@ -206,6 +236,10 @@ class TournamentSerializer(serializers.ModelSerializer):
             discipline,
             validated_data.get("format_config"),
         )
+
+        # entry_mode domyślnie MANAGER (model), ale jeśli podany — tylko aktywne
+        if "entry_mode" in validated_data:
+            validated_data["entry_mode"] = self.validate_entry_mode(validated_data["entry_mode"])
 
         return super().create(validated_data)
 
@@ -227,11 +261,73 @@ class TournamentSerializer(serializers.ModelSerializer):
         ).exists():
             return TournamentMembership.Role.ASSISTANT
 
-        # Sprawdzenie czy użytkownik jest zarejestrowanym uczestnikiem
         if TournamentRegistration.objects.filter(tournament=obj, user=request.user).exists():
             return "PARTICIPANT"
 
         return None
+
+    def get_my_permissions(self, obj: Tournament) -> dict:
+        """
+        Kontrakt dla frontu: uprawnienia do AKCJI (granularnie).
+        Na razie zwracamy spójny słownik; backendowe enforcement zrobimy w widokach.
+        """
+        request = self.context.get("request")
+        user = request.user if request and request.user and request.user.is_authenticated else None
+
+        # Organizer ma pełne prawa (łącznie z organizer-only)
+        if user and obj.organizer_id == user.id:
+            return {
+                TournamentMembership.PERM_TEAMS_EDIT: True,
+                TournamentMembership.PERM_SCHEDULE_EDIT: True,
+                TournamentMembership.PERM_RESULTS_EDIT: True,
+                TournamentMembership.PERM_BRACKET_EDIT: True,
+                TournamentMembership.PERM_TOURNAMENT_EDIT: True,
+                TournamentMembership.PERM_PUBLISH: True,
+                TournamentMembership.PERM_ARCHIVE: True,
+                TournamentMembership.PERM_MANAGE_ASSISTANTS: True,
+                TournamentMembership.PERM_JOIN_SETTINGS: True,
+            }
+
+        m = None
+        if user:
+            m = TournamentMembership.objects.filter(
+                tournament=obj,
+                user=user,
+                role=TournamentMembership.Role.ASSISTANT,
+            ).first()
+
+        # Domyślnie wszystko False
+        base = {
+            TournamentMembership.PERM_TEAMS_EDIT: False,
+            TournamentMembership.PERM_SCHEDULE_EDIT: False,
+            TournamentMembership.PERM_RESULTS_EDIT: False,
+            TournamentMembership.PERM_BRACKET_EDIT: False,
+            TournamentMembership.PERM_TOURNAMENT_EDIT: False,
+            TournamentMembership.PERM_PUBLISH: False,
+            TournamentMembership.PERM_ARCHIVE: False,
+            TournamentMembership.PERM_MANAGE_ASSISTANTS: False,
+            TournamentMembership.PERM_JOIN_SETTINGS: False,
+        }
+
+        if not m:
+            return base
+
+        # W ORGANIZER_ONLY: asystent ma podgląd, edycja twardo False
+        if _safe_entry_mode(obj.entry_mode) == Tournament.EntryMode.ORGANIZER_ONLY:
+            return base
+
+        # W MANAGER: effective_permissions (ale organizer-only rzeczy nadal False)
+        eff = m.effective_permissions()
+        base.update(
+            {
+                TournamentMembership.PERM_TEAMS_EDIT: bool(eff.get(TournamentMembership.PERM_TEAMS_EDIT)),
+                TournamentMembership.PERM_SCHEDULE_EDIT: bool(eff.get(TournamentMembership.PERM_SCHEDULE_EDIT)),
+                TournamentMembership.PERM_RESULTS_EDIT: bool(eff.get(TournamentMembership.PERM_RESULTS_EDIT)),
+                TournamentMembership.PERM_BRACKET_EDIT: bool(eff.get(TournamentMembership.PERM_BRACKET_EDIT)),
+                TournamentMembership.PERM_TOURNAMENT_EDIT: bool(eff.get(TournamentMembership.PERM_TOURNAMENT_EDIT)),
+            }
+        )
+        return base
 
     def get_matches_started(self, obj: Tournament) -> bool:
         """
@@ -263,8 +359,6 @@ class TournamentMetaUpdateSerializer(serializers.ModelSerializer):
         end = attrs.get("end_date", getattr(self.instance, "end_date", None))
         if start and end and end < start:
             raise serializers.ValidationError(
-                {
-                    "end_date": "Data zakończenia nie może być wcześniejsza niż data rozpoczęcia."
-                }
+                {"end_date": "Data zakończenia nie może być wcześniejsza niż data rozpoczęcia."}
             )
         return attrs

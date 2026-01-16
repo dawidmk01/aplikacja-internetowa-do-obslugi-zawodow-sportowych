@@ -19,16 +19,21 @@ from tournaments.services.match_outcome import (
     validate_penalties_consistency,
 )
 
-from ..models import Match, Stage, Tournament
+from ..models import Match, Stage, Tournament, TournamentRegistration
 from ..serializers import MatchResultUpdateSerializer, MatchSerializer
 from ._helpers import (
-    user_can_manage_tournament,
+    # PODGLĄD/ROLE (NOWA STRATEGIA)
+    user_is_assistant,
+    user_can_view_tournament,
+    can_edit_schedule,
+    can_edit_results,
+
+    # KO helpers (bez zmian)
     _get_cup_matches,
     _sync_two_leg_pair_winner_if_possible,
     _try_auto_advance_knockout,
     handle_knockout_winner_change,
 )
-
 
 # ============================================================
 # Local Helpers
@@ -90,15 +95,13 @@ def _pair_winner_id(group: List[Match]) -> Optional[int]:
 
 
 def _handle_knockout_progression(
-        tournament: Tournament,
-        stage: Stage,
-        old_winner_id: Optional[int],
-        new_winner_id: Optional[int],
+    tournament: Tournament,
+    stage: Stage,
+    old_winner_id: Optional[int],
+    new_winner_id: Optional[int],
 ) -> None:
     """
-    Consolidated logic for handling winner changes in Knockout stages.
-    Handles rollback (soft reset) and auto-advancement.
-    IMPORTANT: applies only to the main KNOCKOUT tree (not Third Place).
+    Applies only to the main KNOCKOUT tree (not Third Place).
     """
     if stage.stage_type != Stage.StageType.KNOCKOUT:
         return
@@ -115,10 +118,6 @@ def _handle_knockout_progression(
 
 
 def _stringify_validation_detail(detail: object) -> str:
-    """
-    Zamienia serializers.ValidationError.detail na czytelny tekst.
-    Detail bywa dict/list/str.
-    """
     if detail is None:
         return "Nieprawidłowe dane."
     if isinstance(detail, str):
@@ -126,7 +125,6 @@ def _stringify_validation_detail(detail: object) -> str:
     if isinstance(detail, list):
         return "; ".join(str(x) for x in detail)
     if isinstance(detail, dict):
-        # preferujemy non_field_errors, tennis_sets itp.
         for k in ("non_field_errors", "tennis_sets", "detail"):
             v = detail.get(k)
             if v:
@@ -138,16 +136,12 @@ def _stringify_validation_detail(detail: object) -> str:
 
 
 def _validate_tennis_match_before_finish(match: Match, cfg: dict) -> Optional[str]:
-    """
-    Walidacja defensywna przed zakończeniem meczu tenisowego.
-    """
     if not match.result_entered:
         return "Nie można zakończyć meczu tenisowego bez wprowadzenia wyniku."
 
     if match.tennis_sets is None:
         return "Brak danych setów (tennis_sets). Uzupełnij sety w gemach."
 
-    # tenis nie ma dogrywki ani karnych
     if match.went_to_extra_time or match.decided_by_penalties:
         return "W tenisie nie obsługujemy dogrywki ani karnych."
 
@@ -207,7 +201,7 @@ def _knockout_has_started(tournament: Tournament) -> bool:
 
 
 def _import_advance_from_groups():
-    from tournaments.services.advance_from_groups import advance_from_groups  # alias
+    from tournaments.services.advance_from_groups import advance_from_groups
     return advance_from_groups
 
 
@@ -233,26 +227,22 @@ def _regenerate_knockout_from_groups_if_safe(tournament: Tournament) -> None:
 def _public_access_or_403(request, tournament: Tournament) -> Optional[Response]:
     """
     Zasady dostępu dla strony publicznej:
-    - manager (organizator/asystent) -> zawsze OK
-    - uczestnik (zatwierdzone zgłoszenie) -> zawsze OK (widzi mecze przed publikacją)
+    - organizer/asystent -> OK (zalogowany)
+    - zarejestrowany uczestnik -> OK (zalogowany)
     - public:
       - tournament.is_published musi być True
       - jeśli tournament.access_code ustawione, wymagamy ?code=...
     """
     user = getattr(request, "user", None)
 
-    # 1. Sprawdzamy, czy użytkownik jest zalogowany
     if user and getattr(user, "is_authenticated", False):
-
-        # A. Czy jest managerem?
-        if user_can_manage_tournament(user, tournament):
+        if tournament.organizer_id == user.id:
+            return None
+        if user_is_assistant(user, tournament):
+            return None
+        if TournamentRegistration.objects.filter(tournament=tournament, user=user).exists():
             return None
 
-        # B. Czy jest uczestnikiem z zatwierdzonym zgłoszeniem? (TWOJA ZMIANA)
-        if tournament.registrations.filter(user=user, approved=True).exists():
-            return None
-
-    # 2. Walidacja standardowa (dla niezalogowanych lub osób postronnych)
     if not tournament.is_published:
         return Response({"detail": "Turniej nie jest dostępny."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -269,14 +259,18 @@ def _public_access_or_403(request, tournament: Tournament) -> Optional[Response]
 
 class TournamentMatchListView(ListAPIView):
     """
-    Lista meczów dla managerów (organizator/asystent).
+    Lista meczów dla panelu (organizator/asystent).
+    NOWA STRATEGIA: asystent ma podgląd także w ORGANIZER_ONLY.
     """
     serializer_class = MatchSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
-        if not user_can_manage_tournament(self.request.user, tournament):
+
+        user = self.request.user
+        is_panel_user = (tournament.organizer_id == user.id) or user_is_assistant(user, tournament)
+        if not is_panel_user:
             return Match.objects.none()
 
         return (
@@ -316,6 +310,7 @@ class TournamentPublicMatchListView(ListAPIView):
 class MatchScheduleUpdateView(RetrieveUpdateAPIView):
     """
     PATCH /api/matches/<id>/
+    Edycja harmonogramu – granularnie (schedule_edit).
     """
     queryset = Match.objects.all()
     serializer_class = MatchSerializer
@@ -328,10 +323,19 @@ class MatchScheduleUpdateView(RetrieveUpdateAPIView):
         ).distinct()
 
     def update(self, request, *args, **kwargs):
+        match = self.get_object()
+        tournament = match.tournament
+
+        if not can_edit_schedule(request.user, tournament):
+            return Response(
+                {"detail": "Nie masz uprawnień do edycji harmonogramu. Dostępny jest tylko podgląd."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         allowed_fields = {"scheduled_date", "scheduled_time", "location"}
         data = {k: v for k, v in request.data.items() if k in allowed_fields}
 
-        serializer = self.get_serializer(self.get_object(), data=data, partial=True)
+        serializer = self.get_serializer(match, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
 
@@ -341,6 +345,7 @@ class MatchScheduleUpdateView(RetrieveUpdateAPIView):
 class MatchResultUpdateView(RetrieveUpdateAPIView):
     """
     PATCH /api/matches/<pk>/result/
+    Edycja wyników – granularnie (results_edit).
     """
     serializer_class = MatchResultUpdateSerializer
     permission_classes = [IsAuthenticated]
@@ -358,8 +363,15 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
     @transaction.atomic
     def update(self, request, *args, **kwargs):
         match = self.get_object()
-        stage = match.stage
         tournament = match.tournament
+
+        if not can_edit_results(request.user, tournament):
+            return Response(
+                {"detail": "Nie masz uprawnień do edycji wyników. Dostępny jest tylko podgląd."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        stage = match.stage
 
         old_single_winner_id = match.winner_id
         cup_matches = _get_cup_matches(tournament)
@@ -416,6 +428,7 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
 class FinishMatchView(APIView):
     """
     POST /api/matches/<pk>/finish/
+    Finish – także traktujemy jako edycję wyników (results_edit).
     """
     permission_classes = [IsAuthenticated]
 
@@ -432,8 +445,11 @@ class FinishMatchView(APIView):
         tournament = match.tournament
         stage = match.stage
 
-        if not user_can_manage_tournament(request.user, tournament):
-            return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
+        if not can_edit_results(request.user, tournament):
+            return Response(
+                {"detail": "Nie masz uprawnień do zatwierdzania wyników. Dostępny jest tylko podgląd."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         cfg = tournament.format_config or {}
 

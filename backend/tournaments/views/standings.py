@@ -7,12 +7,14 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from tournaments.models import Tournament, Stage
+from tournaments.models import Tournament, Stage, TournamentRegistration
 from tournaments.services.standings.compute import compute_stage_standings
 from tournaments.services.standings.knockout_bracket import get_knockout_bracket
 from tournaments.services.standings.types import StandingRow
 
-from tournaments.views._helpers import user_can_manage_tournament
+from tournaments.views._helpers import (
+    user_is_assistant,
+)
 
 
 class TournamentStandingsView(APIView):
@@ -30,8 +32,7 @@ class TournamentStandingsView(APIView):
     - meta.tennis_points_mode (np. "PLT" / "NONE") jeśli dyscyplina tennis
     """
 
-    # Publiczny endpoint (ale kontrola dostępu w _public_access_or_403)
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny]  # kontrola dostępu w _public_access_or_403
 
     def get(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
@@ -99,26 +100,30 @@ class TournamentStandingsView(APIView):
     @staticmethod
     def _public_access_or_403(request, tournament: Tournament) -> Response | None:
         """
-        Zasady dostępu spójne z TournamentDetailView i TournamentPublicMatchListView:
-        - manager (organizator/asystent) -> zawsze OK
-        - uczestnik (zatwierdzone zgłoszenie) -> zawsze OK (widzi tabele przed publikacją)
+        Spójnie z matches.py (public/matches) + TournamentDetailView:
+
+        - organizer/asystent (zalogowany) -> OK zawsze
+        - uczestnik (zalogowany i ma TournamentRegistration w tym turnieju) -> OK zawsze
         - public:
           - tournament.is_published == True
           - jeśli tournament.access_code ustawione -> wymagamy ?code=...
         """
         user = getattr(request, "user", None)
 
-        # Sprawdzamy uprawnienia użytkowników zalogowanych (Managerzy i Uczestnicy)
         if user and getattr(user, "is_authenticated", False):
-            # A. Czy jest managerem?
-            if user_can_manage_tournament(user, tournament):
+            # organizer
+            if tournament.organizer_id == user.id:
                 return None
 
-            # B. Czy jest uczestnikiem z zatwierdzonym zgłoszeniem?
-            if tournament.registrations.filter(user=user, approved=True).exists():
+            # assistant (podgląd również w ORGANIZER_ONLY)
+            if user_is_assistant(user, tournament):
                 return None
 
-        # Walidacja dla użytkowników niezalogowanych lub osób postronnych
+            # uczestnik (rejestracja istnieje) – bez approved=True (bo tego nie ma w modelu)
+            if TournamentRegistration.objects.filter(tournament=tournament, user=user).exists():
+                return None
+
+        # public
         if not getattr(tournament, "is_published", False):
             return Response({"detail": "Turniej nie jest dostępny."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -171,7 +176,7 @@ class TournamentStandingsView(APIView):
         if discipline == "tennis":
             base.update(
                 {
-                    # sety (trzymane u Ciebie jako goals_* w StandingRow)
+                    # sety (u Ciebie były mapowane na goals_* w StandingRow)
                     "sets_for": row.goals_for,
                     "sets_against": row.goals_against,
                     "sets_diff": row.goal_difference,

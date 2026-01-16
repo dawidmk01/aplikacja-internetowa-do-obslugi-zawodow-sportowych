@@ -22,6 +22,12 @@ class Tournament(models.Model):
 
     Cykl życia:
     - status: DRAFT → CONFIGURED → RUNNING → FINISHED
+
+    Docelowa logika:
+    - entry_mode steruje WYŁĄCZNIE panelem zarządzania (kto może edytować).
+      Aktywne tryby: MANAGER, ORGANIZER_ONLY.
+    - dołączanie uczestników przez konto+kody to osobny toggle: join_enabled
+      (działa zarówno w MANAGER jak i ORGANIZER_ONLY, ale toggle zmienia tylko organizator).
     """
 
     class Discipline(models.TextChoices):
@@ -41,11 +47,11 @@ class Tournament(models.Model):
         LEAGUE = "LEAGUE", "Liga"
         MIXED = "MIXED", "Mieszany"
 
-    # ZMIANA: Dostosowanie trybów do wymagań (MANAGER, SELF_REGISTER)
     class EntryMode(models.TextChoices):
-        MANAGER = "MANAGER", "Organizator + asystent"
+        # Aktywne tryby panelu
+        MANAGER = "MANAGER", "Organizator + asystenci"
         ORGANIZER_ONLY = "ORGANIZER_ONLY", "Tylko organizator"
-        SELF_REGISTER = "SELF_REGISTER", "Samodzielna rejestracja"
+
 
     class Status(models.TextChoices):
         DRAFT = "DRAFT", "Szkic"
@@ -84,11 +90,18 @@ class Tournament(models.Model):
 
     format_config = models.JSONField(default=dict, blank=True)
 
+    # Panel management mode (nie mieszać z dołączaniem uczestników)
     entry_mode = models.CharField(
         max_length=32,
         choices=EntryMode.choices,
-        # ZMIANA: Domyślnie MANAGER
         default=EntryMode.MANAGER,
+    )
+
+    # Toggle dołączania przez konto + kod (działa w MANAGER i ORGANIZER_ONLY)
+    join_enabled = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Czy użytkownicy mogą dołączać do turnieju przez konto + kod (join link + code).",
     )
 
     status = models.CharField(
@@ -105,14 +118,15 @@ class Tournament(models.Model):
         help_text="Logiczne archiwum – turniej ukryty na głównych listach",
     )
 
+    # Kod dostępu do podglądu publicznego (jeśli używasz mechanizmu 'code' do oglądania)
     access_code = models.CharField(max_length=20, blank=True, null=True)
 
-    # ZMIANA: Usunięto duplikat, pole do trybu SELF_REGISTER
+    # Kod dołączania uczestników (JOIN CODE) – zachowujemy nazwę dla kompatybilności,
     registration_code = models.CharField(
         max_length=32,
         blank=True,
         null=True,
-        help_text="Kod do samodzielnej rejestracji (tryb SELF_REGISTER).",
+        help_text="Kod dołączania uczestników (JOIN) używany, gdy join_enabled=true.",
     )
 
     # Opis turnieju (widoczny w panelu publicznym)
@@ -141,7 +155,6 @@ class Tournament(models.Model):
         }
 
     def get_league_legs(self) -> int:
-        # Metoda teraz szuka klucza "league_matches"
         raw = (self.format_config or {}).get(self.FORMATCFG_LEAGUE_LEGS_KEY, self.DEFAULT_LEAGUE_LEGS)
         try:
             value = int(raw)
@@ -161,12 +174,59 @@ class Tournament(models.Model):
 
 
 # ============================================================
-# ROLE ORGANIZACYJNE
+# ROLE ORGANIZACYJNE + UPRAWNIENIA (PER-ASYSTENT)
 # ============================================================
 
 class TournamentMembership(models.Model):
+    """
+    Membership asystenta w turnieju + granularne uprawnienia.
+
+    permissions: JSON, np.
+      {
+        "teams_edit": true,
+        "schedule_edit": true,
+        "results_edit": true,
+        "bracket_generate": true
+      }
+
+    Zasady:
+    - Organizer zawsze ma pełne uprawnienia (nie przez Membership).
+    - W entry_mode=ORGANIZER_ONLY: asystent ma podgląd, a edycja zależy od backendowych checków,
+      ale domyślnie rekomendujemy traktować edycję jako wyłączoną (poza przypadkami, gdy świadomie dopuścisz).
+    """
+
     class Role(models.TextChoices):
         ASSISTANT = "ASSISTANT", "Asystent"
+
+    # Klucze uprawnień (spójne dla backend i front)
+    PERM_TEAMS_EDIT = "teams_edit"
+    PERM_SCHEDULE_EDIT = "schedule_edit"
+    PERM_RESULTS_EDIT = "results_edit"
+    PERM_BRACKET_EDIT = "bracket_edit"          # zmiany/generowanie rozgrywek / reset
+    PERM_TOURNAMENT_EDIT = "tournament_edit"    # np. opis, metadane (bez publish/codes)
+
+    # Zawsze organizer-only (nie dawaj tego asystentom w ogóle, nawet jeśli pojawi się w JSON):
+    PERM_PUBLISH = "publish"
+    PERM_ARCHIVE = "archive"
+    PERM_MANAGE_ASSISTANTS = "manage_assistants"
+    PERM_JOIN_SETTINGS = "join_settings"        # join_enabled / registration_code / access_code
+
+    DEFAULT_PERMISSIONS_MANAGER = {
+        PERM_TEAMS_EDIT: True,
+        PERM_SCHEDULE_EDIT: True,
+        PERM_RESULTS_EDIT: True,
+        PERM_BRACKET_EDIT: True,
+        PERM_TOURNAMENT_EDIT: True,
+    }
+
+    DEFAULT_PERMISSIONS_ORGANIZER_ONLY = {
+        # W trybie tylko organizator: asystent ma podgląd, edycja domyślnie wyłączona
+        PERM_TEAMS_EDIT: False,
+        PERM_SCHEDULE_EDIT: False,
+        PERM_RESULTS_EDIT: False,
+        PERM_BRACKET_EDIT: False,
+        PERM_TOURNAMENT_EDIT: False,
+    }
 
     tournament = models.ForeignKey(
         Tournament,
@@ -186,12 +246,43 @@ class TournamentMembership(models.Model):
         default=Role.ASSISTANT,
     )
 
+    permissions = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Granularne uprawnienia asystenta w danym turnieju (JSON).",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["tournament", "user"], name="uniq_tournament_user")
         ]
+
+    def effective_permissions(self) -> dict:
+        """
+        Zwraca uprawnienia z domyślną bazą zależną od entry_mode,
+        nadpisaną wartościami z self.permissions.
+        """
+        base = (
+            self.DEFAULT_PERMISSIONS_ORGANIZER_ONLY
+            if self.tournament.entry_mode == Tournament.EntryMode.ORGANIZER_ONLY
+            else self.DEFAULT_PERMISSIONS_MANAGER
+        )
+        merged = dict(base)
+        if isinstance(self.permissions, dict):
+            merged.update(self.permissions)
+
+        # twarde blokady: tylko organizator
+        for k in (
+            self.PERM_PUBLISH,
+            self.PERM_ARCHIVE,
+            self.PERM_MANAGE_ASSISTANTS,
+            self.PERM_JOIN_SETTINGS,
+        ):
+            merged.pop(k, None)
+
+        return merged
 
 
 # ============================================================
@@ -202,9 +293,10 @@ class TournamentRegistration(models.Model):
     """
     Rejestracja uczestnika (konto) do turnieju:
     - 1 user = 1 rejestracja w danym turnieju
-    - wskazuje slot Team, który użytkownik „zajął”
+    - opcjonalnie wskazuje slot Team, który użytkownik „zajął”
     - przechowuje display_name (do edycji nazwy po rejestracji)
     """
+
     tournament = models.ForeignKey(
         Tournament,
         on_delete=models.CASCADE,
@@ -217,7 +309,6 @@ class TournamentRegistration(models.Model):
         related_name="tournament_registrations",
     )
 
-    # Używamy stringa "Team", ponieważ model Team jest zdefiniowany poniżej
     team = models.ForeignKey(
         "Team",
         on_delete=models.SET_NULL,
@@ -287,14 +378,14 @@ class Team(models.Model):
         null=True,
     )
 
-    # ZMIANA: Powiązanie slotu z użytkownikiem (dla trybu SELF_REGISTER)
+
     registered_user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
         related_name="registered_teams",
-        help_text="Użytkownik, który zajął ten slot w trybie SELF_REGISTER.",
+        help_text="(Opcionalne) Użytkownik powiązany ze slotem Team. Preferuj TournamentRegistration.team.",
     )
 
     name = models.CharField(max_length=255)
@@ -422,33 +513,9 @@ class Match(models.Model):
         related_name="away_matches",
     )
 
-    # ============================================================
-    # WYNIK – pola ogólne (wspólne dla dyscyplin)
-    # ============================================================
-    #
-    # home_score / away_score:
-    # - piłka nożna / ręczna / koszykówka: bramki / punkty,
-    # - tenis: liczba wygranych setów (wyliczana na podstawie tennis_sets).
-    #
     home_score = models.PositiveIntegerField(default=0)
     away_score = models.PositiveIntegerField(default=0)
 
-    # ============================================================
-    # TENIS – zapis setów w gemach
-    # ============================================================
-    #
-    # Struktura JSON (lista setów):
-    # [
-    #   {"home_games": 6, "away_games": 4},
-    #   {"home_games": 3, "away_games": 6},
-    #   {"home_games": 7, "away_games": 6, "home_tiebreak": 7, "away_tiebreak": 5}
-    # ]
-    #
-    # Zasady:
-    # - pole wykorzystywane tylko dla Tournament.discipline == "tennis",
-    # - dla pozostałych dyscyplin powinno pozostać NULL,
-    # - walidacja poprawności (6–0..7–6 oraz tie-break przy 7–6) odbywa się w serializerze/usługach.
-    #
     tennis_sets = models.JSONField(
         blank=True,
         null=True,
@@ -456,9 +523,6 @@ class Match(models.Model):
         help_text="Dla tenisa: lista setów w gemach (opcjonalnie z tie-breakiem).",
     )
 
-    # ============================================================
-    # DOGRYWKA / KARNE (głównie piłka nożna KO oraz ręczna wg konfiguracji)
-    # ============================================================
     went_to_extra_time = models.BooleanField(default=False)
     home_extra_time_score = models.PositiveSmallIntegerField(null=True, blank=True)
     away_extra_time_score = models.PositiveSmallIntegerField(null=True, blank=True)
@@ -467,7 +531,6 @@ class Match(models.Model):
     home_penalty_score = models.PositiveSmallIntegerField(null=True, blank=True)
     away_penalty_score = models.PositiveSmallIntegerField(null=True, blank=True)
 
-    # Czy wynik został faktycznie wprowadzony/edytowany przez użytkownika
     result_entered = models.BooleanField(default=False)
 
     winner = models.ForeignKey(
@@ -492,7 +555,6 @@ class Match(models.Model):
         help_text="Numer kolejki / rundy",
     )
 
-    # Harmonogram meczu (opcjonalny)
     scheduled_date = models.DateField(blank=True, null=True)
     scheduled_time = models.TimeField(blank=True, null=True)
     location = models.CharField(max_length=255, blank=True, null=True)

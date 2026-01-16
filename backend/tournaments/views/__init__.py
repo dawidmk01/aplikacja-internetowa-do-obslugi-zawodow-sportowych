@@ -13,6 +13,7 @@ from .assistants import (
     TournamentAssistantListView,
     AddAssistantView,
     RemoveAssistantView,
+    AssistantPermissionsView,
 )
 
 from .registrations import (
@@ -20,10 +21,6 @@ from .registrations import (
     TournamentRegistrationJoinView,
     TournamentRegistrationMeView,
     TournamentRegistrationMyMatchesView,
-    # Aliasy/Nowe widoki rejestracji
-    TournamentSelfRegisterView,
-    TournamentSelfRegisterMeView,
-    TournamentSelfRegisterMyMatchesView,
 )
 
 from .teams import (
@@ -63,15 +60,13 @@ __all__ = [
     "TournamentAssistantListView",
     "AddAssistantView",
     "RemoveAssistantView",
+    "AssistantPermissionsView",
 
     # registrations
     "TournamentRegistrationVerifyView",
     "TournamentRegistrationJoinView",
     "TournamentRegistrationMeView",
     "TournamentRegistrationMyMatchesView",
-    "TournamentSelfRegisterView",
-    "TournamentSelfRegisterMeView",
-    "TournamentSelfRegisterMyMatchesView",
 
     # teams
     "TournamentTeamSetupView",
