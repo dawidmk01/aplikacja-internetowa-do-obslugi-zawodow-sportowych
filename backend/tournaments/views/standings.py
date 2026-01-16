@@ -101,14 +101,24 @@ class TournamentStandingsView(APIView):
         """
         Zasady dostępu spójne z TournamentDetailView i TournamentPublicMatchListView:
         - manager (organizator/asystent) -> zawsze OK
+        - uczestnik (zatwierdzone zgłoszenie) -> zawsze OK (widzi tabele przed publikacją)
         - public:
           - tournament.is_published == True
           - jeśli tournament.access_code ustawione -> wymagamy ?code=...
         """
         user = getattr(request, "user", None)
-        if user and getattr(user, "is_authenticated", False) and user_can_manage_tournament(user, tournament):
-            return None
 
+        # Sprawdzamy uprawnienia użytkowników zalogowanych (Managerzy i Uczestnicy)
+        if user and getattr(user, "is_authenticated", False):
+            # A. Czy jest managerem?
+            if user_can_manage_tournament(user, tournament):
+                return None
+
+            # B. Czy jest uczestnikiem z zatwierdzonym zgłoszeniem?
+            if tournament.registrations.filter(user=user, approved=True).exists():
+                return None
+
+        # Walidacja dla użytkowników niezalogowanych lub osób postronnych
         if not getattr(tournament, "is_published", False):
             return Response({"detail": "Turniej nie jest dostępny."}, status=status.HTTP_403_FORBIDDEN)
 

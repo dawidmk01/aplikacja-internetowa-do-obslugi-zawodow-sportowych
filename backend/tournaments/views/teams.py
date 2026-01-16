@@ -30,12 +30,31 @@ def _tournament_real_started(tournament: Tournament) -> bool:
     )
 
 
+def _can_edit_teams(user, tournament: Tournament) -> bool:
+    """
+    Sprawdza uprawnienia do edycji uczestników (nazwy, liczba).
+    Zasada:
+    1. Musi być managerem (organizator lub asystent).
+    2. Jeśli entry_mode == ORGANIZER_ONLY -> tylko organizator może edytować.
+    """
+    # podstawowy warunek
+    if not user_can_manage_tournament(user, tournament):
+        return False
+
+    # ORGANIZER_ONLY: tylko organizator może edytować teams
+    if tournament.entry_mode == Tournament.EntryMode.ORGANIZER_ONLY:
+        return tournament.organizer_id == user.id
+
+    return True
+
+
 class TournamentTeamListView(ListAPIView):
     serializer_class = TeamSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
+        # Do podglądu listy wystarczy rola w turnieju (nawet w ORGANIZER_ONLY asystent musi widzieć teams)
         if not user_can_manage_tournament(self.request.user, tournament):
             return Team.objects.none()
         return (
@@ -50,8 +69,13 @@ class TournamentTeamUpdateView(APIView):
 
     def patch(self, request, pk, team_id):
         tournament = get_object_or_404(Tournament, pk=pk)
-        if not user_can_manage_tournament(request.user, tournament):
-            return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
+
+        # ZMIANA: użycie _can_edit_teams zamiast user_can_manage_tournament
+        if not _can_edit_teams(request.user, tournament):
+            return Response(
+                {"detail": "Brak uprawnień do edycji uczestników (tryb: tylko organizator)."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         team = get_object_or_404(
             Team,
@@ -82,7 +106,9 @@ class TournamentTeamSetupView(APIView):
 
     Uprawnienia:
     - organizer: może zmieniać także po rozpoczęciu (ale to resetuje wyniki)
-    - assistant: może zmieniać tylko do REALNEGO startu (bez liczenia BYE jako start)
+    - assistant:
+        1. Może zmieniać, CHYBA ŻE tryb to ORGANIZER_ONLY.
+        2. Może zmieniać tylko do REALNEGO startu (bez liczenia BYE jako start).
     """
 
     permission_classes = [IsAuthenticated]
@@ -91,8 +117,12 @@ class TournamentTeamSetupView(APIView):
     def post(self, request, pk):
         tournament = get_object_or_404(Tournament, pk=pk)
 
-        if not user_can_manage_tournament(request.user, tournament):
-            return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
+        # ZMIANA: Blokada asystenta w trybie ORGANIZER_ONLY na samym wstępie
+        if not _can_edit_teams(request.user, tournament):
+            return Response(
+                {"detail": "Brak uprawnień do edycji uczestników (tryb: tylko organizator)."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         # Role
         is_organizer = tournament.organizer_id == request.user.id
@@ -113,7 +143,8 @@ class TournamentTeamSetupView(APIView):
         # Klucz: po REALNYM starcie blokujemy TYLKO asystenta.
         if is_assistant and real_started:
             return Response(
-                {"detail": "Turniej już się rozpoczął (są mecze w trakcie lub zakończone) — asystent nie może zmieniać liczby uczestników."},
+                {
+                    "detail": "Turniej już się rozpoczął (są mecze w trakcie lub zakończone) — asystent nie może zmieniać liczby uczestników."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -127,7 +158,8 @@ class TournamentTeamSetupView(APIView):
             return Response({"detail": "Nieprawidłowa liczba uczestników."}, status=status.HTTP_400_BAD_REQUEST)
 
         if requested_count < 2:
-            return Response({"detail": "Liczba uczestników musi wynosić co najmniej 2."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "Liczba uczestników musi wynosić co najmniej 2."},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         # Wymuś: BYE zawsze nieaktywny
         Team.objects.filter(tournament=tournament, name=BYE_TEAM_NAME).update(is_active=False)

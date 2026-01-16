@@ -2,23 +2,24 @@ from __future__ import annotations
 
 from django.apps import apps
 from django.db import transaction
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 
 from rest_framework import serializers, status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.generics import ListAPIView, ListCreateAPIView, RetrieveUpdateAPIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from tournaments.models import Team, Tournament
+from tournaments.models import Team, Tournament, TournamentMembership, TournamentRegistration
 from tournaments.permissions import IsTournamentOrganizer
 from tournaments.serializers import TournamentSerializer, TournamentMetaUpdateSerializer
 from tournaments.services.match_generation import ensure_matches_generated
 from tournaments.views._helpers import user_can_manage_tournament
 
 
-
-# =========================d
+# =========================
 # HELPERY MODEL-LOOKUP
 # =========================
 def get_model_any(app_label: str, names: list[str]):
@@ -116,7 +117,7 @@ class TournamentListView(ListCreateAPIView):
 
         Team.objects.bulk_create(
             [
-                Teamz:=Team(tournament=tournament, name=f"{name_prefix} 1", is_active=True),
+                Team(tournament=tournament, name=f"{name_prefix} 1", is_active=True),
                 Team(tournament=tournament, name=f"{name_prefix} 2", is_active=True),
             ]
         )
@@ -133,8 +134,15 @@ class MyTournamentListView(ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        return Tournament.objects.filter(organizer=user).union(
-            Tournament.objects.filter(memberships__user=user)
+        # ZMIANA: Użycie Q i distinct() zamiast union(), obsługa registrations
+        return (
+            Tournament.objects.filter(
+                Q(organizer=user)
+                | Q(memberships__user=user)
+                | Q(registrations__user=user)
+            )
+            .distinct()
+            .order_by("-created_at")
         )
 
 
@@ -152,19 +160,37 @@ class TournamentDetailView(RetrieveUpdateAPIView):
 
     def retrieve(self, request, *args, **kwargs):
         tournament = self.get_object()
-        user = request.user if request.user.is_authenticated else None
 
-        if user and user_can_manage_tournament(user, tournament):
-            return super().retrieve(request, *args, **kwargs)
+        serializer = self.get_serializer(tournament, context={"request": request})
 
-        if not tournament.is_published:
-            return Response({"detail": "Turniej nie jest dostępny."}, status=status.HTTP_403_FORBIDDEN)
+        # 1) Organizator lub asystent (w trybie MANAGER) -> pełny dostęp jak dotychczas
+        if request.user.is_authenticated and user_can_manage_tournament(request.user, tournament):
+            return Response(serializer.data)
 
-        if tournament.access_code:
-            if request.query_params.get("code") != tournament.access_code:
-                return Response({"detail": "Wymagany poprawny kod dostępu."}, status=status.HTTP_403_FORBIDDEN)
+        # 2) Asystent (membership) -> PODGLĄD, nawet gdy entry_mode blokuje panel
+        is_member = (
+            request.user.is_authenticated
+            and TournamentMembership.objects.filter(tournament=tournament, user=request.user).exists()
+        )
+        if is_member:
+            return Response(serializer.data)
 
-        return super().retrieve(request, *args, **kwargs)
+        # 3) Zarejestrowany uczestnik -> podgląd
+        if request.user.is_authenticated and TournamentRegistration.objects.filter(
+            tournament=tournament, user=request.user
+        ).exists():
+            return Response(serializer.data)
+
+        # 4) Public (opublikowany + ewentualny kod)
+        if tournament.is_published:
+            if tournament.access_code:
+                provided_code = request.query_params.get("code")
+                if provided_code != tournament.access_code:
+                    raise PermissionDenied("Nieprawidłowy kod dostępu.")
+            return Response(serializer.data)
+
+        raise PermissionDenied("Brak dostępu do tego turnieju.")
+
 
 # =========================
 # META (SCHEDULE + DESCRIPTION)
@@ -202,7 +228,8 @@ class TournamentMetaUpdateView(APIView):
 
         # Zwracamy pełny widok turnieju (spójny z resztą UI)
         return Response(TournamentSerializer(tournament, context={"request": request}).data)
-    
+
+
 # =========================
 # ARCHIVE / UNARCHIVE
 # =========================
@@ -463,4 +490,3 @@ class ChangeSetupView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-

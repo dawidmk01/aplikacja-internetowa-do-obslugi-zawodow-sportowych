@@ -1,7 +1,6 @@
 from django.urls import path
 
 from .views import (
-    # tournaments
     TournamentListView,
     TournamentDetailView,
     TournamentMetaUpdateView,
@@ -11,79 +10,78 @@ from .views import (
     ChangeDisciplineView,
     ChangeSetupView,
 
-    # assistants
     TournamentAssistantListView,
     AddAssistantView,
     RemoveAssistantView,
 
-    # teams
     TournamentTeamSetupView,
     TournamentTeamListView,
     TournamentTeamUpdateView,
 
-    # matches
     TournamentMatchListView,
     TournamentPublicMatchListView,
     MatchScheduleUpdateView,
     MatchResultUpdateView,
     FinishMatchView,
 
-    # stages
-    AdvanceFromGroupsView,
-
-    # standings
     TournamentStandingsView,
+
+    TournamentRegistrationVerifyView,
+    TournamentRegistrationJoinView,
+    TournamentRegistrationMeView,
+    TournamentRegistrationMyMatchesView,
+
+    TournamentSelfRegisterView,
+    TournamentSelfRegisterMeView,
+    TournamentSelfRegisterMyMatchesView,
 )
 
 urlpatterns = [
-    # =========================
-    # TURNIEJE
-    # =========================
-    path("tournaments/", TournamentListView.as_view(), name="tournament-list"),
-    path("tournaments/my/", MyTournamentListView.as_view(), name="my-tournament-list"),
-    path("tournaments/<int:pk>/", TournamentDetailView.as_view(), name="tournament-detail"),
-    path("tournaments/<int:pk>/meta/", TournamentMetaUpdateView.as_view(), name="tournament-meta"),
+    # --- TOURNAMENTS ---
+    path("tournaments/", TournamentListView.as_view()),
+    path("tournaments/my/", MyTournamentListView.as_view()),
+    path("tournaments/<int:pk>/", TournamentDetailView.as_view()),
+    path("tournaments/<int:pk>/meta/", TournamentMetaUpdateView.as_view()),
+    path("tournaments/<int:pk>/archive/", ArchiveTournamentView.as_view()),
+    path("tournaments/<int:pk>/unarchive/", UnarchiveTournamentView.as_view()),
 
-    path("tournaments/<int:pk>/archive/", ArchiveTournamentView.as_view(), name="tournament-archive"),
-    path("tournaments/<int:pk>/unarchive/", UnarchiveTournamentView.as_view(), name="tournament-unarchive"),
-    path("tournaments/<int:pk>/change-discipline/", ChangeDisciplineView.as_view(), name="tournament-change-discipline"),
-    path("tournaments/<int:pk>/change-setup/", ChangeSetupView.as_view(), name="tournament-change-setup"),
+    # nowe (kanoniczne)
+    path("tournaments/<int:pk>/discipline/", ChangeDisciplineView.as_view()),
+    path("tournaments/<int:pk>/setup/", ChangeSetupView.as_view()),
 
-    # =========================
-    # ASYSTENCI
-    # =========================
-    path("tournaments/<int:pk>/assistants/", TournamentAssistantListView.as_view(), name="tournament-assistants"),
-    path("tournaments/<int:pk>/assistants/list/", TournamentAssistantListView.as_view(), name="tournament-assistants-list"),
-    path("tournaments/<int:pk>/assistants/add/", AddAssistantView.as_view(), name="assistant-add"),
-    path("tournaments/<int:pk>/assistants/<int:user_id>/remove/", RemoveAssistantView.as_view(), name="assistant-remove"),
+    # aliasy (wsteczna kompatybilność z frontendem)
+    path("tournaments/<int:pk>/change-discipline/", ChangeDisciplineView.as_view()),
+    path("tournaments/<int:pk>/change-setup/", ChangeSetupView.as_view()),
 
-    # =========================
-    # DRUŻYNY
-    # =========================
-    path("tournaments/<int:pk>/teams/", TournamentTeamListView.as_view(), name="tournament-teams"),
-    path("tournaments/<int:pk>/teams/setup/", TournamentTeamSetupView.as_view(), name="tournament-teams-setup"),
-    path("tournaments/<int:pk>/teams/<int:team_id>/", TournamentTeamUpdateView.as_view(), name="tournament-team-detail"),
+    # --- ASSISTANTS ---
+    path("tournaments/<int:pk>/assistants/", TournamentAssistantListView.as_view()),
+    path("tournaments/<int:pk>/assistants/add/", AddAssistantView.as_view()),
+    path("tournaments/<int:pk>/assistants/<int:user_id>/remove/", RemoveAssistantView.as_view()),
 
-    # =========================
-    # MECZE
-    # =========================
-    path("tournaments/<int:pk>/matches/", TournamentMatchListView.as_view(), name="tournament-matches"),
-    path("tournaments/<int:pk>/public/matches/", TournamentPublicMatchListView.as_view(), name="tournament-public-matches"),
+    # --- TEAMS ---
+    path("tournaments/<int:pk>/teams/setup/", TournamentTeamSetupView.as_view()),
+    path("tournaments/<int:pk>/teams/", TournamentTeamListView.as_view()),
+    path("tournaments/<int:pk>/teams/<int:team_id>/", TournamentTeamUpdateView.as_view()),
 
-    path("matches/<int:pk>/", MatchScheduleUpdateView.as_view(), name="match-schedule-detail"),
-    path("matches/<int:pk>/result/", MatchResultUpdateView.as_view(), name="match-result-update"),
-    path("matches/<int:pk>/finish/", FinishMatchView.as_view(), name="match-finish"),
+    # --- MATCHES ---
+    path("tournaments/<int:pk>/matches/", TournamentMatchListView.as_view()),
+    path("tournaments/<int:pk>/public/matches/", TournamentPublicMatchListView.as_view()),
+    path("matches/<int:pk>/", MatchScheduleUpdateView.as_view()),
+    path("matches/<int:pk>/result/", MatchResultUpdateView.as_view()),
+    path("matches/<int:pk>/finish/", FinishMatchView.as_view()),
 
-    # =========================
-    # ETAPY – GRUPY → KO
-    # =========================
-    path("tournaments/<int:pk>/advance-from-groups/", AdvanceFromGroupsView.as_view(), name="tournament-advance-from-groups"),
-    path("tournaments/<int:pk>/stages/advance/", AdvanceFromGroupsView.as_view(), name="stage-advance"),
+    # --- STANDINGS ---
+    path("tournaments/<int:pk>/standings/", TournamentStandingsView.as_view()),
+    path("tournaments/<int:pk>/public/standings/", TournamentStandingsView.as_view()),
 
-    # =========================
-    # STANDINGS
-    # =========================
-    path("tournaments/<int:pk>/standings/", TournamentStandingsView.as_view(), name="tournament-standings"),
-    # alias public (opcjonalny)
-    path("tournaments/<int:pk>/public/standings/", TournamentStandingsView.as_view(), name="tournament-public-standings"),
+    # --- REGISTRATIONS ---
+    path("tournaments/<int:pk>/registrations/verify/", TournamentRegistrationVerifyView.as_view()),
+    path("tournaments/<int:pk>/registrations/join/", TournamentRegistrationJoinView.as_view()),
+    path("tournaments/<int:pk>/registrations/me/", TournamentRegistrationMeView.as_view()),
+    path("tournaments/<int:pk>/registrations/my/matches/", TournamentRegistrationMyMatchesView.as_view()),
+
+    # --- SELF-REGISTER ---
+    path("tournaments/<int:pk>/self-register/", TournamentSelfRegisterView.as_view()),
+    path("tournaments/<int:pk>/self-register/me/", TournamentSelfRegisterMeView.as_view()),
+    path("tournaments/<int:pk>/self-register/my/matches/", TournamentSelfRegisterMyMatchesView.as_view()),
 ]

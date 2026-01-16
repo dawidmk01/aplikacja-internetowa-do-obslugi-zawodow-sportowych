@@ -41,10 +41,11 @@ class Tournament(models.Model):
         LEAGUE = "LEAGUE", "Liga"
         MIXED = "MIXED", "Mieszany"
 
+    # ZMIANA: Dostosowanie trybów do wymagań (MANAGER, SELF_REGISTER)
     class EntryMode(models.TextChoices):
+        MANAGER = "MANAGER", "Organizator + asystent"
         ORGANIZER_ONLY = "ORGANIZER_ONLY", "Tylko organizator"
-        OPEN_APPROVAL = "OPEN_APPROVAL", "Zgłoszenia z zatwierdzaniem"
-        ACCOUNT_BASED = "ACCOUNT_BASED", "Uczestnicy z kontami"
+        SELF_REGISTER = "SELF_REGISTER", "Samodzielna rejestracja"
 
     class Status(models.TextChoices):
         DRAFT = "DRAFT", "Szkic"
@@ -52,7 +53,7 @@ class Tournament(models.Model):
         RUNNING = "RUNNING", "W trakcie"
         FINISHED = "FINISHED", "Zakończony"
 
-    # ZMIANA: Ujednolicenie klucza z Frontendem i bazą danych
+    # Ujednolicenie klucza z Frontendem i bazą danych
     FORMATCFG_LEAGUE_LEGS_KEY = "league_matches"
     DEFAULT_LEAGUE_LEGS = 1
 
@@ -86,7 +87,8 @@ class Tournament(models.Model):
     entry_mode = models.CharField(
         max_length=32,
         choices=EntryMode.choices,
-        default=EntryMode.ORGANIZER_ONLY,
+        # ZMIANA: Domyślnie MANAGER
+        default=EntryMode.MANAGER,
     )
 
     status = models.CharField(
@@ -104,6 +106,14 @@ class Tournament(models.Model):
     )
 
     access_code = models.CharField(max_length=20, blank=True, null=True)
+
+    # ZMIANA: Usunięto duplikat, pole do trybu SELF_REGISTER
+    registration_code = models.CharField(
+        max_length=32,
+        blank=True,
+        null=True,
+        help_text="Kod do samodzielnej rejestracji (tryb SELF_REGISTER).",
+    )
 
     # Opis turnieju (widoczny w panelu publicznym)
     description = models.TextField(blank=True, null=True)
@@ -185,6 +195,54 @@ class TournamentMembership(models.Model):
 
 
 # ============================================================
+# REJESTRACJE UCZESTNIKÓW (KONTA)
+# ============================================================
+
+class TournamentRegistration(models.Model):
+    """
+    Rejestracja uczestnika (konto) do turnieju:
+    - 1 user = 1 rejestracja w danym turnieju
+    - wskazuje slot Team, który użytkownik „zajął”
+    - przechowuje display_name (do edycji nazwy po rejestracji)
+    """
+    tournament = models.ForeignKey(
+        Tournament,
+        on_delete=models.CASCADE,
+        related_name="registrations",
+    )
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="tournament_registrations",
+    )
+
+    # Używamy stringa "Team", ponieważ model Team jest zdefiniowany poniżej
+    team = models.ForeignKey(
+        "Team",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="registrations",
+    )
+
+    display_name = models.CharField(max_length=80)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tournament", "user"],
+                name="uniq_registration_tournament_user",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tournament_id}:{self.user_id} -> {self.display_name}"
+
+
+# ============================================================
 # DYWIZJE
 # ============================================================
 
@@ -229,11 +287,23 @@ class Team(models.Model):
         null=True,
     )
 
+    # ZMIANA: Powiązanie slotu z użytkownikiem (dla trybu SELF_REGISTER)
+    registered_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="registered_teams",
+        help_text="Użytkownik, który zajął ten slot w trybie SELF_REGISTER.",
+    )
+
     name = models.CharField(max_length=255)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self) -> str:
+        if self.registered_user_id:
+            return f"{self.name} (U: {self.registered_user_id})"
         return self.name
 
 

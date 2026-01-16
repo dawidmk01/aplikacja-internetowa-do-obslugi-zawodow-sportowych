@@ -90,10 +90,10 @@ def _pair_winner_id(group: List[Match]) -> Optional[int]:
 
 
 def _handle_knockout_progression(
-    tournament: Tournament,
-    stage: Stage,
-    old_winner_id: Optional[int],
-    new_winner_id: Optional[int],
+        tournament: Tournament,
+        stage: Stage,
+        old_winner_id: Optional[int],
+        new_winner_id: Optional[int],
 ) -> None:
     """
     Consolidated logic for handling winner changes in Knockout stages.
@@ -234,14 +234,25 @@ def _public_access_or_403(request, tournament: Tournament) -> Optional[Response]
     """
     Zasady dostępu dla strony publicznej:
     - manager (organizator/asystent) -> zawsze OK
+    - uczestnik (zatwierdzone zgłoszenie) -> zawsze OK (widzi mecze przed publikacją)
     - public:
       - tournament.is_published musi być True
       - jeśli tournament.access_code ustawione, wymagamy ?code=...
     """
     user = getattr(request, "user", None)
-    if user and getattr(user, "is_authenticated", False) and user_can_manage_tournament(user, tournament):
-        return None
 
+    # 1. Sprawdzamy, czy użytkownik jest zalogowany
+    if user and getattr(user, "is_authenticated", False):
+
+        # A. Czy jest managerem?
+        if user_can_manage_tournament(user, tournament):
+            return None
+
+        # B. Czy jest uczestnikiem z zatwierdzonym zgłoszeniem? (TWOJA ZMIANA)
+        if tournament.registrations.filter(user=user, approved=True).exists():
+            return None
+
+    # 2. Walidacja standardowa (dla niezalogowanych lub osób postronnych)
     if not tournament.is_published:
         return Response({"detail": "Turniej nie jest dostępny."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -278,9 +289,6 @@ class TournamentMatchListView(ListAPIView):
 class TournamentPublicMatchListView(ListAPIView):
     """
     Publiczna lista meczów dla widza.
-
-    GET /api/tournaments/<id>/public/matches/
-    (opcjonalnie) ?code=XXXX jeśli turniej ma access_code
     """
     serializer_class = MatchSerializer
     permission_classes = [AllowAny]
@@ -289,8 +297,6 @@ class TournamentPublicMatchListView(ListAPIView):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
         denied = _public_access_or_403(self.request, tournament)
         if denied is not None:
-            # DRF nie pozwala łatwo zwrócić Response z get_queryset,
-            # więc zwracamy pusty queryset, a Response zwrócimy w list().
             return Match.objects.none()
 
         return (
@@ -356,7 +362,6 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
         tournament = match.tournament
 
         old_single_winner_id = match.winner_id
-
         cup_matches = _get_cup_matches(tournament)
         is_knockout_like = stage.stage_type == Stage.StageType.KNOCKOUT or _is_third_place_stage(stage)
 
@@ -484,14 +489,11 @@ class FinishMatchView(APIView):
                 if err and not _is_tennis(tournament):
                     return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
-                if _is_tennis(tournament):
-                    winner_id = _tennis_winner_id_from_sets(match)
-                else:
-                    winner_id = knockout_winner_id(match)
+                winner_id = _tennis_winner_id_from_sets(match) if _is_tennis(tournament) else knockout_winner_id(match)
 
                 if winner_id is None:
                     return Response(
-                        {"detail": "Mecz pucharowy musi mieć zwycięzcę. Uzupełnij wynik tak, by wskazać wygranego."},
+                        {"detail": "Mecz pucharowy musi mieć zwycięzcę."},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
@@ -519,7 +521,7 @@ class FinishMatchView(APIView):
                         match.status = Match.Status.SCHEDULED
                         match.save(update_fields=["status"])
                         return Response(
-                            {"detail": "Dwumecz musi być rozstrzygnięty. Zmień wynik rewanżu."},
+                            {"detail": "Dwumecz musi być rozstrzygnięty."},
                             status=status.HTTP_400_BAD_REQUEST,
                         )
                 else:

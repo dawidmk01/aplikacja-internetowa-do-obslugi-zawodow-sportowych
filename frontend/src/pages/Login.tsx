@@ -1,6 +1,9 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 
+// Pobranie bazy API z env lub fallback na localhost
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/+$/, "");
+
 type Props = {
   onLogin?: () => Promise<void>;
 };
@@ -41,7 +44,8 @@ export default function Login({ onLogin }: Props) {
 
     try {
       if (mode === "login") {
-        const res = await fetch("http://localhost:8000/api/auth/login/", {
+        // ZMIANA: Użycie dynamicznego API_BASE
+        const res = await fetch(`${API_BASE}/api/auth/login/`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username, password }),
@@ -57,9 +61,17 @@ export default function Login({ onLogin }: Props) {
         localStorage.setItem("refresh", data.refresh);
 
         await onLogin?.();
-        navigate("/my-tournaments");
+
+        const next = searchParams.get("next");
+        if (next && next.startsWith("/")) {
+          navigate(next, { replace: true });
+        } else {
+          navigate("/my-tournaments");
+        }
+
       } else {
-        const res = await fetch("http://localhost:8000/api/auth/register/", {
+        // ZMIANA: Użycie dynamicznego API_BASE
+        const res = await fetch(`${API_BASE}/api/auth/register/`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username, email, password }),
@@ -72,7 +84,11 @@ export default function Login({ onLogin }: Props) {
         }
 
         alert("Konto utworzone. Możesz się zalogować.");
-        navigate("/login");
+
+        const next = searchParams.get("next");
+        const qs = next ? `?next=${encodeURIComponent(next)}` : "";
+        navigate(`/login${qs}`);
+
         setPassword("");
       }
     } catch (e: any) {
@@ -80,6 +96,18 @@ export default function Login({ onLogin }: Props) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const switchToRegister = () => {
+    const next = searchParams.get("next");
+    const qs = next ? `&next=${encodeURIComponent(next)}` : "";
+    navigate(`/login?mode=register${qs}`);
+  };
+
+  const switchToLogin = () => {
+    const next = searchParams.get("next");
+    const qs = next ? `?next=${encodeURIComponent(next)}` : "";
+    navigate(`/login${qs}`);
   };
 
   return (
@@ -123,7 +151,7 @@ export default function Login({ onLogin }: Props) {
 
         {error && <p style={{ color: "crimson" }}>{error}</p>}
 
-        <button disabled={loading} type="submit">
+        <button disabled={loading} type="submit" style={{ padding: "8px 16px", cursor: loading ? "not-allowed" : "pointer" }}>
           {loading
             ? "Przetwarzanie…"
             : mode === "login"
@@ -143,14 +171,20 @@ export default function Login({ onLogin }: Props) {
       {mode === "login" ? (
         <p>
           Nie masz konta?{" "}
-          <button onClick={() => navigate("/login?mode=register")}>
+          <button
+            onClick={switchToRegister}
+            style={{ background: "none", border: "none", color: "#007bff", cursor: "pointer", textDecoration: "underline", padding: 0 }}
+          >
             Zarejestruj się
           </button>
         </p>
       ) : (
         <p>
           Masz już konto?{" "}
-          <button onClick={() => navigate("/login")}>
+          <button
+            onClick={switchToLogin}
+            style={{ background: "none", border: "none", color: "#007bff", cursor: "pointer", textDecoration: "underline", padding: 0 }}
+          >
             Zaloguj się
           </button>
         </p>
@@ -158,4 +192,3 @@ export default function Login({ onLogin }: Props) {
     </div>
   );
 }
-

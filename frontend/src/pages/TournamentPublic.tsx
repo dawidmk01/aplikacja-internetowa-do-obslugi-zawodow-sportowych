@@ -1,5 +1,6 @@
+
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useLocation, useParams, useSearchParams, useNavigate } from "react-router-dom";
 import { apiFetch } from "../api";
 import PublicMatchesPanel from "../components/PublicMatchesPanel";
 import type { MatchPublicDTO } from "../components/PublicMatchesPanel";
@@ -13,11 +14,20 @@ type TournamentPublicDTO = {
   end_date: string | null;
   location: string | null;
   is_published?: boolean;
+
+  entry_mode?: "MANAGER" | "ORGANIZER_ONLY" | "SELF_REGISTER";
+  competition_type?: "TEAM" | "INDIVIDUAL";
+  my_role?: "ORGANIZER" | "ASSISTANT" | "PARTICIPANT" | null;
+};
+
+type RegistrationMeDTO = {
+  display_name: string;
+  team_id: number | null;
 };
 
 function formatDateRange(start: string | null, end: string | null) {
   if (!start && !end) return null;
-  if (start && end) return `${start} - ${end}`; // bez "—"
+  if (start && end) return `${start} - ${end}`;
   return start ?? end;
 }
 
@@ -30,50 +40,117 @@ function isByePublic(m: MatchPublicDTO): boolean {
 
 type ViewTab = "MATCHES" | "STANDINGS";
 
-export default function TournamentPublic({ initialView = "MATCHES" }: { initialView?: ViewTab } = {}) {
+function hasAccessToken(): boolean {
+  try {
+    const keys = ["access", "accessToken", "access_token", "jwt_access", "token"];
+    for (const k of keys) {
+      const v = localStorage.getItem(k);
+      if (v && v.trim()) return true;
+    }
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k) continue;
+      const lk = k.toLowerCase();
+      if (lk.includes("access") && !lk.includes("refresh")) {
+        const v = localStorage.getItem(k);
+        if (v && v.trim()) return true;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+function normalizeName(s: string) {
+  return (s ?? "").trim().replace(/\s+/g, " ");
+}
+
+export default function TournamentPublic(
+  { initialView = "MATCHES" }: { initialView?: ViewTab } = {}
+) {
   const { id } = useParams<{ id: string }>();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  // TWOJA ZMIANA: Pobranie kodu z URL i synchronizacja ze stanem
+  const urlAccessCode = searchParams.get("code") ?? "";
+  const [code, setCode] = useState("");
+
+  useEffect(() => {
+    if (urlAccessCode && !code) setCode(urlAccessCode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlAccessCode]);
+
+  const joinFlag = searchParams.get("join") === "1";
 
   const [tournament, setTournament] = useState<TournamentPublicDTO | null>(null);
   const [matches, setMatches] = useState<MatchPublicDTO[]>([]);
+  const [myMatches, setMyMatches] = useState<MatchPublicDTO[]>([]);
+
   const [error, setError] = useState<string | null>(null);
 
   const [needsCode, setNeedsCode] = useState(false);
-  const [code, setCode] = useState("");
 
   const [view, setView] = useState<ViewTab>(initialView);
+
+  // rejestracja
+  const isLogged = hasAccessToken();
+  const [regMe, setRegMe] = useState<RegistrationMeDTO | null>(null);
+  const [regBusy, setRegBusy] = useState(false);
+  const [regInfo, setRegInfo] = useState<string | null>(null);
+  const [regError, setRegError] = useState<string | null>(null);
+
+  const [regCode, setRegCode] = useState("");
+  const [verified, setVerified] = useState(false);
+  const [displayName, setDisplayName] = useState("");
+
+  const nextParam = encodeURIComponent(location.pathname + location.search);
 
   const qs = useMemo(() => {
     const c = code.trim();
     return c ? `?code=${encodeURIComponent(c)}` : "";
   }, [code]);
 
-  const load = async () => {
+  const publicMatches = useMemo(
+    () => matches.filter((m) => !isByePublic(m)),
+    [matches]
+  );
+
+  const loadMyMatches = async () => {
+    if (!id || !isLogged) return;
+    try {
+      const res = await apiFetch(`/api/tournaments/${id}/registrations/my/matches/`);
+      if (!res.ok) return;
+
+      const data = await res.json().catch(() => []);
+      const list: MatchPublicDTO[] = Array.isArray(data) ? data : [];
+      setMyMatches(list.filter((m) => !isByePublic(m)));
+    } catch {
+      // nie blokujemy całej strony
+    }
+  };
+
+  const loadTournamentAndMatches = async () => {
     if (!id) return;
 
     setError(null);
 
-    const [tRes, mRes] = await Promise.all([
-      apiFetch(`/api/tournaments/${id}/${qs}`),
-      apiFetch(`/api/tournaments/${id}/public/matches/${qs}`),
-    ]);
-
-    const handle403 = async (res: Response) => {
-      const data = await res.json().catch(() => null);
+    // 1) turniej
+    const tRes = await apiFetch(`/api/tournaments/${id}/${qs}`);
+    if (tRes.status === 403) {
+      const data = await tRes.json().catch(() => null);
       const msg = data?.detail || "Brak dostępu.";
       if (String(msg).toLowerCase().includes("kod")) setNeedsCode(true);
       throw new Error(msg);
-    };
-
-    if (tRes.status === 403) await handle403(tRes);
-    if (mRes.status === 403) await handle403(mRes);
-
+    }
     if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
-    if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
 
     setNeedsCode(false);
 
     const tData = await tRes.json();
-    setTournament({
+    const t: TournamentPublicDTO = {
       id: tData.id,
       name: tData.name,
       description: tData.description ?? null,
@@ -81,20 +158,150 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
       end_date: tData.end_date ?? null,
       location: tData.location ?? null,
       is_published: tData.is_published,
-    });
+      entry_mode: tData.entry_mode,
+      competition_type: tData.competition_type,
+      my_role: tData.my_role ?? null,
+    };
+    setTournament(t);
+
+    // 2) mecze publiczne (uczestnik approved może dostać 200 nawet przed publikacją)
+    const mRes = await apiFetch(`/api/tournaments/${id}/public/matches/${qs}`);
+    if (mRes.status === 403) {
+      const data = await mRes.json().catch(() => null);
+      const msg = data?.detail || "Brak dostępu.";
+      if (String(msg).toLowerCase().includes("kod")) setNeedsCode(true);
+      setMatches([]);
+      return;
+    }
+    if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
 
     const raw = await mRes.json();
-    const list: MatchPublicDTO[] = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? raw.results : [];
+    const list: MatchPublicDTO[] = Array.isArray(raw)
+      ? raw
+      : Array.isArray(raw?.results)
+      ? raw.results
+      : [];
     setMatches(list);
   };
 
+  const loadRegistrationMe = async () => {
+    if (!id || !isLogged) {
+      setRegMe(null);
+      return;
+    }
+
+    const res = await apiFetch(`/api/tournaments/${id}/registrations/me/`);
+    if (res.status === 404) {
+      setRegMe(null);
+      return;
+    }
+    if (!res.ok) {
+      setRegMe(null);
+      return;
+    }
+
+    const data = (await res.json().catch(() => null)) as RegistrationMeDTO | null;
+    if (data?.display_name) {
+      setRegMe({ display_name: data.display_name, team_id: data.team_id ?? null });
+      setDisplayName(data.display_name);
+      loadMyMatches();
+    } else {
+      setRegMe(null);
+    }
+  };
+
   useEffect(() => {
-    load().catch((e: any) => setError(e.message));
+    loadTournamentAndMatches().catch((e: any) => setError(e.message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, qs]); // Dodano qs do zależności, aby odświeżyć po zmianie kodu
+
+  useEffect(() => {
+    loadRegistrationMe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  const publicMatches = useMemo(() => matches.filter((m) => !isByePublic(m)), [matches]);
   const dateRange = formatDateRange(tournament?.start_date ?? null, tournament?.end_date ?? null);
+
+  const verifyRegistrationCode = async () => {
+    if (!id) return;
+
+    setRegError(null);
+    setRegInfo(null);
+
+    const c = regCode.trim();
+    if (!c) {
+      setRegError("Wpisz kod rejestracyjny.");
+      return;
+    }
+
+    setRegBusy(true);
+    try {
+      const res = await apiFetch(`/api/tournaments/${id}/registrations/verify/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: c }),
+      });
+
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.detail || "Nie udało się zweryfikować kodu.");
+
+      setVerified(true);
+      await loadRegistrationMe();
+      setRegInfo("Kod poprawny. Uzupełnij nazwę i zarejestruj się.");
+    } catch (e: any) {
+      setVerified(false);
+      setRegError(e?.message ?? "Błąd weryfikacji kodu.");
+    } finally {
+      setRegBusy(false);
+    }
+  };
+
+  const joinOrRename = async () => {
+    if (!id) return;
+
+    setRegError(null);
+    setRegInfo(null);
+
+    const c = regCode.trim();
+    const dn = normalizeName(displayName);
+
+    if (!c) {
+      setRegError("Wpisz kod rejestracyjny.");
+      return;
+    }
+    if (!dn) {
+      setRegError("Podaj nazwę drużyny / imię i nazwisko.");
+      return;
+    }
+
+    setRegBusy(true);
+    try {
+      const res = await apiFetch(`/api/tournaments/${id}/registrations/join/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: c, display_name: dn }),
+      });
+
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.detail || "Nie udało się zapisać do turnieju.");
+
+      await loadRegistrationMe();
+
+      setRegInfo(regMe ? "Zmieniono nazwę." : "Zapisano do turnieju.");
+      setRegError(null);
+
+      if (joinFlag) {
+        navigate(
+          location.pathname + (code.trim() ? `?code=${encodeURIComponent(code.trim())}` : ""),
+          { replace: true }
+        );
+      }
+    } catch (e: any) {
+      setRegError(e?.message ?? "Błąd rejestracji.");
+    } finally {
+      setRegBusy(false);
+    }
+  };
 
   return (
     <div style={{ padding: "2rem", maxWidth: 980 }}>
@@ -119,6 +326,88 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
             </div>
           ) : null}
         </div>
+
+        {(joinFlag || !!regMe) && (
+          <section
+            style={{
+              marginTop: "1.25rem",
+              padding: "1rem",
+              border: "1px solid #333",
+              borderRadius: 12,
+              maxWidth: 560,
+            }}
+          >
+            <h3 style={{ marginTop: 0, marginBottom: 6 }}>Rejestracja do turnieju</h3>
+
+            {tournament?.entry_mode !== "SELF_REGISTER" ? (
+              <div style={{ opacity: 0.85 }}>Samodzielna rejestracja nie jest włączona dla tego turnieju.</div>
+            ) : !isLogged ? (
+              <div style={{ display: "grid", gap: 10 }}>
+                <div style={{ opacity: 0.85 }}>
+                  Aby zapisać się do turnieju, musisz się zalogować lub utworzyć konto.
+                </div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <Link
+                    to={`/login?next=${nextParam}`}
+                    style={{ border: "1px solid #444", padding: "0.45rem 0.75rem", borderRadius: 10, textDecoration: "none", display: "inline-block" }}
+                  >
+                    Zaloguj
+                  </Link>
+                  <Link
+                    to={`/login?mode=register&next=${nextParam}`}
+                    style={{ border: "1px solid #444", padding: "0.45rem 0.75rem", borderRadius: 10, textDecoration: "none", display: "inline-block" }}
+                  >
+                    Zarejestruj konto
+                  </Link>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {regMe ? (
+                  <div style={{ opacity: 0.9 }}>
+                    Jesteś zarejestrowany jako: <strong>{regMe.display_name}</strong>
+                    {!tournament?.is_published && (
+                      <div style={{ marginTop: 6, opacity: 0.75 }}>
+                        Turniej nie jest jeszcze opublikowany — widok publiczny może być ograniczony.
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ opacity: 0.9 }}>Wpisz kod rejestracyjny i uzupełnij nazwę uczestnika.</div>
+                )}
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <input
+                    value={regCode}
+                    onChange={(e) => setRegCode(e.target.value)}
+                    placeholder="Kod rejestracyjny"
+                    style={{ flex: 1, minWidth: 220, padding: "0.55rem" }}
+                  />
+                  <button onClick={verifyRegistrationCode} disabled={regBusy} style={{ padding: "0.55rem 0.9rem" }}>
+                    {regBusy ? "…" : "Sprawdź kod"}
+                  </button>
+                </div>
+
+                {(verified || !!regMe) && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <input
+                      value={displayName}
+                      onChange={(e) => setDisplayName(e.target.value)}
+                      placeholder={tournament?.competition_type === "INDIVIDUAL" ? "Imię i nazwisko" : "Nazwa drużyny"}
+                      style={{ flex: 1, minWidth: 220, padding: "0.55rem" }}
+                    />
+                    <button onClick={joinOrRename} disabled={regBusy} style={{ padding: "0.55rem 0.9rem" }}>
+                      {regBusy ? "…" : regMe ? "Zmień nazwę" : "Zarejestruj się"}
+                    </button>
+                  </div>
+                )}
+
+                {regError && <div style={{ color: "crimson" }}>{regError}</div>}
+                {regInfo && <div style={{ opacity: 0.85 }}>{regInfo}</div>}
+              </div>
+            )}
+          </section>
+        )}
 
         <div style={{ marginTop: "1rem", display: "flex", gap: 10, flexWrap: "wrap" }}>
           <button
@@ -162,7 +451,7 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
 
           <div style={{ display: "flex", gap: 8 }}>
             <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="Wpisz kod" style={{ flex: 1, padding: "0.5rem" }} />
-            <button onClick={() => load().catch((e: any) => setError(e.message))} style={{ padding: "0.5rem 0.9rem" }}>
+            <button onClick={() => loadTournamentAndMatches().catch((e: any) => setError(e.message))} style={{ padding: "0.5rem 0.9rem" }}>
               Otwórz
             </button>
           </div>
@@ -170,7 +459,55 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
       )}
 
       {view === "MATCHES" ? (
-        <PublicMatchesPanel matches={publicMatches} />
+        <div>
+          {regMe && tournament?.is_published && (
+            <section style={{ marginBottom: "1.5rem" }}>
+              <h2 style={{ margin: "0 0 0.5rem 0" }}>Moje mecze</h2>
+
+              {myMatches.length === 0 ? (
+                <div style={{ opacity: 0.75 }}>Brak meczów do wyświetlenia (albo nie ma jeszcze przypisanych spotkań).</div>
+              ) : (
+                <div style={{ border: "1px solid #333", borderRadius: 12, padding: "0.75rem 1rem" }}>
+                  {myMatches.map((m) => (
+                    <div
+                      key={m.id}
+                      style={{
+                        borderBottom: "1px solid #333",
+                        padding: "0.75rem 0",
+                        display: "flex",
+                        gap: "1rem",
+                        justifyContent: "space-between",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <div style={{ minWidth: 260 }}>
+                        <div style={{ fontWeight: 700 }}>
+                          {m.home_team_name} <span style={{ opacity: 0.6 }}>vs</span> {m.away_team_name}
+                        </div>
+                        <div style={{ opacity: 0.75, fontSize: "0.9rem", marginTop: 4 }}>
+                          {[m.scheduled_date, m.scheduled_time, m.location].filter(Boolean).join(" • ")}
+                        </div>
+                      </div>
+
+                      <div style={{ textAlign: "right", minWidth: 140 }}>
+                        {typeof m.home_score === "number" && typeof m.away_score === "number" ? (
+                          <div style={{ fontWeight: 800 }}>
+                            {m.home_score} : {m.away_score}
+                          </div>
+                        ) : (
+                          <div style={{ opacity: 0.55 }} />
+                        )}
+                        <div style={{ opacity: 0.75, fontSize: "0.85rem" }}>{m.status ?? ""}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
+          <PublicMatchesPanel matches={publicMatches} />
+        </div>
       ) : id ? (
         <StandingsBracket tournamentId={Number(id)} accessCode={code.trim() || undefined} />
       ) : null}

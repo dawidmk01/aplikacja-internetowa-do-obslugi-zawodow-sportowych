@@ -15,16 +15,25 @@ from ..models import Match, Stage, Team, Tournament, TournamentMembership
 # ============================================================
 
 def user_can_manage_tournament(user, tournament: Tournament) -> bool:
+    """
+    Sprawdza, czy użytkownik ma uprawnienia do zarządzania turniejem (edycja, dodawanie drużyn).
+    """
     if not user or not user.is_authenticated:
         return False
 
+    # 1. Organizator zawsze ma pełne prawo
     if tournament.organizer_id == user.id:
         return True
 
-    return tournament.memberships.filter(
-        user=user,
-        role=TournamentMembership.Role.ASSISTANT,
-    ).exists()
+    # 2. Asystent ma prawo tylko w trybie MANAGER.
+    # W trybach ORGANIZER_ONLY i SELF_REGISTER (konto) asystent nie zarządza.
+    if tournament.entry_mode == Tournament.EntryMode.MANAGER:
+        return tournament.memberships.filter(
+            user=user,
+            role=TournamentMembership.Role.ASSISTANT,
+        ).exists()
+
+    return False
 
 
 # ============================================================

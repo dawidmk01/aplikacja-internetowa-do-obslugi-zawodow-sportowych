@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from tournaments.models import Match, Tournament, TournamentMembership
+from tournaments.models import Match, Tournament, TournamentMembership, TournamentRegistration
 
 User = get_user_model()
 
@@ -69,6 +69,21 @@ class TournamentSerializer(serializers.ModelSerializer):
             "my_role",
             "matches_started",
         )
+
+    # ============================================================
+    # UKRYWANIE PÓL WRAŻLIWYCH (READ)
+    # ============================================================
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+
+        # Kody (access + registration) widoczne tylko dla organizatora
+        if not request or not request.user.is_authenticated or instance.organizer_id != request.user.id:
+            data.pop("access_code", None)
+            data.pop("registration_code", None)
+
+        return data
 
     # ============================================================
     # WALIDACJA FORMATU VS DYSCYPLINA
@@ -155,15 +170,17 @@ class TournamentSerializer(serializers.ModelSerializer):
             role=TournamentMembership.Role.ASSISTANT,
         ).exists()
 
-        # Widoczność – tylko organizator
+        # Widoczność / kody / tryby – tylko organizator
         if not is_organizer:
             attrs.pop("is_published", None)
             attrs.pop("access_code", None)
+            attrs.pop("registration_code", None)
+            attrs.pop("entry_mode", None)
 
-        # Konfiguracja – organizator lub asystent
+        # Konfiguracja sportowa – organizator lub asystent
+        # (entry_mode usunięte stąd, bo jest wyżej - tylko organizer)
         if not (is_organizer or is_assistant):
             for field in (
-                "entry_mode",
                 "competition_type",
                 "tournament_format",
                 "format_config",
@@ -209,6 +226,10 @@ class TournamentSerializer(serializers.ModelSerializer):
             role=TournamentMembership.Role.ASSISTANT,
         ).exists():
             return TournamentMembership.Role.ASSISTANT
+
+        # Sprawdzenie czy użytkownik jest zarejestrowanym uczestnikiem
+        if TournamentRegistration.objects.filter(tournament=obj, user=request.user).exists():
+            return "PARTICIPANT"
 
         return None
 

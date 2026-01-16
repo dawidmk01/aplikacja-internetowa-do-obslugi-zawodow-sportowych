@@ -9,6 +9,9 @@ import AssistantsList from "../components/AssistantsList";
    Typy danych
    ========================= */
 
+// Zgodne z backendem (models.py)
+type EntryMode = "MANAGER" | "ORGANIZER_ONLY" | "SELF_REGISTER";
+
 type Tournament = {
   id: number;
   name: string;
@@ -18,9 +21,11 @@ type Tournament = {
   is_published: boolean;
   access_code: string | null;
 
-  // ✅ Opis widoczny na stronie publicznej (/tournaments/:id)
-  // UJEDNOLICONE z TournamentPublicDTO: backend/serializer powinien zwracać "description"
   description: string | null;
+
+  // ✅ Nowe pola konfiguracji rejestracji
+  entry_mode: EntryMode;
+  registration_code: string | null;
 
   my_role: "ORGANIZER" | "ASSISTANT" | null;
 };
@@ -36,7 +41,7 @@ async function copyToClipboard(text: string): Promise<boolean> {
       return true;
     }
   } catch {
-    // fallback poniżej
+    // fallback
   }
 
   try {
@@ -66,19 +71,21 @@ export default function TournamentDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Publiczny odczyt turnieju z kodem dostępu (fallback, gdy ktoś nie ma uprawnień)
+  // Publiczny odczyt turnieju z kodem dostępu
   const [accessCode, setAccessCode] = useState("");
   const [needsCode, setNeedsCode] = useState(false);
 
   // Zarządzanie asystentami
   const [assistantsVersion, setAssistantsVersion] = useState(0);
 
-  // Ustawienia publikacji i kodu dostępu (dla organizatora)
+  // === DRAFTY USTAWIEŃ (Edycja) ===
   const [isPublishedDraft, setIsPublishedDraft] = useState(false);
   const [accessCodeDraft, setAccessCodeDraft] = useState("");
-
-  // ✅ Opis publiczny (dla organizatora)
   const [descriptionDraft, setDescriptionDraft] = useState("");
+
+  // ✅ State dla trybu rejestracji
+  const [entryModeDraft, setEntryModeDraft] = useState<EntryMode>("MANAGER");
+  const [registrationCodeDraft, setRegistrationCodeDraft] = useState("");
 
   const [savingSecurity, setSavingSecurity] = useState(false);
   const [securityMsg, setSecurityMsg] = useState<string | null>(null);
@@ -116,12 +123,14 @@ export default function TournamentDetail() {
       .then((data: Tournament) => {
         setTournament(data);
 
-        // Snapshot do edycji ustawień (organizator)
+        // Snapshot do edycji ustawień
         setIsPublishedDraft(Boolean(data.is_published));
         setAccessCodeDraft(data.access_code ?? "");
-
-        // ✅ opis publiczny (UJEDNOLICONE: description)
         setDescriptionDraft(data.description ?? "");
+
+        // ✅ Inicjalizacja trybu
+        setEntryModeDraft(data.entry_mode ?? "MANAGER");
+        setRegistrationCodeDraft(data.registration_code ?? "");
 
         setNeedsCode(false);
         setSecurityMsg(null);
@@ -155,7 +164,7 @@ export default function TournamentDetail() {
   };
 
   /* =========================
-     Publikacja + zabezpieczenia + opis (PATCH)
+     Zapis ustawień (PATCH)
      ========================= */
 
   const saveSecuritySettings = async () => {
@@ -167,6 +176,7 @@ export default function TournamentDetail() {
 
     const normalizedCode = accessCodeDraft.trim();
     const normalizedDesc = descriptionDraft.trim();
+    const normalizedRegCode = registrationCodeDraft.trim();
 
     if (normalizedDesc.length > DESCRIPTION_MAX) {
       setSavingSecurity(false);
@@ -174,11 +184,21 @@ export default function TournamentDetail() {
       return;
     }
 
-    // ✅ Wysyłamy "description" (zgodnie z publiczną stroną TournamentPublic)
+    // Walidacja dla trybu SELF_REGISTER
+    if (entryModeDraft === "SELF_REGISTER" && normalizedRegCode.length < 3) {
+      setSavingSecurity(false);
+      setError("Dla samodzielnej rejestracji wymagany jest kod rejestracyjny (min. 3 znaki).");
+      return;
+    }
+
     const payload: Partial<Tournament> = {
       is_published: isPublishedDraft,
       access_code: normalizedCode.length ? normalizedCode : null,
       description: normalizedDesc.length ? normalizedDesc : null,
+
+      // ✅ Nowe pola w payloadzie
+      entry_mode: entryModeDraft,
+      registration_code: entryModeDraft === "SELF_REGISTER" ? normalizedRegCode : null,
     };
 
     try {
@@ -199,6 +219,8 @@ export default function TournamentDetail() {
       setIsPublishedDraft(Boolean(updated.is_published));
       setAccessCodeDraft(updated.access_code ?? "");
       setDescriptionDraft(updated.description ?? "");
+      setEntryModeDraft(updated.entry_mode ?? "MANAGER");
+      setRegistrationCodeDraft(updated.registration_code ?? "");
 
       setSecurityMsg("Ustawienia zostały zapisane.");
     } catch (e: any) {
@@ -239,10 +261,9 @@ export default function TournamentDetail() {
         });
         return;
       } catch {
-        // anulowanie udostępniania – ignorujemy
+        // anulowanie
       }
     }
-
     await handleCopyLink();
   };
 
@@ -252,7 +273,6 @@ export default function TournamentDetail() {
       setSecurityMsg("Nie udało się pobrać QR – brak canvas.");
       return;
     }
-
     try {
       const pngUrl = canvas.toDataURL("image/png");
       const a = document.createElement("a");
@@ -275,20 +295,14 @@ export default function TournamentDetail() {
     return (
       <div style={{ padding: "2rem" }}>
         <h2>Dostęp do turnieju</h2>
-
-        <p>Ten turniej wymaga kodu dostępu. Wpisz kod i potwierdź, aby pobrać dane turnieju.</p>
-
+        <p>Ten turniej wymaga kodu dostępu.</p>
         <input
           type="text"
           placeholder="Kod dostępu"
           value={accessCode}
           onChange={(e) => setAccessCode(e.target.value)}
         />
-
-        <button onClick={fetchTournament} style={{ marginLeft: 8 }}>
-          Potwierdź
-        </button>
-
+        <button onClick={fetchTournament} style={{ marginLeft: 8 }}>Potwierdź</button>
         {error && <p style={{ color: "crimson" }}>{error}</p>}
       </div>
     );
@@ -305,7 +319,6 @@ export default function TournamentDetail() {
     <div style={{ padding: "2rem" }}>
       <h1 style={{ marginBottom: 6 }}>{tournament.name}</h1>
 
-      {/* ✅ Podgląd opisu (widzoczny także dla asystenta w panelu) */}
       {tournament.description && (
         <div style={{ marginBottom: 12, opacity: 0.95, whiteSpace: "pre-wrap" }}>{tournament.description}</div>
       )}
@@ -331,45 +344,36 @@ export default function TournamentDetail() {
       {/* ===== Udostępnianie (link + QR) ===== */}
       <section style={{ marginTop: "1.25rem", padding: "1rem", border: "1px solid #333", borderRadius: 8 }}>
         <h3>Udostępnianie</h3>
-
         {!tournament.is_published && (
           <p style={{ color: "#c9a227" }}>
-            Turniej jest prywatny. Link i kod QR będą użyteczne dla widzów dopiero po publikacji (lub po podaniu kodu).
+            Turniej jest prywatny. Link i kod QR będą użyteczne dla widzów dopiero po publikacji.
           </p>
         )}
-
         {tournament.access_code && (
           <p style={{ opacity: 0.9 }}>
             <strong>Kod dostępu:</strong> {tournament.access_code}
           </p>
         )}
-
         <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
           <button onClick={handleCopyLink}>Kopiuj link</button>
           <button onClick={handleNativeShare}>Udostępnij</button>
         </div>
-
         <div style={{ marginTop: "0.75rem", wordBreak: "break-all", opacity: 0.9 }}>
           <small>{shareUrl}</small>
         </div>
-
         <div style={{ marginTop: "1rem", display: "flex", gap: "1rem", alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ padding: 8, background: "white", borderRadius: 6 }}>
             <QRCodeCanvas value={shareUrl} size={180} includeMargin ref={qrRef} />
           </div>
-
-          <div>
-            <button onClick={handleDownloadQr}>Pobierz kod QR (PNG)</button>
-          </div>
+          <button onClick={handleDownloadQr}>Pobierz kod QR (PNG)</button>
         </div>
-
         {securityMsg && <p style={{ color: "green", marginTop: 8 }}>{securityMsg}</p>}
       </section>
 
-      {/* ===== Publikacja, kod dostępu, opis (organizator) ===== */}
+      {/* ===== Publikacja, kod dostępu, opis, ENTRY_MODE (organizator) ===== */}
       {isOrganizer && (
         <section style={{ marginTop: "1.25rem", padding: "1rem", border: "1px solid #333", borderRadius: 8 }}>
-          <h3>Ustawienia publiczne</h3>
+          <h3>Ustawienia turnieju</h3>
 
           <label style={{ display: "block", marginTop: 8 }}>
             <input
@@ -380,50 +384,90 @@ export default function TournamentDetail() {
             Opublikuj turniej
           </label>
 
-          {/* ✅ Opis publiczny */}
-          <div style={{ marginTop: 14 }}>
-            <label style={{ display: "block", marginBottom: 6 }}>Opis turnieju (widoczny na stronie publicznej)</label>
+          {/* Wybór trybu rejestracji */}
+          <div style={{ marginTop: 14, padding: "12px", background: "rgba(255,255,255,0.05)", borderRadius: 6 }}>
+            <label style={{ display: "block", marginBottom: 6, fontWeight: "bold" }}>
+              Sposób rejestracji uczestników
+            </label>
 
+            <select
+              value={entryModeDraft}
+              onChange={(e) => setEntryModeDraft(e.target.value as EntryMode)}
+              style={{ padding: "0.5rem", width: "100%", maxWidth: "420px", borderRadius: "4px" }}
+            >
+              <option value="ORGANIZER_ONLY">Tylko organizator (asystent nie dodaje)</option>
+              <option value="MANAGER">Organizator + asystent (Ręcznie)</option>
+              <option value="SELF_REGISTER">Samodzielna rejestracja (Konto + Kod)</option>
+            </select>
+
+            <div style={{ marginTop: 8, opacity: 0.8, fontSize: "0.9rem" }}>
+              {entryModeDraft === "ORGANIZER_ONLY" && (
+                <div>Uczestników dodajesz tylko Ty w zakładce „Drużyny”.</div>
+              )}
+              {entryModeDraft === "MANAGER" && (
+                <div>Uczestników dodajesz Ty lub Twoi asystenci (domyślny tryb).</div>
+              )}
+              {entryModeDraft === "SELF_REGISTER" && (
+                <div>
+                  Uczestnicy sami zakładają konta i dołączają wpisując kod.
+                  <br />
+                  <strong>Wymagane:</strong> Ustawienie kodu rejestracyjnego poniżej oraz utworzenie "pustych slotów" w drużynach.
+                </div>
+              )}
+            </div>
+
+            {/* Input na kod rejestracyjny - tylko dla SELF_REGISTER */}
+            {entryModeDraft === "SELF_REGISTER" && (
+               <div style={{ marginTop: 10 }}>
+                 <label style={{ display: "block", fontSize: "0.85rem", marginBottom: 4 }}>
+                   Kod rejestracyjny (dla uczestników)
+                 </label>
+                 <input
+                    type="text"
+                    value={registrationCodeDraft}
+                    onChange={(e) => setRegistrationCodeDraft(e.target.value)}
+                    placeholder="np. START2024"
+                    maxLength={32}
+                    style={{ padding: "0.4rem", width: "200px" }}
+                 />
+               </div>
+            )}
+          </div>
+
+          {/* Opis publiczny */}
+          <div style={{ marginTop: 14 }}>
+            <label style={{ display: "block", marginBottom: 6 }}>Opis turnieju (publiczny)</label>
             <textarea
               value={descriptionDraft}
               onChange={(e) => setDescriptionDraft(e.target.value)}
-              placeholder="Np. informacje organizacyjne, zasady, sponsorzy, kontakt…"
+              placeholder="Informacje organizacyjne, zasady..."
               rows={6}
               style={{ width: "min(680px, 100%)" }}
               maxLength={DESCRIPTION_MAX}
             />
-
             <div style={{ marginTop: 6, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
               <small style={{ opacity: 0.85 }}>
                 {descriptionDraft.trim().length}/{DESCRIPTION_MAX}
               </small>
-
-              <button type="button" onClick={clearDescription}>
-                Wyczyść opis
-              </button>
+              <button type="button" onClick={clearDescription}>Wyczyść opis</button>
             </div>
           </div>
 
-          {/* Kod dostępu */}
+          {/* Kod dostępu (dla widzów) */}
           <div style={{ marginTop: 14 }}>
-            <label style={{ display: "block", marginBottom: 6 }}>Kod dostępu (opcjonalny, max 20 znaków)</label>
-
+            <label style={{ display: "block", marginBottom: 6 }}>Kod dostępu (dla widzów/podglądu)</label>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               <input
                 type="text"
                 value={accessCodeDraft}
                 onChange={(e) => setAccessCodeDraft(e.target.value)}
-                placeholder="np. ABC123"
+                placeholder="np. WIDZ123"
                 maxLength={20}
               />
-
-              <button type="button" onClick={clearAccessCode}>
-                Wyczyść kod
-              </button>
+              <button type="button" onClick={clearAccessCode}>Wyczyść kod</button>
             </div>
           </div>
 
-          {/* Zapis */}
           <div style={{ marginTop: 14 }}>
             <button disabled={savingSecurity} onClick={saveSecuritySettings}>
               {savingSecurity ? "Zapisywanie…" : "Zapisz ustawienia"}
@@ -439,7 +483,7 @@ export default function TournamentDetail() {
         </div>
       )}
 
-      {/* ===== Asystenci (organizator) ===== */}
+      {/* ===== Asystenci ===== */}
       {isOrganizer && (
         <>
           <AddAssistantForm tournamentId={tournament.id} onAdded={() => setAssistantsVersion((v) => v + 1)} />

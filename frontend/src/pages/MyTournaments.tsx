@@ -5,17 +5,19 @@ import { apiFetch, apiGet } from "../api";
 type Tournament = {
   id: number;
   name: string;
-  discipline: string; // np. "football"
+  discipline: string;
   tournament_format?: "LEAGUE" | "CUP" | "MIXED";
   participants_count?: number;
   status?: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
   is_published?: boolean;
   access_code?: string | null;
 
-  // frontend już obsługuje, backend dopniemy później
   is_archived?: boolean;
 
-  my_role: "ORGANIZER" | "ASSISTANT" | null;
+  entry_mode?: "MANAGER" | "ORGANIZER_ONLY" | "SELF_REGISTER";
+  registration_code?: string | null;
+
+  my_role: "ORGANIZER" | "ASSISTANT" | "PARTICIPANT" | null;
 };
 
 function disciplineLabel(code: string | undefined) {
@@ -50,11 +52,19 @@ function statusLabel(v?: Tournament["status"]) {
   return "—";
 }
 
+function entryModeLabel(v?: Tournament["entry_mode"]) {
+  const m = v ?? "MANAGER"; // kompatybilność wsteczna
+  if (m === "MANAGER") return "Organizator + asystent";
+  if (m === "ORGANIZER_ONLY") return "Tylko organizator";
+  if (m === "SELF_REGISTER") return "Self-register";
+  return "—";
+}
+
 function normalizePL(s: string) {
   return s
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, ""); // usuwa znaki diakrytyczne
+    .replace(/[\u0300-\u036f]/g, "");
 }
 
 async function copyToClipboard(text: string) {
@@ -78,6 +88,22 @@ async function copyToClipboard(text: string) {
   }
 }
 
+function canUsePanel(t: Tournament) {
+  const mode = t.entry_mode ?? "MANAGER";
+  if (t.my_role === "ORGANIZER") return true;
+  if (t.my_role === "ASSISTANT") return mode === "MANAGER";
+  return false;
+}
+
+function panelDisabledReason(t: Tournament) {
+  if (t.my_role !== "ASSISTANT") return null;
+  const mode = t.entry_mode ?? "MANAGER";
+  if (mode === "MANAGER") return null;
+  if (mode === "ORGANIZER_ONLY") return "Panel wyłączony (tryb: tylko organizator). Masz podgląd.";
+  if (mode === "SELF_REGISTER") return "Panel wyłączony (tryb: self-register). Masz podgląd.";
+  return "Panel wyłączony. Masz podgląd.";
+}
+
 export default function MyTournaments() {
   const [items, setItems] = useState<Tournament[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -88,12 +114,11 @@ export default function MyTournaments() {
   const [busyId, setBusyId] = useState<number | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
-  // Filtry widoczności sekcji (jeden rząd checkboxów)
   const [visibleSections, setVisibleSections] = useState({
     draft: true,
     ready: true,
     published: true,
-    archived: false, // domyślnie ukryte
+    archived: false,
   });
 
   const load = () => {
@@ -115,7 +140,6 @@ export default function MyTournaments() {
     window.setTimeout(() => setToast(null), 2200);
   };
 
-  // ✅ Filtr + ranking trafności (żeby np. "c" dawało "c Zapasy" na górze)
   const filtered = useMemo(() => {
     const q = normalizePL(query.trim());
     if (!q) return items;
@@ -128,15 +152,15 @@ export default function MyTournaments() {
         const st = normalizePL(statusLabel(t.status));
         const vis = normalizePL(t.is_published ? "opublikowany" : "nieopublikowany");
         const arch = normalizePL(t.is_archived ? "archiwum" : "");
+        const mode = normalizePL(entryModeLabel(t.entry_mode));
+        const role = normalizePL(t.my_role ?? "");
 
         let score = 0;
 
-        // Priorytet: nazwa turnieju
         if (name === q) score += 200;
         else if (name.startsWith(q)) score += 140;
         else if (name.includes(q)) score += 90;
 
-        // Priorytet: dyscyplina / format / status
         if (discipline.startsWith(q)) score += 60;
         else if (discipline.includes(q)) score += 40;
 
@@ -144,10 +168,10 @@ export default function MyTournaments() {
         if (st.includes(q)) score += 10;
         if (vis.includes(q)) score += 6;
         if (arch.includes(q)) score += 6;
+        if (mode.includes(q)) score += 6;
+        if (role.includes(q)) score += 6;
 
-        // Dodatkowy „fallback” — jeśli query pasuje do zlepionego opisu,
-        // ale nie weszło w powyższe, daj minimalny score, żeby rekord nie zniknął.
-        const hay = [name, discipline, format, st, vis, arch].join(" ");
+        const hay = [name, discipline, format, st, vis, arch, mode, role].join(" ");
         if (score === 0 && hay.includes(q)) score = 1;
 
         return { t, score };
@@ -177,7 +201,6 @@ export default function MyTournaments() {
   const togglePublish = async (t: Tournament) => {
     if (t.my_role !== "ORGANIZER") return;
 
-    // biznesowo: publikacja dopiero po konfiguracji
     if ((t.status ?? "DRAFT") === "DRAFT") {
       setToastSafe("Najpierw skonfiguruj turniej i wygeneruj rozgrywki.");
       return;
@@ -211,7 +234,6 @@ export default function MyTournaments() {
     setError(null);
 
     try {
-      // Backend dopniemy w następnym kroku (pole is_archived + walidacja).
       const res = await apiFetch(`/api/tournaments/${t.id}/`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -219,14 +241,14 @@ export default function MyTournaments() {
       });
 
       if (!res.ok) {
-        setToastSafe("Funkcja archiwum jeszcze nieobsługiwana po stronie backendu.");
+        setToastSafe("Błąd archiwizacji.");
         return;
       }
 
       load();
       setToastSafe(!t.is_archived ? "Przeniesiono do archiwum." : "Przywrócono z archiwum.");
     } catch {
-      setToastSafe("Funkcja archiwum jeszcze nieobsługiwana po stronie backendu.");
+      setToastSafe("Błąd komunikacji z serwerem.");
     } finally {
       setBusyId(null);
     }
@@ -241,15 +263,24 @@ export default function MyTournaments() {
 
         <div style={{ display: "grid", gap: "0.75rem" }}>
           {list.map((t) => {
-            const canManage = t.my_role === "ORGANIZER";
+            const panelEnabled = canUsePanel(t);
+            const isOrganizer = t.my_role === "ORGANIZER";
             const isDraft = (t.status ?? "DRAFT") === "DRAFT";
             const isShareOpen = shareOpenId === t.id;
 
             const baseLink = `${window.location.origin}/tournaments/${t.id}`;
+
+            const joinLink =
+              t.access_code && t.access_code.trim()
+                ? `${baseLink}?code=${encodeURIComponent(t.access_code)}&join=1`
+                : `${baseLink}?join=1`;
+
             const linkWithCode =
               t.access_code && t.access_code.trim()
                 ? `${baseLink}?code=${encodeURIComponent(t.access_code)}`
                 : baseLink;
+
+            const panelNote = panelDisabledReason(t);
 
             return (
               <div
@@ -270,12 +301,9 @@ export default function MyTournaments() {
                 >
                   <div style={{ minWidth: 280 }}>
                     <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
-                      <Link
-                        to={`/tournaments/${t.id}/detail`}
-                        style={{ fontSize: "1.05rem", fontWeight: 700, textDecoration: "none" }}
-                      >
+                      <span style={{ fontSize: "1.05rem", fontWeight: 700 }}>
                         {t.name}
-                      </Link>
+                      </span>
                       <span style={{ opacity: 0.85 }}>{disciplineLabel(t.discipline)}</span>
                     </div>
 
@@ -289,14 +317,46 @@ export default function MyTournaments() {
                         <span>Widoczność: {t.is_published ? "Opublikowany" : "Nieopublikowany"}</span>
                       )}
                       {t.is_archived && <span>Stan: Archiwum</span>}
+                      <span>Tryb: {entryModeLabel(t.entry_mode)}</span>
                     </div>
 
                     <div style={{ marginTop: 6, opacity: 0.85 }}>Rola: {t.my_role ?? "—"}</div>
+
+                    {panelNote && (
+                      <div style={{ marginTop: 8, opacity: 0.9 }}>
+                        {panelNote}
+                      </div>
+                    )}
                   </div>
 
                   <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    {/* Panel: zawsze pokazujemy dla ORGANIZER i ASSISTANT (wejście pokaże gate w layout),
+                        ale dla braku uprawnień gate wyświetli komunikat i link do podglądu. */}
+                    {(t.my_role === "ORGANIZER" || t.my_role === "ASSISTANT") && (
+                      <Link
+                        to={`/tournaments/${t.id}/detail`}
+                        style={{
+                          border: "1px solid #444",
+                          padding: "0.45rem 0.75rem",
+                          borderRadius: 8,
+                          textDecoration: "none",
+                          display: "inline-block",
+                          backgroundColor: panelEnabled ? "#2c3e50" : "transparent",
+                          color: panelEnabled ? "white" : "inherit",
+                          opacity: panelEnabled ? 1 : 0.85,
+                        }}
+                        title={
+                          panelEnabled
+                            ? "Panel zarządzania"
+                            : "Panel jest wyłączony w tym trybie. Zobaczysz komunikat i przejdziesz do podglądu."
+                        }
+                      >
+                        Panel
+                      </Link>
+                    )}
+
                     <Link
-                      to={`/tournaments/${t.id}/detail`}
+                      to={`/tournaments/${t.id}`}
                       style={{
                         border: "1px solid #444",
                         padding: "0.45rem 0.75rem",
@@ -305,7 +365,7 @@ export default function MyTournaments() {
                         display: "inline-block",
                       }}
                     >
-                      Szczegóły
+                      Turniej
                     </Link>
 
                     {!t.is_archived && (
@@ -323,7 +383,7 @@ export default function MyTournaments() {
                       </button>
                     )}
 
-                    {canManage && !t.is_archived && (
+                    {isOrganizer && !t.is_archived && (
                       <button
                         onClick={() => togglePublish(t)}
                         disabled={busyId === t.id}
@@ -341,7 +401,7 @@ export default function MyTournaments() {
                       </button>
                     )}
 
-                    {canManage && (
+                    {isOrganizer && (
                       <button
                         onClick={() => toggleArchive(t)}
                         disabled={busyId === t.id}
@@ -451,6 +511,49 @@ export default function MyTournaments() {
                         </div>
                       </>
                     )}
+
+                    {isOrganizer && (t.entry_mode ?? "MANAGER") === "SELF_REGISTER" && (
+                      <div style={{ display: "grid", gap: 10, marginTop: 10, borderTop: "1px solid #444", paddingTop: 10 }}>
+                        <div style={{ opacity: 0.9, fontWeight: 700 }}>Rejestracja uczestników</div>
+
+                        <div style={{ display: "grid", gap: 6 }}>
+                          <div style={{ opacity: 0.9, fontWeight: 600 }}>Link do rejestracji</div>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                            <code style={{ padding: "0.35rem 0.5rem", border: "1px solid #333", borderRadius: 8 }}>
+                              {joinLink}
+                            </code>
+                            <button
+                              onClick={async () => {
+                                const ok = await copyToClipboard(joinLink);
+                                setToastSafe(ok ? "Skopiowano link rejestracji." : "Nie udało się skopiować.");
+                              }}
+                              style={{ border: "1px solid #444", padding: "0.35rem 0.6rem", borderRadius: 8, background: "transparent", cursor: "pointer" }}
+                            >
+                              Kopiuj
+                            </button>
+                          </div>
+                        </div>
+
+                        <div style={{ display: "grid", gap: 6 }}>
+                          <div style={{ opacity: 0.9, fontWeight: 600 }}>Kod rejestracyjny</div>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                            <code style={{ padding: "0.35rem 0.5rem", border: "1px solid #333", borderRadius: 8 }}>
+                              {t.registration_code ?? "—"}
+                            </code>
+                            <button
+                              disabled={!t.registration_code}
+                              onClick={async () => {
+                                const ok = await copyToClipboard(t.registration_code ?? "");
+                                setToastSafe(ok ? "Skopiowano kod rejestracyjny." : "Nie udało się skopiować.");
+                              }}
+                              style={{ border: "1px solid #444", padding: "0.35rem 0.6rem", borderRadius: 8, background: "transparent", cursor: "pointer", opacity: t.registration_code ? 1 : 0.6 }}
+                            >
+                              Kopiuj
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -505,7 +608,6 @@ export default function MyTournaments() {
         </button>
       </div>
 
-      {/* ✅ Jeden rząd checkboxów sterujących widocznością sekcji */}
       <div style={{ marginTop: "1rem", display: "flex", gap: 16, flexWrap: "wrap" }}>
         {[
           ["draft", "Szkice"],
