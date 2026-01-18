@@ -1,3 +1,4 @@
+// frontend/src/api.ts
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 
 /* =====================
@@ -68,7 +69,6 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   const makeHeaders = (token?: string) => {
     const h = new Headers(init.headers || undefined);
 
-    // Content-Type ustawiaj tylko, gdy realnie wysyłasz body (i nie jest to FormData)
     const hasBody = body !== undefined && body !== null;
     if (hasBody && !h.has("Content-Type") && !isFormData(body)) {
       h.set("Content-Type", "application/json");
@@ -123,9 +123,9 @@ export async function addAssistant(tournamentId: number, email: string): Promise
     const data = await res.json().catch(() => ({}));
     throw new Error(
       data?.detail ||
-      data?.non_field_errors?.[0] ||
-      data?.email?.[0] ||
-      "Nie udało się dodać współorganizatora"
+        data?.non_field_errors?.[0] ||
+        data?.email?.[0] ||
+        "Nie udało się dodać współorganizatora"
     );
   }
 }

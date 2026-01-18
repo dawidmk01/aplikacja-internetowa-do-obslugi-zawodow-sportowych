@@ -210,13 +210,15 @@ class TournamentDetailView(RetrieveUpdateAPIView):
         if _is_organizer(user, tournament):
             return Response(serializer.data)
 
-        # 2) Asystent (membership) -> PODGLĄD zawsze (nie blokujemy strony)
+        # 2) Asystent -> PODGLĄD zawsze (nie blokujemy strony)
         if _membership(user, tournament):
             return Response(serializer.data)
 
-        # 3) Zarejestrowany uczestnik -> podgląd
+        # 3) Zarejestrowany uczestnik -> podgląd TYLKO gdy opublikowany lub włączony preview dla uczestników
         if _is_participant(user, tournament):
-            return Response(serializer.data)
+            if tournament.is_published or getattr(tournament, "participants_public_preview_enabled", False):
+                return Response(serializer.data)
+            raise PermissionDenied("Podgląd dla uczestników jest wyłączony. Poczekaj na publikację turnieju.")
 
         # 4) Public: tylko jeśli opublikowany + ewentualny access_code
         if tournament.is_published:

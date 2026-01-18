@@ -17,14 +17,18 @@ type TournamentPublicDTO = {
   location: string | null;
   is_published?: boolean;
 
-  // zarządzanie uczestnikami (bez SELF_REGISTER)
   entry_mode?: EntryMode;
   competition_type?: "TEAM" | "INDIVIDUAL";
 
-  // ✅ toggle dołączania przez konto + kod
   allow_join_by_code?: boolean;
-  // opcjonalnie – jeśli backend zwraca (nie jest wymagane do działania UI)
   join_code?: string | null;
+
+  participants_public_preview_enabled?: boolean;
+
+  // Polityka zmiany nazwy (różne warianty nazwy pola – frontend wykrywa)
+  participants_self_rename_enabled?: boolean;
+  participants_self_rename_requires_approval?: boolean;
+  participants_self_rename_approval_required?: boolean;
 
   my_role?: "ORGANIZER" | "ASSISTANT" | "PARTICIPANT" | null;
 };
@@ -32,6 +36,14 @@ type TournamentPublicDTO = {
 type RegistrationMeDTO = {
   display_name: string;
   team_id: number | null;
+};
+
+type NameChangeRequestDTO = {
+  id?: number;
+  status?: "PENDING" | "APPROVED" | "REJECTED" | string;
+  old_name?: string;
+  requested_name?: string;
+  created_at?: string;
 };
 
 function formatDateRange(start: string | null, end: string | null) {
@@ -75,13 +87,33 @@ function normalizeName(s: string) {
   return (s ?? "").trim().replace(/\s+/g, " ");
 }
 
+function looksLikeJoinDisabledMessage(msg: string) {
+  const t = (msg ?? "").toLowerCase();
+  return t.includes("dołącz") && (t.includes("wyłącz") || t.includes("disabled"));
+}
+
+function looksLikeRenameRequiresApprovalMessage(msg: string) {
+  const t = (msg ?? "").toLowerCase();
+  // heurystyka: komunikaty typu "wymaga akceptacji", "zatwierdzenia", "prośba o zmianę"
+  const approval =
+    t.includes("akcept") || t.includes("zatwier") || t.includes("approval") || t.includes("request") || t.includes("prośb");
+  const rename = t.includes("zmian") && (t.includes("nazw") || t.includes("name"));
+  return approval && rename;
+}
+
+function extractList(payload: any): any[] {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.results)) return payload.results;
+  return [];
+}
+
 export default function TournamentPublic({ initialView = "MATCHES" }: { initialView?: ViewTab } = {}) {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  // kod dostępu do podglądu (public access code)
+  // kod dostępu (public access code)
   const urlAccessCode = searchParams.get("code") ?? "";
   const [code, setCode] = useState("");
 
@@ -90,10 +122,8 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlAccessCode]);
 
-  // flaga wejścia "z linku do dołączania"
+  // tryb "dołączania"
   const joinFlag = searchParams.get("join") === "1";
-
-  // opcjonalnie: prefill kodu dołączania z URL (jeśli kiedyś dodasz do linku)
   const urlJoinCode = searchParams.get("join_code") ?? searchParams.get("joinCode") ?? "";
 
   const [tournament, setTournament] = useState<TournamentPublicDTO | null>(null);
@@ -111,21 +141,30 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
   const [regInfo, setRegInfo] = useState<string | null>(null);
   const [regError, setRegError] = useState<string | null>(null);
 
+  // JOIN (tylko do pierwszego dołączenia)
   const [regCode, setRegCode] = useState("");
   const [verified, setVerified] = useState(false);
+
+  // NAZWA (po dołączeniu)
   const [displayName, setDisplayName] = useState("");
 
-  // prefill kodu dołączania z URL (jeśli join=1)
+  const [joinDisabledByServer, setJoinDisabledByServer] = useState(false);
+
+  // PENDING prośba o zmianę nazwy (jeśli backend pozwala odczytać)
+  const [pendingNameReq, setPendingNameReq] = useState<NameChangeRequestDTO | null>(null);
+
+  // prefill join code z URL
   useEffect(() => {
     if (joinFlag && urlJoinCode && !regCode) setRegCode(urlJoinCode);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [joinFlag, urlJoinCode]);
 
-  // po zmianie kodu resetujemy weryfikację
+  // po zmianie kodu reset weryfikacji
   useEffect(() => {
     setVerified(false);
     setRegInfo(null);
     setRegError(null);
+    setJoinDisabledByServer(false);
   }, [regCode]);
 
   const nextParam = encodeURIComponent(location.pathname + location.search);
@@ -137,6 +176,22 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
 
   const publicMatches = useMemo(() => matches.filter((m) => !isByePublic(m)), [matches]);
 
+  const nameChangeApprovalRequired = useMemo(() => {
+    const t = tournament as any;
+    if (!t) return false;
+
+    if (typeof t.participants_self_rename_enabled === "boolean") {
+      return !t.participants_self_rename_enabled;
+    }
+    if (typeof t.participants_self_rename_requires_approval === "boolean") {
+      return !!t.participants_self_rename_requires_approval;
+    }
+    if (typeof t.participants_self_rename_approval_required === "boolean") {
+      return !!t.participants_self_rename_approval_required;
+    }
+    return false; // brak pola -> domyślnie mogą zmieniać
+  }, [tournament]);
+
   const loadMyMatches = async () => {
     if (!id || !isLogged) return;
     try {
@@ -147,7 +202,43 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
       const list: MatchPublicDTO[] = Array.isArray(data) ? data : [];
       setMyMatches(list.filter((m) => !isByePublic(m)));
     } catch {
-      // nie blokujemy całej strony
+      // ignore
+    }
+  };
+
+  const loadMyPendingNameChange = async (teamId: number | null) => {
+    if (!id || !teamId) {
+      setPendingNameReq(null);
+      return;
+    }
+
+    try {
+      const res = await apiFetch(
+        `/api/tournaments/${id}/teams/name-change-requests/?status=PENDING&team_id=${teamId}`
+      );
+
+      if (!res.ok) {
+        // 403/404 ignorujemy (np. endpoint tylko dla organizerów)
+        return;
+      }
+
+      const data = await res.json().catch(() => null);
+      const list = extractList(data) as any[];
+      const first = list?.[0] ?? null;
+
+      if (first) {
+        setPendingNameReq({
+          id: first.id,
+          status: first.status,
+          old_name: first.old_name,
+          requested_name: first.requested_name,
+          created_at: first.created_at,
+        });
+      } else {
+        setPendingNameReq(null);
+      }
+    } catch {
+      // ignore
     }
   };
 
@@ -156,19 +247,26 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
 
     setError(null);
 
-    // 1) turniej publiczny
     const tRes = await apiFetch(`/api/tournaments/${id}/${qs}`);
     if (tRes.status === 403) {
       const data = await tRes.json().catch(() => null);
       const msg = data?.detail || "Brak dostępu.";
-      if (String(msg).toLowerCase().includes("kod")) setNeedsCode(true);
-      throw new Error(msg);
-    }
-    if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
 
+      if (String(msg).toLowerCase().includes("kod")) setNeedsCode(true);
+      else setNeedsCode(false);
+
+      // ważne: join panel ma działać nawet przy braku dostępu do public view
+      setTournament(null);
+      setMatches([]);
+      setError(msg);
+      return;
+    }
+
+    if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
     setNeedsCode(false);
 
-    const tData = await tRes.json();
+    const tData = await tRes.json().catch(() => ({}));
+
     const t: TournamentPublicDTO = {
       id: tData.id,
       name: tData.name,
@@ -182,41 +280,67 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
       competition_type: tData.competition_type,
       my_role: tData.my_role ?? null,
 
-      // ✅ toggle dołączania przez konto + kod (NOWY KONTRAKT)
-      allow_join_by_code: Boolean(tData.allow_join_by_code),
-      join_code: tData.join_code ?? null,
+      allow_join_by_code: Object.prototype.hasOwnProperty.call(tData, "allow_join_by_code")
+        ? Boolean(tData.allow_join_by_code)
+        : undefined,
+
+      join_code: Object.prototype.hasOwnProperty.call(tData, "join_code") ? (tData.join_code ?? null) : undefined,
+
+      participants_public_preview_enabled: Object.prototype.hasOwnProperty.call(tData, "participants_public_preview_enabled")
+        ? Boolean(tData.participants_public_preview_enabled)
+        : undefined,
+
+      participants_self_rename_enabled: Object.prototype.hasOwnProperty.call(tData, "participants_self_rename_enabled")
+        ? Boolean(tData.participants_self_rename_enabled)
+        : undefined,
+
+      participants_self_rename_requires_approval: Object.prototype.hasOwnProperty.call(tData, "participants_self_rename_requires_approval")
+        ? Boolean(tData.participants_self_rename_requires_approval)
+        : undefined,
+
+      participants_self_rename_approval_required: Object.prototype.hasOwnProperty.call(tData, "participants_self_rename_approval_required")
+        ? Boolean(tData.participants_self_rename_approval_required)
+        : undefined,
     };
+
     setTournament(t);
 
-    // 2) mecze publiczne
     const mRes = await apiFetch(`/api/tournaments/${id}/public/matches/${qs}`);
     if (mRes.status === 403) {
       const data = await mRes.json().catch(() => null);
       const msg = data?.detail || "Brak dostępu.";
       if (String(msg).toLowerCase().includes("kod")) setNeedsCode(true);
       setMatches([]);
+      setError((prev) => prev ?? msg);
       return;
     }
     if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
 
-    const raw = await mRes.json();
-    const list: MatchPublicDTO[] = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? raw.results : [];
+    const raw = await mRes.json().catch(() => []);
+    const list: MatchPublicDTO[] = Array.isArray(raw)
+      ? raw
+      : Array.isArray((raw as any)?.results)
+        ? (raw as any).results
+        : [];
     setMatches(list);
   };
 
   const loadRegistrationMe = async () => {
     if (!id || !isLogged) {
       setRegMe(null);
+      setPendingNameReq(null);
       return;
     }
 
     const res = await apiFetch(`/api/tournaments/${id}/registrations/me/`);
     if (res.status === 404) {
       setRegMe(null);
+      setPendingNameReq(null);
       return;
     }
     if (!res.ok) {
       setRegMe(null);
+      setPendingNameReq(null);
       return;
     }
 
@@ -225,8 +349,12 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
       setRegMe({ display_name: data.display_name, team_id: data.team_id ?? null });
       setDisplayName(data.display_name);
       loadMyMatches();
+
+      // spróbuj dociągnąć pending request (jeśli endpoint pozwala)
+      await loadMyPendingNameChange(data.team_id ?? null);
     } else {
       setRegMe(null);
+      setPendingNameReq(null);
     }
   };
 
@@ -242,6 +370,7 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
 
   const dateRange = formatDateRange(tournament?.start_date ?? null, tournament?.end_date ?? null);
 
+  // --- JOIN: verify code (tylko przed dołączeniem) ---
   const verifyRegistrationCode = async () => {
     if (!id) return;
 
@@ -263,10 +392,15 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
       });
 
       const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.detail || "Nie udało się zweryfikować kodu.");
+      if (!res.ok) {
+        const msg = data?.detail || "Nie udało się zweryfikować kodu.";
+        if (looksLikeJoinDisabledMessage(msg)) setJoinDisabledByServer(true);
+        throw new Error(msg);
+      }
 
       setVerified(true);
-      setRegInfo("Kod poprawny. Uzupełnij nazwę i zapisz się do turnieju.");
+      setJoinDisabledByServer(false);
+      setRegInfo("Kod poprawny. Uzupełnij nazwę i dołącz do turnieju.");
     } catch (e: any) {
       setVerified(false);
       setRegError(e?.message ?? "Błąd weryfikacji kodu.");
@@ -275,7 +409,8 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
     }
   };
 
-  const joinOrRename = async () => {
+  // --- JOIN: dołączenie (wymaga kodu) ---
+  const joinTournament = async () => {
     if (!id) return;
 
     setRegError(null);
@@ -293,8 +428,6 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
       return;
     }
 
-    const wasRegistered = !!regMe;
-
     setRegBusy(true);
     try {
       const res = await apiFetch(`/api/tournaments/${id}/registrations/join/`, {
@@ -304,14 +437,19 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
       });
 
       const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.detail || "Nie udało się zapisać do turnieju.");
+      if (!res.ok) {
+        const msg = data?.detail || "Nie udało się zapisać do turnieju.";
+        if (looksLikeJoinDisabledMessage(msg)) setJoinDisabledByServer(true);
+        throw new Error(msg);
+      }
 
       await loadRegistrationMe();
-
-      setRegInfo(wasRegistered ? "Zmieniono nazwę." : "Zapisano do turnieju.");
+      setRegInfo("Zapisano do turnieju.");
       setRegError(null);
 
-      // jeśli weszliśmy przez join=1, czyścimy tylko flagę (zostawiamy ewentualny code= do podglądu)
+      await loadTournamentAndMatches().catch(() => null);
+
+      // jeżeli weszliśmy przez join=1, czyścimy join flagę (zostawiamy ewentualny code=)
       if (joinFlag) {
         const keepAccess = code.trim() ? `?code=${encodeURIComponent(code.trim())}` : "";
         navigate(location.pathname + keepAccess, { replace: true });
@@ -323,7 +461,114 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
     }
   };
 
-  const showJoinPanel = Boolean(tournament?.allow_join_by_code) && (joinFlag || !!regMe);
+  // --- RENAME (1): bezpośrednia zmiana nazwy (gdy nie ma akceptacji) ---
+  const renameRegistrationImmediate = async (dn: string) => {
+    if (!id) return;
+
+    const res = await apiFetch(`/api/tournaments/${id}/registrations/me/`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ display_name: dn }),
+    });
+
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg = data?.detail || "Nie udało się zmienić nazwy.";
+      throw new Error(msg);
+    }
+
+    await loadRegistrationMe();
+    setRegInfo("Zmieniono nazwę.");
+  };
+
+  // --- RENAME (2): prośba o zmianę nazwy (gdy wymagana akceptacja) ---
+  const requestNameChangeApproval = async (dn: string) => {
+    if (!id) return;
+
+    const payload: any = {
+      requested_name: dn,
+    };
+
+    if (regMe?.team_id) payload.team_id = regMe.team_id;
+
+    const res = await apiFetch(`/api/tournaments/${id}/teams/name-change-requests/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg = data?.detail || "Nie udało się wysłać prośby o zmianę nazwy.";
+      throw new Error(msg);
+    }
+
+    setRegInfo("Wysłano prośbę o zmianę nazwy. Oczekuje na akceptację organizatora.");
+    setRegError(null);
+
+    // spróbuj odświeżyć pending (jeśli endpoint działa dla uczestnika)
+    await loadMyPendingNameChange(regMe?.team_id ?? null);
+  };
+
+  // --- RENAME: handler (sam dobiera tryb + fallback) ---
+  const handleRenameOrRequest = async () => {
+    if (!id) return;
+
+    setRegError(null);
+    setRegInfo(null);
+
+    if (!regMe) return;
+
+    const dn = normalizeName(displayName);
+    if (!dn) {
+      setRegError("Podaj nową nazwę.");
+      return;
+    }
+
+    if (normalizeName(regMe.display_name) === dn) {
+      setRegInfo("Nazwa nie uległa zmianie.");
+      return;
+    }
+
+    if (pendingNameReq?.status === "PENDING") {
+      setRegInfo("Masz już oczekującą prośbę o zmianę nazwy. Poczekaj na decyzję organizatora.");
+      return;
+    }
+
+    setRegBusy(true);
+    try {
+      if (nameChangeApprovalRequired) {
+        await requestNameChangeApproval(dn);
+        return;
+      }
+
+      // standard: zmiana natychmiastowa
+      await renameRegistrationImmediate(dn);
+    } catch (e: any) {
+      // fallback: backend może wymagać akceptacji nawet jeśli public view nie zwrócił pola
+      const msg = e?.message ?? "Błąd zmiany nazwy.";
+      if (looksLikeRenameRequiresApprovalMessage(msg)) {
+        try {
+          await requestNameChangeApproval(dn);
+          return;
+        } catch (e2: any) {
+          setRegError(e2?.message ?? msg);
+          return;
+        }
+      }
+      setRegError(msg);
+    } finally {
+      setRegBusy(false);
+    }
+  };
+
+  // Panel join pokazujemy gdy:
+  // - join=1 lub allow_join_by_code=true lub użytkownik już zapisany
+  const shouldShowJoinPanel = joinFlag || !!regMe || Boolean(tournament?.allow_join_by_code);
+
+  // „Join wyłączony” pokazujemy tylko, gdy wiemy to na pewno i użytkownik NIE jest zapisany
+  const joinIsDisabledKnown =
+    !regMe && (joinDisabledByServer || (tournament ? tournament.allow_join_by_code === false : false));
 
   return (
     <div style={{ padding: "2rem", maxWidth: 980 }}>
@@ -349,23 +594,24 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
           ) : null}
         </div>
 
-        {showJoinPanel && (
+        {/* PANEL DOŁĄCZANIA / ZMIANY NAZWY */}
+        {shouldShowJoinPanel && (
           <section
             style={{
               marginTop: "1.25rem",
               padding: "1rem",
               border: "1px solid #333",
               borderRadius: 12,
-              maxWidth: 560,
+              maxWidth: 620,
             }}
           >
-            <h3 style={{ marginTop: 0, marginBottom: 6 }}>Dołącz do turnieju</h3>
+            <h3 style={{ marginTop: 0, marginBottom: 6 }}>
+              {regMe ? "Twoje dane w turnieju" : "Dołącz do turnieju"}
+            </h3>
 
             {!isLogged ? (
               <div style={{ display: "grid", gap: 10 }}>
-                <div style={{ opacity: 0.85 }}>
-                  Aby dołączyć, musisz się zalogować lub utworzyć konto.
-                </div>
+                <div style={{ opacity: 0.85 }}>Aby dołączyć, musisz się zalogować lub utworzyć konto.</div>
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                   <Link
                     to={`/login?next=${nextParam}`}
@@ -393,69 +639,141 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
                   </Link>
                 </div>
               </div>
-            ) : (
-              <div style={{ display: "grid", gap: 10 }}>
-                {regMe ? (
-                  <div style={{ opacity: 0.9 }}>
-                    Jesteś zapisany jako: <strong>{regMe.display_name}</strong>
-                    {!tournament?.is_published && (
-                      <div style={{ marginTop: 6, opacity: 0.75 }}>
-                        Turniej nie jest opublikowany — widok publiczny może być ograniczony.
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div style={{ opacity: 0.9 }}>
-                    Wpisz kod dołączania i uzupełnij nazwę uczestnika.
-                  </div>
-                )}
-
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <input
-                    value={regCode}
-                    onChange={(e) => setRegCode(e.target.value)}
-                    placeholder="Kod dołączania"
-                    style={{ flex: 1, minWidth: 220, padding: "0.55rem" }}
-                  />
-                  <button onClick={verifyRegistrationCode} disabled={regBusy} style={{ padding: "0.55rem 0.9rem" }}>
-                    {regBusy ? "…" : "Sprawdź kod"}
-                  </button>
+            ) : joinIsDisabledKnown ? (
+              <div style={{ opacity: 0.92, lineHeight: 1.45 }}>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>Dołączanie do turnieju jest wyłączone</div>
+                <div style={{ opacity: 0.85 }}>
+                  Organizator nie włączył opcji dołączania przez konto i kod dla tego turnieju.
                 </div>
 
-                {(verified || !!regMe) && (
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <input
-                      value={displayName}
-                      onChange={(e) => setDisplayName(e.target.value)}
-                      placeholder={tournament?.competition_type === "INDIVIDUAL" ? "Imię i nazwisko" : "Nazwa drużyny"}
-                      style={{ flex: 1, minWidth: 220, padding: "0.55rem" }}
-                    />
-                    <button onClick={joinOrRename} disabled={regBusy} style={{ padding: "0.55rem 0.9rem" }}>
-                      {regBusy ? "…" : regMe ? "Zmień nazwę" : "Dołącz"}
-                    </button>
-                  </div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
+                  <button
+                    type="button"
+                    onClick={() => loadTournamentAndMatches().catch(() => null)}
+                    style={{ padding: "0.5rem 0.9rem" }}
+                  >
+                    Odśwież
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const keepAccess = code.trim() ? `?code=${encodeURIComponent(code.trim())}` : "";
+                      navigate(location.pathname + keepAccess, { replace: true });
+                    }}
+                    style={{ padding: "0.5rem 0.9rem" }}
+                  >
+                    Przejdź do podglądu
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 12 }}>
+                {/* Stan: już zapisany -> zmiana nazwy (lub prośba) */}
+                {regMe ? (
+                  <>
+                    <div style={{ opacity: 0.9 }}>
+                      Jesteś zapisany jako: <strong>{regMe.display_name}</strong>
+                      <div style={{ marginTop: 6, opacity: 0.75 }}>
+                        Kod dołączania służy tylko do pierwszego dołączenia.
+                      </div>
+
+                      {pendingNameReq?.status === "PENDING" && (
+                        <div
+                          style={{
+                            marginTop: 10,
+                            padding: "10px 12px",
+                            border: "1px solid rgba(201,162,39,0.35)",
+                            borderRadius: 10,
+                            color: "#c9a227",
+                            lineHeight: 1.4,
+                          }}
+                        >
+                          <div style={{ fontWeight: 800, marginBottom: 6 }}>Oczekująca prośba o zmianę nazwy</div>
+                          <div style={{ opacity: 0.95 }}>
+                            {pendingNameReq.old_name ? (
+                              <>
+                                {pendingNameReq.old_name} → <strong>{pendingNameReq.requested_name ?? "…"}</strong>
+                              </>
+                            ) : (
+                              <>
+                                Nowa nazwa: <strong>{pendingNameReq.requested_name ?? "…"}</strong>
+                              </>
+                            )}
+                          </div>
+                          <div style={{ marginTop: 6, opacity: 0.85 }}>
+                            Nie możesz wysłać kolejnej prośby, dopóki organizator nie podejmie decyzji.
+                          </div>
+                        </div>
+                      )}
+
+                      {nameChangeApprovalRequired && (
+                        <div style={{ marginTop: 10, opacity: 0.8 }}>
+                          Zmiana nazwy wymaga akceptacji organizatora — zostanie wysłana prośba.
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <input
+                        value={displayName}
+                        onChange={(e) => setDisplayName(e.target.value)}
+                        placeholder={
+                          tournament?.competition_type === "INDIVIDUAL"
+                            ? "Imię i nazwisko"
+                            : "Nazwa drużyny / imię i nazwisko"
+                        }
+                        style={{ flex: 1, minWidth: 260, padding: "0.55rem" }}
+                      />
+                      <button
+                        onClick={handleRenameOrRequest}
+                        disabled={regBusy || pendingNameReq?.status === "PENDING"}
+                        style={{ padding: "0.55rem 0.9rem" }}
+                      >
+                        {regBusy ? "…" : nameChangeApprovalRequired ? "Wyślij prośbę" : "Zmień nazwę"}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {/* Stan: nie zapisany -> join przez kod */}
+                    <div style={{ opacity: 0.9 }}>Wpisz kod dołączania, sprawdź go i uzupełnij nazwę.</div>
+
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <input
+                        value={regCode}
+                        onChange={(e) => setRegCode(e.target.value)}
+                        placeholder="Kod dołączania"
+                        style={{ flex: 1, minWidth: 220, padding: "0.55rem" }}
+                      />
+                      <button onClick={verifyRegistrationCode} disabled={regBusy} style={{ padding: "0.55rem 0.9rem" }}>
+                        {regBusy ? "…" : "Sprawdź kod"}
+                      </button>
+                    </div>
+
+                    {(verified || joinFlag) && (
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <input
+                          value={displayName}
+                          onChange={(e) => setDisplayName(e.target.value)}
+                          placeholder={
+                            tournament?.competition_type === "INDIVIDUAL"
+                              ? "Imię i nazwisko"
+                              : "Nazwa drużyny / imię i nazwisko"
+                          }
+                          style={{ flex: 1, minWidth: 220, padding: "0.55rem" }}
+                        />
+                        <button onClick={joinTournament} disabled={regBusy} style={{ padding: "0.55rem 0.9rem" }}>
+                          {regBusy ? "…" : "Dołącz"}
+                        </button>
+                      </div>
+                    )}
+                  </>
                 )}
 
                 {regError && <div style={{ color: "crimson" }}>{regError}</div>}
                 {regInfo && <div style={{ opacity: 0.85 }}>{regInfo}</div>}
               </div>
             )}
-          </section>
-        )}
-
-        {(joinFlag || !!regMe) && !tournament?.allow_join_by_code && (
-          <section
-            style={{
-              marginTop: "1.25rem",
-              padding: "1rem",
-              border: "1px solid #333",
-              borderRadius: 12,
-              maxWidth: 560,
-              opacity: 0.9,
-            }}
-          >
-            <h3 style={{ marginTop: 0, marginBottom: 6 }}>Dołączanie do turnieju</h3>
-            <div>Dołączanie przez konto i kod nie jest włączone dla tego turnieju.</div>
           </section>
         )}
 
@@ -526,12 +844,13 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
 
       {view === "MATCHES" ? (
         <div>
+          {/* Moje mecze pokazuj tylko gdy są dostępne (to jest niezależne od rename) */}
           {regMe && tournament?.is_published && (
             <section style={{ marginBottom: "1.5rem" }}>
               <h2 style={{ margin: "0 0 0.5rem 0" }}>Moje mecze</h2>
 
               {myMatches.length === 0 ? (
-                <div style={{ opacity: 0.75 }}>Brak meczów do wyświetlenia (albo nie ma jeszcze przypisanych spotkań).</div>
+                <div style={{ opacity: 0.75 }}>Brak meczów do wyświetlenia.</div>
               ) : (
                 <div style={{ border: "1px solid #333", borderRadius: 12, padding: "0.75rem 1rem" }}>
                   {myMatches.map((m) => (

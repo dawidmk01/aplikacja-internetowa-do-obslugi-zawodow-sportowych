@@ -1,3 +1,4 @@
+# backend/tournaments/views/registrations.py
 from __future__ import annotations
 
 from typing import Optional
@@ -24,9 +25,7 @@ def _norm_name(s: str) -> str:
 
 def _join_enabled_or_400(tournament: Tournament) -> Optional[Response]:
     """
-    NOWA STRATEGIA:
-    - join działa, gdy tournament.join_enabled == True
-    - NIE patrzymy na entry_mode=SELF_REGISTER (legacy ignorujemy)
+    join działa, gdy tournament.join_enabled == True
     """
     if not getattr(tournament, "join_enabled", False):
         return Response(
@@ -61,19 +60,32 @@ def _tournament_real_started(tournament: Tournament) -> bool:
 
 
 def _get_user_team(tournament: Tournament, user) -> Optional[Team]:
-    return Team.objects.filter(
-        tournament=tournament,
-        registered_user=user,
-        is_active=True,
-    ).first()
+    return (
+        Team.objects.filter(
+            tournament=tournament,
+            registered_user=user,
+            is_active=True,
+        )
+        .exclude(name=BYE_TEAM_NAME)
+        .first()
+    )
 
 
 def _claim_free_team_or_none(tournament: Tournament, user) -> Optional[Team]:
-    team = Team.objects.filter(
-        tournament=tournament,
-        is_active=True,
-        registered_user__isnull=True,
-    ).order_by("id").first()
+    """
+    Zajmuje pierwszy wolny slot Team (aktywny, bez registered_user).
+    Nie tworzymy nowych slotów tutaj — to robi organizer przez teams/setup/.
+    """
+    team = (
+        Team.objects.filter(
+            tournament=tournament,
+            is_active=True,
+            registered_user__isnull=True,
+        )
+        .exclude(name=BYE_TEAM_NAME)
+        .order_by("id")
+        .first()
+    )
 
     if not team:
         return None
@@ -83,8 +95,11 @@ def _claim_free_team_or_none(tournament: Tournament, user) -> Optional[Team]:
     return team
 
 
+# ============================================================
+# SERIALIZERY
+# ============================================================
+
 class RegistrationVerifySerializer(serializers.Serializer):
-    # kompatybilność: stary payload mógł mieć registration_code
     code = serializers.CharField(max_length=64, allow_blank=False, trim_whitespace=True, required=False)
     registration_code = serializers.CharField(max_length=64, allow_blank=False, trim_whitespace=True, required=False)
 
@@ -109,11 +124,23 @@ class RegistrationJoinSerializer(serializers.Serializer):
         return attrs
 
 
+class RegistrationRenameSerializer(serializers.Serializer):
+    display_name = serializers.CharField(max_length=80, allow_blank=False, trim_whitespace=True)
+
+    def validate_display_name(self, value: str) -> str:
+        v = _norm_name(value)
+        if not v:
+            raise serializers.ValidationError("Wymagana nazwa.")
+        if len(v) > 80:
+            raise serializers.ValidationError("Nazwa jest za długa (max 80 znaków).")
+        return v
+
+
+# ============================================================
+# WIDOKI
+# ============================================================
+
 class TournamentRegistrationVerifyView(APIView):
-    """
-    POST /api/tournaments/<pk>/registrations/verify/
-    body: { "code": "..." }
-    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk: int):
@@ -134,10 +161,6 @@ class TournamentRegistrationVerifyView(APIView):
 
 
 class TournamentRegistrationJoinView(APIView):
-    """
-    POST /api/tournaments/<pk>/registrations/join/
-    body: { "code": "...", "display_name": "..." }
-    """
     permission_classes = [IsAuthenticated]
 
     @transaction.atomic
@@ -158,7 +181,6 @@ class TournamentRegistrationJoinView(APIView):
         if denied:
             return denied
 
-        # blokada dołączenia po realnym starcie (wynik wpisany w nie-BYE)
         existing = TournamentRegistration.objects.filter(tournament=tournament, user=request.user).first()
         if not existing and _tournament_real_started(tournament):
             return Response(
@@ -173,30 +195,33 @@ class TournamentRegistrationJoinView(APIView):
         )
         reg.display_name = display_name
 
-        # team slot
         team = reg.team if reg.team_id else None
-        if team and (team.tournament_id != tournament.id or team.registered_user_id != request.user.id):
+        if team and team.tournament_id != tournament.id:
+            team = None
+
+        if team and team.registered_user_id not in (None, request.user.id):
             team = None
 
         if not team:
             team = _get_user_team(tournament, request.user) or _claim_free_team_or_none(tournament, request.user)
 
-        # jeśli dalej brak: tworzymy nowy slot, ale z limitem participants_count (jeżeli ustawiony)
         if not team:
-            if tournament.participants_count and Team.objects.filter(tournament=tournament, is_active=True).count() >= tournament.participants_count:
-                return Response({"detail": "Brak wolnych miejsc (limit uczestników)."}, status=status.HTTP_400_BAD_REQUEST)
-
-            team = Team.objects.create(
-                tournament=tournament,
-                name=display_name,
-                is_active=True,
-                registered_user=request.user,
+            return Response(
+                {"detail": "Brak wolnych miejsc. Organizator musi zwiększyć liczbę uczestników (teams/setup)."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ustaw nazwę teamu = display_name
+        update_fields = []
+        if team.registered_user_id != request.user.id:
+            team.registered_user = request.user
+            update_fields.append("registered_user")
+
         if team.name != display_name:
             team.name = display_name
-            team.save(update_fields=["name"])
+            update_fields.append("name")
+
+        if update_fields:
+            team.save(update_fields=update_fields)
 
         reg.team = team
         reg.save(update_fields=["display_name", "team"])
@@ -208,40 +233,90 @@ class TournamentRegistrationJoinView(APIView):
 
 
 class TournamentRegistrationMeView(APIView):
-    """
-    GET /api/tournaments/<pk>/registrations/me/
-    -> 200 { display_name, team_id } albo 404
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
-        reg = TournamentRegistration.objects.filter(
-            tournament=tournament,
-            user=request.user,
-        ).only("display_name", "team_id").first()
+        reg = (
+            TournamentRegistration.objects.filter(
+                tournament=tournament,
+                user=request.user,
+            )
+            .only("display_name", "team_id")
+            .first()
+        )
 
         if not reg:
             return Response({"detail": "Brak rejestracji."}, status=status.HTTP_404_NOT_FOUND)
 
         return Response({"display_name": reg.display_name, "team_id": reg.team_id}, status=status.HTTP_200_OK)
 
+    @transaction.atomic
+    def patch(self, request, pk: int):
+        tournament = get_object_or_404(Tournament, pk=pk)
+
+        # KLUCZOWE: jeśli wymagana akceptacja, blokujemy bezpośredni rename
+        if not getattr(tournament, "participants_self_rename_enabled", True):
+            return Response(
+                {
+                    "detail": (
+                        "Zmiana nazwy wymaga akceptacji organizatora — wyślij prośbę o zmianę nazwy."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reg = TournamentRegistration.objects.select_for_update().filter(
+            tournament=tournament,
+            user=request.user,
+        ).first()
+
+        if not reg:
+            return Response({"detail": "Brak rejestracji."}, status=status.HTTP_404_NOT_FOUND)
+
+        ser = RegistrationRenameSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        new_name = ser.validated_data["display_name"]
+
+        changed = False
+        if reg.display_name != new_name:
+            reg.display_name = new_name
+            reg.save(update_fields=["display_name"])
+            changed = True
+
+        if reg.team_id:
+            team = Team.objects.select_for_update().filter(id=reg.team_id, tournament=tournament).first()
+            if team and team.name != new_name and team.name != BYE_TEAM_NAME:
+                team.name = new_name
+                team.save(update_fields=["name"])
+                changed = True
+
+        return Response(
+            {
+                "detail": "OK" if changed else "NO_CHANGES",
+                "display_name": reg.display_name,
+                "team_id": reg.team_id,
+            },
+            status=status.HTTP_200_OK,
+        )
+
 
 class TournamentRegistrationMyMatchesView(ListAPIView):
-    """
-    GET /api/tournaments/<pk>/registrations/my/matches/
-    Zwraca listę meczów dla teamu zalogowanego usera (format jak public matches).
-    """
     permission_classes = [IsAuthenticated]
     serializer_class = MatchSerializer
 
     def get_queryset(self):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
 
-        reg = TournamentRegistration.objects.filter(
-            tournament=tournament,
-            user=self.request.user,
-        ).only("team_id").first()
+        reg = (
+            TournamentRegistration.objects.filter(
+                tournament=tournament,
+                user=self.request.user,
+            )
+            .only("team_id")
+            .first()
+        )
 
         if not reg or not reg.team_id:
             return Match.objects.none()
@@ -254,7 +329,6 @@ class TournamentRegistrationMyMatchesView(ListAPIView):
         )
 
 
-# (Opcjonalnie) Aliasy dla kompatybilności starych frontów/URL-i:
 TournamentSelfRegisterView = TournamentRegistrationJoinView
 TournamentSelfRegisterMeView = TournamentRegistrationMeView
 TournamentSelfRegisterMyMatchesView = TournamentRegistrationMyMatchesView

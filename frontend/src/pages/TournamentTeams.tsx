@@ -26,6 +26,21 @@ type SetupTeamsResponse = {
   teams: Team[];
 };
 
+type NameChangeRequestItem = {
+  id: number;
+  team_id: number;
+  old_name: string;
+  requested_name: string;
+  requested_by_id: number;
+  created_at: string;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+};
+
+type NameChangeRequestListResponse = {
+  count: number;
+  results: NameChangeRequestItem[];
+};
+
 export default function TournamentTeams() {
   const { id } = useParams<{ id: string }>();
 
@@ -34,6 +49,11 @@ export default function TournamentTeams() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  // kolejka
+  const [queueLoading, setQueueLoading] = useState(false);
+  const [queueBusy, setQueueBusy] = useState(false);
+  const [pendingRequests, setPendingRequests] = useState<NameChangeRequestItem[]>([]);
 
   const inFlightRef = useRef(false);
 
@@ -71,6 +91,75 @@ export default function TournamentTeams() {
     return data;
   };
 
+  const loadPendingQueue = async () => {
+    if (!id) return;
+
+    setQueueLoading(true);
+    try {
+      const res = await apiFetch(`/api/tournaments/${id}/teams/name-change-requests/`);
+      if (!res.ok) {
+        // brak dostępu lub endpoint nieaktywny
+        setPendingRequests([]);
+        return;
+      }
+      const data: NameChangeRequestListResponse = await res.json();
+      setPendingRequests(Array.isArray(data?.results) ? data.results : []);
+    } catch {
+      setPendingRequests([]);
+    } finally {
+      setQueueLoading(false);
+    }
+  };
+
+  const approveRequest = async (requestId: number) => {
+    if (!id) return;
+
+    setQueueBusy(true);
+    setMessage(null);
+    try {
+      const res = await apiFetch(
+        `/api/tournaments/${id}/teams/name-change-requests/${requestId}/approve/`,
+        { method: "POST" }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || "Nie udało się zaakceptować prośby.");
+      }
+
+      await loadPendingQueue();
+      await loadTeams().catch(() => null);
+      setMessage("Prośba zaakceptowana.");
+    } catch (e: any) {
+      setMessage(e?.message || "Błąd akceptacji prośby.");
+    } finally {
+      setQueueBusy(false);
+    }
+  };
+
+  const rejectRequest = async (requestId: number) => {
+    if (!id) return;
+
+    setQueueBusy(true);
+    setMessage(null);
+    try {
+      const res = await apiFetch(
+        `/api/tournaments/${id}/teams/name-change-requests/${requestId}/reject/`,
+        { method: "POST" }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || "Nie udało się odrzucić prośby.");
+      }
+
+      await loadPendingQueue();
+      setMessage("Prośba odrzucona.");
+    } catch (e: any) {
+      setMessage(e?.message || "Błąd odrzucenia prośby.");
+    } finally {
+      setQueueBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!id) return;
 
@@ -81,8 +170,13 @@ export default function TournamentTeams() {
         setMessage(null);
         setLoading(true);
 
-        await loadTournament();
+        const t = await loadTournament();
         await loadTeams();
+
+        // kolejka tylko dla organizer/asystent (backend i tak zwróci 403 jeśli brak uprawnień)
+        if (mounted && (t.my_role === "ORGANIZER" || t.my_role === "ASSISTANT")) {
+          await loadPendingQueue();
+        }
       } catch (e: any) {
         if (mounted) setMessage(e.message || "Błąd ładowania danych.");
       } finally {
@@ -98,6 +192,7 @@ export default function TournamentTeams() {
     return () => {
       mounted = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   const currentCount = useMemo(() => Math.max(2, teams.length), [teams.length]);
@@ -108,8 +203,9 @@ export default function TournamentTeams() {
   const myRole: MyRole = tournament.my_role ?? null;
   const isOrganizer = myRole === "ORGANIZER";
   const isAssistant = myRole === "ASSISTANT";
-  const matchesStarted = Boolean(tournament.matches_started);
+  const canManageQueue = isOrganizer || isAssistant;
 
+  const matchesStarted = Boolean(tournament.matches_started);
   const lockCountForAssistant = isAssistant && matchesStarted;
 
   const formatLabel =
@@ -120,17 +216,13 @@ export default function TournamentTeams() {
         : "Grupy + puchar";
 
   const confirmChangeCount = (): boolean => {
-    // Asystent po starcie i tak nie dojdzie do tego miejsca (button disabled),
-    // ale zostawiamy też ochronę UX.
     if (lockCountForAssistant) {
       setMessage("Asystent nie może zmieniać liczby uczestników po rozpoczęciu turnieju.");
       return false;
     }
 
-    // DRAFT: to “najbezpieczniej”
     if (tournament.status === "DRAFT" && !matchesStarted) return true;
 
-    // Organizator po starcie: mocna informacja o skutkach
     if (isOrganizer && matchesStarted) {
       return window.confirm(
         [
@@ -148,7 +240,6 @@ export default function TournamentTeams() {
       );
     }
 
-    // Standardowe ostrzeżenie (CONFIGURED/RUNNING bez realnego startu itp.)
     return window.confirm(
       "Zmiana liczby uczestników spowoduje reset rozgrywek (etapy i mecze).\nKontynuować?"
     );
@@ -170,6 +261,9 @@ export default function TournamentTeams() {
 
       const resp = await setupTeams(next);
       setMessage(resp.detail || "Zmieniono liczbę uczestników.");
+
+      // po zmianie listy teamów warto odświeżyć kolejkę (sloty mogły się zmienić)
+      if (canManageQueue) await loadPendingQueue();
     } catch (e: any) {
       setMessage(e.message || "Nie udało się zmienić liczby uczestników.");
     } finally {
@@ -212,7 +306,6 @@ export default function TournamentTeams() {
         </div>
       </section>
 
-      {/* Komunikaty zależne od roli */}
       {lockCountForAssistant && (
         <div
           style={{
@@ -276,6 +369,106 @@ export default function TournamentTeams() {
 
       <hr />
 
+      {/* =========================
+          KOLEJKA PROŚB (PENDING)
+         ========================= */}
+      {canManageQueue && (
+        <>
+          <section style={{ margin: "1rem 0" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <h2 style={{ margin: 0 }}>Kolejka próśb o zmianę nazwy</h2>
+
+              <button
+                type="button"
+                onClick={() => loadPendingQueue()}
+                disabled={queueLoading || queueBusy}
+                style={{
+                  opacity: queueLoading || queueBusy ? 0.7 : 1,
+                  cursor: queueLoading || queueBusy ? "wait" : "pointer",
+                }}
+              >
+                Odśwież
+              </button>
+
+              <span style={{ opacity: 0.8 }}>
+                {queueLoading ? "Ładowanie…" : `Oczekuje: ${pendingRequests.length}`}
+              </span>
+            </div>
+
+            {pendingRequests.length === 0 && !queueLoading ? (
+              <p style={{ opacity: 0.7, fontStyle: "italic" }}>Brak oczekujących próśb.</p>
+            ) : (
+              <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                {pendingRequests.map((r) => (
+                  <div
+                    key={r.id}
+                    style={{
+                      border: "1px solid #444",
+                      borderRadius: 10,
+                      padding: "0.75rem",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      alignItems: "center",
+                    }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                        Team #{r.team_id}
+                      </div>
+                      <div style={{ opacity: 0.9, wordBreak: "break-word" }}>
+                        <span style={{ opacity: 0.7 }}>Było:</span> {r.old_name}
+                        <br />
+                        <span style={{ opacity: 0.7 }}>Chce:</span> {r.requested_name}
+                      </div>
+                      <div style={{ opacity: 0.6, fontSize: 12, marginTop: 6 }}>
+                        request_id: {r.id} • user_id: {r.requested_by_id}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        disabled={queueBusy}
+                        onClick={() => approveRequest(r.id)}
+                        style={{
+                          padding: "0.35rem 0.6rem",
+                          borderRadius: 8,
+                          border: "1px solid #2f7a2f",
+                          opacity: queueBusy ? 0.7 : 1,
+                          cursor: queueBusy ? "wait" : "pointer",
+                        }}
+                      >
+                        Akceptuj
+                      </button>
+                      <button
+                        type="button"
+                        disabled={queueBusy}
+                        onClick={() => rejectRequest(r.id)}
+                        style={{
+                          padding: "0.35rem 0.6rem",
+                          borderRadius: 8,
+                          border: "1px solid #7a2f2f",
+                          opacity: queueBusy ? 0.7 : 1,
+                          cursor: queueBusy ? "wait" : "pointer",
+                        }}
+                      >
+                        Odrzuć
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <hr />
+        </>
+      )}
+
+      {/* =========================
+          EDYCJA NAZW (PANEL)
+         ========================= */}
       <h2>{tournament?.competition_type === "INDIVIDUAL" ? "Zawodnicy" : "Drużyny"}</h2>
 
       {teams.length === 0 && !busy ? (
@@ -303,6 +496,8 @@ export default function TournamentTeams() {
               onBlur={async (e) => {
                 try {
                   await updateTeamName(team.id, e.target.value);
+                  // po manualnej zmianie nazwy odśwież kolejkę (czasem ta sama prośba przestaje mieć sens)
+                  if (canManageQueue) await loadPendingQueue();
                 } catch (err: any) {
                   setMessage(err.message);
                   await loadTeams().catch(() => null);

@@ -1,3 +1,4 @@
+# backend/tournaments/serializers/tournament.py
 from __future__ import annotations
 
 from django.contrib.auth import get_user_model
@@ -65,13 +66,26 @@ class TournamentSerializer(serializers.ModelSerializer):
     """
     Zasady:
     - entry_mode steruje WYŁĄCZNIE panelem (MANAGER / ORGANIZER_ONLY)
-    - join_enabled to osobny toggle dołączania uczestników (tylko organizer może zmieniać)
-    - kody (access_code, registration_code) zwracamy TYLKO organizerowi
+    - allow_join_by_code to toggle dołączania uczestników przez konto + kod
+    - join_code to kod dołączania (dla uczestników)
+    - kody (access_code, join_code) zwracamy TYLKO organizerowi
     """
 
     my_role = serializers.SerializerMethodField()
     matches_started = serializers.SerializerMethodField()
     my_permissions = serializers.SerializerMethodField()
+
+    # ==========
+    # API kontrakt dla frontu (spójne nazwy)
+    # model może mieć legacy: join_enabled + registration_code
+    # ==========
+    allow_join_by_code = serializers.BooleanField(required=False, source="join_enabled")
+    join_code = serializers.CharField(
+        required=False,
+        allow_null=True,
+        allow_blank=True,
+        source="registration_code",
+    )
 
     class Meta:
         model = Tournament
@@ -97,10 +111,17 @@ class TournamentSerializer(serializers.ModelSerializer):
         if "entry_mode" in data:
             data["entry_mode"] = _safe_entry_mode(data.get("entry_mode"))
 
-        # Kody (access + join) widoczne tylko dla organizatora
+        # Nie chcemy dubli nazw (legacy) w API — trzymamy kontrakt frontendowy:
+        # allow_join_by_code + join_code
+        data.pop("join_enabled", None)
+        data.pop("registration_code", None)
+
+        # Kody widoczne tylko dla organizatora:
+        # - access_code (kod dla widzów)
+        # - join_code (kod dla uczestników)
         if not request or not request.user.is_authenticated or instance.organizer_id != request.user.id:
             data.pop("access_code", None)
-            data.pop("registration_code", None)
+            data.pop("join_code", None)
 
         return data
 
@@ -132,7 +153,9 @@ class TournamentSerializer(serializers.ModelSerializer):
     def validate_entry_mode(self, value: str):
         # Docelowo akceptujemy TYLKO aktywne tryby panelu.
         if value not in ACTIVE_ENTRY_MODES:
-            raise serializers.ValidationError("Nieprawidłowy tryb panelu. Dozwolone: MANAGER, ORGANIZER_ONLY.")
+            raise serializers.ValidationError(
+                "Nieprawidłowy tryb panelu. Dozwolone: MANAGER, ORGANIZER_ONLY."
+            )
         return value
 
     # ============================================================
@@ -147,6 +170,29 @@ class TournamentSerializer(serializers.ModelSerializer):
         if "format_config" in attrs:
             discipline = attrs.get("discipline") or (instance.discipline if instance else None)
             attrs["format_config"] = _normalize_format_config(discipline, attrs.get("format_config"))
+
+        # =========================
+        # Walidacja join-by-code (kontrakt frontendowy)
+        #
+        # Ponieważ mamy source mapping:
+        # - allow_join_by_code -> join_enabled
+        # - join_code -> registration_code
+        # to tutaj operujemy na kluczach MODELowych (join_enabled/registration_code),
+        # bo właśnie takie będą w attrs po zmapowaniu.
+        # =========================
+        join_enabled = attrs.get("join_enabled", None)
+        reg_code = attrs.get("registration_code", None)
+
+        if join_enabled is True:
+            code = (reg_code or "").strip()
+            if len(code) < 3:
+                raise serializers.ValidationError(
+                    {"join_code": "Dla dołączania przez kod wymagany jest kod (min. 3 znaki)."}
+                )
+            attrs["registration_code"] = code
+        elif join_enabled is False:
+            # jeśli wyłączamy, czyścimy kod
+            attrs["registration_code"] = None
 
         # CREATE lub brak usera: nie narzucamy reguł zmian po DRAFT
         if not request or not request.user.is_authenticated or not instance:
@@ -194,19 +240,22 @@ class TournamentSerializer(serializers.ModelSerializer):
             role=TournamentMembership.Role.ASSISTANT,
         ).exists()
 
-        # Pola organizer-only:
+        # Pola organizer-only (WRITE)
         # - publikacja, kody, tryb panelu, toggle join, join-code
         if not is_organizer:
             for field in (
                 "is_published",
                 "access_code",
                 "entry_mode",
-                "join_enabled",     # <--- DODANO BLOKADĘ EDYCJI join_enabled
-                "registration_code",
+                "join_enabled",        # model
+                "registration_code",   # model
+                # defensywnie (gdyby gdzieś trafiły jeszcze nazwy z frontu)
+                "allow_join_by_code",
+                "join_code",
             ):
                 attrs.pop(field, None)
 
-        # Konfiguracja sportowa: organizer lub asystent (podgląd/zmiana zależy potem od endpointów)
+        # Konfiguracja sportowa: organizer lub asystent
         if not (is_organizer or is_assistant):
             for field in (
                 "competition_type",

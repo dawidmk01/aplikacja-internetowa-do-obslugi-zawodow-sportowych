@@ -1,3 +1,4 @@
+// frontend/src/pages/FindTournament.tsx
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -9,26 +10,27 @@ export default function FindTournament() {
   const handleSearch = () => {
     setError(null);
 
-    if (!input.trim()) {
+    const raw = input.trim();
+    if (!raw) {
       setError("Wpisz link lub ID turnieju.");
       return;
     }
 
-    // 1️⃣ Próba: pełny link
+    // 1) pełny link
     try {
-      const url = new URL(input);
+      const url = new URL(raw);
       const match = url.pathname.match(/\/tournaments\/(\d+)/);
       if (match) {
         navigate(`/tournaments/${match[1]}${url.search}`);
         return;
       }
     } catch {
-      // nie URL – idziemy dalej
+      // nie URL
     }
 
-    // 2️⃣ Próba: samo ID
-    if (/^\d+$/.test(input)) {
-      navigate(`/tournaments/${input}`);
+    // 2) samo ID
+    if (/^\d+$/.test(raw)) {
+      navigate(`/tournaments/${raw}`);
       return;
     }
 
@@ -39,9 +41,7 @@ export default function FindTournament() {
     <div style={{ padding: "2rem", maxWidth: "600px" }}>
       <h1>Wyszukaj turniej</h1>
 
-      <p>
-        Wklej link do turnieju (np. z QR code) lub wpisz jego ID.
-      </p>
+      <p>Wklej link do turnieju (np. z QR code) lub wpisz jego ID.</p>
 
       <input
         type="text"
@@ -51,10 +51,7 @@ export default function FindTournament() {
         style={{ width: "100%" }}
       />
 
-      <button
-        style={{ marginTop: "1rem" }}
-        onClick={handleSearch}
-      >
+      <button style={{ marginTop: "1rem" }} onClick={handleSearch}>
         Przejdź do turnieju
       </button>
 

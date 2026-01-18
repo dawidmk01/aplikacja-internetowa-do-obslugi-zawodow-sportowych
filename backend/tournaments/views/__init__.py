@@ -1,3 +1,5 @@
+# backend/tournaments/views/__init__.py
+
 from .tournaments import (
     TournamentListView,
     TournamentDetailView,
@@ -27,6 +29,12 @@ from .teams import (
     TournamentTeamSetupView,
     TournamentTeamListView,
     TournamentTeamUpdateView,
+
+    # team name change requests (są w teams.py, nie w osobnym module)
+    TournamentTeamNameChangeRequestListView,
+    TournamentTeamNameChangeRequestCreateView,
+    TournamentTeamNameChangeRequestApproveView,
+    TournamentTeamNameChangeRequestRejectView,
 )
 
 from .matches import (
@@ -72,6 +80,12 @@ __all__ = [
     "TournamentTeamSetupView",
     "TournamentTeamListView",
     "TournamentTeamUpdateView",
+
+    # team name change requests
+    "TournamentTeamNameChangeRequestListView",
+    "TournamentTeamNameChangeRequestCreateView",
+    "TournamentTeamNameChangeRequestApproveView",
+    "TournamentTeamNameChangeRequestRejectView",
 
     # matches
     "TournamentMatchListView",

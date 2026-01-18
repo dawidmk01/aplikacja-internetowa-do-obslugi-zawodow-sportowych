@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 
 
 # ============================================================
@@ -28,6 +29,13 @@ class Tournament(models.Model):
       Aktywne tryby: MANAGER, ORGANIZER_ONLY.
     - dołączanie uczestników przez konto+kody to osobny toggle: join_enabled
       (działa zarówno w MANAGER jak i ORGANIZER_ONLY, ale toggle zmienia tylko organizator).
+    - podgląd TournamentPublic (strona publiczna) to osobna polityka:
+      * public widzi tylko gdy is_published=True (+ ewentualny access_code),
+      * uczestnik (TournamentRegistration) może dostać preview przed publikacją tylko gdy
+        participants_public_preview_enabled=True.
+    - samodzielna zmiana nazwy przez uczestników:
+      * jeśli participants_self_rename_enabled=True -> zmiana nazwy może dziać się od razu (bez kodu)
+      * jeśli False -> tworzymy prośbę (kolejka) do akceptacji organizatora/asystenta.
     """
 
     class Discipline(models.TextChoices):
@@ -48,10 +56,8 @@ class Tournament(models.Model):
         MIXED = "MIXED", "Mieszany"
 
     class EntryMode(models.TextChoices):
-        # Aktywne tryby panelu
         MANAGER = "MANAGER", "Organizator + asystenci"
         ORGANIZER_ONLY = "ORGANIZER_ONLY", "Tylko organizator"
-
 
     class Status(models.TextChoices):
         DRAFT = "DRAFT", "Szkic"
@@ -104,6 +110,21 @@ class Tournament(models.Model):
         help_text="Czy użytkownicy mogą dołączać do turnieju przez konto + kod (join link + code).",
     )
 
+    # Czy uczestnik (TournamentRegistration) ma prawo podglądu TournamentPublic przed publikacją
+    participants_public_preview_enabled = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Czy zarejestrowani uczestnicy mogą oglądać TournamentPublic przed publikacją turnieju.",
+    )
+
+    # NOWE: czy uczestnicy mogą samodzielnie zmieniać swoją nazwę (bez akceptacji)
+    # Domyślnie True, żeby nie zepsuć dotychczasowego UX (działa jak teraz).
+    participants_self_rename_enabled = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="Czy uczestnicy mogą samodzielnie zmieniać nazwę (bez akceptacji organizatora/asystenta).",
+    )
+
     status = models.CharField(
         max_length=20,
         choices=Status.choices,
@@ -118,10 +139,10 @@ class Tournament(models.Model):
         help_text="Logiczne archiwum – turniej ukryty na głównych listach",
     )
 
-    # Kod dostępu do podglądu publicznego (jeśli używasz mechanizmu 'code' do oglądania)
+    # Kod dostępu do podglądu publicznego
     access_code = models.CharField(max_length=20, blank=True, null=True)
 
-    # Kod dołączania uczestników (JOIN CODE) – zachowujemy nazwę dla kompatybilności,
+    # Kod dołączania uczestników (JOIN CODE)
     registration_code = models.CharField(
         max_length=32,
         blank=True,
@@ -141,7 +162,6 @@ class Tournament(models.Model):
 
     @staticmethod
     def infer_default_competition_type(discipline: str) -> str:
-        # Tenis i zapasy traktujemy jako domyślnie indywidualne.
         if discipline in (Tournament.Discipline.TENNIS, Tournament.Discipline.WRESTLING):
             return Tournament.CompetitionType.INDIVIDUAL
         return Tournament.CompetitionType.TEAM
@@ -180,36 +200,21 @@ class Tournament(models.Model):
 class TournamentMembership(models.Model):
     """
     Membership asystenta w turnieju + granularne uprawnienia.
-
-    permissions: JSON, np.
-      {
-        "teams_edit": true,
-        "schedule_edit": true,
-        "results_edit": true,
-        "bracket_generate": true
-      }
-
-    Zasady:
-    - Organizer zawsze ma pełne uprawnienia (nie przez Membership).
-    - W entry_mode=ORGANIZER_ONLY: asystent ma podgląd, a edycja zależy od backendowych checków,
-      ale domyślnie rekomendujemy traktować edycję jako wyłączoną (poza przypadkami, gdy świadomie dopuścisz).
     """
 
     class Role(models.TextChoices):
         ASSISTANT = "ASSISTANT", "Asystent"
 
-    # Klucze uprawnień (spójne dla backend i front)
     PERM_TEAMS_EDIT = "teams_edit"
     PERM_SCHEDULE_EDIT = "schedule_edit"
     PERM_RESULTS_EDIT = "results_edit"
-    PERM_BRACKET_EDIT = "bracket_edit"          # zmiany/generowanie rozgrywek / reset
-    PERM_TOURNAMENT_EDIT = "tournament_edit"    # np. opis, metadane (bez publish/codes)
+    PERM_BRACKET_EDIT = "bracket_edit"
+    PERM_TOURNAMENT_EDIT = "tournament_edit"
 
-    # Zawsze organizer-only (nie dawaj tego asystentom w ogóle, nawet jeśli pojawi się w JSON):
     PERM_PUBLISH = "publish"
     PERM_ARCHIVE = "archive"
     PERM_MANAGE_ASSISTANTS = "manage_assistants"
-    PERM_JOIN_SETTINGS = "join_settings"        # join_enabled / registration_code / access_code
+    PERM_JOIN_SETTINGS = "join_settings"
 
     DEFAULT_PERMISSIONS_MANAGER = {
         PERM_TEAMS_EDIT: True,
@@ -220,7 +225,6 @@ class TournamentMembership(models.Model):
     }
 
     DEFAULT_PERMISSIONS_ORGANIZER_ONLY = {
-        # W trybie tylko organizator: asystent ma podgląd, edycja domyślnie wyłączona
         PERM_TEAMS_EDIT: False,
         PERM_SCHEDULE_EDIT: False,
         PERM_RESULTS_EDIT: False,
@@ -260,10 +264,6 @@ class TournamentMembership(models.Model):
         ]
 
     def effective_permissions(self) -> dict:
-        """
-        Zwraca uprawnienia z domyślną bazą zależną od entry_mode,
-        nadpisaną wartościami z self.permissions.
-        """
         base = (
             self.DEFAULT_PERMISSIONS_ORGANIZER_ONLY
             if self.tournament.entry_mode == Tournament.EntryMode.ORGANIZER_ONLY
@@ -273,7 +273,6 @@ class TournamentMembership(models.Model):
         if isinstance(self.permissions, dict):
             merged.update(self.permissions)
 
-        # twarde blokady: tylko organizator
         for k in (
             self.PERM_PUBLISH,
             self.PERM_ARCHIVE,
@@ -290,13 +289,6 @@ class TournamentMembership(models.Model):
 # ============================================================
 
 class TournamentRegistration(models.Model):
-    """
-    Rejestracja uczestnika (konto) do turnieju:
-    - 1 user = 1 rejestracja w danym turnieju
-    - opcjonalnie wskazuje slot Team, który użytkownik „zajął”
-    - przechowuje display_name (do edycji nazwy po rejestracji)
-    """
-
     tournament = models.ForeignKey(
         Tournament,
         on_delete=models.CASCADE,
@@ -332,6 +324,77 @@ class TournamentRegistration(models.Model):
     def __str__(self) -> str:
         return f"{self.tournament_id}:{self.user_id} -> {self.display_name}"
 
+
+# ============================================================
+# KOLEJKA PRÓŚB O ZMIANĘ NAZWY (uczestnicy)
+# ============================================================
+
+class TeamNameChangeRequest(models.Model):
+    """
+    Prośba o zmianę nazwy Team złożona przez uczestnika.
+    Używane, gdy (docelowo) tournament.participants_self_rename_enabled == False.
+
+    Flow:
+    - PENDING -> (APPROVED | REJECTED)
+    - approve: zmienia Team.name + (opcjonalnie) TournamentRegistration.display_name
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Oczekuje"
+        APPROVED = "APPROVED", "Zaakceptowana"
+        REJECTED = "REJECTED", "Odrzucona"
+
+    tournament = models.ForeignKey(
+        Tournament,
+        on_delete=models.CASCADE,
+        related_name="name_change_requests",
+    )
+
+    team = models.ForeignKey(
+        "Team",
+        on_delete=models.CASCADE,
+        related_name="name_change_requests",
+    )
+
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="team_name_change_requests",
+    )
+
+    old_name = models.CharField(max_length=255)
+    requested_name = models.CharField(max_length=255)
+
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="team_name_change_decisions",
+    )
+
+    decided_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["team"],
+                condition=Q(status="PENDING"),
+                name="uniq_pending_name_change_per_team",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tournament_id}:{self.team_id} {self.status} {self.old_name} -> {self.requested_name}"
 
 # ============================================================
 # DYWIZJE
@@ -377,7 +440,6 @@ class Team(models.Model):
         blank=True,
         null=True,
     )
-
 
     registered_user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

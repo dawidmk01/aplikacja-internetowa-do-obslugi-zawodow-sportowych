@@ -22,6 +22,12 @@ from .views import (
     TournamentTeamListView,
     TournamentTeamUpdateView,
 
+    # team name change requests (QUEUE)
+    TournamentTeamNameChangeRequestListView,
+    TournamentTeamNameChangeRequestCreateView,
+    TournamentTeamNameChangeRequestApproveView,
+    TournamentTeamNameChangeRequestRejectView,
+
     # matches
     TournamentMatchListView,
     TournamentPublicMatchListView,
@@ -66,6 +72,27 @@ urlpatterns = [
     path("tournaments/<int:pk>/teams/setup/", TournamentTeamSetupView.as_view()),
     path("tournaments/<int:pk>/teams/", TournamentTeamListView.as_view()),
     path("tournaments/<int:pk>/teams/<int:team_id>/", TournamentTeamUpdateView.as_view()),
+
+    # --- TEAM NAME CHANGE REQUESTS (QUEUE) ---
+    # organizer/asystent: lista + count
+    path(
+        "tournaments/<int:pk>/teams/name-change-requests/",
+        TournamentTeamNameChangeRequestListView.as_view(),
+    ),
+    # participant: create request for given team
+    path(
+        "tournaments/<int:pk>/teams/<int:team_id>/name-change-requests/",
+        TournamentTeamNameChangeRequestCreateView.as_view(),
+    ),
+    # organizer/asystent: approve / reject
+    path(
+        "tournaments/<int:pk>/teams/name-change-requests/<int:request_id>/approve/",
+        TournamentTeamNameChangeRequestApproveView.as_view(),
+    ),
+    path(
+        "tournaments/<int:pk>/teams/name-change-requests/<int:request_id>/reject/",
+        TournamentTeamNameChangeRequestRejectView.as_view(),
+    ),
 
     # --- MATCHES ---
     path("tournaments/<int:pk>/matches/", TournamentMatchListView.as_view()),

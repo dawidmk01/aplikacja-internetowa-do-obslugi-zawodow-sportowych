@@ -19,7 +19,7 @@ from tournaments.services.match_outcome import (
     validate_penalties_consistency,
 )
 
-from ..models import Match, Stage, Tournament, TournamentRegistration
+from ..models import Match, Stage, Tournament
 from ..serializers import MatchResultUpdateSerializer, MatchSerializer
 from ._helpers import (
     # PODGLĄD/ROLE (NOWA STRATEGIA)
@@ -27,6 +27,7 @@ from ._helpers import (
     user_can_view_tournament,
     can_edit_schedule,
     can_edit_results,
+    public_access_or_403,  # <-- NOWE: wspólna kontrola dostępu do TournamentPublic
 
     # KO helpers (bez zmian)
     _get_cup_matches,
@@ -224,35 +225,6 @@ def _regenerate_knockout_from_groups_if_safe(tournament: Tournament) -> None:
     advance_from_groups(tournament)
 
 
-def _public_access_or_403(request, tournament: Tournament) -> Optional[Response]:
-    """
-    Zasady dostępu dla strony publicznej:
-    - organizer/asystent -> OK (zalogowany)
-    - zarejestrowany uczestnik -> OK (zalogowany)
-    - public:
-      - tournament.is_published musi być True
-      - jeśli tournament.access_code ustawione, wymagamy ?code=...
-    """
-    user = getattr(request, "user", None)
-
-    if user and getattr(user, "is_authenticated", False):
-        if tournament.organizer_id == user.id:
-            return None
-        if user_is_assistant(user, tournament):
-            return None
-        if TournamentRegistration.objects.filter(tournament=tournament, user=user).exists():
-            return None
-
-    if not tournament.is_published:
-        return Response({"detail": "Turniej nie jest dostępny."}, status=status.HTTP_403_FORBIDDEN)
-
-    if tournament.access_code:
-        if request.query_params.get("code") != tournament.access_code:
-            return Response({"detail": "Wymagany poprawny kod dostępu."}, status=status.HTTP_403_FORBIDDEN)
-
-    return None
-
-
 # ============================================================
 # Views
 # ============================================================
@@ -289,7 +261,7 @@ class TournamentPublicMatchListView(ListAPIView):
 
     def get_queryset(self):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
-        denied = _public_access_or_403(self.request, tournament)
+        denied = public_access_or_403(self.request, tournament)
         if denied is not None:
             return Match.objects.none()
 
@@ -301,7 +273,7 @@ class TournamentPublicMatchListView(ListAPIView):
 
     def list(self, request, *args, **kwargs):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
-        denied = _public_access_or_403(request, tournament)
+        denied = public_access_or_403(request, tournament)
         if denied is not None:
             return denied
         return super().list(request, *args, **kwargs)
