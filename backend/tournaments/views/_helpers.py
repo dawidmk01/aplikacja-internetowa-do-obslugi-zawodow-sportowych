@@ -1,6 +1,7 @@
+# backend/tournaments/views/_helpers.py
 from __future__ import annotations
 
-from typing import Optional, Tuple, Any, Dict
+from typing import Optional, Tuple, Any, Dict, Set
 
 from django.db.models import Q
 from rest_framework import status
@@ -15,6 +16,32 @@ from ..models import Match, Stage, Team, Tournament, TournamentMembership, Tourn
 # ============================================================
 # UPRAWNIENIA (NOWY SYSTEM)
 # ============================================================
+
+# Klucze, które MUSZĄ być ustawione jawnie w raw permissions (bez żadnych fallbacków).
+STRICT_EXPLICIT_KEYS: Set[str] = {
+    TournamentMembership.PERM_ROSTER_EDIT,
+    TournamentMembership.PERM_NAME_CHANGE_APPROVE,
+}
+
+# Klucze, które istnieją w "panelu uprawnień" (front potrzebuje ich zawsze w odpowiedzi).
+PERMISSIONS_RESPONSE_KEYS: list[str] = [
+    TournamentMembership.PERM_TEAMS_EDIT,
+    TournamentMembership.PERM_SCHEDULE_EDIT,
+    TournamentMembership.PERM_RESULTS_EDIT,
+    TournamentMembership.PERM_BRACKET_EDIT,
+    TournamentMembership.PERM_TOURNAMENT_EDIT,
+
+    # nowe (bez fallbacków)
+    TournamentMembership.PERM_ROSTER_EDIT,
+    TournamentMembership.PERM_NAME_CHANGE_APPROVE,
+
+    # organizer-only
+    TournamentMembership.PERM_PUBLISH,
+    TournamentMembership.PERM_ARCHIVE,
+    TournamentMembership.PERM_MANAGE_ASSISTANTS,
+    TournamentMembership.PERM_JOIN_SETTINGS,
+]
+
 
 def _normalize_args(user_or_tournament: Any, tournament_or_user: Any) -> tuple[Any, Tournament]:
     """
@@ -57,7 +84,10 @@ def participant_can_view_public_preview(tournament: Tournament) -> bool:
     - zawsze, gdy turniej jest opublikowany
     - albo gdy organizer włączy participants_public_preview_enabled
     """
-    return bool(getattr(tournament, "is_published", False) or getattr(tournament, "participants_public_preview_enabled", False))
+    return bool(
+        getattr(tournament, "is_published", False)
+        or getattr(tournament, "participants_public_preview_enabled", False)
+    )
 
 
 def user_can_view_tournament(user, tournament: Tournament) -> bool:
@@ -68,7 +98,7 @@ def user_can_view_tournament(user, tournament: Tournament) -> bool:
     - organizator: tak
     - asystent: tak
     - uczestnik: tak, ale tylko gdy ma prawo do publicznego podglądu (publikacja lub preview enabled)
-      (bo inaczej uczestnik obchodzi blokadę TournamentPublic przez inne endpointy jak teams/matches).
+      (żeby nie obchodził blokady TournamentPublic przez inne endpointy jak teams/matches).
     """
     if not user or not getattr(user, "is_authenticated", False):
         return False
@@ -85,81 +115,66 @@ def user_can_view_tournament(user, tournament: Tournament) -> bool:
     return False
 
 
+def _apply_strict_keys_from_raw(perms: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Wymusza politykę "bez fallbacków" dla STRICT_EXPLICIT_KEYS:
+    - jeśli w raw nie ma klucza -> False
+    - jeśli jest -> bool(raw[key])
+    """
+    for k in STRICT_EXPLICIT_KEYS:
+        perms[k] = bool(raw.get(k, False))
+    return perms
+
+
 def get_my_permissions(user, tournament: Tournament) -> Dict[str, bool]:
     """
     Zwraca uprawnienia dla frontu:
-    - organizator: wszystko True (w tym "organizer-only" rzeczy)
-    - asystent: effective_permissions() (ale twardo blokujemy edycję w ORGANIZER_ONLY)
+    - organizator: wszystko True (w tym organizer-only)
+    - asystent: effective_permissions(), ALE:
+        * w ORGANIZER_ONLY wszystkie akcje edycyjne są blokowane
+        * STRICT_EXPLICIT_KEYS (roster/name_change_approve) bierzemy WYŁĄCZNIE z raw permissions (bez fallbacków)
     - inni: wszystko False
     """
+    # Organizer
     if user and getattr(user, "is_authenticated", False) and tournament.organizer_id == user.id:
-        return {
-            TournamentMembership.PERM_TEAMS_EDIT: True,
-            TournamentMembership.PERM_SCHEDULE_EDIT: True,
-            TournamentMembership.PERM_RESULTS_EDIT: True,
-            TournamentMembership.PERM_BRACKET_EDIT: True,
-            TournamentMembership.PERM_TOURNAMENT_EDIT: True,
-            TournamentMembership.PERM_PUBLISH: True,
-            TournamentMembership.PERM_ARCHIVE: True,
-            TournamentMembership.PERM_MANAGE_ASSISTANTS: True,
-            TournamentMembership.PERM_JOIN_SETTINGS: True,
-        }
+        return {k: True for k in PERMISSIONS_RESPONSE_KEYS}
 
+    # Brak membership -> wszystko False
     m = get_membership(user, tournament)
     if not m:
-        return {
-            TournamentMembership.PERM_TEAMS_EDIT: False,
-            TournamentMembership.PERM_SCHEDULE_EDIT: False,
-            TournamentMembership.PERM_RESULTS_EDIT: False,
-            TournamentMembership.PERM_BRACKET_EDIT: False,
-            TournamentMembership.PERM_TOURNAMENT_EDIT: False,
-            TournamentMembership.PERM_PUBLISH: False,
-            TournamentMembership.PERM_ARCHIVE: False,
-            TournamentMembership.PERM_MANAGE_ASSISTANTS: False,
-            TournamentMembership.PERM_JOIN_SETTINGS: False,
-        }
+        return {k: False for k in PERMISSIONS_RESPONSE_KEYS}
 
+    # ORGANIZER_ONLY: asystent ma podgląd, ale żadnej edycji
     if tournament.entry_mode == Tournament.EntryMode.ORGANIZER_ONLY:
-        return {
-            TournamentMembership.PERM_TEAMS_EDIT: False,
-            TournamentMembership.PERM_SCHEDULE_EDIT: False,
-            TournamentMembership.PERM_RESULTS_EDIT: False,
-            TournamentMembership.PERM_BRACKET_EDIT: False,
-            TournamentMembership.PERM_TOURNAMENT_EDIT: False,
-            TournamentMembership.PERM_PUBLISH: False,
-            TournamentMembership.PERM_ARCHIVE: False,
-            TournamentMembership.PERM_MANAGE_ASSISTANTS: False,
-            TournamentMembership.PERM_JOIN_SETTINGS: False,
-        }
+        return {k: False for k in PERMISSIONS_RESPONSE_KEYS}
 
-    perms = m.effective_permissions()
+    # Asystent w MANAGER
+    perms: Dict[str, Any] = dict(m.effective_permissions() or {})
+    raw: Dict[str, Any] = dict(m.permissions or {})
 
+    # organizer-only zawsze false dla asystenta
     perms[TournamentMembership.PERM_PUBLISH] = False
     perms[TournamentMembership.PERM_ARCHIVE] = False
     perms[TournamentMembership.PERM_MANAGE_ASSISTANTS] = False
     perms[TournamentMembership.PERM_JOIN_SETTINGS] = False
 
-    required_keys = [
-        TournamentMembership.PERM_TEAMS_EDIT,
-        TournamentMembership.PERM_SCHEDULE_EDIT,
-        TournamentMembership.PERM_RESULTS_EDIT,
-        TournamentMembership.PERM_BRACKET_EDIT,
-        TournamentMembership.PERM_TOURNAMENT_EDIT,
-        TournamentMembership.PERM_PUBLISH,
-        TournamentMembership.PERM_ARCHIVE,
-        TournamentMembership.PERM_MANAGE_ASSISTANTS,
-        TournamentMembership.PERM_JOIN_SETTINGS,
-    ]
-    for k in required_keys:
-        perms[k] = bool(perms.get(k, False))
+    # nowe klucze: bez fallbacków
+    perms = _apply_strict_keys_from_raw(perms, raw)
 
-    return perms
+    # normalizacja: zawsze zwracamy komplet kluczy jako bool
+    out: Dict[str, bool] = {}
+    for k in PERMISSIONS_RESPONSE_KEYS:
+        out[k] = bool(perms.get(k, False))
+    return out
 
 
 def assistant_has_perm(user, tournament: Tournament, perm_key: str) -> bool:
     """
     Sprawdza uprawnienie asystenta do KONKRETNEJ AKCJI.
-    - w ORGANIZER_ONLY: zawsze False dla edycji (podgląd zostaje)
+    - organizator: zawsze True
+    - asystent: tylko w MANAGER i tylko jeśli ma perm_key==True
+    - w ORGANIZER_ONLY: zawsze False dla edycji (podgląd zostaje w innych endpointach)
+    - STRICT_EXPLICIT_KEYS: sprawdzamy WYŁĄCZNIE w raw permissions (bez fallbacków)
     """
     if not user or not getattr(user, "is_authenticated", False):
         return False
@@ -174,13 +189,20 @@ def assistant_has_perm(user, tournament: Tournament, perm_key: str) -> bool:
     if tournament.entry_mode != Tournament.EntryMode.MANAGER:
         return False
 
-    perms = m.effective_permissions()
-    return bool(perms.get(perm_key))
+    # nowe klucze: bez fallbacków
+    if perm_key in STRICT_EXPLICIT_KEYS:
+        raw = m.permissions or {}
+        return bool(raw.get(perm_key, False))
+
+    # pozostałe: z effective_permissions (bo mogą mieć domyślne bazowe zależne od entry_mode)
+    perms = m.effective_permissions() or {}
+    return bool(perms.get(perm_key, False))
 
 
 def user_can_manage_tournament(user_or_tournament, tournament_or_user) -> bool:
     """
     Legacy: "czy może edytować" (MANAGER + membership).
+    Zostawione jako legacy, ale NIE używamy już do nowych akcji.
     """
     user, tournament = _normalize_args(user_or_tournament, tournament_or_user)
 
@@ -218,6 +240,21 @@ def can_edit_bracket(user, tournament: Tournament) -> bool:
 
 def can_edit_tournament_detail(user, tournament: Tournament) -> bool:
     return assistant_has_perm(user, tournament, TournamentMembership.PERM_TOURNAMENT_EDIT)
+
+
+# NOWE (bez fallbacków)
+def can_edit_roster(user, tournament: Tournament) -> bool:
+    """
+    Edycja składów (zawodników) – niezależne od teams_edit.
+    """
+    return assistant_has_perm(user, tournament, TournamentMembership.PERM_ROSTER_EDIT)
+
+
+def can_approve_name_changes(user, tournament: Tournament) -> bool:
+    """
+    Akceptacja/odrzucenie próśb o zmianę nazwy – niezależne od teams_edit.
+    """
+    return assistant_has_perm(user, tournament, TournamentMembership.PERM_NAME_CHANGE_APPROVE)
 
 
 def can_manage_assistants(user, tournament: Tournament) -> bool:
@@ -314,8 +351,6 @@ def _sync_two_leg_pair_winner_if_possible(stage: Stage, tournament: Tournament, 
     )
     group = [m for m in group if _pair_key_ids(m.home_team_id, m.away_team_id) == key]
 
-    if len(group) == 1:
-        return
     if len(group) != 2:
         return
     if any(m.status != Match.Status.FINISHED for m in group):

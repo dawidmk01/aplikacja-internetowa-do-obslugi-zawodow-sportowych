@@ -30,7 +30,11 @@ from .teams import (
     TournamentTeamListView,
     TournamentTeamUpdateView,
 
-    # team name change requests (są w teams.py, nie w osobnym module)
+    # roster (players)
+    TournamentTeamPlayersView,
+    TournamentMyTeamPlayersView,
+
+    # team name change requests (QUEUE)
     TournamentTeamNameChangeRequestListView,
     TournamentTeamNameChangeRequestCreateView,
     TournamentTeamNameChangeRequestApproveView,
@@ -80,6 +84,10 @@ __all__ = [
     "TournamentTeamSetupView",
     "TournamentTeamListView",
     "TournamentTeamUpdateView",
+
+    # roster (players)
+    "TournamentTeamPlayersView",
+    "TournamentMyTeamPlayersView",
 
     # team name change requests
     "TournamentTeamNameChangeRequestListView",

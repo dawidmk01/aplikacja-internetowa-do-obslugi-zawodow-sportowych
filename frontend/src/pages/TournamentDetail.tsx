@@ -16,6 +16,10 @@ type MyPermissions = {
   bracket_edit: boolean;
   tournament_edit: boolean;
 
+  // NOWE
+  roster_edit: boolean; // składy (zawodnicy)
+  name_change_approve: boolean; // akceptacja kolejki zmian nazw
+
   // organizer-only (informacyjnie)
   publish: boolean;
   archive: boolean;
@@ -62,6 +66,10 @@ type AssistantPermissionsPayload = {
   results_edit?: boolean;
   bracket_edit?: boolean;
   tournament_edit?: boolean;
+
+  // NOWE
+  roster_edit?: boolean;
+  name_change_approve?: boolean;
 };
 
 type AssistantPermsResponse = {
@@ -314,6 +322,10 @@ export default function TournamentDetail() {
         results_edit: Boolean(eff.results_edit),
         bracket_edit: Boolean(eff.bracket_edit),
         tournament_edit: Boolean(eff.tournament_edit),
+
+        // NOWE
+        roster_edit: Boolean(eff.roster_edit),
+        name_change_approve: Boolean(eff.name_change_approve),
       };
 
       setAssistantDrafts((m) => ({ ...m, [userId]: draft }));
@@ -340,6 +352,10 @@ export default function TournamentDetail() {
         results_edit: draft.results_edit,
         bracket_edit: draft.bracket_edit,
         tournament_edit: draft.tournament_edit,
+
+        // NOWE
+        roster_edit: draft.roster_edit,
+        name_change_approve: draft.name_change_approve,
       };
 
       const res = await apiFetch(`/api/tournaments/${id}/assistants/${userId}/permissions/`, {
@@ -358,6 +374,10 @@ export default function TournamentDetail() {
         results_edit: Boolean(eff.results_edit),
         bracket_edit: Boolean(eff.bracket_edit),
         tournament_edit: Boolean(eff.tournament_edit),
+
+        // NOWE
+        roster_edit: Boolean(eff.roster_edit),
+        name_change_approve: Boolean(eff.name_change_approve),
       };
       setAssistantDrafts((m) => ({ ...m, [userId]: normalized }));
       setAssistantMsg((m) => ({ ...m, [userId]: "Zapisano." }));
@@ -401,7 +421,7 @@ export default function TournamentDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  // po pobraniu turnieju, jeśli organizer -> ładuj asystentów
+  // Organizer: ładuj asystentów
   useEffect(() => {
     if (!id) return;
     if (!isOrganizer) return;
@@ -410,7 +430,7 @@ export default function TournamentDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, isOrganizer]);
 
-  // gdy zmienia się lista asystentów, dociągnij ich uprawnienia (tylko brakujące)
+  // Organizer: gdy zmienia się lista asystentów, dociągnij ich uprawnienia (tylko brakujące)
   useEffect(() => {
     if (!isOrganizer) return;
 
@@ -421,6 +441,80 @@ export default function TournamentDetail() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assistants, isOrganizer]);
+
+  /**
+   * ASSISTANT: dociągnij swoje "effective permissions" z endpointu membership
+   * i nadpisz tournament.my_permissions, żeby UI nie bazował na niepełnym my_permissions z /tournaments/<id>/.
+   */
+  useEffect(() => {
+    if (!id) return;
+    if (!tournament) return;
+    if (tournament.my_role !== "ASSISTANT") return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        // 1) pobierz swoje user_id
+        const meRes = await apiFetch("/api/auth/me/");
+        const me = await meRes.json().catch(() => null);
+        if (!meRes.ok || !me) return;
+
+        const myUserId =
+          (me as any).id ??
+          (me as any).user_id ??
+          (me as any).pk ??
+          null;
+
+        if (!myUserId) return;
+
+        // 2) pobierz effective perms z tego samego źródła co organizator
+        const pRes = await apiFetch(`/api/tournaments/${id}/assistants/${myUserId}/permissions/`);
+        const pdata = await pRes.json().catch(() => null);
+        if (!pRes.ok || !pdata) return;
+
+        const eff = (pdata as any).effective ?? pdata ?? {};
+
+        if (cancelled) return;
+
+        // 3) zmerguj defensywnie, żeby nie zgubić niczego co backend już zwrócił
+        setTournament((prev) => {
+          if (!prev) return prev;
+
+          const prevPerms = prev.my_permissions ?? ({} as MyPermissions);
+
+          const mergedPerms: MyPermissions = {
+            // istniejące (jeśli były)
+            teams_edit: Boolean((prevPerms as any).teams_edit),
+            schedule_edit: Boolean((prevPerms as any).schedule_edit),
+            results_edit: Boolean((prevPerms as any).results_edit),
+            bracket_edit: Boolean((prevPerms as any).bracket_edit),
+            tournament_edit: Boolean((prevPerms as any).tournament_edit),
+
+            // nowe pola (prawda z effective)
+            roster_edit: Boolean(eff.roster_edit),
+            name_change_approve: Boolean(eff.name_change_approve),
+
+            // organizer-only informacyjnie (też mogą przyjść w effective)
+            publish: Boolean(eff.publish),
+            archive: Boolean(eff.archive),
+            manage_assistants: Boolean(eff.manage_assistants),
+            join_settings: Boolean(eff.join_settings),
+          };
+
+          // jeśli backend my_permissions miał komplet podstawowych pól, możesz też je nadpisać z effective,
+          // ale zostawiamy minimalnie: podstawowe bierzemy z prevPerms, nowe z eff (sedno problemu).
+          return { ...prev, my_permissions: mergedPerms };
+        });
+      } catch {
+        // celowo ignorujemy – to tylko dogranie uprawnień
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id, tournament?.my_role, tournament?.id]); // celowo zależność od roli/turnieju
 
   const generateTournament = () => {
     if (!tournament) return;
@@ -520,12 +614,10 @@ export default function TournamentDetail() {
   const buildRenameApprovalPatch = (): Partial<Tournament> => {
     if (!tournament) return {};
 
-    // jeśli backend ma participants_self_rename_enabled: true => samodzielnie, false => akceptacja
     if (Object.prototype.hasOwnProperty.call(tournament, "participants_self_rename_enabled")) {
       return { participants_self_rename_enabled: !renameRequiresApprovalDraft };
     }
 
-    // jeśli backend ma pole "requires_approval" / "approval_required"
     if (Object.prototype.hasOwnProperty.call(tournament, "participants_self_rename_requires_approval")) {
       return { participants_self_rename_requires_approval: renameRequiresApprovalDraft };
     }
@@ -533,7 +625,6 @@ export default function TournamentDetail() {
       return { participants_self_rename_approval_required: renameRequiresApprovalDraft };
     }
 
-    // fallback: wysyłamy najbezpieczniejszy wariant (backend może go znać)
     return { participants_self_rename_requires_approval: renameRequiresApprovalDraft } as any;
   };
 
@@ -570,7 +661,6 @@ export default function TournamentDetail() {
 
       applyPatchedTournament(payload, data);
 
-      // odśwież drafty wg odpowiedzi
       const nextAllow =
         Object.prototype.hasOwnProperty.call(data, "allow_join_by_code")
           ? Boolean((data as any).allow_join_by_code)
@@ -591,7 +681,6 @@ export default function TournamentDetail() {
 
       setParticipantsPreviewDraft(nextPreview);
 
-      // rename policy - odczyt po zapisie
       if (Object.prototype.hasOwnProperty.call(data, "participants_self_rename_enabled")) {
         setRenameRequiresApprovalDraft(!Boolean((data as any).participants_self_rename_enabled));
       } else if (Object.prototype.hasOwnProperty.call(data, "participants_self_rename_requires_approval")) {
@@ -622,8 +711,6 @@ export default function TournamentDetail() {
   }, [tournament]);
 
   const shareAccessCodeValue = useMemo(() => {
-    // Używamy wartości z draft (bo user tego oczekuje w UI),
-    // ale jeśli nie ma draftu -> fallback na turniej
     const v = (accessCodeDraft ?? tournament?.access_code ?? "").trim();
     return v.length ? v : "";
   }, [accessCodeDraft, tournament]);
@@ -863,10 +950,18 @@ export default function TournamentDetail() {
               {tournament.my_permissions ? (
                 <div style={{ marginTop: 10 }}>
                   <PermissionRow label="Edycja drużyn" value={!!tournament.my_permissions.teams_edit} />
+                  <PermissionRow
+                    label="Składy: dodawanie/edycja zawodników"
+                    value={!!tournament.my_permissions.roster_edit}
+                  />
                   <PermissionRow label="Edycja harmonogramu" value={!!tournament.my_permissions.schedule_edit} />
                   <PermissionRow label="Wprowadzanie wyników" value={!!tournament.my_permissions.results_edit} />
                   <PermissionRow label="Edycja drabinki" value={!!tournament.my_permissions.bracket_edit} />
                   <PermissionRow label="Edycja ustawień turnieju" value={!!tournament.my_permissions.tournament_edit} />
+                  <PermissionRow
+                    label="Akceptacja zmian nazw (kolejka)"
+                    value={!!tournament.my_permissions.name_change_approve}
+                  />
 
                   <div style={{ marginTop: 10, opacity: 0.75, fontSize: "0.9rem" }}>
                     Publikacja, archiwizacja, zarządzanie asystentami i ustawienia dołączania są zarezerwowane dla organizatora.
@@ -908,6 +1003,11 @@ export default function TournamentDetail() {
                           results_edit: m[a.user_id]?.results_edit ?? false,
                           bracket_edit: m[a.user_id]?.bracket_edit ?? false,
                           tournament_edit: m[a.user_id]?.tournament_edit ?? false,
+
+                          // NOWE
+                          roster_edit: m[a.user_id]?.roster_edit ?? false,
+                          name_change_approve: m[a.user_id]?.name_change_approve ?? false,
+
                           ...patch,
                         },
                       }));
@@ -953,10 +1053,12 @@ export default function TournamentDetail() {
                             <div style={{ display: "grid", gap: 8 }}>
                               {[
                                 ["teams_edit", "Edycja drużyn"],
+                                ["roster_edit", "Składy: dodawanie/edycja zawodników"],
                                 ["schedule_edit", "Edycja harmonogramu"],
                                 ["results_edit", "Wprowadzanie wyników"],
                                 ["bracket_edit", "Edycja drabinki"],
                                 ["tournament_edit", "Edycja ustawień turnieju"],
+                                ["name_change_approve", "Akceptacja zmian nazw (kolejka)"],
                               ].map(([k, label]) => (
                                 <label
                                   key={k}
@@ -1168,10 +1270,7 @@ export default function TournamentDetail() {
 
       {/* 4) UDOSTĘPNIANIE */}
       {canManage && (
-        <Section
-          title="4) Udostępnianie"
-          hint={tournament.is_published ? "Turniej opublikowany" : "Turniej prywatny"}
-        >
+        <Section title="4) Udostępnianie" hint={tournament.is_published ? "Turniej opublikowany" : "Turniej prywatny"}>
           {!tournament.is_published && (
             <p style={{ color: "#c9a227", marginTop: 0 }}>
               Turniej jest prywatny. Link/QR dla widzów ma sens głównie po publikacji (lub gdy używasz kodu dostępu).

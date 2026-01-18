@@ -4,9 +4,9 @@ import AddAssistantForm from "./AddAssistantForm";
 import AssistantsList from "./AssistantsList";
 
 /**
- * Nowa strategia:
+ * Strategia:
  * - entry_mode: tylko MANAGER | ORGANIZER_ONLY (steruje panelem zarządzania)
- * - dołączanie (join link + code): toggle join_enabled + registration_code
+ * - dołączanie (join link + code): allow_join_by_code + join_code (kontrakt z backend serializerem)
  * - SELF_REGISTER jeśli istnieje w bazie traktujemy jako legacy (UI go nie pokazuje)
  */
 type EntryMode = "MANAGER" | "ORGANIZER_ONLY";
@@ -24,9 +24,9 @@ type TournamentDTO = {
   // tryb panelu
   entry_mode?: EntryMode | "SELF_REGISTER"; // legacy może przyjść z API
 
-  // join toggle (konto + kod)
-  join_enabled?: boolean;
-  registration_code?: string | null;
+  // join toggle (konto + kod) – KONTRAKT FRONT: allow_join_by_code + join_code
+  allow_join_by_code?: boolean;
+  join_code?: string | null;
 
   my_role?: "ORGANIZER" | "ASSISTANT" | "PARTICIPANT" | null;
 };
@@ -92,7 +92,6 @@ export default function TournamentPermissionsPanel({ tournamentId }: { tournamen
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.detail || "Nie udało się pobrać danych turnieju.");
 
-      // Defensive: normalizujemy legacy
       const dto = data as TournamentDTO;
       dto.entry_mode = normalizeEntryMode(dto.entry_mode);
 
@@ -190,7 +189,7 @@ export default function TournamentPermissionsPanel({ tournamentId }: { tournamen
             )}
           </section>
 
-          {/* Toggle dołączania (join_enabled) */}
+          {/* Toggle dołączania (allow_join_by_code) */}
           <section style={{ borderTop: "1px solid #333", paddingTop: 10 }}>
             <div style={{ fontWeight: 700, marginBottom: 8 }}>Dołączanie uczestników (konto + kod)</div>
 
@@ -202,16 +201,14 @@ export default function TournamentPermissionsPanel({ tournamentId }: { tournamen
               <input
                 type="checkbox"
                 disabled={!isOrganizer || busy}
-                checked={!!t.join_enabled}
-                onChange={(e) => patchTournament({ join_enabled: e.target.checked })}
+                checked={!!t.allow_join_by_code}
+                onChange={(e) => patchTournament({ allow_join_by_code: e.target.checked })}
               />
               <span>Zezwól uczestnikom dołączać przez konto i kod</span>
             </label>
 
-            {!t.join_enabled ? (
-              <div style={{ marginTop: 8, opacity: 0.85 }}>
-                Dołączanie jest wyłączone.
-              </div>
+            {!t.allow_join_by_code ? (
+              <div style={{ marginTop: 8, opacity: 0.85 }}>Dołączanie jest wyłączone.</div>
             ) : (
               <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
                 <div style={{ opacity: 0.85, fontSize: "0.9rem" }}>Link do dołączenia (wymaga loginu):</div>
@@ -224,13 +221,13 @@ export default function TournamentPermissionsPanel({ tournamentId }: { tournamen
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <code style={{ padding: "0.45rem 0.6rem", border: "1px solid #333", borderRadius: 8 }}>
-                    {t.registration_code ?? "—"}
+                    {t.join_code ?? "—"}
                   </code>
 
                   {isOrganizer && (
                     <button
                       disabled={busy}
-                      onClick={() => patchTournament({ registration_code: genCode(8) })}
+                      onClick={() => patchTournament({ join_code: genCode(8) })}
                       style={{
                         border: "1px solid #444",
                         padding: "0.45rem 0.75rem",
@@ -253,15 +250,12 @@ export default function TournamentPermissionsPanel({ tournamentId }: { tournamen
             )}
           </section>
 
-          {/* Asystenci + panel uprawnień per-asystent (punkt 5) */}
+          {/* Asystenci + panel uprawnień per-asystent */}
           <section style={{ borderTop: "1px solid #333", paddingTop: 10 }}>
             <div style={{ fontWeight: 700, marginBottom: 8 }}>Asystenci</div>
 
             {isOrganizer ? (
-              <AddAssistantForm
-                tournamentId={tournamentId}
-                onAdded={() => setAssistantsKey((k) => k + 1)}
-              />
+              <AddAssistantForm tournamentId={tournamentId} onAdded={() => setAssistantsKey((k) => k + 1)} />
             ) : (
               <div style={{ opacity: 0.85, marginBottom: 8 }}>
                 Dodawanie/usuwanie asystentów jest dostępne tylko dla organizatora.
@@ -269,18 +263,12 @@ export default function TournamentPermissionsPanel({ tournamentId }: { tournamen
             )}
 
             <div style={{ marginTop: 10 }}>
-              <AssistantsList
-                key={assistantsKey}
-                tournamentId={tournamentId}
-                canRemove={!!isOrganizer}
-              />
+              <AssistantsList key={assistantsKey} tournamentId={tournamentId} canManage={!!isOrganizer} />
             </div>
 
-            {/* Punkt 5: przypomnienie w UI (konkrety) */}
             <div style={{ marginTop: 10, opacity: 0.85, fontSize: "0.9rem" }}>
-              Uprawnienia per-asystent (granularne) konfigurujesz w sekcji „Uprawnienia asystentów” na stronie turnieju
-              (TournamentTeams / TournamentSchedule / TournamentResults / TournamentDetail będą disable’ować akcje wg PERM_*).
-              Ten panel nie blokuje stron — ogranicza tylko działania.
+              Uprawnienia per-asystent konfigurujesz w liście asystentów. Panel nie blokuje stron — ogranicza tylko akcje
+              edycyjne.
             </div>
           </section>
         </div>

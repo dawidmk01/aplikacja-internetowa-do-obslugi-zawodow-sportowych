@@ -29,9 +29,7 @@ class AddAssistantSerializer(serializers.Serializer):
         try:
             return User.objects.get(email=value)
         except User.DoesNotExist:
-            raise serializers.ValidationError(
-                "Użytkownik o podanym adresie e-mail nie istnieje."
-            )
+            raise serializers.ValidationError("Użytkownik o podanym adresie e-mail nie istnieje.")
 
     def validate(self, attrs):
         tournament = self.context["tournament"]
@@ -46,35 +44,40 @@ class AddAssistantSerializer(serializers.Serializer):
         attrs["user"] = user
         return attrs
 
+
 class AssistantPermissionsSerializer(serializers.Serializer):
     """
-    Punkt 5: granularne uprawnienia per-asystent.
-
+    Granularne uprawnienia per-asystent.
     Kontrakt dla frontu:
-      - teams_edit, schedule_edit, results_edit, bracket_edit, tournament_edit
-      - organizer-only klucze mogą być zwracane (false), ale NIE zapisujemy ich z PATCH.
+      - teams_edit, roster_edit, schedule_edit, results_edit, bracket_edit, tournament_edit, name_change_approve
     """
 
     teams_edit = serializers.BooleanField(required=False)
+    roster_edit = serializers.BooleanField(required=False)                 # NEW
     schedule_edit = serializers.BooleanField(required=False)
     results_edit = serializers.BooleanField(required=False)
     bracket_edit = serializers.BooleanField(required=False)
     tournament_edit = serializers.BooleanField(required=False)
+    name_change_approve = serializers.BooleanField(required=False)         # NEW
 
-    # organizer-only (dla spójności kontraktu; w PATCH ignorowane)
+    # organizer-only (mogą być zwrócone w effective, ale NIE chcemy ich zapisywać)
     publish = serializers.BooleanField(required=False)
     archive = serializers.BooleanField(required=False)
     manage_assistants = serializers.BooleanField(required=False)
     join_settings = serializers.BooleanField(required=False)
 
-    EDITABLE_KEYS = {
-        TournamentMembership.PERM_TEAMS_EDIT: "teams_edit",
-        TournamentMembership.PERM_SCHEDULE_EDIT: "schedule_edit",
-        TournamentMembership.PERM_RESULTS_EDIT: "results_edit",
-        TournamentMembership.PERM_BRACKET_EDIT: "bracket_edit",
-        TournamentMembership.PERM_TOURNAMENT_EDIT: "tournament_edit",
-    }
+    @classmethod
+    def allowed_keys(cls) -> set[str]:
+        # tylko to wolno zapisać do TournamentMembership.permissions
+        return {
+            TournamentMembership.PERM_TEAMS_EDIT,
+            TournamentMembership.PERM_ROSTER_EDIT,
+            TournamentMembership.PERM_SCHEDULE_EDIT,
+            TournamentMembership.PERM_RESULTS_EDIT,
+            TournamentMembership.PERM_BRACKET_EDIT,
+            TournamentMembership.PERM_TOURNAMENT_EDIT,
+            TournamentMembership.PERM_NAME_CHANGE_APPROVE,
+        }
 
     def validate(self, attrs):
-        # twardo ignorujemy organizer-only w walidacji zapisu (backend i tak je odrzuci w widoku)
         return attrs

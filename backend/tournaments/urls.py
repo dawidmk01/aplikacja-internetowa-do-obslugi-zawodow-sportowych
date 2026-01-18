@@ -1,3 +1,5 @@
+# backend/tournaments/urls.py
+
 from django.urls import path
 
 from .views import (
@@ -21,6 +23,10 @@ from .views import (
     TournamentTeamSetupView,
     TournamentTeamListView,
     TournamentTeamUpdateView,
+
+    # roster (players)
+    TournamentTeamPlayersView,
+    TournamentMyTeamPlayersView,
 
     # team name change requests (QUEUE)
     TournamentTeamNameChangeRequestListView,
@@ -58,7 +64,7 @@ urlpatterns = [
     path("tournaments/<int:pk>/discipline/", ChangeDisciplineView.as_view()),
     path("tournaments/<int:pk>/setup/", ChangeSetupView.as_view()),
 
-    # aliasy (wsteczna kompatybilność z frontendem)
+    # aliasy (jak masz w systemie)
     path("tournaments/<int:pk>/change-discipline/", ChangeDisciplineView.as_view()),
     path("tournaments/<int:pk>/change-setup/", ChangeSetupView.as_view()),
 
@@ -73,18 +79,19 @@ urlpatterns = [
     path("tournaments/<int:pk>/teams/", TournamentTeamListView.as_view()),
     path("tournaments/<int:pk>/teams/<int:team_id>/", TournamentTeamUpdateView.as_view()),
 
+    # --- TEAM PLAYERS (ROSTER) ---
+    path("tournaments/<int:pk>/teams/<int:team_id>/players/", TournamentTeamPlayersView.as_view()),
+    path("tournaments/<int:pk>/my-team/players/", TournamentMyTeamPlayersView.as_view()),
+
     # --- TEAM NAME CHANGE REQUESTS (QUEUE) ---
-    # organizer/asystent: lista + count
     path(
         "tournaments/<int:pk>/teams/name-change-requests/",
         TournamentTeamNameChangeRequestListView.as_view(),
     ),
-    # participant: create request for given team
     path(
         "tournaments/<int:pk>/teams/<int:team_id>/name-change-requests/",
         TournamentTeamNameChangeRequestCreateView.as_view(),
     ),
-    # organizer/asystent: approve / reject
     path(
         "tournaments/<int:pk>/teams/name-change-requests/<int:request_id>/approve/",
         TournamentTeamNameChangeRequestApproveView.as_view(),

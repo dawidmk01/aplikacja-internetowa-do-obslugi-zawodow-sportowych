@@ -9,13 +9,17 @@ type Assistant = {
   role: "ASSISTANT";
 };
 
-// Kontrakt permissions (punkt 5) – klucze zgodne z backend PERM_*
+// Kontrakt permissions (klucze zgodne z backend PERM_*)
 type AssistantPerms = {
   teams_edit: boolean;
+  roster_edit: boolean; // NOWE: składy
   schedule_edit: boolean;
   results_edit: boolean;
   bracket_edit: boolean;
   tournament_edit: boolean;
+
+  name_change_approve: boolean; // NOWE: akceptacja zmian nazw (kolejka)
+
   // organizer-only (zawsze false dla asystenta, ale trzymamy spójny kontrakt)
   publish: boolean;
   archive: boolean;
@@ -24,11 +28,16 @@ type AssistantPerms = {
 };
 
 const DEFAULT_PERMS: AssistantPerms = {
+  // zgodnie z Twoim założeniem: domyślnie "włączone" jak pozostałe
   teams_edit: true,
+  roster_edit: true,
   schedule_edit: true,
   results_edit: true,
   bracket_edit: true,
   tournament_edit: true,
+  name_change_approve: true,
+
+  // organizer-only zawsze false
   publish: false,
   archive: false,
   manage_assistants: false,
@@ -37,21 +46,26 @@ const DEFAULT_PERMS: AssistantPerms = {
 
 type Props = {
   tournamentId: number;
-  canManage: boolean; // u Ciebie: czy można usuwać. W nowej strategii: tylko organizer powinien mieć true.
+  canManage: boolean; // czy można usuwać i edytować perms (docelowo: tylko organizer)
 };
 
 function permLabel(key: keyof AssistantPerms) {
   switch (key) {
     case "teams_edit":
-      return "Edycja uczestników (Teams)";
+      return "Edycja drużyn";
+    case "roster_edit":
+      return "Składy: dodawanie/edycja zawodników";
     case "schedule_edit":
-      return "Edycja harmonogramu (Schedule)";
+      return "Edycja harmonogramu";
     case "results_edit":
-      return "Edycja wyników (Results)";
+      return "Wprowadzanie wyników";
     case "bracket_edit":
-      return "Generowanie/zmiany rozgrywek (Bracket)";
+      return "Edycja drabinki";
     case "tournament_edit":
-      return "Edycja danych turnieju (Detail)";
+      return "Edycja ustawień turnieju";
+    case "name_change_approve":
+      return "Akceptacja zmian nazw (kolejka)";
+
     case "publish":
       return "Publikacja (tylko organizator)";
     case "archive":
@@ -70,7 +84,6 @@ export default function AssistantsList({ tournamentId, canManage }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // komunikat czasowy
   const [message, setMessage] = useState<string | null>(null);
 
   // permissions cache per user_id
@@ -85,11 +98,17 @@ export default function AssistantsList({ tournamentId, canManage }: Props) {
     getAssistants(tournamentId)
       .then((list) => {
         setItems(list);
-        // reset cache, ale zachowaj jeśli już było
+
+        // przygotuj cache: jeśli nowy user -> null
         setPermsByUser((prev) => {
           const next = { ...prev };
           for (const a of list) {
             if (!(a.user_id in next)) next[a.user_id] = null;
+          }
+          // usuń z cache tych, których już nie ma
+          for (const k of Object.keys(next)) {
+            const uid = Number(k);
+            if (!list.some((x) => x.user_id === uid)) delete next[uid];
           }
           return next;
         });
@@ -116,8 +135,13 @@ export default function AssistantsList({ tournamentId, canManage }: Props) {
   const permissionsUrl = (userId: number) =>
     `/api/tournaments/${tournamentId}/assistants/${userId}/permissions/`;
 
+  const pickEffective = (data: any) => {
+    // backend: { raw: {...}, effective: {...} }
+    if (data && typeof data === "object" && "effective" in data) return data.effective ?? {};
+    return data ?? {};
+  };
+
   const loadPerms = async (userId: number) => {
-    // tylko organizer (canManage) powinien ładować/edytować
     if (!canManage) return;
 
     setPermsLoading((m) => ({ ...m, [userId]: true }));
@@ -128,8 +152,10 @@ export default function AssistantsList({ tournamentId, canManage }: Props) {
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.detail || "Nie udało się pobrać uprawnień asystenta.");
 
+      const eff = pickEffective(data);
+
       // defensywnie merge z defaultem (gdy backend nie zwróci wszystkich kluczy)
-      const merged: AssistantPerms = { ...DEFAULT_PERMS, ...(data ?? {}) };
+      const merged: AssistantPerms = { ...DEFAULT_PERMS, ...(eff ?? {}) };
       setPermsByUser((p) => ({ ...p, [userId]: merged }));
     } catch (e: any) {
       setError(e?.message ?? "Błąd pobierania uprawnień.");
@@ -145,15 +171,28 @@ export default function AssistantsList({ tournamentId, canManage }: Props) {
     setError(null);
 
     try {
+      // wysyłamy WYŁĄCZNIE edytowalne pola (bez organizer-only)
+      const payload = {
+        teams_edit: nextPerms.teams_edit,
+        roster_edit: nextPerms.roster_edit,
+        schedule_edit: nextPerms.schedule_edit,
+        results_edit: nextPerms.results_edit,
+        bracket_edit: nextPerms.bracket_edit,
+        tournament_edit: nextPerms.tournament_edit,
+        name_change_approve: nextPerms.name_change_approve,
+      };
+
       const res = await apiFetch(permissionsUrl(userId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(nextPerms),
+        body: JSON.stringify(payload),
       });
+
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.detail || "Nie udało się zapisać uprawnień.");
 
-      const merged: AssistantPerms = { ...DEFAULT_PERMS, ...(data ?? nextPerms) };
+      const eff = pickEffective(data);
+      const merged: AssistantPerms = { ...DEFAULT_PERMS, ...(eff ?? payload) };
       setPermsByUser((p) => ({ ...p, [userId]: merged }));
 
       setMessage("Zapisano uprawnienia asystenta.");
@@ -165,12 +204,16 @@ export default function AssistantsList({ tournamentId, canManage }: Props) {
     }
   };
 
+  const isEditableKey = (key: keyof AssistantPerms) => {
+    return !["publish", "archive", "manage_assistants", "join_settings"].includes(String(key));
+  };
+
   const togglePerm = async (userId: number, key: keyof AssistantPerms) => {
+    if (!canManage) return;
+    if (!isEditableKey(key)) return;
+
     const current = permsByUser[userId];
     const base = current ?? DEFAULT_PERMS;
-
-    // organizer-only klucze trzymamy false — nie pozwalamy ich ustawiać w UI
-    if (key === "publish" || key === "archive" || key === "manage_assistants" || key === "join_settings") return;
 
     const next = { ...base, [key]: !base[key] };
     setPermsByUser((p) => ({ ...p, [userId]: next }));
@@ -220,7 +263,7 @@ export default function AssistantsList({ tournamentId, canManage }: Props) {
                   )}
                 </div>
 
-                {/* Punkt 5: granularne uprawnienia per-asystent */}
+                {/* Granularne uprawnienia per-asystent */}
                 {canManage && perms && (
                   <div
                     style={{
@@ -238,10 +281,12 @@ export default function AssistantsList({ tournamentId, canManage }: Props) {
                     {(
                       [
                         "teams_edit",
+                        "roster_edit",
                         "schedule_edit",
                         "results_edit",
                         "bracket_edit",
                         "tournament_edit",
+                        "name_change_approve",
                       ] as (keyof AssistantPerms)[]
                     ).map((k) => (
                       <label key={k} style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -256,8 +301,8 @@ export default function AssistantsList({ tournamentId, canManage }: Props) {
                     ))}
 
                     <div style={{ opacity: 0.85, fontSize: "0.9rem", marginTop: 6 }}>
-                      Uwaga: asystent nadal może wejść na strony panelu. Jeśli nie ma prawa do edycji, elementy edycji będą
-                      wyłączone/ukryte, a strona zostanie w trybie podglądu.
+                      Nie obejmuje: publikacji, archiwizacji, zarządzania asystentami i ustawień dołączania — te akcje są
+                      zawsze zarezerwowane dla organizatora.
                     </div>
                   </div>
                 )}

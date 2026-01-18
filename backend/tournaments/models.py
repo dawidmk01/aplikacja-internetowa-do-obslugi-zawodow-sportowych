@@ -1,3 +1,4 @@
+# backend/tournaments/models.py
 """
 Moduł warstwy modelu domenowego odpowiedzialny za przechowywanie danych turnieju,
 struktury organizacyjnej, uczestników oraz rozgrywek.
@@ -8,9 +9,12 @@ generowania struktury rozgrywek oraz kontroli uprawnień w warstwie API.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 
 
 # ============================================================
@@ -192,7 +196,6 @@ class Tournament(models.Model):
     def __str__(self) -> str:
         return self.name
 
-
 # ============================================================
 # ROLE ORGANIZACYJNE + UPRAWNIENIA (PER-ASYSTENT)
 # ============================================================
@@ -200,36 +203,60 @@ class Tournament(models.Model):
 class TournamentMembership(models.Model):
     """
     Membership asystenta w turnieju + granularne uprawnienia.
+
+    Założenia:
+    - Uprawnienia są per-asystent i trzymane w JSON (permissions).
+    - effective_permissions() buduje uprawnienia efektywne jako:
+        base (zależne od entry_mode) + override z permissions (jeśli klucz istnieje).
+    - Brak fallbacków: jeśli nowa flaga (np. roster_edit) nie istnieje w permissions,
+      to jej wartość wynika WYŁĄCZNIE z base.
+    - Blokady organizer-only (publish/archive/manage_assistants/join_settings) są
+      zawsze wycięte dla asystenta, niezależnie od payloadu.
     """
 
     class Role(models.TextChoices):
         ASSISTANT = "ASSISTANT", "Asystent"
 
+    # ==== podstawowe (stare) ====
     PERM_TEAMS_EDIT = "teams_edit"
     PERM_SCHEDULE_EDIT = "schedule_edit"
     PERM_RESULTS_EDIT = "results_edit"
     PERM_BRACKET_EDIT = "bracket_edit"
     PERM_TOURNAMENT_EDIT = "tournament_edit"
 
+    # ==== NOWE (bez fallbacków) ====
+    PERM_ROSTER_EDIT = "roster_edit"                 # dodawanie/edycja zawodników w składach
+    PERM_NAME_CHANGE_APPROVE = "name_change_approve" # akceptacja/odrzucanie kolejki zmian nazw
+
+    # ==== organizer-only (asystent nigdy nie dostaje) ====
     PERM_PUBLISH = "publish"
     PERM_ARCHIVE = "archive"
     PERM_MANAGE_ASSISTANTS = "manage_assistants"
     PERM_JOIN_SETTINGS = "join_settings"
 
+    # Domyślne bazowe uprawnienia w trybie MANAGER.
+    # UWAGA: nowe flagi dajemy domyślnie False (bezpiecznie) – włączasz checkboxami w UI.
     DEFAULT_PERMISSIONS_MANAGER = {
         PERM_TEAMS_EDIT: True,
         PERM_SCHEDULE_EDIT: True,
         PERM_RESULTS_EDIT: True,
         PERM_BRACKET_EDIT: True,
         PERM_TOURNAMENT_EDIT: True,
+
+        # NOWE (domyślnie WYŁĄCZONE, bez fallbacków)
+        PERM_ROSTER_EDIT: True,
+        PERM_NAME_CHANGE_APPROVE: True,
     }
 
+    # W ORGANIZER_ONLY wszystko dla asystenta ma być zablokowane (zostaje tylko podgląd przez inne polityki).
     DEFAULT_PERMISSIONS_ORGANIZER_ONLY = {
         PERM_TEAMS_EDIT: False,
         PERM_SCHEDULE_EDIT: False,
         PERM_RESULTS_EDIT: False,
         PERM_BRACKET_EDIT: False,
         PERM_TOURNAMENT_EDIT: False,
+        PERM_ROSTER_EDIT: False,
+        PERM_NAME_CHANGE_APPROVE: False,
     }
 
     tournament = models.ForeignKey(
@@ -264,15 +291,25 @@ class TournamentMembership(models.Model):
         ]
 
     def effective_permissions(self) -> dict:
+        """
+        Zwraca uprawnienia efektywne asystenta.
+
+        - Wybiera bazę w zależności od entry_mode.
+        - Nadpisuje bazę kluczami z self.permissions (tylko jeśli permissions jest dict).
+        - Wycinamy organizer-only klucze, niezależnie od tego co przyszło w JSON.
+        """
         base = (
             self.DEFAULT_PERMISSIONS_ORGANIZER_ONLY
             if self.tournament.entry_mode == Tournament.EntryMode.ORGANIZER_ONLY
             else self.DEFAULT_PERMISSIONS_MANAGER
         )
+
         merged = dict(base)
+
         if isinstance(self.permissions, dict):
             merged.update(self.permissions)
 
+        # twarde blokady — te rzeczy zawsze tylko organizer
         for k in (
             self.PERM_PUBLISH,
             self.PERM_ARCHIVE,
@@ -281,7 +318,12 @@ class TournamentMembership(models.Model):
         ):
             merged.pop(k, None)
 
+        # Normalizacja typów do bool (żeby nie trafiły np. "true"/1)
+        for k, v in list(merged.items()):
+            merged[k] = bool(v)
+
         return merged
+
 
 
 # ============================================================
@@ -396,6 +438,7 @@ class TeamNameChangeRequest(models.Model):
     def __str__(self) -> str:
         return f"{self.tournament_id}:{self.team_id} {self.status} {self.old_name} -> {self.requested_name}"
 
+
 # ============================================================
 # DYWIZJE
 # ============================================================
@@ -458,6 +501,64 @@ class Team(models.Model):
         if self.registered_user_id:
             return f"{self.name} (U: {self.registered_user_id})"
         return self.name
+
+
+# ============================================================
+# ZAWODNICY (SKŁAD DRUŻYNY)
+# ============================================================
+
+class TeamPlayer(models.Model):
+    """
+    Model reprezentujący zawodnika przypisanego do drużyny w ramach danego turnieju.
+
+    Encja stanowi źródło danych dla składów drużynowych oraz incydentów meczowych,
+    w których wymagane jest wskazanie konkretnego uczestnika (np. kartka, zmiana).
+    """
+
+    team = models.ForeignKey(
+        Team,
+        on_delete=models.CASCADE,
+        related_name="players",
+    )
+
+    display_name = models.CharField(max_length=120)
+
+    jersey_number = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Indywidualny numer zawodnika (np. numer koszulki).",
+    )
+
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="Flaga logicznej aktywności zawodnika, pozwalająca zachować historię zdarzeń.",
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_team_players",
+        help_text="Użytkownik, który wprowadził zawodnika do składu.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["team", "jersey_number"],
+                condition=Q(jersey_number__isnull=False, is_active=True),
+                name="uniq_active_jersey_number_per_team",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.display_name} ({self.team_id})"
 
 
 # ============================================================
@@ -542,6 +643,25 @@ class Match(models.Model):
         IN_PROGRESS = "IN_PROGRESS", "W trakcie"
         FINISHED = "FINISHED", "Zakończony"
 
+    class ClockState(models.TextChoices):
+        NOT_STARTED = "NOT_STARTED", "Nie rozpoczęty"
+        RUNNING = "RUNNING", "W trakcie"
+        PAUSED = "PAUSED", "Wstrzymany"
+        STOPPED = "STOPPED", "Zatrzymany"
+
+    class ClockPeriod(models.TextChoices):
+        NONE = "NONE", "Brak"
+
+        # Piłka nożna
+        FH = "FH", "1 połowa"
+        SH = "SH", "2 połowa"
+        ET1 = "ET1", "Dogrywka 1"
+        ET2 = "ET2", "Dogrywka 2"
+
+        # Piłka ręczna (standard 2x30)
+        H1 = "H1", "1 połowa (ręczna)"
+        H2 = "H2", "2 połowa (ręczna)"
+
     tournament = models.ForeignKey(
         Tournament,
         on_delete=models.CASCADE,
@@ -621,6 +741,39 @@ class Match(models.Model):
     scheduled_time = models.TimeField(blank=True, null=True)
     location = models.CharField(max_length=255, blank=True, null=True)
 
+    # ===== Zegar meczu =====
+    clock_state = models.CharField(
+        max_length=16,
+        choices=ClockState.choices,
+        default=ClockState.NOT_STARTED,
+        db_index=True,
+        help_text="Stan zegara wykorzystywanego do rejestrowania czasu zdarzeń meczowych.",
+    )
+
+    clock_period = models.CharField(
+        max_length=8,
+        choices=ClockPeriod.choices,
+        default=ClockPeriod.NONE,
+        db_index=True,
+        help_text="Bieżący okres gry (np. połowa, dogrywka), istotny dla wyliczeń minut incydentów.",
+    )
+
+    clock_started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Znacznik czasu uruchomienia aktualnego odcinka pomiaru czasu.",
+    )
+
+    clock_elapsed_seconds = models.PositiveIntegerField(
+        default=0,
+        help_text="Skumulowany czas (w sekundach) w obrębie bieżącego okresu, bez aktualnie trwającego odcinka.",
+    )
+
+    clock_added_seconds = models.PositiveIntegerField(
+        default=0,
+        help_text="Dodatkowy czas doliczony do bieżącego okresu (np. doliczony czas w piłce nożnej).",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -632,5 +785,216 @@ class Match(models.Model):
         ]
         ordering = ["round_number", "id"]
 
+    # ===== Pomocnicze wyliczenia zegara =====
+
+    def clock_seconds_in_period(self, now: datetime | None = None) -> int:
+        """
+        Zwraca liczbę sekund, które upłynęły w bieżącym okresie gry.
+
+        Metoda umożliwia spójne wyliczanie czasu niezależnie od przerw, pauz oraz
+        liczby klientów obserwujących mecz, co jest kluczowe dla rejestrowania incydentów.
+        """
+        now_dt = now or timezone.now()
+        running = 0
+        if self.clock_state == self.ClockState.RUNNING and self.clock_started_at:
+            delta = now_dt - self.clock_started_at
+            running = max(0, int(delta.total_seconds()))
+        return int(self.clock_elapsed_seconds or 0) + running
+
+    def _clock_period_base_seconds(self) -> int:
+        """
+        Zwraca bazowy offset czasu (w sekundach) wynikający z dyscypliny i okresu gry.
+
+        Offset jest wykorzystywany do wyliczenia czasu absolutnego meczu, co pozwala
+        przechowywać incydenty w jednolitej osi czasu (np. 45–90 min w 2 połowie).
+        """
+        d = self.tournament.discipline
+        p = self.clock_period
+
+        if d == Tournament.Discipline.FOOTBALL:
+            mapping = {
+                self.ClockPeriod.FH: 0,
+                self.ClockPeriod.SH: 45 * 60,
+                self.ClockPeriod.ET1: 90 * 60,
+                self.ClockPeriod.ET2: 105 * 60,
+            }
+            return mapping.get(p, 0)
+
+        if d == Tournament.Discipline.HANDBALL:
+            mapping = {
+                self.ClockPeriod.H1: 0,
+                self.ClockPeriod.H2: 30 * 60,
+            }
+            return mapping.get(p, 0)
+
+        return 0
+
+    def clock_seconds_total(self, now: datetime | None = None) -> int:
+        """
+        Zwraca czas absolutny meczu w sekundach (offset okresu + czas w okresie).
+
+        Wartość wspiera spójne wyliczanie minut incydentów niezależnie od sposobu
+        prezentacji (np. minuta 73 w 2 połowie piłki nożnej).
+        """
+        return self._clock_period_base_seconds() + self.clock_seconds_in_period(now=now)
+
+    def clock_minute_total(self, now: datetime | None = None) -> int:
+        """
+        Zwraca minutę meczu wyliczoną na podstawie zegara.
+
+        Metoda celowo zwraca wartość w konwencji 1..N, co upraszcza zapis incydentów.
+        """
+        seconds = self.clock_seconds_total(now=now)
+        return int(seconds // 60) + 1
+
     def __str__(self) -> str:
         return f"{self.home_team} vs {self.away_team}"
+
+
+# ============================================================
+# INCYDENTY MECZOWE (BRAMKI, KARTKI, ZMIANY, KARY)
+# ============================================================
+
+class MatchIncident(models.Model):
+    """
+    Model zdarzenia zarejestrowanego w trakcie meczu.
+
+    Encja umożliwia odwzorowanie przebiegu spotkania w formie osi zdarzeń,
+    przy czym źródło czasu może wynikać z zegara meczu lub z ręcznej korekty.
+    """
+
+    class Kind(models.TextChoices):
+        GOAL = "GOAL", "Bramka"
+        YELLOW_CARD = "YELLOW_CARD", "Żółta kartka"
+        RED_CARD = "RED_CARD", "Czerwona kartka"
+        FOUL = "FOUL", "Faul"
+
+        SUBSTITUTION = "SUBSTITUTION", "Zmiana"
+
+        HANDBALL_TWO_MINUTES = "HANDBALL_TWO_MINUTES", "Kara 2 min (ręczna)"
+
+        TENNIS_CODE_VIOLATION = "TENNIS_CODE_VIOLATION", "Naruszenie przepisów (tenis)"
+        TIMEOUT = "TIMEOUT", "Przerwa/timeout"
+
+    class TimeSource(models.TextChoices):
+        CLOCK = "CLOCK", "Zegar meczu"
+        MANUAL = "MANUAL", "Wprowadzony ręcznie"
+
+    match = models.ForeignKey(
+        Match,
+        on_delete=models.CASCADE,
+        related_name="incidents",
+    )
+
+    team = models.ForeignKey(
+        Team,
+        on_delete=models.CASCADE,
+        related_name="incidents",
+    )
+
+    kind = models.CharField(
+        max_length=40,
+        choices=Kind.choices,
+        db_index=True,
+    )
+
+    period = models.CharField(
+        max_length=8,
+        choices=Match.ClockPeriod.choices,
+        default=Match.ClockPeriod.NONE,
+        db_index=True,
+        help_text="Okres gry w momencie rejestracji zdarzenia (np. połowa, dogrywka).",
+    )
+
+    time_source = models.CharField(
+        max_length=8,
+        choices=TimeSource.choices,
+        default=TimeSource.CLOCK,
+        help_text="Źródło czasu zdarzenia, istotne przy korektach oraz analizie przebiegu meczu.",
+    )
+
+    minute = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Minuta zdarzenia liczona w osi czasu meczu (może być pusta w dyscyplinach bez zegara).",
+    )
+
+    minute_raw = models.CharField(
+        max_length=12,
+        null=True,
+        blank=True,
+        help_text="Oryginalny zapis minuty (np. '90+3'), umożliwiający wierną prezentację w interfejsie.",
+    )
+
+    player = models.ForeignKey(
+        TeamPlayer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="incidents",
+        help_text="Zawodnik powiązany ze zdarzeniem jednoosobowym (np. kartka, faul).",
+    )
+
+    player_in = models.ForeignKey(
+        TeamPlayer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="incidents_in",
+        help_text="Zawodnik wchodzący na boisko (dla zdarzenia typu zmiana).",
+    )
+
+    player_out = models.ForeignKey(
+        TeamPlayer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="incidents_out",
+        help_text="Zawodnik schodzący z boiska (dla zdarzenia typu zmiana).",
+    )
+
+    meta = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Dodatkowe dane zależne od dyscypliny i typu zdarzenia (np. szczegóły kary, opis).",
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_match_incidents",
+        help_text="Użytkownik rejestrujący zdarzenie w systemie.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [
+            models.Index(fields=["match", "created_at"], name="idx_incident_match_time"),
+            models.Index(fields=["match", "team", "kind"], name="idx_incident_m_team_kind"),
+        ]
+        constraints = [
+            # UWAGA: w Meta nie odwołujemy się do Kind.SUBSTITUTION (NameError),
+            # używamy literalnej wartości pola.
+            models.CheckConstraint(
+                check=(
+                    ~Q(kind="SUBSTITUTION")
+                    | (Q(player_in__isnull=False) & Q(player_out__isnull=False))
+                ),
+                name="sub_req_players_in_out",
+            ),
+            models.CheckConstraint(
+                check=(
+                    Q(kind="SUBSTITUTION")
+                    | (Q(player_in__isnull=True) & Q(player_out__isnull=True))
+                ),
+                name="non_sub_no_players_in_out",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.match_id}:{self.team_id} {self.kind} @{self.minute or '-'}"

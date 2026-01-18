@@ -15,7 +15,7 @@ from ..serializers import (
     TournamentAssistantSerializer,
 )
 from ..serializers.assistants import AssistantPermissionsSerializer
-from ._helpers import user_can_view_tournament, get_membership
+from ._helpers import user_can_view_tournament
 
 
 class TournamentAssistantListView(ListAPIView):
@@ -25,7 +25,8 @@ class TournamentAssistantListView(ListAPIView):
     def get_queryset(self):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
 
-        # Podgląd listy: organizer + asystent (membership). Jeśli wolisz tylko organizer – zmień na IsTournamentOrganizer.
+        # Podgląd listy: organizer + asystent (membership) + participant (jeśli ma view).
+        # Jeśli chcesz tylko organizer: zmień na IsTournamentOrganizer.
         if not user_can_view_tournament(self.request.user, tournament):
             return TournamentMembership.objects.none()
 
@@ -42,12 +43,27 @@ class AddAssistantView(APIView):
         serializer = AddAssistantSerializer(data=request.data, context={"tournament": tournament})
         serializer.is_valid(raise_exception=True)
 
-        TournamentMembership.objects.create(
+        user = serializer.validated_data["user"]
+
+        # Nie dodawaj organizatora jako asystenta
+        if user.id == tournament.organizer_id:
+            return Response(
+                {"detail": "Organizator nie może być dodany jako asystent."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Unikaj duplikatów membership
+        obj, created = TournamentMembership.objects.get_or_create(
             tournament=tournament,
-            user=serializer.validated_data["user"],
+            user=user,
             role=TournamentMembership.Role.ASSISTANT,
-            permissions={},  # domyślne bazowe wynikają z entry_mode w effective_permissions()
+            defaults={"permissions": {}},
         )
+        if not created:
+            return Response(
+                {"detail": "Ten użytkownik jest już asystentem w tym turnieju."},
+                status=status.HTTP_409_CONFLICT,
+            )
 
         return Response(status=status.HTTP_201_CREATED)
 
@@ -71,14 +87,16 @@ class RemoveAssistantView(APIView):
 class AssistantPermissionsView(APIView):
     """
     GET  /api/tournaments/<pk>/assistants/<user_id>/permissions/
-      -> { effective: {...}, raw: {...} }
+      -> { raw: {...}, effective: {...} }
 
     PATCH /api/tournaments/<pk>/assistants/<user_id>/permissions/
-      body: { teams_edit?: bool, schedule_edit?: bool, ... }
-      -> { effective: {...}, raw: {...} }
+      body: { teams_edit?: bool, schedule_edit?: bool, ... , roster_edit?: bool, name_change_approve?: bool }
+      -> { raw: {...}, effective: {...} }
 
-    Tylko organizator może modyfikować.
-    Asystent może co najwyżej zobaczyć (opcjonalnie) – tu robimy: GET organizer+asystent, PATCH tylko organizer.
+    Zasady:
+    - Organizer: może GET/PATCH dla dowolnego asystenta
+    - Asystent: może GET wyłącznie swoje uprawnienia (żeby nie podglądał cudzych)
+    - PATCH: tylko organizer
     """
     permission_classes = [IsAuthenticated]
 
@@ -125,8 +143,16 @@ class AssistantPermissionsView(APIView):
         ser = AssistantPermissionsSerializer(data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
 
+        # Twardo filtrujemy do dozwolonych kluczy (żadnych organizer-only i żadnych "śmieci")
+        allowed_keys = set(AssistantPermissionsSerializer.allowed_keys())
+
         raw = dict(m.permissions or {})
-        raw.update(ser.validated_data)
+        raw = {k: bool(v) for k, v in raw.items() if k in allowed_keys}
+
+        for k, v in ser.validated_data.items():
+            if k in allowed_keys:
+                raw[k] = bool(v)
+
         m.permissions = raw
         m.save(update_fields=["permissions"])
 

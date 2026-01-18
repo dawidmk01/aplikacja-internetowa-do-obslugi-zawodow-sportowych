@@ -318,25 +318,49 @@ class TournamentSerializer(serializers.ModelSerializer):
     def get_my_permissions(self, obj: Tournament) -> dict:
         """
         Kontrakt dla frontu: uprawnienia do AKCJI (granularnie).
-        Na razie zwracamy spójny słownik; backendowe enforcement zrobimy w widokach.
+        Zwracamy pełny zestaw kluczy PERM_* (łącznie z nowymi).
         """
         request = self.context.get("request")
         user = request.user if request and request.user and request.user.is_authenticated else None
+
+        # Pełny "szablon" odpowiedzi (zawsze te same klucze)
+        base = {
+            TournamentMembership.PERM_TEAMS_EDIT: False,
+            TournamentMembership.PERM_ROSTER_EDIT: False,
+            TournamentMembership.PERM_SCHEDULE_EDIT: False,
+            TournamentMembership.PERM_RESULTS_EDIT: False,
+            TournamentMembership.PERM_BRACKET_EDIT: False,
+            TournamentMembership.PERM_TOURNAMENT_EDIT: False,
+
+            # organizer-only (asystent zawsze false)
+            TournamentMembership.PERM_PUBLISH: False,
+            TournamentMembership.PERM_ARCHIVE: False,
+            TournamentMembership.PERM_MANAGE_ASSISTANTS: False,
+            TournamentMembership.PERM_JOIN_SETTINGS: False,
+
+            # NOWE
+            TournamentMembership.PERM_NAME_CHANGE_APPROVE: False,
+        }
 
         # Organizer ma pełne prawa (łącznie z organizer-only)
         if user and obj.organizer_id == user.id:
             return {
                 TournamentMembership.PERM_TEAMS_EDIT: True,
+                TournamentMembership.PERM_ROSTER_EDIT: True,
                 TournamentMembership.PERM_SCHEDULE_EDIT: True,
                 TournamentMembership.PERM_RESULTS_EDIT: True,
                 TournamentMembership.PERM_BRACKET_EDIT: True,
                 TournamentMembership.PERM_TOURNAMENT_EDIT: True,
+
+                TournamentMembership.PERM_NAME_CHANGE_APPROVE: True,
+
                 TournamentMembership.PERM_PUBLISH: True,
                 TournamentMembership.PERM_ARCHIVE: True,
                 TournamentMembership.PERM_MANAGE_ASSISTANTS: True,
                 TournamentMembership.PERM_JOIN_SETTINGS: True,
             }
 
+        # Asystent
         m = None
         if user:
             m = TournamentMembership.objects.filter(
@@ -345,19 +369,6 @@ class TournamentSerializer(serializers.ModelSerializer):
                 role=TournamentMembership.Role.ASSISTANT,
             ).first()
 
-        # Domyślnie wszystko False
-        base = {
-            TournamentMembership.PERM_TEAMS_EDIT: False,
-            TournamentMembership.PERM_SCHEDULE_EDIT: False,
-            TournamentMembership.PERM_RESULTS_EDIT: False,
-            TournamentMembership.PERM_BRACKET_EDIT: False,
-            TournamentMembership.PERM_TOURNAMENT_EDIT: False,
-            TournamentMembership.PERM_PUBLISH: False,
-            TournamentMembership.PERM_ARCHIVE: False,
-            TournamentMembership.PERM_MANAGE_ASSISTANTS: False,
-            TournamentMembership.PERM_JOIN_SETTINGS: False,
-        }
-
         if not m:
             return base
 
@@ -365,15 +376,20 @@ class TournamentSerializer(serializers.ModelSerializer):
         if _safe_entry_mode(obj.entry_mode) == Tournament.EntryMode.ORGANIZER_ONLY:
             return base
 
-        # W MANAGER: effective_permissions (ale organizer-only rzeczy nadal False)
+        # W MANAGER: bierzemy effective_permissions (ale organizer-only dalej false)
         eff = m.effective_permissions()
+
         base.update(
             {
                 TournamentMembership.PERM_TEAMS_EDIT: bool(eff.get(TournamentMembership.PERM_TEAMS_EDIT)),
+                TournamentMembership.PERM_ROSTER_EDIT: bool(eff.get(TournamentMembership.PERM_ROSTER_EDIT)),
                 TournamentMembership.PERM_SCHEDULE_EDIT: bool(eff.get(TournamentMembership.PERM_SCHEDULE_EDIT)),
                 TournamentMembership.PERM_RESULTS_EDIT: bool(eff.get(TournamentMembership.PERM_RESULTS_EDIT)),
                 TournamentMembership.PERM_BRACKET_EDIT: bool(eff.get(TournamentMembership.PERM_BRACKET_EDIT)),
                 TournamentMembership.PERM_TOURNAMENT_EDIT: bool(eff.get(TournamentMembership.PERM_TOURNAMENT_EDIT)),
+
+                TournamentMembership.PERM_NAME_CHANGE_APPROVE: bool(
+                    eff.get(TournamentMembership.PERM_NAME_CHANGE_APPROVE)),
             }
         )
         return base
