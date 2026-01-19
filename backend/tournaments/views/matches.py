@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 from django.db import transaction
 from django.db.models import Q
@@ -19,7 +19,7 @@ from tournaments.services.match_outcome import (
     validate_penalties_consistency,
 )
 
-from ..models import Match, Stage, Tournament
+from ..models import Match, Stage, Tournament, MatchIncident
 from ..serializers import MatchResultUpdateSerializer, MatchSerializer
 from ._helpers import (
     # PODGLĄD/ROLE (NOWA STRATEGIA)
@@ -225,6 +225,110 @@ def _regenerate_knockout_from_groups_if_safe(tournament: Tournament) -> None:
     advance_from_groups(tournament)
 
 
+# =========================
+# Incidents -> score guard
+# =========================
+
+def _incident_goal_points(discipline: str, meta: object) -> int:
+    """
+    GOAL punktacja:
+    - koszykówka: meta.points = 1/2/3 (domyślnie 1)
+    - reszta: 1
+    """
+    if discipline == Tournament.Discipline.BASKETBALL:
+        m = meta if isinstance(meta, dict) else {}
+        raw = m.get("points", 1)
+        try:
+            pts = int(raw or 1)
+        except (TypeError, ValueError):
+            pts = 1
+        return pts if pts in (1, 2, 3) else 1
+    return 1
+
+
+def _incident_counts_for_main_score(discipline: str, period: object) -> bool:
+    """
+    Na tym etapie pilnujemy spójności głównego wyniku (home_score/away_score)
+    z incydentami GOAL. Jeżeli w przyszłości rozdzielisz ET na osobne pola,
+    to ET1/ET2 nie powinny liczyć się do main-score.
+    """
+    p = str(period or "").strip() or "NONE"
+
+    if discipline == Tournament.Discipline.FOOTBALL:
+        return p in {"NONE", "FH", "SH"}  # ET1/ET2 pomijamy
+    if discipline == Tournament.Discipline.HANDBALL:
+        return p in {"NONE", "H1", "H2"}
+    # kosz + pozostałe: liczymy wszystko
+    return True
+
+
+def _min_scores_from_goal_incidents(match: Match) -> Tuple[int, int]:
+    """
+    Minimalny wynik wymagany przez zarejestrowane incydenty GOAL.
+    Wymusza zasadę: nie można zbić wyniku poniżej tego, co już jest opisane incydentami.
+    """
+    t = match.tournament
+    discipline = t.discipline
+
+    if not match.home_team_id or not match.away_team_id:
+        return 0, 0
+
+    qs = (
+        MatchIncident.objects
+        .filter(match_id=match.id, kind="GOAL")
+        .only("team_id", "meta", "period")
+    )
+
+    home_min = 0
+    away_min = 0
+
+    for i in qs:
+        if not _incident_counts_for_main_score(discipline, i.period):
+            continue
+        pts = _incident_goal_points(discipline, i.meta)
+        if i.team_id == match.home_team_id:
+            home_min += pts
+        elif i.team_id == match.away_team_id:
+            away_min += pts
+
+    return int(home_min), int(away_min)
+
+
+def _validate_scores_not_below_incidents(match: Match, home_score, away_score) -> Optional[str]:
+    """
+    Blokujemy zapis, gdy ktoś próbuje ustawić wynik < suma GOAL incydentów.
+    (Dokładnie to: „korekta w dół wymaga usunięcia incydentu”.)
+    """
+    if _is_tennis(match.tournament):
+        return None
+
+    home_min, away_min = _min_scores_from_goal_incidents(match)
+
+    if home_score is None:
+        if home_min > 0:
+            return f"Nie można wyczyścić wyniku gospodarzy: istnieją incydenty GOAL ({home_min}). Usuń incydenty lub ustaw wynik >= {home_min}."
+    else:
+        try:
+            hs = int(home_score)
+        except (TypeError, ValueError):
+            return "home_score musi być liczbą."
+        if hs < home_min:
+            return f"Wynik gospodarzy ({hs}) nie może być mniejszy niż suma z incydentów GOAL ({home_min}). Usuń incydenty lub ustaw wynik >= {home_min}."
+
+    if away_score is None:
+        if away_min > 0:
+            return f"Nie można wyczyścić wyniku gości: istnieją incydenty GOAL ({away_min}). Usuń incydenty lub ustaw wynik >= {away_min}."
+    else:
+        try:
+            aws = int(away_score)
+        except (TypeError, ValueError):
+            return "away_score musi być liczbą."
+        if aws < away_min:
+            return f"Wynik gości ({aws}) nie może być mniejszy niż suma z incydentów GOAL ({away_min}). Usuń incydenty lub ustaw wynik >= {away_min}."
+
+    return None
+
+
 # ============================================================
 # Views
 # ============================================================
@@ -334,7 +438,15 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
+        # zablokuj rekord meczu na czas update
         match = self.get_object()
+        match = (
+            Match.objects
+            .select_related("stage", "tournament")
+            .select_for_update()
+            .get(pk=match.pk)
+        )
+
         tournament = match.tournament
 
         if not can_edit_results(request.user, tournament):
@@ -361,6 +473,14 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
 
         serializer = self.get_serializer(match, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+
+        # --- GUARD: wynik nie może spaść poniżej incydentów GOAL ---
+        proposed_home = serializer.validated_data.get("home_score", match.home_score)
+        proposed_away = serializer.validated_data.get("away_score", match.away_score)
+        err = _validate_scores_not_below_incidents(match, proposed_home, proposed_away)
+        if err:
+            return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
+
         match = serializer.save()
 
         if stage.stage_type in (Stage.StageType.LEAGUE, Stage.StageType.GROUP):
@@ -411,7 +531,7 @@ class FinishMatchView(APIView):
             return Response({"detail": "Brak identyfikatora meczu."}, status=status.HTTP_400_BAD_REQUEST)
 
         match = get_object_or_404(
-            Match.objects.select_related("stage", "tournament", "home_team", "away_team"),
+            Match.objects.select_related("stage", "tournament", "home_team", "away_team").select_for_update(),
             pk=match_id,
         )
         tournament = match.tournament
@@ -423,13 +543,18 @@ class FinishMatchView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        # --- GUARD: nie kończymy meczu, jeśli wynik < incydenty GOAL ---
+        err = _validate_scores_not_below_incidents(match, match.home_score, match.away_score)
+        if err:
+            return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
+
         cfg = tournament.format_config or {}
 
         if stage.stage_type in (Stage.StageType.LEAGUE, Stage.StageType.GROUP):
             if _is_tennis(tournament):
-                err = _validate_tennis_match_before_finish(match, cfg)
-                if err:
-                    return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
+                err2 = _validate_tennis_match_before_finish(match, cfg)
+                if err2:
+                    return Response({"detail": err2}, status=status.HTTP_400_BAD_REQUEST)
 
             try:
                 MatchResultService.apply_result(match)
@@ -462,9 +587,9 @@ class FinishMatchView(APIView):
                         {"detail": "Tenis nie wspiera trybu dwumeczu (cup_matches=2)."},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                err = _validate_tennis_match_before_finish(match, cfg)
-                if err:
-                    return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
+                err3 = _validate_tennis_match_before_finish(match, cfg)
+                if err3:
+                    return Response({"detail": err3}, status=status.HTTP_400_BAD_REQUEST)
 
             if match.home_score is None or match.away_score is None:
                 return Response(
@@ -473,9 +598,9 @@ class FinishMatchView(APIView):
                 )
 
             if cup_matches == 1:
-                err = validate_extra_time_consistency(match) or validate_penalties_consistency(match)
-                if err and not _is_tennis(tournament):
-                    return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
+                err4 = validate_extra_time_consistency(match) or validate_penalties_consistency(match)
+                if err4 and not _is_tennis(tournament):
+                    return Response({"detail": err4}, status=status.HTTP_400_BAD_REQUEST)
 
                 winner_id = _tennis_winner_id_from_sets(match) if _is_tennis(tournament) else knockout_winner_id(match)
 

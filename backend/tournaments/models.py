@@ -702,7 +702,18 @@ class Match(models.Model):
         blank=True,
         null=True,
         default=None,
-        help_text="Dla tenisa: lista setów w gemach (opcjonalnie z tie-breakiem).",
+        help_text="Dla tenisa: lista zakończonych setów w gemach (opcjonalnie z tie-breakiem).",
+    )
+
+    # NOWE: stan bieżącego seta/gema (punkt po punkcie)
+    tennis_state = models.JSONField(
+        blank=True,
+        null=True,
+        default=None,
+        help_text=(
+            "Dla tenisa: bieżący stan punktów/gemów. "
+            "Przykład: {home_games, away_games, home_points, away_points, in_tiebreak, home_tb, away_tb, set_index}."
+        ),
     )
 
     went_to_extra_time = models.BooleanField(default=False)
@@ -755,7 +766,7 @@ class Match(models.Model):
         choices=ClockPeriod.choices,
         default=ClockPeriod.NONE,
         db_index=True,
-        help_text="Bieżący okres gry (np. połowa, dogrywka), istotny dla wyliczeń minut incydentów.",
+        help_text="Bieżący okres gry (np. połowa, dogrywka).",
     )
 
     clock_started_at = models.DateTimeField(
@@ -790,23 +801,21 @@ class Match(models.Model):
     def clock_seconds_in_period(self, now: datetime | None = None) -> int:
         """
         Zwraca liczbę sekund, które upłynęły w bieżącym okresie gry.
-
-        Metoda umożliwia spójne wyliczanie czasu niezależnie od przerw, pauz oraz
-        liczby klientów obserwujących mecz, co jest kluczowe dla rejestrowania incydentów.
+        UWAGA: doliczamy clock_added_seconds, żeby działało 45+X itd.
         """
         now_dt = now or timezone.now()
         running = 0
         if self.clock_state == self.ClockState.RUNNING and self.clock_started_at:
             delta = now_dt - self.clock_started_at
             running = max(0, int(delta.total_seconds()))
-        return int(self.clock_elapsed_seconds or 0) + running
+
+        base = int(self.clock_elapsed_seconds or 0) + running
+        added = int(self.clock_added_seconds or 0)
+        return base + added
 
     def _clock_period_base_seconds(self) -> int:
         """
-        Zwraca bazowy offset czasu (w sekundach) wynikający z dyscypliny i okresu gry.
-
-        Offset jest wykorzystywany do wyliczenia czasu absolutnego meczu, co pozwala
-        przechowywać incydenty w jednolitej osi czasu (np. 45–90 min w 2 połowie).
+        Bazowy offset (sekundy) dla absolutnej osi czasu meczu.
         """
         d = self.tournament.discipline
         p = self.clock_period
@@ -831,18 +840,13 @@ class Match(models.Model):
 
     def clock_seconds_total(self, now: datetime | None = None) -> int:
         """
-        Zwraca czas absolutny meczu w sekundach (offset okresu + czas w okresie).
-
-        Wartość wspiera spójne wyliczanie minut incydentów niezależnie od sposobu
-        prezentacji (np. minuta 73 w 2 połowie piłki nożnej).
+        Czas absolutny meczu (offset okresu + czas w okresie).
         """
         return self._clock_period_base_seconds() + self.clock_seconds_in_period(now=now)
 
     def clock_minute_total(self, now: datetime | None = None) -> int:
         """
-        Zwraca minutę meczu wyliczoną na podstawie zegara.
-
-        Metoda celowo zwraca wartość w konwencji 1..N, co upraszcza zapis incydentów.
+        Minuta meczu w konwencji 1..N (np. 1,2,...).
         """
         seconds = self.clock_seconds_total(now=now)
         return int(seconds // 60) + 1
@@ -857,14 +861,16 @@ class Match(models.Model):
 
 class MatchIncident(models.Model):
     """
-    Model zdarzenia zarejestrowanego w trakcie meczu.
-
-    Encja umożliwia odwzorowanie przebiegu spotkania w formie osi zdarzeń,
-    przy czym źródło czasu może wynikać z zegara meczu lub z ręcznej korekty.
+    Zdarzenie w trakcie meczu (oś czasu). Czas może pochodzić z zegara meczu lub ręcznie.
     """
 
     class Kind(models.TextChoices):
         GOAL = "GOAL", "Bramka"
+
+        # Piłka nożna – rzut karny w trakcie gry (NIE seria po meczu)
+        PENALTY_SCORED = "PENALTY_SCORED", "Rzut karny (gol)"
+        PENALTY_MISSED = "PENALTY_MISSED", "Rzut karny (niewykorzystany)"
+
         YELLOW_CARD = "YELLOW_CARD", "Żółta kartka"
         RED_CARD = "RED_CARD", "Czerwona kartka"
         FOUL = "FOUL", "Faul"
@@ -873,7 +879,9 @@ class MatchIncident(models.Model):
 
         HANDBALL_TWO_MINUTES = "HANDBALL_TWO_MINUTES", "Kara 2 min (ręczna)"
 
+        TENNIS_POINT = "TENNIS_POINT", "Punkt (tenis)"
         TENNIS_CODE_VIOLATION = "TENNIS_CODE_VIOLATION", "Naruszenie przepisów (tenis)"
+
         TIMEOUT = "TIMEOUT", "Przerwa/timeout"
 
     class TimeSource(models.TextChoices):
@@ -917,14 +925,14 @@ class MatchIncident(models.Model):
         null=True,
         blank=True,
         db_index=True,
-        help_text="Minuta zdarzenia liczona w osi czasu meczu (może być pusta w dyscyplinach bez zegara).",
+        help_text="Minuta zdarzenia w osi czasu meczu (może być pusta w dyscyplinach bez zegara).",
     )
 
     minute_raw = models.CharField(
         max_length=12,
         null=True,
         blank=True,
-        help_text="Oryginalny zapis minuty (np. '90+3'), umożliwiający wierną prezentację w interfejsie.",
+        help_text="Oryginalny zapis minuty (np. '90+3'), do wiernej prezentacji.",
     )
 
     player = models.ForeignKey(
@@ -933,7 +941,7 @@ class MatchIncident(models.Model):
         null=True,
         blank=True,
         related_name="incidents",
-        help_text="Zawodnik powiązany ze zdarzeniem jednoosobowym (np. kartka, faul).",
+        help_text="Zawodnik zdarzenia jednoosobowego (kartka, faul).",
     )
 
     player_in = models.ForeignKey(
@@ -942,7 +950,7 @@ class MatchIncident(models.Model):
         null=True,
         blank=True,
         related_name="incidents_in",
-        help_text="Zawodnik wchodzący na boisko (dla zdarzenia typu zmiana).",
+        help_text="Zawodnik wchodzący (zmiana).",
     )
 
     player_out = models.ForeignKey(
@@ -951,13 +959,13 @@ class MatchIncident(models.Model):
         null=True,
         blank=True,
         related_name="incidents_out",
-        help_text="Zawodnik schodzący z boiska (dla zdarzenia typu zmiana).",
+        help_text="Zawodnik schodzący (zmiana).",
     )
 
     meta = models.JSONField(
         default=dict,
         blank=True,
-        help_text="Dodatkowe dane zależne od dyscypliny i typu zdarzenia (np. szczegóły kary, opis).",
+        help_text="Dodatkowe dane zależne od dyscypliny i typu zdarzenia.",
     )
 
     created_by = models.ForeignKey(
@@ -966,7 +974,6 @@ class MatchIncident(models.Model):
         null=True,
         blank=True,
         related_name="created_match_incidents",
-        help_text="Użytkownik rejestrujący zdarzenie w systemie.",
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -978,23 +985,16 @@ class MatchIncident(models.Model):
             models.Index(fields=["match", "team", "kind"], name="idx_incident_m_team_kind"),
         ]
         constraints = [
-            # UWAGA: w Meta nie odwołujemy się do Kind.SUBSTITUTION (NameError),
-            # używamy literalnej wartości pola.
             models.CheckConstraint(
-                check=(
-                    ~Q(kind="SUBSTITUTION")
-                    | (Q(player_in__isnull=False) & Q(player_out__isnull=False))
-                ),
+                check=(~Q(kind="SUBSTITUTION") | (Q(player_in__isnull=False) & Q(player_out__isnull=False))),
                 name="sub_req_players_in_out",
             ),
             models.CheckConstraint(
-                check=(
-                    Q(kind="SUBSTITUTION")
-                    | (Q(player_in__isnull=True) & Q(player_out__isnull=True))
-                ),
+                check=(Q(kind="SUBSTITUTION") | (Q(player_in__isnull=True) & Q(player_out__isnull=True))),
                 name="non_sub_no_players_in_out",
             ),
         ]
 
     def __str__(self) -> str:
         return f"{self.match_id}:{self.team_id} {self.kind} @{self.minute or '-'}"
+

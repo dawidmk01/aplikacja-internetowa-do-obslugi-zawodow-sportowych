@@ -57,6 +57,25 @@ from .standings import (
     TournamentStandingsView,
 )
 
+# =========================
+# NEW: incidents + match clock
+# =========================
+from .incidents import (
+    MatchIncidentListCreateView,
+    MatchIncidentDeleteView,
+    MatchIncidentRecomputeScoreView,
+)
+
+from .match_clock import (
+    MatchClockGetView,
+    MatchClockStartView,
+    MatchClockPauseView,
+    MatchClockResumeView,
+    MatchClockStopView,
+    MatchClockSetPeriodView,
+    MatchClockSetAddedSecondsView,
+)
+
 __all__ = [
     # tournaments
     "TournamentListView",
@@ -107,4 +126,18 @@ __all__ = [
 
     # standings
     "TournamentStandingsView",
+
+    # NEW: incidents
+    "MatchIncidentListCreateView",
+    "MatchIncidentDeleteView",
+    "MatchIncidentRecomputeScoreView",
+
+    # NEW: clock
+    "MatchClockGetView",
+    "MatchClockStartView",
+    "MatchClockPauseView",
+    "MatchClockResumeView",
+    "MatchClockStopView",
+    "MatchClockSetPeriodView",
+    "MatchClockSetAddedSecondsView",
 ]

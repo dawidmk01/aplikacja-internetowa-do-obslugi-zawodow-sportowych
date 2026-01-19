@@ -49,6 +49,21 @@ from .views import (
     TournamentRegistrationJoinView,
     TournamentRegistrationMeView,
     TournamentRegistrationMyMatchesView,
+
+    # =========================
+    # NEW: incidents + match clock
+    # =========================
+    MatchIncidentListCreateView,
+    MatchIncidentDeleteView,
+    MatchIncidentRecomputeScoreView,
+
+    MatchClockGetView,
+    MatchClockStartView,
+    MatchClockPauseView,
+    MatchClockResumeView,
+    MatchClockStopView,
+    MatchClockSetPeriodView,
+    MatchClockSetAddedSecondsView,
 )
 
 urlpatterns = [
@@ -117,4 +132,22 @@ urlpatterns = [
     path("tournaments/<int:pk>/registrations/join/", TournamentRegistrationJoinView.as_view()),
     path("tournaments/<int:pk>/registrations/me/", TournamentRegistrationMeView.as_view()),
     path("tournaments/<int:pk>/registrations/my/matches/", TournamentRegistrationMyMatchesView.as_view()),
+
+    # =========================================================
+    # NEW: INCYDENTY MECZOWE (timeline + live)
+    # =========================================================
+    path("matches/<int:match_id>/incidents/", MatchIncidentListCreateView.as_view()),
+    path("matches/<int:match_id>/incidents/recompute-score/", MatchIncidentRecomputeScoreView.as_view()),
+    path("incidents/<int:incident_id>/", MatchIncidentDeleteView.as_view()),
+
+    # =========================================================
+    # NEW: ZEGAR MECZU
+    # =========================================================
+    path("matches/<int:match_id>/clock/", MatchClockGetView.as_view()),
+    path("matches/<int:match_id>/clock/start/", MatchClockStartView.as_view()),
+    path("matches/<int:match_id>/clock/pause/", MatchClockPauseView.as_view()),
+    path("matches/<int:match_id>/clock/resume/", MatchClockResumeView.as_view()),
+    path("matches/<int:match_id>/clock/stop/", MatchClockStopView.as_view()),
+    path("matches/<int:match_id>/clock/period/", MatchClockSetPeriodView.as_view()),
+    path("matches/<int:match_id>/clock/added/", MatchClockSetAddedSecondsView.as_view()),
 ]

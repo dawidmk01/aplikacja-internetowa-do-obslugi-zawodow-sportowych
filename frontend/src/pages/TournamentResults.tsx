@@ -1,6 +1,9 @@
+// frontend/src/pages/TournamentResults.tsx
+
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { apiFetch } from "../api";
+import MatchLivePanel from "../components/MatchLivePanel";
 import {
   buildStagesForView,
   displayGroupName,
@@ -15,7 +18,7 @@ import {
    ============================================================ */
 
 export type MatchStageType = "LEAGUE" | "KNOCKOUT" | "GROUP" | "THIRD_PLACE";
-export type MatchStatus = "SCHEDULED" | "IN_PROGRESS" | "FINISHED";
+export type MatchStatus = "SCHEDULED" | "IN_PROGRESS" | "RUNNING" | "FINISHED";
 
 type HandballTableDrawMode = "ALLOW_DRAW" | "PENALTIES" | "OVERTIME_PENALTIES";
 type HandballKnockoutTiebreak = "OVERTIME_PENALTIES" | "PENALTIES";
@@ -57,8 +60,8 @@ export type MatchDTO = {
   home_team_id?: number;
   away_team_id?: number;
 
-  home_team_name: string;
-  away_team_name: string;
+  home_team_name: string | null;
+  away_team_name: string | null;
 
   // Dla tenisa: sety wygrane (liczone z tennis_sets)
   home_score: number | null;
@@ -114,6 +117,11 @@ export function inputValueToScore(v: string): number {
 
 function lower(s: string | null | undefined) {
   return (s ?? "").toLowerCase();
+}
+
+function teamLabel(s: string | null | undefined): string {
+  const v = (s ?? "").trim();
+  return v ? v : "—";
 }
 
 function isHandball(t: TournamentDTO | null): boolean {
@@ -235,7 +243,7 @@ function tennisSetWinner(set: TennisSetDTO): 1 | 2 | null {
   if (hg === 6 && ag <= 4) return 1;
   if (ag === 6 && hg <= 4) return 2;
 
-  // inne wyniki nie zamykają seta (np. 6:5, 5:6, 4:4 itd.)
+  // inne wyniki nie zamykają seta
   return null;
 }
 
@@ -277,9 +285,7 @@ function validateTennisSetsForMatch(args: {
     if (w == null) {
       return {
         ok: false,
-        message:
-          `Nieprawidłowy wynik w secie ${i + 1}. ` +
-          "Dozwolone: 6:0–6:4, 7:5, 7:6 (wymaga tie-breaka).",
+        message: `Nieprawidłowy wynik w secie ${i + 1}. Dozwolone: 6:0–6:4, 7:5, 7:6 (wymaga tie-breaka).`,
       };
     }
     if (w === 1) hs += 1;
@@ -336,12 +342,7 @@ function goalsForTeam(m: MatchDTO, teamId: number): number {
   return 0;
 }
 
-function aggregateForPair(pair: MatchDTO[]): {
-  ok: boolean;
-  tie: boolean;
-  secondLegId: number | null;
-  message?: string;
-} {
+function aggregateForPair(pair: MatchDTO[]): { ok: boolean; tie: boolean; secondLegId: number | null; message?: string } {
   if (pair.length !== 2) return { ok: false, tie: false, secondLegId: null };
   const [m1, m2] = pair;
   const second = m1.id > m2.id ? m1 : m2;
@@ -396,12 +397,7 @@ function canUsePenaltiesUI(t: TournamentDTO | null, m: MatchDTO): boolean {
   return false;
 }
 
-function normalizeMatchForConfig(
-  t: TournamentDTO | null,
-  m: MatchDTO,
-  cupMatches: 1 | 2,
-  allMatches: MatchDTO[]
-): MatchDTO {
+function normalizeMatchForConfig(t: TournamentDTO | null, m: MatchDTO, cupMatches: 1 | 2, allMatches: MatchDTO[]): MatchDTO {
   const hb = isHandball(t);
   const tn = isTennis(t);
 
@@ -516,24 +512,21 @@ function canFinishMatchUI(args: {
 
   // TENNIS: osobna logika finish
   if (tn) {
-    // blokada dwumeczu w KO
     if (knockoutLike && cupMatches === 2) {
       return { ok: false, message: "Tenis nie wspiera trybu dwumeczu (cup_matches=2)." };
     }
-
-    // brak ET/karnych
     if (match.went_to_extra_time || match.decided_by_penalties) {
       return { ok: false, message: "W tenisie nie obsługujemy dogrywki ani karnych." };
     }
-
     const v = validateTennisSetsForMatch({ tournament, sets: match.tennis_sets });
     if (!v.ok) return { ok: false, message: v.message ?? "Nieprawidłowy wynik tenisowy." };
-
     if (!v.finished) {
       const target = tennisTargetSets(tournament);
-      return { ok: false, message: `Aby zakończyć mecz, ktoś musi wygrać ${target} sety (best-of-${getTennisBestOf(tournament)}).` };
+      return {
+        ok: false,
+        message: `Aby zakończyć mecz, ktoś musi wygrać ${target} sety (best-of-${getTennisBestOf(tournament)}).`,
+      };
     }
-
     return { ok: true };
   }
 
@@ -566,7 +559,6 @@ function canFinishMatchUI(args: {
     const mode = getHandballTableDrawMode(tournament);
 
     if (!regularTie(match)) return { ok: true };
-
     if (mode === "ALLOW_DRAW") return { ok: true };
 
     if (mode === "PENALTIES") {
@@ -612,7 +604,10 @@ function canFinishMatchUI(args: {
 
       if (finalTie(match)) {
         if (!match.decided_by_penalties || !penaltiesValid(match)) {
-          return { ok: false, message: "Mecz pucharowy (1 mecz) nie może zakończyć się remisem – ustaw rozstrzygnięcie (karne)." };
+          return {
+            ok: false,
+            message: "Mecz pucharowy (1 mecz) nie może zakończyć się remisem – ustaw rozstrzygnięcie (karne).",
+          };
         }
       }
 
@@ -819,7 +814,7 @@ export default function TournamentResults() {
 
     const list: MatchDTO[] = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? raw.results : [];
 
-    const normalizedApi = list.map((m: any) => ({
+    const normalizedApi: MatchDTO[] = list.map((m: any) => ({
       ...m,
       tennis_sets: m.tennis_sets ?? null,
 
@@ -831,6 +826,9 @@ export default function TournamentResults() {
       away_penalty_score: m.away_penalty_score ?? null,
       home_score: m.home_score ?? 0,
       away_score: m.away_score ?? 0,
+
+      home_team_name: m.home_team_name ?? null,
+      away_team_name: m.away_team_name ?? null,
     }));
 
     const effectiveTournament = tOverride ?? tournament;
@@ -838,6 +836,18 @@ export default function TournamentResults() {
 
     setMatches(final);
     return final;
+  };
+
+  // Wywoływane przez panel LIVE (incydenty), gdy backend automatycznie zmienia wynik.
+  // Ważne: nie robimy full-refresh strony – tylko pobieramy aktualne mecze i nakładamy drafty.
+  const refreshAfterLiveChange = async (matchId: number) => {
+    setEdited((prev) => {
+      const n = new Set(prev);
+      n.add(matchId);
+      return n;
+    });
+
+    await loadMatches(tournament).catch(() => null);
   };
 
   const updateMatchScore = async (match: MatchDTO) => {
@@ -973,7 +983,7 @@ export default function TournamentResults() {
 
   function uiStatus(m: MatchDTO) {
     if (m.status === "FINISHED") return "ZAKONCZONY";
-    if (m.status === "IN_PROGRESS") return "W_TRAKCIE";
+    if (m.status === "IN_PROGRESS" || m.status === "RUNNING") return "W_TRAKCIE";
     return "ZAPLANOWANY";
   }
 
@@ -1121,8 +1131,16 @@ export default function TournamentResults() {
       while (list.length <= idx) {
         list.push({ home_games: 0, away_games: 0, home_tiebreak: null, away_tiebreak: null });
       }
+
       const current = normalizeTennisSet(list[idx]);
-      const nextSet = normalizeTennisSet({ ...current, ...patch });
+      let nextSet = normalizeTennisSet({ ...current, ...patch });
+
+      // AUTO-CLEAR TB gdy nie jest potrzebny
+      const needsTB = (nextSet.home_games === 7 && nextSet.away_games === 6) || (nextSet.home_games === 6 && nextSet.away_games === 7);
+      if (!needsTB) {
+        nextSet = { ...nextSet, home_tiebreak: null, away_tiebreak: null };
+      }
+
       list[idx] = nextSet;
       return { ...m, tennis_sets: list };
     });
@@ -1232,6 +1250,14 @@ export default function TournamentResults() {
 
     const tennisValidation = tn ? validateTennisSetsForMatch({ tournament, sets: match.tennis_sets }) : { ok: true as const };
 
+    // Bezpieczne renderowanie (null-safe)
+    const homeName = teamLabel(match.home_team_name);
+    const awayName = teamLabel(match.away_team_name);
+
+    // Jeśli nie znasz dokładnego kontraktu propsów MatchLivePanel, a TS robi problemy,
+    // to tym rzutowaniem wyciszamy typy w tym miejscu (nie wpływa na runtime).
+    const MatchLivePanelAny = MatchLivePanel as any;
+
     return (
       <div
         key={match.id}
@@ -1254,9 +1280,9 @@ export default function TournamentResults() {
           }}
         >
           <div style={{ display: "flex", gap: "1rem", alignItems: "center", minWidth: "250px" }}>
-            <strong style={{ textAlign: "right", flex: 1 }}>{match.home_team_name}</strong>
+            <strong style={{ textAlign: "right", flex: 1 }}>{homeName}</strong>
             <span style={{ opacity: 0.6 }}>vs</span>
-            <strong style={{ textAlign: "left", flex: 1 }}>{match.away_team_name ?? "—"}</strong>
+            <strong style={{ textAlign: "left", flex: 1 }}>{awayName}</strong>
           </div>
 
           <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
@@ -1359,7 +1385,7 @@ export default function TournamentResults() {
                         gemy
                         {setWinner ? (
                           <span style={{ marginLeft: "0.5rem", opacity: 0.85 }}>
-                            (wygrywa: {setWinner === 1 ? match.home_team_name : match.away_team_name})
+                            (wygrywa: {setWinner === 1 ? homeName : awayName})
                           </span>
                         ) : (
                           <span style={{ marginLeft: "0.5rem", color: "#e67e22" }}>(niepoprawny / niedokończony set)</span>
@@ -1372,22 +1398,24 @@ export default function TournamentResults() {
                           <input
                             type="number"
                             min={0}
-                            value={scoreToInputValue(ns.home_tiebreak ?? 0)}
+                            value={ns.home_tiebreak == null ? "" : String(ns.home_tiebreak)}
                             disabled={lockRegularInputs || !needsTB}
-                            onChange={(e) =>
-                              updateTennisSet(match.id, idx, { home_tiebreak: needsTB ? inputValueToScore(e.target.value) : null })
-                            }
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              updateTennisSet(match.id, idx, { home_tiebreak: raw === "" ? null : inputValueToScore(raw) });
+                            }}
                             style={{ width: 60, textAlign: "center", padding: "0.3rem" }}
                           />
                           <span style={{ fontWeight: "bold", opacity: 0.7 }}>:</span>
                           <input
                             type="number"
                             min={0}
-                            value={scoreToInputValue(ns.away_tiebreak ?? 0)}
+                            value={ns.away_tiebreak == null ? "" : String(ns.away_tiebreak)}
                             disabled={lockRegularInputs || !needsTB}
-                            onChange={(e) =>
-                              updateTennisSet(match.id, idx, { away_tiebreak: needsTB ? inputValueToScore(e.target.value) : null })
-                            }
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              updateTennisSet(match.id, idx, { away_tiebreak: raw === "" ? null : inputValueToScore(raw) });
+                            }}
                             style={{ width: 60, textAlign: "center", padding: "0.3rem" }}
                           />
                         </label>
@@ -1656,9 +1684,25 @@ export default function TournamentResults() {
           </div>
         )}
 
-        {showFinishWarning && (
-          <div style={{ marginTop: "0.6rem", fontSize: "0.85em", color: "#e74c3c" }}>{finishVerdict.message}</div>
-        )}
+        {showFinishWarning && <div style={{ marginTop: "0.6rem", fontSize: "0.85em", color: "#e74c3c" }}>{finishVerdict.message}</div>}
+
+        {/* ============================================================
+           MATCH LIVE / INCYDENTY (panel)
+           ============================================================ */}
+        <div style={{ marginTop: "0.85rem" }}>
+          <MatchLivePanelAny
+            tournamentId={String(tournament?.id ?? "")}
+            discipline={tournament?.discipline ?? ""}
+            matchId={match.id}
+            matchStatus={match.status}
+            homeTeamId={match.home_team_id}
+            awayTeamId={match.away_team_id}
+            homeTeamName={homeName}
+            awayTeamName={awayName}
+            canEdit={!lockByFinish || inEditFinished}
+            onAfterRecompute={() => refreshAfterLiveChange(match.id)}
+          />
+        </div>
       </div>
     );
   };
