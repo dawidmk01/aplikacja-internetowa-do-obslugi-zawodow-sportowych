@@ -1,5 +1,4 @@
 # backend/tournaments/views/incidents.py
-
 from __future__ import annotations
 
 from django.db import transaction
@@ -184,14 +183,60 @@ def _set_team_score_value(match: Match, team_id: int, value: int) -> None:
         match.away_score = v
 
 
+# =========================
+# Scoping: REGULAR / EXTRA_TIME
+# =========================
+
+SCORE_SCOPE_REGULAR = "REGULAR"
+SCORE_SCOPE_EXTRA_TIME = "EXTRA_TIME"
+
+
+def _norm_score_scope(scope: str | None) -> str:
+    s = (scope or SCORE_SCOPE_REGULAR).strip().upper()
+    return SCORE_SCOPE_EXTRA_TIME if s == SCORE_SCOPE_EXTRA_TIME else SCORE_SCOPE_REGULAR
+
+
+def _team_score_value_scoped(match: Match, team_id: int, scope: str) -> int:
+    scope = _norm_score_scope(scope)
+    if scope == SCORE_SCOPE_EXTRA_TIME:
+        if team_id == match.home_team_id:
+            return int(getattr(match, "home_extra_time_score", 0) or 0)
+        if team_id == match.away_team_id:
+            return int(getattr(match, "away_extra_time_score", 0) or 0)
+        return 0
+    # REGULAR
+    return _team_score_value(match, team_id)
+
+
+def _set_team_score_value_scoped(match: Match, team_id: int, scope: str, value: int) -> None:
+    scope = _norm_score_scope(scope)
+    v = max(0, int(value))
+    if scope == SCORE_SCOPE_EXTRA_TIME:
+        if team_id == match.home_team_id:
+            setattr(match, "home_extra_time_score", v)
+        elif team_id == match.away_team_id:
+            setattr(match, "away_extra_time_score", v)
+        return
+    # REGULAR
+    _set_team_score_value(match, team_id, v)
+
+
+def _incident_scope(incident_meta: dict) -> str:
+    try:
+        return _norm_score_scope(incident_meta.get("scope"))
+    except Exception:
+        return SCORE_SCOPE_REGULAR
+
+
 def _goal_points_for_discipline(discipline: str, meta: dict) -> int:
     """
     Punktacja GOAL:
     - football/handball: 1
     - basketball: meta.points = 1/2/3 (domyślnie 1)
+      (tolerujemy też meta._points jako legacy)
     """
     if discipline == Tournament.Discipline.BASKETBALL:
-        raw = meta.get("points", 1)
+        raw = meta.get("points", meta.get("_points", 1))
         try:
             pts = int(raw or 1)
         except (TypeError, ValueError):
@@ -202,24 +247,67 @@ def _goal_points_for_discipline(discipline: str, meta: dict) -> int:
     return 1
 
 
-def _sum_goal_points_for_team(match_id: int, team_id: int, discipline: str, exclude_incident_id: int | None = None) -> int:
-    qs = MatchIncident.objects.filter(match_id=match_id, kind="GOAL").only("team_id", "meta")
-    if exclude_incident_id:
-        qs = qs.exclude(id=exclude_incident_id)
-
+def _sum_goal_points_for_team_scoped(match_id: int, team_id: int, discipline: str, scope: str) -> int:
+    scope = _norm_score_scope(scope)
+    qs = MatchIncident.objects.filter(match_id=match_id, kind="GOAL", team_id=team_id).only("meta")
     total = 0
-    for i in qs:
-        if i.team_id != team_id:
+    for inc in qs:
+        meta = inc.meta if isinstance(inc.meta, dict) else {}
+        if _incident_scope(meta) != scope:
             continue
-        meta = i.meta if isinstance(i.meta, dict) else {}
         try:
-            pts = _goal_points_for_discipline(discipline, meta)
+            total += _goal_points_for_discipline(discipline, meta)
         except ValueError:
-            # jeśli ktoś kiedyś wrzucił zły meta.points, traktujemy jako 1,
-            # żeby nie blokować działania systemu (twarda walidacja jest na create)
-            pts = 1
-        total += pts
+            total += 1
     return int(total)
+
+
+def _recompute_match_score_from_goal_incidents(match: Match) -> None:
+    """
+    GOAL-based sports: wynik jest liczony wyłącznie z incydentów GOAL.
+
+    Ustawiamy dokładnie:
+      - home_score / away_score = suma GOAL(scope=REGULAR)
+      - home_extra_time_score / away_extra_time_score = suma GOAL(scope=EXTRA_TIME)
+
+    Nie próbujemy „doganiać” ani utrzymywać rozjazdów. To eliminuje problemy synchronizacji.
+    """
+    d = match.tournament.discipline
+    if d == Tournament.Discipline.TENNIS:
+        return
+
+    home_id = match.home_team_id
+    away_id = match.away_team_id
+
+    home_reg = _sum_goal_points_for_team_scoped(match.id, home_id, d, SCORE_SCOPE_REGULAR) if home_id else 0
+    away_reg = _sum_goal_points_for_team_scoped(match.id, away_id, d, SCORE_SCOPE_REGULAR) if away_id else 0
+    home_et = _sum_goal_points_for_team_scoped(match.id, home_id, d, SCORE_SCOPE_EXTRA_TIME) if home_id else 0
+    away_et = _sum_goal_points_for_team_scoped(match.id, away_id, d, SCORE_SCOPE_EXTRA_TIME) if away_id else 0
+
+    update_fields: list[str] = []
+
+    if int(match.home_score or 0) != int(home_reg):
+        match.home_score = int(home_reg)
+        update_fields.append("home_score")
+    if int(match.away_score or 0) != int(away_reg):
+        match.away_score = int(away_reg)
+        update_fields.append("away_score")
+
+    # extra time fields may not exist in old schema; be defensive
+    if hasattr(match, "home_extra_time_score") and int(getattr(match, "home_extra_time_score", 0) or 0) != int(home_et):
+        setattr(match, "home_extra_time_score", int(home_et))
+        update_fields.append("home_extra_time_score")
+    if hasattr(match, "away_extra_time_score") and int(getattr(match, "away_extra_time_score", 0) or 0) != int(away_et):
+        setattr(match, "away_extra_time_score", int(away_et))
+        update_fields.append("away_extra_time_score")
+
+    # if any ET goals were recorded, ensure the flag is set; do not auto-unset
+    if (home_et + away_et) > 0 and hasattr(match, "went_to_extra_time") and not getattr(match, "went_to_extra_time", False):
+        match.went_to_extra_time = True
+        update_fields.append("went_to_extra_time")
+
+    if update_fields:
+        match.save(update_fields=update_fields)
 
 
 class MatchIncidentListCreateView(APIView):
@@ -241,8 +329,7 @@ class MatchIncidentListCreateView(APIView):
         return Response([_serialize_incident(x) for x in qs])
 
     def post(self, request, match_id: int):
-        # UWAGA: tu robimy atomic + select_for_update, bo wprowadzamy logikę,
-        # która zależy od aktualnego wyniku meczu i sumy incydentów GOAL.
+        # atomic + select_for_update: incydent + recompute wyniku musi być spójne
         with transaction.atomic():
             match = get_object_or_404(
                 Match.objects.select_related("tournament").select_for_update(),
@@ -280,9 +367,8 @@ class MatchIncidentListCreateView(APIView):
                 minute = _parse_int(data.get("minute"), "minute", allow_none=True)
                 minute_raw = (data.get("minute_raw") or "").strip() or None
 
-                # jeśli CLOCK i brak minuty -> policz z zegara
+                # CLOCK + brak minuty => policz z zegara
                 if time_source == MatchIncident.TimeSource.CLOCK and minute is None:
-                    # jeżeli zegar nie ruszył i nie ma elapsed -> brak możliwości wyliczenia
                     if match.clock_state == Match.ClockState.NOT_STARTED and int(match.clock_elapsed_seconds or 0) == 0:
                         raise ValueError("Zegar meczu nie jest uruchomiony – podaj minute ręcznie albo uruchom zegar.")
                     minute = match.clock_minute_total(now=timezone.now())
@@ -327,47 +413,12 @@ class MatchIncidentListCreateView(APIView):
                         meta = dict(meta)
                         meta["points"] = int(pts)
 
-                # Jeśli GOAL: dopnij logikę auto-synchronizacji wyniku z incydentami
-                score_update_fields: list[str] = []
+                # GOAL: waliduj punkty + ujednolić scope (REGULAR/EXTRA_TIME)
                 if kind == "GOAL" and discipline != Tournament.Discipline.TENNIS:
-                    # walidacja + punkty
                     meta = dict(meta)
-                    pts = _goal_points_for_discipline(discipline, meta)
-
-                    # suma punktów z dotychczasowych GOAL incydentów tej drużyny
-                    existing_points = _sum_goal_points_for_team(match.id, team_id, discipline)
-
-                    current_score = _team_score_value(match, team_id)
-
-                    # napraw invariant jeśli ktoś "ręcznie" zbił wynik poniżej incydentów
-                    base_score = max(current_score, existing_points)
-
-                    # ile punktów brakuje w incydentach do już wpisanego wyniku
-                    gap = max(0, base_score - existing_points)
-
-                    # delta = o ile ten incydent faktycznie podniesie wynik
-                    # (w koszu potrafi być częściowe: np. gap=1, pts=2 => delta=1)
-                    delta = max(0, pts - gap)
-
-                    meta["_points"] = pts
-                    meta["_score_delta"] = int(delta)
-
-                    if base_score != current_score:
-                        _set_team_score_value(match, team_id, base_score)
-                        if team_id == match.home_team_id:
-                            score_update_fields.append("home_score")
-                        elif team_id == match.away_team_id:
-                            score_update_fields.append("away_score")
-
-                    if delta > 0:
-                        _set_team_score_value(match, team_id, base_score + delta)
-                        if team_id == match.home_team_id and "home_score" not in score_update_fields:
-                            score_update_fields.append("home_score")
-                        if team_id == match.away_team_id and "away_score" not in score_update_fields:
-                            score_update_fields.append("away_score")
-
-                    if score_update_fields:
-                        match.save(update_fields=score_update_fields)
+                    meta["scope"] = _norm_score_scope(meta.get("scope"))
+                    # walidacja punktacji (kosz)
+                    _goal_points_for_discipline(discipline, meta)
 
             except (ValueError, AssertionError) as e:
                 return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -390,6 +441,10 @@ class MatchIncidentListCreateView(APIView):
             # AUTO-PAUSE zegara po TIMEOUT w sportach stop-clock (handball/basketball)
             if kind == _TIMEOUT_KIND and _should_timeout_pause_clock(discipline):
                 _pause_clock_if_running(match, now=timezone.now())
+
+            # GOAL-based: po dodaniu bramki/punktów zawsze recompute wyniku z incydentów
+            if kind == "GOAL" and discipline != Tournament.Discipline.TENNIS:
+                _recompute_match_score_from_goal_incidents(match)
 
             incident = (
                 MatchIncident.objects
@@ -518,7 +573,7 @@ class MatchIncidentDeleteView(APIView):
                 pk=incident_id
             )
 
-            # zablokuj również Match, bo będziemy zmieniać wynik
+            # zablokuj również Match, bo będziemy przeliczać wynik
             match = Match.objects.select_related("tournament").select_for_update().get(pk=incident.match_id)
 
             try:
@@ -527,46 +582,14 @@ class MatchIncidentDeleteView(APIView):
                 return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
 
             discipline = match.tournament.discipline
-
-            # jeśli usuwamy GOAL (poza tenisem) -> cofnij wpływ na wynik,
-            # ale nigdy nie zejdź poniżej sumy pozostałych incydentów GOAL.
-            if incident.kind == "GOAL" and discipline != Tournament.Discipline.TENNIS:
-                meta = incident.meta if isinstance(incident.meta, dict) else {}
-
-                try:
-                    pts = _goal_points_for_discipline(discipline, meta)
-                except ValueError:
-                    pts = 1
-
-                                # W nowym modelu (szybki wynik jako prawda) GOAL zawsze wpływa na wynik.
-                # Nie opieramy się na _score_delta (historyczny mechanizm „doganiania”).
-                delta = pts
-
-                team_id = incident.team_id
-                current_score = _team_score_value(match, team_id)
-
-                remaining_points = _sum_goal_points_for_team(
-                    match.id,
-                    team_id,
-                    discipline,
-                    exclude_incident_id=incident.id,
-                )
-
-                new_score = max(0, int(current_score) - int(delta))
-                # wynik nie może spaść poniżej sumy pozostałych incydentów
-                new_score = max(new_score, int(remaining_points))
-
-                update_fields: list[str] = []
-                if new_score != current_score:
-                    _set_team_score_value(match, team_id, new_score)
-                    if team_id == match.home_team_id:
-                        update_fields.append("home_score")
-                    elif team_id == match.away_team_id:
-                        update_fields.append("away_score")
-                    if update_fields:
-                        match.save(update_fields=update_fields)
+            was_goal = incident.kind == "GOAL" and discipline != Tournament.Discipline.TENNIS
 
             incident.delete()
+
+            # GOAL-based: po usunięciu bramki/punktów zawsze recompute wyniku z incydentów
+            if was_goal:
+                _recompute_match_score_from_goal_incidents(match)
+
             return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -584,8 +607,6 @@ class MatchIncidentRecomputeScoreView(APIView):
 
             d = match.tournament.discipline
 
-            # tenis: na tym etapie nie przeliczamy home_score/away_score z punktów (bo to sety/gemy),
-            # punkty trzymamy jako timeline; scoring tennis dopniemy osobno.
             if d == Tournament.Discipline.TENNIS:
                 return Response(
                     {
@@ -594,36 +615,25 @@ class MatchIncidentRecomputeScoreView(APIView):
                     status=status.HTTP_200_OK,
                 )
 
-            # Suma punktów z incydentów GOAL (w koszu uwzględnia meta.points)
-            home_points = _sum_goal_points_for_team(match.id, match.home_team_id, d) if match.home_team_id else 0
-            away_points = _sum_goal_points_for_team(match.id, match.away_team_id, d) if match.away_team_id else 0
+            _recompute_match_score_from_goal_incidents(match)
 
-            # Nowa semantyka: recompute NIE obniża wyniku.
-            # Podnosi wynik tylko do minimum wymaganego przez incydenty (naprawa spójności).
-            current_home = int(match.home_score or 0)
-            current_away = int(match.away_score or 0)
-
-            new_home = max(current_home, int(home_points))
-            new_away = max(current_away, int(away_points))
-
-            update_fields: list[str] = []
-            if new_home != current_home:
-                match.home_score = new_home
-                update_fields.append("home_score")
-            if new_away != current_away:
-                match.away_score = new_away
-                update_fields.append("away_score")
-
-            if update_fields:
-                match.save(update_fields=update_fields)
+            # raport
+            home_reg = _sum_goal_points_for_team_scoped(match.id, match.home_team_id, d, SCORE_SCOPE_REGULAR) if match.home_team_id else 0
+            away_reg = _sum_goal_points_for_team_scoped(match.id, match.away_team_id, d, SCORE_SCOPE_REGULAR) if match.away_team_id else 0
+            home_et = _sum_goal_points_for_team_scoped(match.id, match.home_team_id, d, SCORE_SCOPE_EXTRA_TIME) if match.home_team_id else 0
+            away_et = _sum_goal_points_for_team_scoped(match.id, match.away_team_id, d, SCORE_SCOPE_EXTRA_TIME) if match.away_team_id else 0
 
             return Response(
                 {
                     "match_id": match.id,
                     "home_score": int(match.home_score or 0),
                     "away_score": int(match.away_score or 0),
-                    "incidents_min_home": int(home_points),
-                    "incidents_min_away": int(away_points),
+                    "home_extra_time_score": int(getattr(match, "home_extra_time_score", 0) or 0),
+                    "away_extra_time_score": int(getattr(match, "away_extra_time_score", 0) or 0),
+                    "incidents_regular_home": int(home_reg),
+                    "incidents_regular_away": int(away_reg),
+                    "incidents_extra_time_home": int(home_et),
+                    "incidents_extra_time_away": int(away_et),
                 },
                 status=status.HTTP_200_OK,
             )

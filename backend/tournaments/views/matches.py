@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from typing import Optional, List, Tuple, Dict, Any
 
 from django.db import transaction
@@ -466,6 +468,303 @@ def _sync_score_to_goal_incidents_or_409(
 
 
 
+
+MANUAL_SCORE_CODE_WOULD_DELETE_REAL = "MANUAL_SCORE_WOULD_DELETE_REAL_GOALS"
+
+
+def _incident_scope(match: Match, i: MatchIncident) -> str:
+    """
+    Określa bucket wyniku, do którego liczy się dany GOAL:
+    - preferujemy meta.scope ("EXTRA_TIME")
+    - fallback na period ET/ET1/ET2
+    """
+    m = i.meta if isinstance(getattr(i, "meta", None), dict) else {}
+    s = str(m.get("scope") or "").strip().upper()
+    if s == "EXTRA_TIME":
+        return "EXTRA_TIME"
+
+    p = str(getattr(i, "period", None) or "").strip().upper()
+    if p in {"ET", "ET1", "ET2"}:
+        return "EXTRA_TIME"
+
+    return "REGULAR"
+
+
+def _goal_incident_is_synthetic(i: MatchIncident) -> bool:
+    """
+    Syntetyczne = wygenerowane przez szybki/ręczny wynik (a nie realne zdarzenie live).
+    """
+    m = i.meta if isinstance(getattr(i, "meta", None), dict) else {}
+    if m.get("synthetic") is True:
+        return True
+    src = str(m.get("source") or m.get("origin") or "").strip().upper()
+    return src in {"FAST_SCORE", "MANUAL_SCORE"}
+
+
+def _sum_goal_points_for_team_scoped(match: Match, *, team_id: int, scope: str) -> int:
+    d = match.tournament.discipline
+    if not team_id:
+        return 0
+    qs = (
+        MatchIncident.objects
+        .filter(match_id=match.id, kind="GOAL", team_id=team_id)
+        .only("id", "team_id", "meta", "period")
+    )
+    total = 0
+    want = str(scope or "REGULAR").upper()
+    for i in qs:
+        if _incident_scope(match, i) != want:
+            continue
+        total += _incident_goal_points(d, i.meta)
+    return int(total)
+
+
+def _clock_minute_payload(match: Match) -> Tuple[str, Optional[int], Optional[str]]:
+    """
+    Jeśli zegar działa (RUNNING), to syntetyczne incydenty dostają minutę z zegara.
+    Zwraca: (time_source, minute, minute_raw)
+    """
+    state = str(getattr(match, "clock_state", "") or "")
+    is_running = state == str(getattr(Match.ClockState, "RUNNING", "RUNNING"))
+    if not is_running:
+        return ("MANUAL", None, None)
+
+    now = timezone.now()
+    elapsed = int(getattr(match, "clock_elapsed_seconds", 0) or 0)
+    started_at = getattr(match, "clock_started_at", None)
+    if started_at:
+        try:
+            delta = int((now - started_at).total_seconds())
+        except Exception:
+            delta = 0
+        if delta < 0:
+            delta = 0
+        elapsed += delta
+
+    # cap (UI safety)
+    if elapsed > _MAX_MATCH_SECONDS:
+        elapsed = _MAX_MATCH_SECONDS
+    if elapsed < 0:
+        elapsed = 0
+
+    minute = int(math.ceil(elapsed / 60.0)) if elapsed > 0 else 0
+    return ("CLOCK", minute, str(minute))
+
+
+def _default_period_for_scope(discipline: str, scope: str) -> str:
+    if str(scope).upper() == "EXTRA_TIME":
+        # dla czytelności w UI
+        if discipline in (Tournament.Discipline.FOOTBALL, Tournament.Discipline.HANDBALL):
+            return "ET1"
+        return "ET"
+    return "NONE"
+
+
+def _apply_manual_result_via_goal_incidents_or_409(
+    match: Match,
+    *,
+    force: bool,
+    created_by_id: Optional[int] = None,
+) -> Optional[Response]:
+    """
+    Ręczny "sztywny" wynik działa przez incydenty GOAL:
+    - dodajemy brakujące GOAL jako syntetyczne (meta.synthetic/source=MANUAL_SCORE)
+    - odejmujemy tylko syntetyczne (chyba że force==True)
+    - jeżeli zegar RUNNING, syntetyczne dostają minute z zegara
+
+    Obsługujemy dwa scope'y:
+    - REGULAR => home_score/away_score
+    - EXTRA_TIME => home_extra_time_score/away_extra_time_score (gdy went_to_extra_time)
+    """
+    t = match.tournament
+    d = t.discipline
+
+    if _is_tennis(t):
+        return None
+    if not _is_goal_based_or_basketball(d):
+        return None
+    if not match.home_team_id or not match.away_team_id:
+        return None
+
+    desired_regular_home = int(match.home_score or 0)
+    desired_regular_away = int(match.away_score or 0)
+
+    et_enabled = bool(getattr(match, "went_to_extra_time", False))
+    desired_et_home = int(match.home_extra_time_score or 0) if et_enabled else 0
+    desired_et_away = int(match.away_extra_time_score or 0) if et_enabled else 0
+
+    # jeśli ktoś wpisał ET>0, dopnij toggle
+    if (desired_et_home > 0 or desired_et_away > 0) and not et_enabled:
+        match.went_to_extra_time = True
+        et_enabled = True
+
+    desired_map: Dict[Tuple[int, str], int] = {
+        (match.home_team_id, "REGULAR"): desired_regular_home,
+        (match.away_team_id, "REGULAR"): desired_regular_away,
+        (match.home_team_id, "EXTRA_TIME"): desired_et_home if et_enabled else 0,
+        (match.away_team_id, "EXTRA_TIME"): desired_et_away if et_enabled else 0,
+    }
+
+    qs = (
+        MatchIncident.objects
+        .filter(match_id=match.id, kind="GOAL")
+        .only("id", "team_id", "meta", "period", "player_id", "minute", "minute_raw")
+        .order_by("-id")
+    )
+
+    by_key: Dict[Tuple[int, str], List[MatchIncident]] = {
+        (match.home_team_id, "REGULAR"): [],
+        (match.away_team_id, "REGULAR"): [],
+        (match.home_team_id, "EXTRA_TIME"): [],
+        (match.away_team_id, "EXTRA_TIME"): [],
+    }
+
+    for i in qs:
+        if i.team_id not in (match.home_team_id, match.away_team_id):
+            continue
+        scope = _incident_scope(match, i)
+        key = (i.team_id, scope)
+        if key in by_key:
+            by_key[key].append(i)
+
+    def current_points(key: Tuple[int, str]) -> int:
+        total = 0
+        for i in by_key.get(key, []):
+            total += _incident_goal_points(d, i.meta)
+        return int(total)
+
+    to_delete: List[MatchIncident] = []
+    would_delete_real: List[MatchIncident] = []
+
+    def plan_deletions(key: Tuple[int, str], cur: int, desired: int) -> int:
+        if cur <= desired:
+            return cur
+
+        candidates = by_key.get(key, [])
+        # preferuj syntetyczne, potem "puste", potem najnowsze
+        def _sort_k(inc: MatchIncident):
+            synthetic = _goal_incident_is_synthetic(inc)
+            filled = _goal_incident_is_filled(inc)
+            return (0 if synthetic else 1, 0 if not filled else 1, -int(inc.id))
+
+        candidates_sorted = sorted(candidates, key=_sort_k)
+
+        new_cur = cur
+        for inc in candidates_sorted:
+            if new_cur <= desired:
+                break
+            pts = _incident_goal_points(d, inc.meta)
+            new_cur -= pts
+            to_delete.append(inc)
+            if not _goal_incident_is_synthetic(inc):
+                would_delete_real.append(inc)
+        return int(new_cur)
+
+    for key, desired in desired_map.items():
+        cur = current_points(key)
+        plan_deletions(key, cur, desired)
+
+    if would_delete_real and not force:
+        return Response(
+            {
+                "detail": (
+                    "Konflikt: obniżenie wyniku wymaga usunięcia REALNYCH bramek/punktów (incydenty live). "
+                    "Usuń je ręcznie z listy incydentów lub użyj opcji \"Wymuś\"."
+                ),
+                "code": MANUAL_SCORE_CODE_WOULD_DELETE_REAL,
+                "would_delete": [i.id for i in would_delete_real],
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+
+    if to_delete:
+        MatchIncident.objects.filter(id__in=[i.id for i in to_delete]).delete()
+
+    # Po usunięciach policz ponownie i dodaj brakujące
+    time_source, minute, minute_raw = _clock_minute_payload(match)
+
+    def create_synthetic(team_id: int, scope: str, need_points: int) -> None:
+        if need_points <= 0:
+            return
+        meta_base: Dict[str, Any] = {"synthetic": True, "source": "MANUAL_SCORE"}
+        if str(scope).upper() == "EXTRA_TIME":
+            meta_base["scope"] = "EXTRA_TIME"
+
+        period = _default_period_for_scope(d, scope)
+
+        if d == Tournament.Discipline.BASKETBALL:
+            chunks = _points_to_basketball_chunks(need_points)
+            for pts in chunks:
+                meta = dict(meta_base)
+                meta["points"] = pts
+                MatchIncident.objects.create(
+                    match_id=match.id,
+                    team_id=team_id,
+                    kind="GOAL",
+                    period=period,
+                    time_source=time_source,
+                    minute=minute,
+                    minute_raw=minute_raw,
+                    player_id=None,
+                    meta=meta,
+                    created_by_id=created_by_id,
+                )
+        else:
+            for _ in range(int(need_points)):
+                MatchIncident.objects.create(
+                    match_id=match.id,
+                    team_id=team_id,
+                    kind="GOAL",
+                    period=period,
+                    time_source=time_source,
+                    minute=minute,
+                    minute_raw=minute_raw,
+                    player_id=None,
+                    meta=dict(meta_base),
+                    created_by_id=created_by_id,
+                )
+
+    # aktualne po delete
+    cur_reg_home = _sum_goal_points_for_team_scoped(match, team_id=match.home_team_id, scope="REGULAR")
+    cur_reg_away = _sum_goal_points_for_team_scoped(match, team_id=match.away_team_id, scope="REGULAR")
+    cur_et_home = _sum_goal_points_for_team_scoped(match, team_id=match.home_team_id, scope="EXTRA_TIME")
+    cur_et_away = _sum_goal_points_for_team_scoped(match, team_id=match.away_team_id, scope="EXTRA_TIME")
+
+    create_synthetic(match.home_team_id, "REGULAR", desired_regular_home - cur_reg_home)
+    create_synthetic(match.away_team_id, "REGULAR", desired_regular_away - cur_reg_away)
+
+    if et_enabled:
+        create_synthetic(match.home_team_id, "EXTRA_TIME", desired_et_home - cur_et_home)
+        create_synthetic(match.away_team_id, "EXTRA_TIME", desired_et_away - cur_et_away)
+
+    # Zapisz pola wynikowe jako cache z incydentów (spójność na przyszłość)
+    # (po create musimy policzyć jeszcze raz)
+    reg_home = _sum_goal_points_for_team_scoped(match, team_id=match.home_team_id, scope="REGULAR")
+    reg_away = _sum_goal_points_for_team_scoped(match, team_id=match.away_team_id, scope="REGULAR")
+    et_home = _sum_goal_points_for_team_scoped(match, team_id=match.home_team_id, scope="EXTRA_TIME")
+    et_away = _sum_goal_points_for_team_scoped(match, team_id=match.away_team_id, scope="EXTRA_TIME")
+
+    match.home_score = reg_home
+    match.away_score = reg_away
+
+    update_fields = ["home_score", "away_score", "went_to_extra_time"]
+
+    if et_enabled:
+        match.went_to_extra_time = True
+        match.home_extra_time_score = et_home
+        match.away_extra_time_score = et_away
+        update_fields += ["home_extra_time_score", "away_extra_time_score"]
+    else:
+        # gdy ET wyłączone, czyścimy cache ET
+        match.home_extra_time_score = None
+        match.away_extra_time_score = None
+        update_fields += ["home_extra_time_score", "away_extra_time_score"]
+
+    match.save(update_fields=update_fields)
+
+    return None
+
+
 # =========================
 # Match clock helpers
 # =========================
@@ -658,7 +957,7 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
         match = serializer.save()
 
         # Szybki wynik jest źródłem prawdy: dopasuj incydenty GOAL do wyniku.
-        resp = _sync_score_to_goal_incidents_or_409(match, force=force, created_by_id=request.user.id)
+        resp = _apply_manual_result_via_goal_incidents_or_409(match, force=force, created_by_id=request.user.id)
         if resp is not None:
             return resp
 
@@ -724,7 +1023,7 @@ class FinishMatchView(APIView):
 
         # Szybki wynik jest źródłem prawdy: przy zakończeniu też domykamy sync do incydentów.
         force = str(request.query_params.get("force") or "").strip().lower() in {"1", "true", "yes"}
-        resp = _sync_score_to_goal_incidents_or_409(match, force=force, created_by_id=request.user.id)
+        resp = _apply_manual_result_via_goal_incidents_or_409(match, force=force, created_by_id=request.user.id)
         if resp is not None:
             return resp
 

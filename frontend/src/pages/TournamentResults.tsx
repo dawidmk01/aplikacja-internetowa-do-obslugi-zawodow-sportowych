@@ -783,6 +783,39 @@ useEffect(() => {
   }
 }, [liveStorageKey, openLive]);
 
+
+// ===== UI toggle persistence (per mecz) =====
+type MatchUiPrefs = { extraTime?: boolean; penalties?: boolean };
+
+const matchUiStorageKey = (tournamentId: string | undefined, matchId: number) =>
+  tournamentId ? `tournament:${tournamentId}:results:matchUi:${matchId}` : null;
+
+const readMatchUi = (tournamentId: string | undefined, matchId: number): MatchUiPrefs => {
+  const key = matchUiStorageKey(tournamentId, matchId);
+  if (!key) return {};
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    return obj && typeof obj === "object" ? obj : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeMatchUi = (tournamentId: string | undefined, matchId: number, patch: MatchUiPrefs) => {
+  const key = matchUiStorageKey(tournamentId, matchId);
+  if (!key) return;
+  const prev = readMatchUi(tournamentId, matchId);
+  const next = { ...prev, ...patch };
+  try {
+    window.localStorage.setItem(key, JSON.stringify(next));
+  } catch {
+    // ignore
+  }
+};
+
+
   // ===== edycja meczu zakończonego =====
   const [editingFinished, setEditingFinished] = useState<Set<number>>(new Set());
   const [finishedSnapshots, setFinishedSnapshots] = useState<Record<number, MatchDTO>>({});
@@ -944,8 +977,28 @@ useEffect(() => {
       away_team_name: m.away_team_name ?? null,
     }));
 
+
+    // Przywróć lokalne preferencje UI (dogrywka/karne) – niezależnie od tego,
+    // czy użytkownik kliknął "Zapisz wynik". Dzięki temu LIVE wie, gdzie księgować bramki.
+    const withUiPrefs: MatchDTO[] = normalizedApi.map((m) => {
+      const prefs = readMatchUi(id, m.id);
+      const next: MatchDTO = { ...m };
+
+      if (prefs.extraTime && !next.went_to_extra_time) {
+        next.went_to_extra_time = true;
+        next.home_extra_time_score = next.home_extra_time_score ?? 0;
+        next.away_extra_time_score = next.away_extra_time_score ?? 0;
+      }
+      if (prefs.penalties && !next.decided_by_penalties) {
+        next.decided_by_penalties = true;
+        next.home_penalty_score = next.home_penalty_score ?? 0;
+        next.away_penalty_score = next.away_penalty_score ?? 0;
+      }
+      return next;
+    });
+
     const effectiveTournament = tOverride ?? tournament;
-    const final = mergeDrafts(normalizedApi, effectiveTournament ?? null);
+    const final = mergeDrafts(withUiPrefs, effectiveTournament ?? null);
 
     setMatches(final);
     return final;
@@ -1969,12 +2022,23 @@ const updateLocalMatch = (matchId: number, updater: (m: MatchDTO) => MatchDTO) =
                 disabled={isBusy || lockByFinish || !extraAllowed}
                 onChange={(e) => {
                   const checked = e.target.checked;
+
+                  // Nie pozwól wyłączyć dogrywki, jeśli istnieje wynik dogrywki (chroni spójność z incydentami).
+                  if (!checked) {
+                    const etSum = (Number(match.home_extra_time_score || 0) || 0) + (Number(match.away_extra_time_score || 0) || 0);
+                    if (etSum > 0) {
+                      pushToast("Nie można wyłączyć dogrywki, gdy istnieją bramki/punkty w dogrywce. Usuń je lub ustaw wynik dogrywki na 0:0.", "error");
+                      return;
+                    }
+                  }
+
                   updateLocalMatch(match.id, (m) => ({
                     ...m,
                     went_to_extra_time: checked,
                     home_extra_time_score: checked ? (m.home_extra_time_score ?? 0) : null,
                     away_extra_time_score: checked ? (m.away_extra_time_score ?? 0) : null,
                   }));
+                  writeMatchUi(id, match.id, { extraTime: checked });
                 }}
               />
               Dogrywka
@@ -2021,12 +2085,23 @@ const updateLocalMatch = (matchId: number, updater: (m: MatchDTO) => MatchDTO) =
                 disabled={isBusy || lockByFinish || !penAllowed}
                 onChange={(e) => {
                   const checked = e.target.checked;
+
+                  // Nie pozwól wyłączyć karnych, jeśli istnieje wynik karnych.
+                  if (!checked) {
+                    const pSum = (Number(match.home_penalty_score || 0) || 0) + (Number(match.away_penalty_score || 0) || 0);
+                    if (pSum > 0) {
+                      pushToast("Nie można wyłączyć karnych, gdy istnieją rzuty karne. Usuń je lub ustaw karne na 0:0.", "error");
+                      return;
+                    }
+                  }
+
                   updateLocalMatch(match.id, (m) => ({
                     ...m,
                     decided_by_penalties: checked,
                     home_penalty_score: checked ? (m.home_penalty_score ?? 0) : null,
                     away_penalty_score: checked ? (m.away_penalty_score ?? 0) : null,
                   }));
+                  writeMatchUi(id, match.id, { penalties: checked });
                 }}
               />
               Rozstrzygnięcie w rzutach karnych
@@ -2080,6 +2155,7 @@ const updateLocalMatch = (matchId: number, updater: (m: MatchDTO) => MatchDTO) =
               homeTeamName={homeName}
               awayTeamName={awayName}
               canEdit={!lockByFinish || inEditFinished}
+              goalScope={match.went_to_extra_time ? "EXTRA_TIME" : "REGULAR"}
               onAfterRecompute={() => refreshAfterLiveChange(match.id)}
             />
           </div>

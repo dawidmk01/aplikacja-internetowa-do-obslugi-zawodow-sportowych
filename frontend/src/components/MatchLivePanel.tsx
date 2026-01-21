@@ -65,6 +65,10 @@ type PlayerDTO = {
 };
 
 type Props = {
+  // Jeśli w TournamentResults włączona jest dogrywka,
+  // bramki/punkty (GOAL) dodane w LIVE powinny trafić do dogrywki.
+  goalScope?: "REGULAR" | "EXTRA_TIME";
+
   tournamentId: string; // z useParams
   discipline: string;
 
@@ -133,6 +137,9 @@ function periodOptions(discipline: string): { value: ClockPeriod; label: string 
     return [
       { value: "H1", label: "1 połowa" },
       { value: "H2", label: "2 połowa" },
+      { value: "ET1", label: "Dogrywka 1" },
+      { value: "ET2", label: "Dogrywka 2" },
+
     ];
   }
   return [];
@@ -305,6 +312,8 @@ export default function MatchLivePanel(props: Props) {
   const {
     tournamentId,
     discipline,
+    goalScope = "REGULAR",
+
     matchId,
     matchStatus,
     homeTeamId,
@@ -644,6 +653,15 @@ export default function MatchLivePanel(props: Props) {
     }
 
     const meta: Record<string, any> = {};
+
+    // Jeśli użytkownik włączył dogrywkę w TournamentResults, to bramki/punkty z LIVE
+    // powinny podnosić wynik dogrywki (home_extra_time_score / away_extra_time_score),
+    // a nie wynik podstawowy.
+    const effectiveGoalScope = goalScope ?? ((clock?.clock_period === "ET1" || clock?.clock_period === "ET2") ? "EXTRA_TIME" : "REGULAR");
+
+    if (!isTennis(discipline) && draft.kind === "GOAL" && effectiveGoalScope === "EXTRA_TIME") {
+      meta.scope = "EXTRA_TIME";
+    }
 
     if (isBasketball(discipline) && draft.kind === "GOAL") {
       meta.points = draft.points;
