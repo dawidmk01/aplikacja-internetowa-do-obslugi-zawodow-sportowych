@@ -15,10 +15,20 @@ type MatchClockDTO = {
   clock_started_at: string | null;
   clock_elapsed_seconds: number;
   clock_added_seconds: number;
-  seconds_in_period: number;
-  seconds_total: number;
-  minute_total: number;
+
+  // legacy fields (Twoja aktualna wersja)
+  seconds_in_period?: number;
+  seconds_total?: number;
+  minute_total?: number;
   server_time: string;
+
+  // nowe (opcjonalnie – jeśli masz już zaktualizowany backend match_clock.py)
+  is_break?: boolean;
+  break_seconds?: number;
+  break_level?: "NORMAL" | "WARN" | "DANGER";
+  write_locked?: boolean;
+  cap_reached?: boolean;
+  max_clock_seconds?: number;
 };
 
 type IncidentTimeSource = "CLOCK" | "MANUAL";
@@ -66,11 +76,8 @@ type Props = {
   homeTeamName: string;
   awayTeamName: string;
 
-  // edycja live dozwolona gdy mecz NIE jest zakończony
-  // lub gdy włączysz tryb edycji zakończonego meczu
   canEdit: boolean;
 
-  // wywołaj po zmianie incydentów, jeżeli backend automatycznie zmienia wynik (np. GOAL)
   onAfterRecompute?: () => Promise<void> | void;
 };
 
@@ -89,11 +96,10 @@ type IncidentDraft = {
   // basketball
   points: 1 | 2 | 3;
 
-  // tennis “punkty w gemie”
+  // tennis
   tennis_set_no: number;
   tennis_game_no: number;
 
-  // opcjonalna notatka
   note: string;
 };
 
@@ -143,7 +149,7 @@ function incidentKindOptions(discipline: string): { value: string; label: string
 
   if (isBasketball(discipline)) {
     return [
-      { value: "GOAL", label: "Punkt" }, // meta.points = 1/2/3
+      { value: "GOAL", label: "Punkt" },
       { value: "FOUL", label: "Faul" },
       { value: "TIMEOUT", label: "Timeout" },
     ];
@@ -159,7 +165,6 @@ function incidentKindOptions(discipline: string): { value: string; label: string
     ];
   }
 
-  // default (football + reszta)
   return [
     { value: "GOAL", label: "Bramka" },
     { value: "YELLOW_CARD", label: "Żółta kartka" },
@@ -177,6 +182,13 @@ function fmtClockState(s: ClockState) {
   return "Zatrzymany";
 }
 
+function fmtMMSS(totalSeconds: number | null | undefined) {
+  const sec = Math.max(0, Number(totalSeconds || 0));
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 function safeInt(v: string): number | null {
   const t = (v ?? "").trim();
   if (!t) return null;
@@ -187,12 +199,79 @@ function safeInt(v: string): number | null {
 }
 
 /* =========================
+   Break UI helpers (frontend-only)
+   ========================= */
+
+type BreakMode = "NONE" | "INTERMISSION" | "TECH";
+
+function breakKey(matchId: number, key: "mode" | "startedAt") {
+  return `matchBreak:${matchId}:${key}`;
+}
+
+function readBreakMode(matchId: number): BreakMode {
+  try {
+    return (localStorage.getItem(breakKey(matchId, "mode")) as BreakMode) || "NONE";
+  } catch {
+    return "NONE";
+  }
+}
+
+function writeBreakMode(matchId: number, mode: BreakMode) {
+  try {
+    localStorage.setItem(breakKey(matchId, "mode"), mode);
+  } catch {
+    // ignore
+  }
+}
+
+function readBreakStartedAt(matchId: number): number | null {
+  try {
+    const raw = localStorage.getItem(breakKey(matchId, "startedAt"));
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeBreakStartedAt(matchId: number, tsMs: number | null) {
+  try {
+    if (!tsMs) localStorage.removeItem(breakKey(matchId, "startedAt"));
+    else localStorage.setItem(breakKey(matchId, "startedAt"), String(tsMs));
+  } catch {
+    // ignore
+  }
+}
+
+function clearBreak(matchId: number) {
+  writeBreakMode(matchId, "NONE");
+  writeBreakStartedAt(matchId, null);
+}
+
+function computeBreakLevel(seconds: number): "NORMAL" | "WARN" | "DANGER" {
+  if (seconds >= 15 * 60) return "DANGER";
+  if (seconds >= 13 * 60) return "WARN";
+  return "NORMAL";
+}
+
+function nextPeriodForSecondHalf(discipline: string, current: ClockPeriod): ClockPeriod | null {
+  if (isFootball(discipline)) {
+    if (current === "FH") return "SH";
+    return null;
+  }
+  if (isHandball(discipline)) {
+    if (current === "H1") return "H2";
+    return null;
+  }
+  return null;
+}
+
+/* =========================
    Tennis points display
    ========================= */
 
 function tennisPointLabel(aPts: number, bPts: number): string {
-  // 0/15/30/40/AD
-  // jeśli ktoś wygrał gema: min 4 punkty i przewaga >=2 => "G"
   if (aPts >= 4 && aPts - bPts >= 2) return "G";
   if (bPts >= 4 && bPts - aPts >= 2) return "—";
 
@@ -200,7 +279,6 @@ function tennisPointLabel(aPts: number, bPts: number): string {
   if (aPts >= 3 && bPts >= 3) {
     if (aPts === bPts) return "40";
     if (aPts === bPts + 1) return "AD";
-    // jeśli a przegrywa przewagą, pokażemy "40" a przewaga będzie po drugiej stronie
     return "40";
   }
   return map[Math.min(aPts, 3)] ?? "0";
@@ -237,32 +315,27 @@ export default function MatchLivePanel(props: Props) {
     onAfterRecompute,
   } = props;
 
-  // Zachowuj stan rozwinięcia panelu także po odświeżeniu strony.
-  const [open, setOpen] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(`matchLivePanelOpen:${matchId}`) === "1";
-    } catch {
-      return false;
-    }
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(`matchLivePanelOpen:${matchId}`, open ? "1" : "0");
-    } catch {
-      // ignore
-    }
-  }, [open, matchId]);
-
-  // clock
   const [clock, setClock] = useState<MatchClockDTO | null>(null);
   const [clockLoading, setClockLoading] = useState(false);
   const [clockError, setClockError] = useState<string | null>(null);
+
+  // break ui
+  const [breakMode, setBreakMode] = useState<BreakMode>(() => readBreakMode(matchId));
+  const [breakTick, setBreakTick] = useState(0);
 
   // incidents
   const [incidents, setIncidents] = useState<IncidentDTO[]>([]);
   const [incLoading, setIncLoading] = useState(false);
   const [incError, setIncError] = useState<string | null>(null);
+
+  const [editIncidentId, setEditIncidentId] = useState<number | null>(null);
+  const [editIncidentDraft, setEditIncidentDraft] = useState<{
+    minute: string;
+    player_id: number | "" | null;
+    player_out_id: number | "" | null;
+    player_in_id: number | "" | null;
+  } | null>(null);
+  const [incUpdating, setIncUpdating] = useState<Record<number, boolean>>({});
 
   // roster cache per team
   const [playersByTeam, setPlayersByTeam] = useState<Record<number, PlayerDTO[]>>({});
@@ -289,7 +362,6 @@ export default function MatchLivePanel(props: Props) {
   }));
 
   useEffect(() => {
-    // gdy zmienia się dyscyplina albo match, ustaw domyślny kind
     setDraft((d) => ({
       ...d,
       kind: defaultKind,
@@ -318,6 +390,13 @@ export default function MatchLivePanel(props: Props) {
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.detail || "Nie udało się pobrać zegara.");
       setClock(data);
+
+      // jeśli backend mówi, że przerwy nie ma, a my mamy stan lokalny – zostawiamy lokalny,
+      // ale gdy zegar RUNNING, resetujemy breakMode (żeby UI nie wisiał na „przerwie”)
+      if (data?.clock_state === "RUNNING") {
+        clearBreak(matchId);
+        setBreakMode("NONE");
+      }
     } catch (e: any) {
       setClockError(e?.message ?? "Błąd pobierania zegara.");
     } finally {
@@ -329,16 +408,19 @@ export default function MatchLivePanel(props: Props) {
     setClockError(null);
     setClockLoading(true);
     try {
+      const method = body ? (suffix === "period/" || suffix === "added-seconds/" ? "PATCH" : "POST") : "POST";
       const res = await apiFetch(clockUrl(suffix), {
-        method: body ? (suffix === "period/" || suffix === "added-seconds/" ? "PATCH" : "POST") : "POST",
+        method,
         headers: body ? { "Content-Type": "application/json" } : undefined,
         body: body ? JSON.stringify(body) : undefined,
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.detail || "Operacja zegara nie powiodła się.");
       setClock(data);
+      return data as MatchClockDTO;
     } catch (e: any) {
       setClockError(e?.message ?? "Błąd operacji zegara.");
+      throw e;
     } finally {
       setClockLoading(false);
     }
@@ -362,8 +444,6 @@ export default function MatchLivePanel(props: Props) {
   const loadTeamPlayers = async (teamId: number) => {
     if (!tournamentId) return;
     if (!teamId) return;
-
-    // cache
     if (playersByTeam[teamId]) return;
 
     setPlayersLoading((m) => ({ ...m, [teamId]: true }));
@@ -374,26 +454,23 @@ export default function MatchLivePanel(props: Props) {
       const list: PlayerDTO[] = Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
       setPlayersByTeam((p) => ({ ...p, [teamId]: list }));
     } catch {
-      // brak twardego błędu w UI – roster jest opcjonalny
+      // opcjonalne
     } finally {
       setPlayersLoading((m) => ({ ...m, [teamId]: false }));
     }
   };
 
-  // otwarcie panelu: pobierz zegar + incydenty + rostery (jeśli są teamId)
   useEffect(() => {
-    if (!open) return;
-    loadClock();
+        loadClock();
     loadIncidents();
     if (homeTeamId) loadTeamPlayers(homeTeamId);
     if (awayTeamId) loadTeamPlayers(awayTeamId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, []);
 
-  // polling zegara gdy RUNNING i panel otwarty
+  // polling zegara gdy RUNNING
   useEffect(() => {
-    if (!open) return;
-    if (!clock || clock.clock_state !== "RUNNING") return;
+        if (!clock || clock.clock_state !== "RUNNING") return;
 
     const t = setInterval(() => {
       loadClock().catch(() => null);
@@ -401,11 +478,131 @@ export default function MatchLivePanel(props: Props) {
 
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, clock?.clock_state]);
+  }, [ clock?.clock_state]);
+
+  // ticking dla przerwy (UI)
+  useEffect(() => {
+
+    // jeśli backend ma break_seconds i przerwa trwa, tick nie jest konieczny, ale i tak go robimy (fallback)
+    const mode = readBreakMode(matchId);
+    const started = readBreakStartedAt(matchId);
+    if (mode === "NONE" || !started) return;
+
+    const t = setInterval(() => setBreakTick((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, [ matchId, breakMode]);
 
   const teamIdForSide = (side: "HOME" | "AWAY") => (side === "HOME" ? homeTeamId : awayTeamId);
-
   const teamNameForSide = (side: "HOME" | "AWAY") => (side === "HOME" ? homeTeamName : awayTeamName);
+
+  const isBreakFromBackend = Boolean(clock?.is_break || clock?.write_locked);
+  const localMode = breakMode;
+  const localStarted = readBreakStartedAt(matchId);
+
+  const localBreakSeconds =
+    localMode !== "NONE" && localStarted ? Math.max(0, Math.floor((Date.now() - localStarted) / 1000)) : 0;
+
+  const breakSeconds = typeof clock?.break_seconds === "number" ? clock.break_seconds : localBreakSeconds;
+  const breakLevel =
+    clock?.break_level ? clock.break_level : computeBreakLevel(breakSeconds);
+
+  const showBreakTimer = (isBreakFromBackend && clock?.clock_state === "PAUSED") || (localMode !== "NONE" && localStarted);
+
+  const canRewind = canEdit && !!clock;
+
+  const handlePrimary = async () => {
+    if (!canEdit) return;
+
+    // jeśli nie mamy zegara jeszcze, dociągnij
+    if (!clock) {
+      await loadClock();
+      return;
+    }
+
+    // 1) start meczu
+    if (clock.clock_state === "NOT_STARTED" || clock.clock_state === "STOPPED") {
+      clearBreak(matchId);
+      setBreakMode("NONE");
+      await postClock("start/");
+      return;
+    }
+
+    // 2) jeżeli jesteśmy w przerwie międzypołówkowej – rozpocznij drugą połowę
+    if (clock.clock_state === "PAUSED" && localMode === "INTERMISSION") {
+      const next = nextPeriodForSecondHalf(discipline, clock.clock_period);
+      if (next) {
+        await postClock("period/", { period: next });
+      }
+      clearBreak(matchId);
+      setBreakMode("NONE");
+      await postClock("resume/");
+      return;
+    }
+
+    // 3) zwykłe wznowienie
+    if (clock.clock_state === "PAUSED") {
+      clearBreak(matchId);
+      setBreakMode("NONE");
+      await postClock("resume/");
+      return;
+    }
+  };
+
+  const handleIntermissionBreak = async () => {
+    if (!canEdit) return;
+    // przerwa = pause z body {break:true} (backend rozróżnia przerwę od technicznej pauzy)
+    writeBreakMode(matchId, "INTERMISSION");
+    writeBreakStartedAt(matchId, Date.now());
+    setBreakMode("INTERMISSION");
+    await postClock("pause/", { break: true });
+  };
+
+  const handleTechPause = async () => {
+    if (!canEdit) return;
+    // pauza techniczna = zwykłe pause bez break
+    writeBreakMode(matchId, "TECH");
+    writeBreakStartedAt(matchId, Date.now());
+    setBreakMode("TECH");
+    await postClock("pause/", { break: false });
+  };
+
+  const handleReset = async () => {
+    if (!canRewind) {
+      setClockError("Cofnięcie zegara jest możliwe tylko, gdy masz uprawnienia do edycji i zegar jest dostępny.");
+      return;
+    }
+    const ok = window.confirm("Cofnąć zegar do początku aktualnego okresu? Incydenty pozostaną bez zmian.");
+    if (!ok) return;
+
+    clearBreak(matchId);
+    setBreakMode("NONE");
+
+    await postClock("reset_period/");
+    await loadClock();
+  };
+
+  const handleFinish = async () => {
+    if (!canEdit) return;
+
+    setClockError(null);
+    setClockLoading(true);
+    try {
+      const res = await apiFetch(`/api/matches/${matchId}/finish/`, { method: "POST" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.detail || "Nie udało się zakończyć meczu.");
+
+      clearBreak(matchId);
+      setBreakMode("NONE");
+
+      await onAfterRecompute?.();
+      await loadClock();
+      await loadIncidents();
+    } catch (e: any) {
+      setClockError(e?.message ?? "Błąd zakończenia meczu.");
+    } finally {
+      setClockLoading(false);
+    }
+  };
 
   const submitIncident = async () => {
     setIncError(null);
@@ -416,7 +613,6 @@ export default function MatchLivePanel(props: Props) {
       return;
     }
 
-    // walidacja minimalna
     if (!draft.kind) {
       setIncError("Wybierz typ incydentu.");
       return;
@@ -433,8 +629,9 @@ export default function MatchLivePanel(props: Props) {
       payload.minute = minute;
       payload.minute_raw = (draft.minute_raw || "").trim() || null;
     }
+    // CLOCK + brak minute => backend sam policzy.
+    // W przerwie backend (po naszej poprawce) przypisze minutę końca okresu (np. 45/90/30/60).
 
-    // player fields
     if (draft.kind === "SUBSTITUTION") {
       if (!draft.player_in_id || !draft.player_out_id) {
         setIncError("Dla zmiany wybierz zawodnika schodzącego i wchodzącego.");
@@ -446,7 +643,6 @@ export default function MatchLivePanel(props: Props) {
       if (draft.player_id) payload.player_id = draft.player_id;
     }
 
-    // meta by discipline/kind
     const meta: Record<string, any> = {};
 
     if (isBasketball(discipline) && draft.kind === "GOAL") {
@@ -459,7 +655,7 @@ export default function MatchLivePanel(props: Props) {
     }
 
     const note = (draft.note || "").trim();
-    if (note) meta.note = note;
+    if (note && draft.kind !== "GOAL" && draft.kind !== "TENNIS_POINT") meta.note = note;
 
     payload.meta = meta;
 
@@ -473,18 +669,13 @@ export default function MatchLivePanel(props: Props) {
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.detail || "Nie udało się dodać incydentu.");
 
-      // odśwież listę incydentów
       await loadIncidents();
-
-      // Backend może automatycznie zmienić wynik (np. GOAL) – odśwież listę meczów w rodzicu.
       await onAfterRecompute?.();
 
-      // TIMEOUT (stop-clock sports) może automatycznie spauzować zegar na backendzie.
       if (draft.kind === "TIMEOUT") {
         await loadClock();
       }
 
-      // czyść część pól
       setDraft((d) => ({
         ...d,
         time_source: "CLOCK",
@@ -512,14 +703,79 @@ export default function MatchLivePanel(props: Props) {
         throw new Error(data?.detail || "Nie udało się usunąć incydentu.");
       }
       await loadIncidents();
-
-      // Backend może automatycznie zmienić wynik (np. GOAL) – odśwież listę meczów w rodzicu.
       await onAfterRecompute?.();
     } catch (e: any) {
       setIncError(e?.message ?? "Błąd usuwania incydentu.");
     } finally {
       setIncLoading(false);
     }
+  };
+
+  const beginEditIncident = (i: IncidentDTO) => {
+    setEditIncidentId(i.id);
+    setEditIncidentDraft({
+      minute: i.minute != null ? String(i.minute) : "",
+      player_id: i.player_id ?? "",
+      player_out_id: i.player_out_id ?? "",
+      player_in_id: i.player_in_id ?? "",
+    });
+  };
+
+  const cancelEditIncident = () => {
+    setEditIncidentId(null);
+    setEditIncidentDraft(null);
+  };
+
+  const updateIncident = async (incidentId: number, patch: Record<string, any>) => {
+    setIncError(null);
+    setIncUpdating((prev) => ({ ...prev, [incidentId]: true }));
+    try {
+      const res = await apiFetch(`/api/incidents/${incidentId}/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        const msg = data?.detail || data?.code || "Nie udało się zaktualizować incydentu.";
+        throw new Error(msg);
+      }
+
+      // backend zwraca zaktualizowany incydent
+      setIncidents((prev) => prev.map((x) => (x.id === incidentId ? data : x)));
+
+      // po zmianie incydentu backend może przeliczyć wynik (goal-based)
+      // dlatego odświeżamy widok incydentów i zegar (bezpiecznie)
+      await loadIncidents();
+      await loadClock();
+    } catch (e: any) {
+      setIncError(e?.message || "Nie udało się zaktualizować incydentu.");
+    } finally {
+      setIncUpdating((prev) => {
+        const n = { ...prev };
+        delete n[incidentId];
+        return n;
+      });
+    }
+  };
+
+  const saveEditIncident = async (i: IncidentDTO) => {
+    if (!editIncidentDraft) return;
+
+    const minuteRaw = editIncidentDraft.minute.trim();
+    const minute = minuteRaw === "" ? null : Math.max(1, Number(minuteRaw));
+    const patch: Record<string, any> = { minute };
+
+    if (supportsSubKind(i.kind)) {
+      patch.player_out_id = editIncidentDraft.player_out_id || null;
+      patch.player_in_id = editIncidentDraft.player_in_id || null;
+    } else if (supportsPlayerKind(i.kind)) {
+      patch.player_id = editIncidentDraft.player_id || null;
+    }
+
+    await updateIncident(i.id, patch);
+    cancelEditIncident();
   };
 
   const kinds = useMemo(() => incidentKindOptions(discipline), [discipline]);
@@ -535,7 +791,9 @@ export default function MatchLivePanel(props: Props) {
 
   const showSubSelect = draft.kind === "SUBSTITUTION";
 
-  // tenis: licz aktualny wynik punktów w “wybranym” gemie
+  const showMinuteRaw = draft.time_source === "MANUAL" && draft.kind !== "GOAL";
+  const showNoteInput = draft.kind !== "GOAL" && draft.kind !== "TENNIS_POINT";
+
   const tennisPointsView = useMemo(() => {
     if (!isTennis(discipline)) return null;
     if (!homeTeamId || !awayTeamId) return null;
@@ -567,6 +825,13 @@ export default function MatchLivePanel(props: Props) {
     };
   }, [discipline, incidents, draft.tennis_set_no, draft.tennis_game_no, homeTeamId, awayTeamId]);
 
+  const sideForTeamId = (teamId: number | null | undefined): "HOME" | "AWAY" => (teamId === homeTeamId ? "HOME" : "AWAY");
+  const supportsPlayerKind = (kind: string) => {
+    // w praktyce: GOAL, CARD, FOUL itp. (dla SUBSTITUTION są osobne pola)
+    return kind !== "SUBSTITUTION" && kind !== "TENNIS_POINT";
+  };
+  const supportsSubKind = (kind: string) => kind === "SUBSTITUTION";
+
   const inProgress = matchStatus === "IN_PROGRESS" || matchStatus === "RUNNING";
 
   const headerBg =
@@ -576,25 +841,30 @@ export default function MatchLivePanel(props: Props) {
       ? "rgba(46,204,113,0.08)"
       : "rgba(255,255,255,0.02)";
 
+  const primaryLabel = useMemo(() => {
+    if (!clock) return "Zacznij mecz";
+    if (clock.clock_state === "NOT_STARTED" || clock.clock_state === "STOPPED") return "Zacznij mecz";
+    if (clock.clock_state === "PAUSED" && breakMode === "INTERMISSION") {
+      if (isFootball(discipline) && clock.clock_period === "FH") return "Rozpocznij 2 połowę";
+      if (isHandball(discipline) && clock.clock_period === "H1") return "Rozpocznij 2 połowę";
+      return "Rozpocznij kolejny etap";
+    }
+    if (clock.clock_state === "PAUSED") return "Wznów grę";
+    return "W trakcie";
+  }, [clock, breakMode, discipline]);
+
+  const breakBadgeStyle = useMemo(() => {
+    if (!showBreakTimer) return null;
+    const bg =
+      breakLevel === "DANGER" ? "rgba(231,76,60,0.25)" : breakLevel === "WARN" ? "rgba(241,196,15,0.22)" : "rgba(255,255,255,0.06)";
+    const border =
+      breakLevel === "DANGER" ? "1px solid rgba(231,76,60,0.55)" : breakLevel === "WARN" ? "1px solid rgba(241,196,15,0.55)" : "1px solid #444";
+    return { background: bg, border };
+  }, [showBreakTimer, breakLevel, breakTick]);
+
   return (
     <div style={{ marginTop: "0.9rem" }}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        style={{
-          padding: "0.45rem 0.8rem",
-          borderRadius: 6,
-          border: "1px solid #444",
-          background: headerBg,
-          color: "#fff",
-          cursor: "pointer",
-          fontSize: "0.85em",
-        }}
-      >
-        {open ? "Ukryj LIVE (zegar + incydenty)" : "Pokaż LIVE (zegar + incydenty)"}
-      </button>
 
-      {open && (
         <div
           style={{
             marginTop: "0.75rem",
@@ -628,9 +898,10 @@ export default function MatchLivePanel(props: Props) {
                 {clock && (
                   <>
                     {" "}
-                    | Minuta: <strong>{clock.minute_total}</strong>
+                    | Czas: <strong>{clock ? fmtMMSS(clock.seconds_total) : "—"}</strong> | Minuta: <strong>{clock.minute_total ?? "—"}</strong>
                   </>
                 )}
+                {clock?.cap_reached && <span style={{ marginLeft: 8, color: "rgba(231,76,60,0.9)" }}>limit 3h</span>}
               </div>
             </div>
 
@@ -639,56 +910,126 @@ export default function MatchLivePanel(props: Props) {
             <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               <button
                 type="button"
-                disabled={clockLoading || !canEdit}
-                onClick={() => postClock("start/")}
-                style={{ padding: "0.35rem 0.7rem", borderRadius: 6, border: "1px solid #444", background: "rgba(46,204,113,0.15)", color: "#fff" }}
+                disabled={clockLoading || !canEdit || clock?.clock_state === "RUNNING"}
+                onClick={handlePrimary}
+                style={{
+                  padding: "0.35rem 0.7rem",
+                  borderRadius: 6,
+                  border: "1px solid #444",
+                  background: "rgba(46,204,113,0.18)",
+                  color: "#fff",
+                }}
               >
-                Start
-              </button>
-              <button
-                type="button"
-                disabled={clockLoading || !canEdit}
-                onClick={() => postClock("pause/")}
-                style={{ padding: "0.35rem 0.7rem", borderRadius: 6, border: "1px solid #444", background: "rgba(255,255,255,0.04)", color: "#fff" }}
-              >
-                Pauza
-              </button>
-              <button
-                type="button"
-                disabled={clockLoading || !canEdit}
-                onClick={() => postClock("resume/")}
-                style={{ padding: "0.35rem 0.7rem", borderRadius: 6, border: "1px solid #444", background: "rgba(255,255,255,0.04)", color: "#fff" }}
-              >
-                Wznów
-              </button>
-              <button
-                type="button"
-                disabled={clockLoading || !canEdit}
-                onClick={() => postClock("stop/")}
-                style={{ padding: "0.35rem 0.7rem", borderRadius: 6, border: "1px solid #444", background: "rgba(231,76,60,0.12)", color: "#fff" }}
-              >
-                Stop
+                {primaryLabel}
               </button>
 
               <button
                 type="button"
-                disabled={clockLoading}
-                onClick={loadClock}
-                style={{ padding: "0.35rem 0.7rem", borderRadius: 6, border: "1px solid #444", background: "rgba(255,255,255,0.04)", color: "#fff" }}
+                disabled={clockLoading || !canEdit || !clock || clock.clock_state !== "RUNNING"}
+                onClick={handleIntermissionBreak}
+                style={{
+                  padding: "0.35rem 0.7rem",
+                  borderRadius: 6,
+                  border: "1px solid #444",
+                  background: "rgba(255,255,255,0.05)",
+                  color: "#fff",
+                }}
               >
-                Odśwież
+                Przerwa
               </button>
-            </div>
 
-            {/* okres gry */}
+              <button
+                type="button"
+                disabled={clockLoading || !canEdit || !clock || clock.clock_state !== "RUNNING"}
+                onClick={handleTechPause}
+                style={{
+                  padding: "0.35rem 0.7rem",
+                  borderRadius: 6,
+                  border: "1px solid #444",
+                  background: "rgba(255,255,255,0.05)",
+                  color: "#fff",
+                }}
+              >
+                Pauza techniczna
+              </button>
+
+              <button
+                type="button"
+                disabled={clockLoading || !canRewind}
+                onClick={handleReset}
+                title={canRewind ? "Cofnij zegar do początku okresu." : "Brak uprawnień lub zegar niedostępny."}
+                style={{
+                  padding: "0.35rem 0.7rem",
+                  borderRadius: 6,
+                  border: "1px solid #444",
+                  background: canRewind ? "rgba(231,76,60,0.12)" : "rgba(255,255,255,0.03)",
+                  color: "#fff",
+                  opacity: canRewind ? 1 : 0.7,
+                }}
+              >
+                Cofnij zegar
+              </button>
+
+              <button
+                type="button"
+                disabled={clockLoading || !canEdit}
+                onClick={handleFinish}
+                style={{
+                  padding: "0.35rem 0.7rem",
+                  borderRadius: 6,
+                  border: "1px solid #444",
+                  background: "rgba(231,76,60,0.14)",
+                  color: "#fff",
+                }}
+              >
+                Zakończ mecz
+              </button>
+</div>
+
+            {showBreakTimer && (
+              <div
+                style={{
+                  marginTop: 10,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "0.35rem 0.6rem",
+                  borderRadius: 999,
+                  ...(breakBadgeStyle as any),
+                  color: "#fff",
+                  fontSize: "0.9em",
+                }}
+              >
+                <strong>{breakMode === "TECH" ? "Pauza techniczna:" : "Przerwa:"}</strong>
+                <span>
+                  {Math.floor(breakSeconds / 60)}:{String(breakSeconds % 60).padStart(2, "0")}
+                </span>
+                <span style={{ opacity: 0.85 }}>
+                  {breakLevel === "WARN" ? "zbliża się 15 min" : breakLevel === "DANGER" ? "przekroczono 15 min" : ""}
+                </span>
+              </div>
+            )}
+
+            {/* okres gry – zostawiamy select (przydatny awaryjnie), ale to główny przycisk ma prowadzić flow */}
             {periodOptions(discipline).length > 0 && (
               <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                 <div style={{ opacity: 0.8, fontSize: "0.9em" }}>Okres gry:</div>
                 <select
                   value={clock?.clock_period && clock.clock_period !== "NONE" ? clock.clock_period : periodOptions(discipline)[0].value}
                   disabled={clockLoading || !canEdit}
-                  onChange={(e) => postClock("period/", { period: e.target.value })}
-                  style={{ padding: "0.35rem 0.5rem", borderRadius: 6, background: "rgba(0,0,0,0.25)", color: "#fff", border: "1px solid #444" }}
+                  onChange={async (e) => {
+                    await postClock("period/", { period: e.target.value });
+                    // zmiana okresu to zmiana „kontekstu”; czyścimy lokalną przerwę
+                    clearBreak(matchId);
+                    setBreakMode("NONE");
+                  }}
+                  style={{
+                    padding: "0.35rem 0.5rem",
+                    borderRadius: 6,
+                    background: "rgba(0,0,0,0.25)",
+                    color: "#fff",
+                    border: "1px solid #444",
+                  }}
                 >
                   {periodOptions(discipline).map((p) => (
                     <option key={p.value} value={p.value}>
@@ -697,26 +1038,15 @@ export default function MatchLivePanel(props: Props) {
                   ))}
                 </select>
 
-                {/* doliczony czas tylko w piłce nożnej */}
-                {isFootball(discipline) && (
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    <span style={{ opacity: 0.8, fontSize: "0.9em" }}>Doliczony czas (sek):</span>
-                    <input
-                      type="number"
-                      min={0}
-                      value={clock?.clock_added_seconds ?? 0}
-                      disabled={clockLoading || !canEdit}
-                      onChange={(e) => postClock("added-seconds/", { added_seconds: Math.max(0, Number(e.target.value || 0)) })}
-                      style={{ width: 100, textAlign: "center", padding: "0.35rem", borderRadius: 6, border: "1px solid #444", background: "rgba(0,0,0,0.25)", color: "#fff" }}
-                    />
-                  </div>
-                )}
+                <div style={{ opacity: 0.7, fontSize: "0.85em" }}>
+                  W przerwie można dodawać incydenty. Jeśli wybierzesz „z zegara”, system zapisze minutę końca połowy.
+                </div>
               </div>
             )}
 
             {!canEdit && (
               <div style={{ marginTop: 10, opacity: 0.75, fontSize: "0.9em" }}>
-                Edycja zegara jest zablokowana (mecz zakończony bez trybu edycji).
+                Edycja LIVE jest zablokowana (mecz zakończony bez trybu edycji).
               </div>
             )}
           </div>
@@ -734,7 +1064,9 @@ export default function MatchLivePanel(props: Props) {
               <div style={{ fontWeight: 700 }}>Incydenty</div>
 
               <div style={{ opacity: 0.65, fontSize: "0.85em" }}>
-                Wynik aktualizuje się automatycznie na podstawie incydentów (GOAL).
+                {isTennis(discipline)
+                  ? "Tenis: incydenty opisują przebieg (punkty)."
+                  : "Bramki/punkty w LIVE mogą aktualizować szybki wynik; w przerwie dopiszesz incydent do końca połowy."}
               </div>
             </div>
 
@@ -801,7 +1133,7 @@ export default function MatchLivePanel(props: Props) {
                     disabled={!canEdit || incLoading}
                     onChange={() => setDraft((d) => ({ ...d, time_source: "CLOCK" }))}
                   />
-                  <span>Z zegara</span>
+                  <span style={{ opacity: 0.9 }}>Z zegara</span>
                 </label>
 
                 <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -812,294 +1144,351 @@ export default function MatchLivePanel(props: Props) {
                     disabled={!canEdit || incLoading}
                     onChange={() => setDraft((d) => ({ ...d, time_source: "MANUAL" }))}
                   />
-                  <span>Ręcznie</span>
+                  <span style={{ opacity: 0.9 }}>Ręcznie</span>
                 </label>
 
                 {draft.time_source === "MANUAL" && (
                   <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <input
-                      placeholder="min (np. 73)"
+                      type="text"
+                      placeholder="min"
                       value={draft.minute}
                       disabled={!canEdit || incLoading}
                       onChange={(e) => setDraft((d) => ({ ...d, minute: e.target.value }))}
-                      style={{ width: 120, padding: "0.35rem", borderRadius: 6, border: "1px solid #444", background: "rgba(0,0,0,0.25)", color: "#fff" }}
+                      style={{ width: 70, textAlign: "center", padding: "0.35rem", borderRadius: 6, border: "1px solid #444", background: "rgba(0,0,0,0.25)", color: "#fff" }}
                     />
-                    <input
-                      placeholder="minute_raw (np. 90+3)"
-                      value={draft.minute_raw}
-                      disabled={!canEdit || incLoading}
-                      onChange={(e) => setDraft((d) => ({ ...d, minute_raw: e.target.value }))}
-                      style={{ width: 160, padding: "0.35rem", borderRadius: 6, border: "1px solid #444", background: "rgba(0,0,0,0.25)", color: "#fff" }}
-                    />
+                    {showMinuteRaw && (
+
+                      <input
+
+                        type="text"
+
+                        placeholder="opis (opc.)"
+
+                        value={draft.minute_raw}
+
+                        disabled={!canEdit || incLoading}
+
+                        onChange={(e) => setDraft((d) => ({ ...d, minute_raw: e.target.value }))}
+
+                        style={{ width: 160, padding: "0.35rem", borderRadius: 6, border: "1px solid #444", background: "rgba(0,0,0,0.25)", color: "#fff" }}
+
+                      />
+
+                    )}
+
                   </div>
                 )}
               </div>
 
-              {/* extra fields by kind */}
-              {isBasketball(discipline) && draft.kind === "GOAL" && (
-                <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                  <div style={{ opacity: 0.85, fontSize: "0.9em" }}>Punkty:</div>
-                  <select
-                    value={draft.points}
-                    disabled={!canEdit || incLoading}
-                    onChange={(e) => setDraft((d) => ({ ...d, points: Number(e.target.value) as 1 | 2 | 3 }))}
-                    style={{ padding: "0.35rem 0.5rem", borderRadius: 6, background: "rgba(0,0,0,0.25)", color: "#fff", border: "1px solid #444" }}
-                  >
-                    <option value={1}>1</option>
-                    <option value={2}>2</option>
-                    <option value={3}>3</option>
-                  </select>
-                </div>
-              )}
-
-              {isTennis(discipline) && draft.kind === "TENNIS_POINT" && (
-                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                  <div style={{ opacity: 0.85, fontSize: "0.9em" }}>Tenis:</div>
-
-                  <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <span style={{ opacity: 0.85 }}>Set</span>
-                    <input
-                      type="number"
-                      min={1}
-                      value={draft.tennis_set_no}
+              {/* players */}
+              <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                {showPlayerSelect && (
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ opacity: 0.85, fontSize: "0.9em" }}>Zawodnik:</div>
+                    <select
+                      value={draft.player_id}
                       disabled={!canEdit || incLoading}
-                      onChange={(e) => setDraft((d) => ({ ...d, tennis_set_no: Math.max(1, Number(e.target.value || 1)) }))}
-                      style={{ width: 80, textAlign: "center", padding: "0.35rem", borderRadius: 6, border: "1px solid #444", background: "rgba(0,0,0,0.25)", color: "#fff" }}
-                    />
-                  </label>
+                      onChange={(e) => setDraft((d) => ({ ...d, player_id: e.target.value ? Number(e.target.value) : "" }))}
+                      style={{ padding: "0.35rem 0.5rem", borderRadius: 6, background: "rgba(0,0,0,0.25)", color: "#fff", border: "1px solid #444", minWidth: 250 }}
+                    >
+                      <option value="">(brak)</option>
+                      {rosterForSide(draft.side).map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.display_name}
+                          {p.jersey_number != null ? ` (#${p.jersey_number})` : ""}
+                        </option>
+                      ))}
+                    </select>
 
-                  <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <span style={{ opacity: 0.85 }}>Gem</span>
-                    <input
-                      type="number"
-                      min={1}
-                      value={draft.tennis_game_no}
-                      disabled={!canEdit || incLoading}
-                      onChange={(e) => setDraft((d) => ({ ...d, tennis_game_no: Math.max(1, Number(e.target.value || 1)) }))}
-                      style={{ width: 80, textAlign: "center", padding: "0.35rem", borderRadius: 6, border: "1px solid #444", background: "rgba(0,0,0,0.25)", color: "#fff" }}
-                    />
-                  </label>
+                    {playersLoading[teamIdForSide(draft.side) || 0] && (
+                      <span style={{ opacity: 0.7, fontSize: "0.85em" }}>Wczytywanie składu…</span>
+                    )}
+                  </div>
+                )}
 
-                  <button
-                    type="button"
-                    disabled={!canEdit || incLoading}
-                    onClick={() => setDraft((d) => ({ ...d, tennis_game_no: Math.max(1, Number(d.tennis_game_no || 1)) + 1 }))}
-                    style={{ padding: "0.35rem 0.7rem", borderRadius: 6, border: "1px solid #444", background: "rgba(255,255,255,0.04)", color: "#fff" }}
-                    title="Przejdź do następnego gema (tylko stan UI; punkty zapisują się w meta set_no/game_no)"
-                  >
-                    Następny gem
-                  </button>
+                {showSubSelect && (
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                    <div style={{ opacity: 0.85, fontSize: "0.9em" }}>Zmiana:</div>
 
-                  {tennisPointsView && (
-                    <div style={{ marginLeft: 10, opacity: 0.9, fontSize: "0.9em" }}>
-                      Aktualny gem (Set {tennisPointsView.setNo}, Gem {tennisPointsView.gameNo}):{" "}
-                      <strong>
-                        {homeTeamName} {tennisPointsView.homeLabel} : {tennisPointsView.awayLabel} {awayTeamName}
-                      </strong>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {showPlayerSelect && (
-                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                  <div style={{ opacity: 0.85, fontSize: "0.9em" }}>Zawodnik (opcjonalnie):</div>
-                  <select
-                    value={draft.player_id}
-                    disabled={!canEdit || incLoading}
-                    onChange={(e) => setDraft((d) => ({ ...d, player_id: e.target.value ? Number(e.target.value) : "" }))}
-                    style={{ padding: "0.35rem 0.5rem", borderRadius: 6, background: "rgba(0,0,0,0.25)", color: "#fff", border: "1px solid #444", minWidth: 240 }}
-                  >
-                    <option value="">— brak —</option>
-                    {rosterForSide(draft.side).map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.jersey_number != null ? `#${p.jersey_number} ` : ""}
-                        {p.display_name}
-                      </option>
-                    ))}
-                  </select>
-
-                  {teamIdForSide(draft.side) && playersLoading[teamIdForSide(draft.side)!] && (
-                    <span style={{ opacity: 0.75, fontSize: "0.85em" }}>Ładowanie składu…</span>
-                  )}
-                </div>
-              )}
-
-              {showSubSelect && (
-                <div style={{ marginTop: 10, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-                  <div style={{ opacity: 0.85, fontSize: "0.9em" }}>Zmiana:</div>
-
-                  <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <span style={{ opacity: 0.85 }}>Schodzi</span>
                     <select
                       value={draft.player_out_id}
                       disabled={!canEdit || incLoading}
                       onChange={(e) => setDraft((d) => ({ ...d, player_out_id: e.target.value ? Number(e.target.value) : "" }))}
                       style={{ padding: "0.35rem 0.5rem", borderRadius: 6, background: "rgba(0,0,0,0.25)", color: "#fff", border: "1px solid #444", minWidth: 220 }}
                     >
-                      <option value="">— wybierz —</option>
+                      <option value="">Schodzi…</option>
                       {rosterForSide(draft.side).map((p) => (
                         <option key={p.id} value={p.id}>
-                          {p.jersey_number != null ? `#${p.jersey_number} ` : ""}
                           {p.display_name}
                         </option>
                       ))}
                     </select>
-                  </label>
 
-                  <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <span style={{ opacity: 0.85 }}>Wchodzi</span>
                     <select
                       value={draft.player_in_id}
                       disabled={!canEdit || incLoading}
                       onChange={(e) => setDraft((d) => ({ ...d, player_in_id: e.target.value ? Number(e.target.value) : "" }))}
                       style={{ padding: "0.35rem 0.5rem", borderRadius: 6, background: "rgba(0,0,0,0.25)", color: "#fff", border: "1px solid #444", minWidth: 220 }}
                     >
-                      <option value="">— wybierz —</option>
+                      <option value="">Wchodzi…</option>
                       {rosterForSide(draft.side).map((p) => (
                         <option key={p.id} value={p.id}>
-                          {p.jersey_number != null ? `#${p.jersey_number} ` : ""}
                           {p.display_name}
                         </option>
                       ))}
                     </select>
-                  </label>
-                </div>
-              )}
+                  </div>
+                )}
 
-              <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <input
-                  placeholder="Notatka (opcjonalnie)"
-                  value={draft.note}
-                  disabled={!canEdit || incLoading}
-                  onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))}
-                  style={{ flex: "1 1 320px", padding: "0.35rem", borderRadius: 6, border: "1px solid #444", background: "rgba(0,0,0,0.25)", color: "#fff" }}
-                />
+                {/* basketball points */}
+                {isBasketball(discipline) && draft.kind === "GOAL" && (
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ opacity: 0.85, fontSize: "0.9em" }}>Punkty:</div>
+                    <select
+                      value={draft.points}
+                      disabled={!canEdit || incLoading}
+                      onChange={(e) => setDraft((d) => ({ ...d, points: Number(e.target.value) as 1 | 2 | 3 }))}
+                      style={{ padding: "0.35rem 0.5rem", borderRadius: 6, background: "rgba(0,0,0,0.25)", color: "#fff", border: "1px solid #444" }}
+                    >
+                      <option value={1}>1</option>
+                      <option value={2}>2</option>
+                      <option value={3}>3</option>
+                    </select>
+                  </div>
+                )}
 
+                {/* tennis selectors */}
+                {isTennis(discipline) && (
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ opacity: 0.85, fontSize: "0.9em" }}>Tenis:</div>
+                    <input
+                      type="number"
+                      min={1}
+                      value={draft.tennis_set_no}
+                      disabled={!canEdit || incLoading}
+                      onChange={(e) => setDraft((d) => ({ ...d, tennis_set_no: Math.max(1, Number(e.target.value || 1)) }))}
+                      style={{ width: 90, textAlign: "center", padding: "0.35rem", borderRadius: 6, border: "1px solid #444", background: "rgba(0,0,0,0.25)", color: "#fff" }}
+                    />
+                    <input
+                      type="number"
+                      min={1}
+                      value={draft.tennis_game_no}
+                      disabled={!canEdit || incLoading}
+                      onChange={(e) => setDraft((d) => ({ ...d, tennis_game_no: Math.max(1, Number(e.target.value || 1)) }))}
+                      style={{ width: 90, textAlign: "center", padding: "0.35rem", borderRadius: 6, border: "1px solid #444", background: "rgba(0,0,0,0.25)", color: "#fff" }}
+                    />
+
+                    {tennisPointsView && (
+                      <div style={{ opacity: 0.85, fontSize: "0.9em" }}>
+                        Gem {tennisPointsView.gameNo}, Set {tennisPointsView.setNo}:{" "}
+                        <strong>
+                          {homeTeamName} {tennisPointsView.homeLabel} : {tennisPointsView.awayLabel} {awayTeamName}
+                        </strong>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {showNoteInput && (
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ opacity: 0.85, fontSize: "0.9em" }}>Notatka:</div>
+                    <input
+                      type="text"
+                      value={draft.note}
+                      disabled={!canEdit || incLoading}
+                      onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))}
+                      placeholder="opcjonalnie"
+                      style={{ width: 320, padding: "0.35rem", borderRadius: 6, border: "1px solid #444", background: "rgba(0,0,0,0.25)", color: "#fff" }}
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                 <button
                   type="button"
                   disabled={!canEdit || incLoading}
                   onClick={submitIncident}
                   style={{
-                    padding: "0.45rem 0.9rem",
+                    padding: "0.38rem 0.75rem",
                     borderRadius: 6,
-                    border: "1px solid rgba(46,204,113,0.5)",
+                    border: "1px solid #444",
                     background: "rgba(46,204,113,0.15)",
                     color: "#fff",
-                    cursor: "pointer",
-                    opacity: !canEdit ? 0.55 : 1,
-                    fontWeight: 700,
                   }}
                 >
                   Dodaj incydent
                 </button>
-              </div>
-
-              {!canEdit && (
-                <div style={{ marginTop: 10, opacity: 0.75, fontSize: "0.9em" }}>
-                  Dodawanie/usuwanie incydentów jest zablokowane (mecz zakończony bez trybu edycji).
-                </div>
-              )}
+</div>
             </div>
 
             {/* list */}
-            <div style={{ marginTop: 12 }}>
-              <div style={{ opacity: 0.85, marginBottom: 8 }}>
-                Lista incydentów ({incidents.length}){" "}
-                <button
-                  type="button"
-                  disabled={incLoading}
-                  onClick={loadIncidents}
-                  style={{ marginLeft: 8, padding: "0.25rem 0.6rem", borderRadius: 6, border: "1px solid #444", background: "rgba(255,255,255,0.04)", color: "#fff" }}
-                >
-                  Odśwież
-                </button>
-              </div>
+            <div style={{ marginTop: 10 }}>
+              {incLoading && <div style={{ opacity: 0.75 }}>Wczytywanie…</div>}
+              {!incLoading && incidents.length === 0 && <div style={{ opacity: 0.7 }}>Brak incydentów.</div>}
 
-              {incLoading && incidents.length === 0 && <div style={{ opacity: 0.75 }}>Ładowanie…</div>}
-
-              {incidents.length === 0 ? (
-                <div style={{ opacity: 0.75 }}>Brak incydentów.</div>
-              ) : (
+              {!incLoading && incidents.length > 0 && (
                 <div style={{ display: "grid", gap: 6 }}>
-                  {incidents.map((i) => (
-                    <div
-                      key={i.id}
-                      style={{
-                        display: "flex",
-                        gap: 10,
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        border: "1px solid #333",
-                        borderRadius: 8,
-                        padding: "0.55rem 0.65rem",
-                        background: "rgba(0,0,0,0.10)",
-                      }}
-                    >
-                      <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
-                        <div style={{ minWidth: 78, opacity: 0.85 }}>
-                          {i.minute_raw ? i.minute_raw : i.minute != null ? `${i.minute}'` : "—"}
+                  {incidents
+                    .slice()
+                    .reverse()
+                    .map((i) => (
+                      <div
+                        key={i.id}
+                        style={{
+                          border: "1px solid #333",
+                          borderRadius: 8,
+                          padding: "0.55rem 0.65rem",
+                          background: "rgba(0,0,0,0.18)",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: 10,
+                          alignItems: "center",
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                          <span style={{ opacity: 0.85, fontSize: "0.9em" }}>
+                            {teamNameForSide(i.team_id === homeTeamId ? "HOME" : "AWAY")}
+                          </span>
+                          <strong>{i.kind_display ?? i.kind}</strong>
+                          <span style={{ opacity: 0.8, fontSize: "0.9em" }}>
+                            {i.minute != null ? `${i.minute}'` : ""}
+                            {i.minute_raw ? ` (${i.minute_raw})` : ""}
+                          </span>
+                          {i.player_name && <span style={{ opacity: 0.9 }}>{i.player_name}</span>}
                         </div>
 
-                        <div style={{ fontWeight: 700 }}>{i.kind_display ?? i.kind}</div>
+                        {editIncidentId === i.id && editIncidentDraft && (
+                          <div style={{ width: "100%", marginTop: 6, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                            <span style={{ opacity: 0.85, fontSize: "0.9em" }}>Edycja incydentu:</span>
 
-                        <div style={{ opacity: 0.85 }}>
-                          {i.team_id === homeTeamId ? homeTeamName : i.team_id === awayTeamId ? awayTeamName : `Team ${i.team_id}`}
-                        </div>
+                            <span style={{ opacity: 0.85, fontSize: "0.9em" }}>Minuta:</span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={editIncidentDraft.minute}
+                              disabled={!canEdit || !!incUpdating[i.id] || incLoading}
+                              onChange={(e) => setEditIncidentDraft((d) => (d ? { ...d, minute: e.target.value } : d))}
+                              style={{ width: 90, textAlign: "center", padding: "0.35rem", borderRadius: 6, border: "1px solid #444", background: "rgba(0,0,0,0.25)", color: "#fff" }}
+                            />
 
-                        {(i.player_name || i.player_in_name || i.player_out_name) && (
-                          <div style={{ opacity: 0.8, fontSize: "0.9em" }}>
-                            {i.kind === "SUBSTITUTION"
-                              ? `Zmiana: ${i.player_out_name ?? "—"} → ${i.player_in_name ?? "—"}`
-                              : `Zawodnik: ${i.player_name ?? "—"}`}
+                            {supportsSubKind(i.kind) ? (
+                              <>
+                                <span style={{ opacity: 0.85, fontSize: "0.9em" }}>Schodzi:</span>
+                                <select
+                                  value={editIncidentDraft.player_out_id ?? ""}
+                                  disabled={!canEdit || !!incUpdating[i.id] || incLoading}
+                                  onChange={(e) => setEditIncidentDraft((d) => (d ? { ...d, player_out_id: e.target.value ? Number(e.target.value) : "" } : d))}
+                                  style={{ padding: "0.35rem 0.5rem", borderRadius: 6, background: "rgba(0,0,0,0.25)", color: "#fff", border: "1px solid #444", minWidth: 200 }}
+                                >
+                                  <option value="">(brak)</option>
+                                  {rosterForSide(sideForTeamId(i.team_id)).map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                      {p.display_name}
+                                      {p.jersey_number != null ? ` (#${p.jersey_number})` : ""}
+                                    </option>
+                                  ))}
+                                </select>
+
+                                <span style={{ opacity: 0.85, fontSize: "0.9em" }}>Wchodzi:</span>
+                                <select
+                                  value={editIncidentDraft.player_in_id ?? ""}
+                                  disabled={!canEdit || !!incUpdating[i.id] || incLoading}
+                                  onChange={(e) => setEditIncidentDraft((d) => (d ? { ...d, player_in_id: e.target.value ? Number(e.target.value) : "" } : d))}
+                                  style={{ padding: "0.35rem 0.5rem", borderRadius: 6, background: "rgba(0,0,0,0.25)", color: "#fff", border: "1px solid #444", minWidth: 200 }}
+                                >
+                                  <option value="">(brak)</option>
+                                  {rosterForSide(sideForTeamId(i.team_id)).map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                      {p.display_name}
+                                      {p.jersey_number != null ? ` (#${p.jersey_number})` : ""}
+                                    </option>
+                                  ))}
+                                </select>
+                              </>
+                            ) : supportsPlayerKind(i.kind) ? (
+                              <>
+                                <span style={{ opacity: 0.85, fontSize: "0.9em" }}>Zawodnik:</span>
+                                <select
+                                  value={editIncidentDraft.player_id ?? ""}
+                                  disabled={!canEdit || !!incUpdating[i.id] || incLoading}
+                                  onChange={(e) => setEditIncidentDraft((d) => (d ? { ...d, player_id: e.target.value ? Number(e.target.value) : "" } : d))}
+                                  style={{ padding: "0.35rem 0.5rem", borderRadius: 6, background: "rgba(0,0,0,0.25)", color: "#fff", border: "1px solid #444", minWidth: 240 }}
+                                >
+                                  <option value="">(brak)</option>
+                                  {rosterForSide(sideForTeamId(i.team_id)).map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                      {p.display_name}
+                                      {p.jersey_number != null ? ` (#${p.jersey_number})` : ""}
+                                    </option>
+                                  ))}
+                                </select>
+                              </>
+                            ) : null}
+
+                            <button
+                              type="button"
+                              disabled={!canEdit || !!incUpdating[i.id] || incLoading}
+                              onClick={() => saveEditIncident(i)}
+                              style={{
+                                padding: "0.25rem 0.65rem",
+                                borderRadius: 6,
+                                border: "1px solid #444",
+                                background: "rgba(46,204,113,0.15)",
+                                color: "#fff",
+                              }}
+                            >
+                              Zapisz
+                            </button>
                           </div>
                         )}
 
-                        {isBasketball(discipline) && i.kind === "GOAL" && typeof i.meta?.points === "number" && (
-                          <div style={{ opacity: 0.85, fontSize: "0.9em" }}>({i.meta.points} pkt)</div>
-                        )}
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                          <span style={{ opacity: 0.6, fontSize: "0.82em" }}>
+                            {i.created_at ? new Date(i.created_at).toLocaleString() : ""}
+                          </span>
 
-                        {isTennis(discipline) && i.kind === "TENNIS_POINT" && (
-                          <div style={{ opacity: 0.85, fontSize: "0.9em" }}>
-                            (Set {i.meta?.set_no ?? 1}, Gem {i.meta?.game_no ?? 1})
-                          </div>
-                        )}
+                          {canEdit && (
+                            <button
+                              type="button"
+                              disabled={!!incUpdating[i.id] || incLoading}
+                              onClick={() => (editIncidentId === i.id ? cancelEditIncident() : beginEditIncident(i))}
+                              style={{
+                                padding: "0.25rem 0.55rem",
+                                borderRadius: 6,
+                                border: "1px solid #444",
+                                background: "rgba(255,255,255,0.04)",
+                                color: "#fff",
+                              }}
+                            >
+                              {editIncidentId === i.id ? "Anuluj edycję" : "Edytuj"}
+                            </button>
+                          )}
 
-                        {typeof i.meta?.note === "string" && i.meta.note.trim() && (
-                          <div style={{ opacity: 0.75, fontSize: "0.9em" }}>— {i.meta.note}</div>
-                        )}
+                          <button
+                            type="button"
+                            disabled={!canEdit || incLoading}
+                            onClick={() => deleteIncident(i.id)}
+                            style={{
+                              padding: "0.25rem 0.55rem",
+                              borderRadius: 6,
+                              border: "1px solid #444",
+                              background: "rgba(231,76,60,0.10)",
+                              color: "#fff",
+                            }}
+                          >
+                            Usuń
+                          </button>
+                        </div>
                       </div>
-
-                      <div>
-                        <button
-                          type="button"
-                          disabled={!canEdit || incLoading}
-                          onClick={() => deleteIncident(i.id)}
-                          style={{
-                            padding: "0.25rem 0.6rem",
-                            borderRadius: 6,
-                            border: "1px solid #444",
-                            background: "rgba(231,76,60,0.12)",
-                            color: "#fff",
-                            cursor: "pointer",
-                            opacity: !canEdit ? 0.55 : 1,
-                          }}
-                        >
-                          Usuń
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                    ))}
                 </div>
               )}
             </div>
-
-            <div style={{ marginTop: 10, opacity: 0.75, fontSize: "0.85em" }}>
-              Uwaga: “Szybki wynik” (np. 25:23) nadal działa niezależnie. Incydenty służą do prowadzenia meczu live i zapisu minut/zawodników.
-            </div>
           </div>
         </div>
-      )}
     </div>
   );
 }

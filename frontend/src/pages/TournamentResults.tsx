@@ -1,6 +1,6 @@
 // frontend/src/pages/TournamentResults.tsx
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { apiFetch } from "../api";
 import MatchLivePanel from "../components/MatchLivePanel";
@@ -96,6 +96,37 @@ type MatchDraft = Partial<
     | "away_penalty_score"
   >
 >;
+
+
+function comparableResult(m: MatchDTO) {
+  return {
+    home_score: m.home_score ?? 0,
+    away_score: m.away_score ?? 0,
+    tennis_sets: m.tennis_sets ?? null,
+    went_to_extra_time: !!m.went_to_extra_time,
+    home_extra_time_score: m.home_extra_time_score ?? null,
+    away_extra_time_score: m.away_extra_time_score ?? null,
+    decided_by_penalties: !!m.decided_by_penalties,
+    home_penalty_score: m.home_penalty_score ?? null,
+    away_penalty_score: m.away_penalty_score ?? null,
+  };
+}
+
+function sameComparableResult(a: MatchDTO, b: MatchDTO): boolean {
+  return JSON.stringify(comparableResult(a)) === JSON.stringify(comparableResult(b));
+}
+type ApiErrorObj = { message: string; code?: string; data?: any };
+
+type PendingForceOp = "SAVE" | "FINISH";
+
+type PendingForce = {
+  matchId: number;
+  op: PendingForceOp;
+  message: string;
+  code?: string;
+  wouldDelete?: any[];
+};
+
 
 /* ============================================================
    HELPERS: numeric parsing
@@ -680,12 +711,39 @@ export default function TournamentResults() {
 
   const [tournament, setTournament] = useState<TournamentDTO | null>(null);
   const [matches, setMatches] = useState<MatchDTO[]>([]);
+  const matchesRef = useRef<MatchDTO[]>([]);
+  useEffect(() => {
+    matchesRef.current = matches;
+  }, [matches]);
+
   const [loading, setLoading] = useState(true);
 
   const [busyMatchId, setBusyMatchId] = useState<number | null>(null);
   const [busyGenerate, setBusyGenerate] = useState(false);
 
-  const [message, setMessage] = useState<string | null>(null);
+
+type ToastKind = "saved" | "success" | "error" | "info";
+type ToastItem = { id: number; text: string; kind: ToastKind; durationMs: number };
+
+const TOAST_DURATION_STANDARD_MS = 4800;
+const TOAST_DURATION_SAVED_MS = 2000;
+
+const [toasts, setToasts] = useState<ToastItem[]>([]);
+const toastSeq = useRef(1);
+
+const pushToast = useCallback((text: string, kind: ToastKind = "info") => {
+  const durationMs = kind === "saved" ? TOAST_DURATION_SAVED_MS : TOAST_DURATION_STANDARD_MS;
+  const id = toastSeq.current++;
+  const item: ToastItem = { id, text, kind, durationMs };
+  setToasts((prev) => [...prev, item]);
+  window.setTimeout(() => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, durationMs);
+}, []);
+
+  // 409 z backendu: próba synchronizacji wyniku → incydenty wymagałaby usunięcia uzupełnionych incydentów
+  const [pendingForce, setPendingForce] = useState<PendingForce | null>(null);
+
 
   // "edited" = zapisane (zielony akcent)
   const [edited, setEdited] = useState<Set<number>>(new Set());
@@ -693,8 +751,37 @@ export default function TournamentResults() {
   // "dirty" = ma niezapisane zmiany
   const [dirty, setDirty] = useState<Set<number>>(new Set());
 
+
   // drafty – żeby reload po zapisie nie kasował innych lokalnych zmian
   const [drafts, setDrafts] = useState<Record<number, MatchDraft>>({});
+
+// ===== LIVE panel (toggle per mecz) =====
+const [openLive, setOpenLive] = useState<Set<number>>(new Set());
+
+// Persistuj stan otwarcia LIVE (per turniej) w localStorage
+const liveStorageKey = id ? `tournament:${id}:results:openLive` : null;
+
+useEffect(() => {
+  if (!liveStorageKey) return;
+  try {
+    const raw = window.localStorage.getItem(liveStorageKey);
+    if (!raw) return;
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr)) setOpenLive(new Set(arr.filter((x) => typeof x === "number")));
+  } catch {
+    // ignoruj
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [liveStorageKey]);
+
+useEffect(() => {
+  if (!liveStorageKey) return;
+  try {
+    window.localStorage.setItem(liveStorageKey, JSON.stringify(Array.from(openLive)));
+  } catch {
+    // ignoruj
+  }
+}, [liveStorageKey, openLive]);
 
   // ===== edycja meczu zakończonego =====
   const [editingFinished, setEditingFinished] = useState<Set<number>>(new Set());
@@ -709,7 +796,7 @@ export default function TournamentResults() {
       n.add(m.id);
       return n;
     });
-    setMessage("Tryb edycji: po zapisaniu zmiany mogą wpłynąć na kolejne etapy KO.");
+    pushToast("Tryb edycji: po zapisaniu zmiany mogą wpłynąć na kolejne etapy KO.", "info");
   };
 
   const cancelEditFinished = (matchId: number) => {
@@ -742,7 +829,7 @@ export default function TournamentResults() {
       return n;
     });
 
-    setMessage("Edycja anulowana.");
+    pushToast("Edycja anulowana.", "info");
   };
 
   const exitEditFinished = (matchId: number) => {
@@ -762,11 +849,37 @@ export default function TournamentResults() {
      API calls
      ============================================================ */
 
-  const parseApiError = async (res: Response): Promise<string> => {
+  const parseApiErrorObj = async (res: Response): Promise<ApiErrorObj> => {
     const data = await res.json().catch(() => null);
-    if (!data) return "Błąd żądania.";
-    if (typeof (data as any)?.detail === "string") return (data as any).detail;
-    return "Błąd żądania.";
+
+    const message =
+      data && typeof (data as any)?.detail === "string"
+        ? (data as any).detail
+        : data && typeof (data as any)?.message === "string"
+        ? (data as any).message
+        : "Błąd żądania.";
+
+    const code = data && typeof (data as any)?.code === "string" ? (data as any).code : undefined;
+
+    return { message, code, data };
+  };
+
+  const parseApiError = async (res: Response): Promise<string> => {
+    const e = await parseApiErrorObj(res);
+    return e.message;
+  };
+
+  const throwApiError = async (res: Response) => {
+    const e = await parseApiErrorObj(res);
+    const err: any = new Error(e.message);
+    err.code = e.code;
+    err.data = e.data;
+    throw err;
+  };
+
+  const isIncidentsSyncConflict = (e: any): boolean => {
+    const code = String(e?.code ?? "");
+    return code === "INCIDENTS_SYNC_WOULD_DELETE_FILLED" || code.startsWith("INCIDENTS_SYNC_");
   };
 
   const loadTournament = async (): Promise<TournamentDTO> => {
@@ -847,10 +960,24 @@ export default function TournamentResults() {
       return n;
     });
 
+    // Jeśli użytkownik jest w trybie "Wprowadź zmiany" dla zakończonego meczu,
+    // zmiana wyniku wynikająca z LIVE (np. usunięcie incydentów) ma odblokować "Zapisz zmiany".
+    if (isEditingFinished(matchId)) {
+      // Zakończony mecz w trybie edycji: użytkownik ma kliknąć „Zapisz zmiany”.
+      setDirty((prev) => {
+        const n = new Set(prev);
+        n.add(matchId);
+        return n;
+      });
+    } else {
+      // Normalny mecz: wynik z LIVE (incydenty) jest już zapisany w backendzie.
+      // Nie oznaczamy meczu jako "dirty" i nie wywołujemy zapisu wyniku.
+    }
+
     await loadMatches(tournament).catch(() => null);
   };
 
-  const updateMatchScore = async (match: MatchDTO) => {
+  const updateMatchScore = async (match: MatchDTO, opts?: { force?: boolean }) => {
     const tn = isTennis(tournament);
 
     let payload: any;
@@ -892,23 +1019,29 @@ export default function TournamentResults() {
       };
     }
 
-    const res = await apiFetch(`/api/matches/${match.id}/result/`, {
+    const forceQ = opts?.force ? "?force=1" : "";
+
+    const res = await apiFetch(`/api/matches/${match.id}/result/${forceQ}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    if (!res.ok) throw new Error(await parseApiError(res));
+    if (!res.ok) await throwApiError(res);
   };
 
   const finishMatch = async (matchId: number) => {
     const res = await apiFetch(`/api/matches/${matchId}/finish/`, { method: "POST" });
-    if (!res.ok) throw new Error(await parseApiError(res));
+    if (!res.ok) await throwApiError(res);
+  };
+
+  const continueMatch = async (matchId: number) => {
+    const res = await apiFetch(`/api/matches/${matchId}/continue/`, { method: "POST" });
+    if (!res.ok) await throwApiError(res);
   };
 
   const generateNextStage = async (stageId: number) => {
     if (!id) return;
     setBusyGenerate(true);
-    setMessage(null);
     const res = await apiFetch(`/api/stages/${stageId}/confirm/`, { method: "POST" });
     if (!res.ok) {
       setBusyGenerate(false);
@@ -922,15 +1055,25 @@ export default function TournamentResults() {
   const advanceFromGroups = async () => {
     if (!id) return;
     setBusyGenerate(true);
-    setMessage(null);
     try {
       const res = await apiFetch(`/api/tournaments/${id}/advance-from-groups/`, { method: "POST" });
-      if (!res.ok) throw new Error(await parseApiError(res));
+      if (!res.ok) await throwApiError(res);
       const t = await loadTournament().catch(() => tournament);
       await loadMatches(t ?? null);
-      setMessage("Faza pucharowa wygenerowana.");
+      pushToast("Faza pucharowa wygenerowana.", "success");
     } catch (e: any) {
-      setMessage(e.message);
+      if (isIncidentsSyncConflict(e)) {
+        const wouldDelete = Array.isArray(e?.data?.would_delete) ? e.data.would_delete : [];
+        setPendingForce({
+          matchId: match.id,
+          op: "FINISH",
+          message: e.message,
+          code: e.code,
+          wouldDelete,
+        });
+      }
+
+      pushToast(e?.message ?? "Błąd.", "error");
     } finally {
       setBusyGenerate(false);
     }
@@ -942,14 +1085,13 @@ export default function TournamentResults() {
 
     const init = async () => {
       try {
-        setMessage(null);
         setLoading(true);
 
         // najpierw turniej (konfig), potem mecze (normalizacja)
         const t = await loadTournament();
         await loadMatches(t);
       } catch (e: any) {
-        if (mounted) setMessage(e.message);
+        if (mounted) pushToast(e?.message ?? "Błąd.", "error");
       } finally {
         if (mounted) setLoading(false);
       }
@@ -993,16 +1135,29 @@ export default function TournamentResults() {
     return "Zakończony";
   }
 
-  const saveMatch = async (matchId: number, opts?: { silentMessage?: boolean; matchOverride?: MatchDTO }) => {
-    const match = opts?.matchOverride ?? matches.find((m) => m.id === matchId);
+  const saveMatch = async (
+    matchId: number,
+    opts?: { silentMessage?: boolean; matchOverride?: MatchDTO }
+  ) => {
+    const match =
+      opts?.matchOverride ??
+      matchesRef.current.find((m) => m.id === matchId) ??
+      matches.find((m) => m.id === matchId);
     if (!match) return;
 
-    try {
-      setBusyMatchId(match.id);
-      if (!opts?.silentMessage) setMessage(null);
+    const silent = !!opts?.silentMessage;
 
+    if (!silent) {
+      setBusyMatchId(match.id);
+      // jeśli jest otwarty panel "wymuś" dla tego meczu, zamknij (żeby UX był spójny)
+      setPendingForce((prev) => (prev?.matchId === match.id ? null : prev));
+    }
+
+    try {
       await updateMatchScore(match);
 
+      // Po lokalnych zmianach wynik zapisujemy ręcznie przyciskiem "Zapisz".
+      // Po udanym zapisie czyścimy draft + znacznik "dirty" i oznaczamy mecz jako edytowany.
       setDrafts((prev) => {
         const n = { ...prev };
         delete n[match.id];
@@ -1013,26 +1168,42 @@ export default function TournamentResults() {
         n.delete(match.id);
         return n;
       });
-
       setEdited((prev) => {
         const n = new Set(prev);
         n.add(match.id);
         return n;
       });
 
+
       const t = await loadTournament().catch(() => tournament);
-      await loadMatches(t ?? null);
+      await loadMatches(t ?? null).catch(() => null);
 
       if (isEditingFinished(match.id)) {
         exitEditFinished(match.id);
       }
 
-      if (!opts?.silentMessage) setMessage("Wynik zapisany.");
+      if (!silent) pushToast("Zapisano.", "saved");
     } catch (e: any) {
-      setMessage(e.message);
+      // Jeśli zapis jest wywołany "cicho" (silent), przekaż błąd do wywołującego.
+      if (silent) {
+        throw e;
+      }
+
+      if (isIncidentsSyncConflict(e)) {
+        const wouldDelete = Array.isArray(e?.data?.would_delete) ? e.data.would_delete : [];
+        setPendingForce({
+          matchId: match.id,
+          op: "SAVE",
+          message: e.message,
+          code: e.code,
+          wouldDelete,
+        });
+      }
+
+      pushToast(e?.message ?? "Błąd.", "error");
       await loadMatches(tournament).catch(() => null);
     } finally {
-      setBusyMatchId(null);
+      if (!silent) setBusyMatchId(null);
     }
   };
 
@@ -1041,7 +1212,7 @@ export default function TournamentResults() {
     if (!match) return;
 
     if (match.status === "FINISHED") {
-      setMessage("Ten mecz jest już zakończony. Użyj „Wprowadź zmiany”, jeśli chcesz coś poprawić.");
+      pushToast("Ten mecz jest już zakończony. Użyj „Wprowadź zmiany”, jeśli chcesz coś poprawić.", "info");
       return;
     }
 
@@ -1055,14 +1226,13 @@ export default function TournamentResults() {
     });
 
     if (!verdict.ok) {
-      setMessage(verdict.message ?? "Nie można zakończyć meczu.");
+      pushToast(verdict.message ?? "Nie można zakończyć meczu.", "error");
       return;
     }
 
     try {
       setBusyMatchId(match.id);
-      setMessage(null);
-
+      setPendingForce((prev) => (prev?.matchId === match.id ? null : prev));
       // zawsze zapisujemy aktualny stan przed finishem
       await updateMatchScore(match);
       await finishMatch(match.id);
@@ -1087,43 +1257,91 @@ export default function TournamentResults() {
       const t = await loadTournament().catch(() => tournament);
       await loadMatches(t ?? null);
 
-      setMessage("Mecz zakończony.");
+      pushToast("Mecz zakończony.", "success");
     } catch (e: any) {
-      setMessage(e.message);
+      if (isIncidentsSyncConflict(e)) {
+        const wouldDelete = Array.isArray(e?.data?.would_delete) ? e.data.would_delete : [];
+        setPendingForce({
+          matchId: match.id,
+          op: "FINISH",
+          message: e.message,
+          code: e.code,
+          wouldDelete,
+        });
+      }
+
+      pushToast(e?.message ?? "Błąd.", "error");
     } finally {
       setBusyMatchId(null);
     }
   };
 
-  const updateLocalMatch = (matchId: number, updater: (m: MatchDTO) => MatchDTO) => {
-    const current = matches.find((m) => m.id === matchId);
-    if (!current) return;
+  const onContinueMatchClick = async (matchId: number) => {
+    const match = matches.find((m) => m.id === matchId);
+    if (!match) return;
 
-    const base = matches.map((m) => (m.id === matchId ? updater(m) : m));
-    const changed = base.find((m) => m.id === matchId);
-    if (!changed) return;
+    if (match.status !== "FINISHED") {
+      pushToast("Ten mecz nie jest zakończony.", "info");
+      return;
+    }
 
-    const cupMatches = getCupMatchesForStage(tournament, changed.stage_order);
-    const normalizedChanged = normalizeMatchForConfig(tournament, changed, cupMatches, base);
+    try {
+      setBusyMatchId(match.id);
+      // Wyjście z trybu edycji zakończonego meczu (jeśli ktoś był w tym trybie)
+      if (isEditingFinished(match.id)) {
+        exitEditFinished(match.id);
+      }
 
-    const nextList = base.map((m) => (m.id === matchId ? normalizedChanged : m));
-    setMatches(nextList);
+      await continueMatch(match.id);
 
-    setDirty((prev) => {
-      const n = new Set(prev);
-      n.add(matchId);
-      return n;
-    });
+      const t = await loadTournament().catch(() => tournament);
+      await loadMatches(t ?? null);
 
-    setDrafts((prev) => ({
-      ...prev,
-      [matchId]: toDraft(normalizedChanged),
-    }));
+      pushToast("Mecz wznowiony.", "success");
+    } catch (e: any) {
+      pushToast(e?.message ?? "Błąd.", "error");
+    } finally {
+      setBusyMatchId(null);
+    }
   };
 
-  /* ============================================================
-     TENNIS UI helpers (per match)
-     ============================================================ */
+
+const updateLocalMatch = (matchId: number, updater: (m: MatchDTO) => MatchDTO) => {
+  const current = matchesRef.current.find((m) => m.id === matchId);
+  if (!current) return;
+
+  const baseList = matchesRef.current;
+  const base = baseList.map((m) => (m.id === matchId ? updater(m) : m));
+  const changed = base.find((m) => m.id === matchId);
+  if (!changed) return;
+
+  const cupMatches = getCupMatchesForStage(tournament, changed.stage_order);
+  const normalizedChanged = normalizeMatchForConfig(tournament, changed, cupMatches, baseList);
+
+  const nextList = baseList.map((m) => (m.id === matchId ? normalizedChanged : m));
+
+  // Krytyczne: aktualizuj ref natychmiast, żeby szybkie kliknięcia nie gubiły ostatniej zmiany
+  matchesRef.current = nextList;
+  setMatches(nextList);
+
+
+  setDirty((prev) => {
+    const n = new Set(prev);
+    n.add(matchId);
+    return n;
+  });
+
+  setDrafts((prev) => ({
+    ...prev,
+    [matchId]: toDraft(normalizedChanged),
+  }));
+
+  // Zapis jest ręczny (przycisk "Zapisz"). Tutaj tylko oznaczamy mecz jako "dirty".
+};
+
+/* ============================================================
+   TENNIS UI helpers (per match)
+   ============================================================ */
 
   const updateTennisSet = (matchId: number, idx: number, patch: Partial<TennisSetDTO>) => {
     updateLocalMatch(matchId, (m) => {
@@ -1171,10 +1389,12 @@ export default function TournamentResults() {
     const status = uiStatus(match);
     const isBusy = busyMatchId === match.id;
     const wasEdited = edited.has(match.id);
-    const isDirty = dirty.has(match.id);
-
     const isFinished = match.status === "FINISHED";
     const inEditFinished = isFinished && isEditingFinished(match.id);
+
+    const snap = finishedSnapshots[match.id];
+    const changedVsSnapshot = inEditFinished && !!snap && !sameComparableResult(snap, match);
+    const isDirty = dirty.has(match.id) || changedVsSnapshot;
 
     const knockoutLike = isKnockoutLike(match.stage_type);
     const cupMatches = getCupMatchesForStage(tournament, match.stage_order);
@@ -1230,12 +1450,22 @@ export default function TournamentResults() {
 
     const tennisLabel = tn ? `Sety: ${match.home_score ?? 0}:${match.away_score ?? 0}` : null;
 
-    const bg = isFinished ? "rgba(30, 144, 255, 0.10)" : wasEdited ? "rgba(46, 204, 113, 0.08)" : "transparent";
+    const isLive = match.status === "IN_PROGRESS" || match.status === "RUNNING";
+
+    const bg = isFinished
+      ? "rgba(30, 144, 255, 0.10)"
+      : isLive
+      ? "rgba(46, 204, 113, 0.08)"
+      : wasEdited
+      ? "rgba(46, 204, 113, 0.06)"
+      : "transparent";
 
     const borderLeft = isFinished
       ? "4px solid rgba(30,144,255,0.8)"
-      : wasEdited
+      : isLive
       ? "4px solid rgba(46,204,113,0.8)"
+      : wasEdited
+      ? "4px solid rgba(46,204,113,0.6)"
       : "4px solid transparent";
 
     const finishVerdict = canFinishMatchUI({ tournament, match, cupMatches, allMatches: matches });
@@ -1470,64 +1700,35 @@ export default function TournamentResults() {
           )}
 
           {/* ===== Buttons ===== */}
-          {!isFinished ? (
-            <>
-              <button
-                onClick={() => saveMatch(match.id)}
-                disabled={isBusy || !isDirty}
-                style={{
-                  marginLeft: tn ? 0 : "1rem",
-                  padding: "0.4rem 0.8rem",
-                  borderRadius: 4,
-                  border: "1px solid rgba(46,204,113,0.5)",
-                  background: isDirty ? "rgba(46,204,113,0.18)" : "rgba(255,255,255,0.05)",
-                  color: "#fff",
-                  cursor: isDirty ? "pointer" : "not-allowed",
-                  opacity: isBusy ? 0.6 : 1,
-                  fontSize: "0.85em",
-                }}
-              >
-                Zapisz wynik
-              </button>
+          {/* Toggle LIVE (zegar + incydenty) — jeden przycisk dla całej karty meczu */}
+          <button
+            type="button"
+            onClick={() =>
+              setOpenLive((prev) => {
+                const n = new Set(prev);
+                if (n.has(match.id)) n.delete(match.id);
+                else n.add(match.id);
+                return n;
+              })
+            }
+            disabled={isBusy}
+            style={{
+              marginLeft: tn ? 0 : "1rem",
+              padding: "0.4rem 0.8rem",
+              borderRadius: 4,
+              border: "1px solid #2e7d32",
+              background: openLive.has(match.id) ? "rgba(46,204,113,0.12)" : "rgba(46,204,113,0.08)",
+              color: "#fff",
+              cursor: isBusy ? "not-allowed" : "pointer",
+              opacity: isBusy ? 0.6 : 1,
+              fontSize: "0.85em",
+            }}
+          >
+            {openLive.has(match.id) ? "Ukryj LIVE (zegar + incydenty)" : "Pokaż LIVE (zegar + incydenty)"}
+          </button>
 
-              <button
-                onClick={() => onFinishMatchClick(match.id)}
-                disabled={isBusy}
-                style={{
-                  padding: "0.4rem 0.8rem",
-                  borderRadius: 4,
-                  border: "1px solid #555",
-                  background: "rgba(255,255,255,0.05)",
-                  color: "#fff",
-                  cursor: "pointer",
-                  opacity: isBusy ? 0.6 : 1,
-                  fontSize: "0.85em",
-                }}
-              >
-                Zakończ mecz
-              </button>
 
-              {isDirty && <span style={{ marginLeft: "0.5rem", fontSize: "0.85em", opacity: 0.75 }}>Niezapisane zmiany</span>}
-            </>
-          ) : !inEditFinished ? (
-            <button
-              onClick={() => startEditFinished(match)}
-              disabled={isBusy}
-              style={{
-                marginLeft: "1rem",
-                padding: "0.4rem 0.8rem",
-                borderRadius: 4,
-                border: "1px solid rgba(30,144,255,0.6)",
-                background: "rgba(30,144,255,0.25)",
-                color: "#fff",
-                cursor: "pointer",
-                opacity: isBusy ? 0.6 : 1,
-                fontSize: "0.85em",
-              }}
-            >
-              Wprowadź zmiany
-            </button>
-          ) : (
+                    {!isFinished ? (
             <>
               <button
                 onClick={() => saveMatch(match.id)}
@@ -1536,16 +1737,59 @@ export default function TournamentResults() {
                   marginLeft: "1rem",
                   padding: "0.4rem 0.8rem",
                   borderRadius: 4,
-                  border: "1px solid rgba(46,204,113,0.5)",
+                  border: "1px solid rgba(46,204,113,0.6)",
                   background: isDirty ? "rgba(46,204,113,0.18)" : "rgba(255,255,255,0.05)",
                   color: "#fff",
-                  cursor: isDirty ? "pointer" : "not-allowed",
+                  cursor: isBusy || !isDirty ? "not-allowed" : "pointer",
                   opacity: isBusy ? 0.6 : 1,
                   fontSize: "0.85em",
                 }}
+                title={isDirty ? "Zapisz zmiany wyniku" : "Brak zmian do zapisu"}
+              >
+                Zapisz wynik
+              </button>
+
+              {!openLive.has(match.id) && (
+                <button
+                  onClick={() => onFinishMatchClick(match.id)}
+                  disabled={isBusy}
+                  style={{
+                    marginLeft: "0.6rem",
+                    padding: "0.4rem 0.8rem",
+                    borderRadius: 4,
+                    border: "1px solid #555",
+                    background: "rgba(255,255,255,0.05)",
+                    color: "#fff",
+                    cursor: "pointer",
+                    opacity: isBusy ? 0.6 : 1,
+                    fontSize: "0.85em",
+                  }}
+                >
+                  Zakończ mecz
+                </button>
+              )}
+            </>
+          ) : inEditFinished ? (
+            <>
+              <button
+                onClick={() => saveMatch(match.id)}
+                disabled={isBusy || !isDirty}
+                style={{
+                  marginLeft: "1rem",
+                  padding: "0.4rem 0.8rem",
+                  borderRadius: 4,
+                  border: "1px solid rgba(46,204,113,0.6)",
+                  background: isDirty ? "rgba(46,204,113,0.18)" : "rgba(255,255,255,0.05)",
+                  color: "#fff",
+                  cursor: isBusy || !isDirty ? "not-allowed" : "pointer",
+                  opacity: isBusy ? 0.6 : 1,
+                  fontSize: "0.85em",
+                }}
+                title={isDirty ? "Zapisz zmiany w zakończonym meczu" : "Brak zmian do zapisu"}
               >
                 Zapisz zmiany
               </button>
+
               <button
                 onClick={() => cancelEditFinished(match.id)}
                 disabled={isBusy}
@@ -1562,13 +1806,148 @@ export default function TournamentResults() {
               >
                 Anuluj
               </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => startEditFinished(match)}
+                disabled={isBusy}
+                style={{
+                  marginLeft: "1rem",
+                  padding: "0.4rem 0.8rem",
+                  borderRadius: 4,
+                  border: "1px solid rgba(30,144,255,0.6)",
+                  background: "rgba(30,144,255,0.25)",
+                  color: "#fff",
+                  cursor: "pointer",
+                  opacity: isBusy ? 0.6 : 1,
+                  fontSize: "0.85em",
+                }}
+              >
+                Wprowadź zmiany
+              </button>
 
-              {isDirty && <span style={{ marginLeft: "0.5rem", fontSize: "0.85em", opacity: 0.75 }}>Niezapisane zmiany</span>}
+              <button
+                onClick={() => onContinueMatchClick(match.id)}
+                disabled={isBusy}
+                style={{
+                  padding: "0.4rem 0.8rem",
+                  borderRadius: 4,
+                  border: "1px solid rgba(46,204,113,0.5)",
+                  background: "rgba(46,204,113,0.12)",
+                  color: "#fff",
+                  cursor: "pointer",
+                  opacity: isBusy ? 0.6 : 1,
+                  fontSize: "0.85em",
+                }}
+                title="Cofnij zakończenie i wróć do statusu: W trakcie"
+              >
+                Wznów mecz
+              </button>
             </>
           )}
-        </div>
+        {/* ===== 409: wymuszenie synchronizacji wyniku → incydenty ===== */}
+        {pendingForce?.matchId === match.id && (
+          <div
+            style={{
+              marginTop: "0.85rem",
+              padding: "0.75rem",
+              borderRadius: 8,
+              border: "1px solid rgba(231, 76, 60, 0.55)",
+              background: "rgba(231, 76, 60, 0.08)",
+            }}
+          >
+            <div style={{ fontSize: "0.9em", opacity: 0.95 }}>
+              <strong>Konflikt synchronizacji</strong>: {pendingForce.message}
+              {pendingForce.code ? <span style={{ marginLeft: "0.5rem", opacity: 0.7 }}>({pendingForce.code})</span> : null}
+            </div>
 
-        {isFinished && !inEditFinished && (
+            {Array.isArray(pendingForce.wouldDelete) && pendingForce.wouldDelete.length > 0 && (
+              <div style={{ marginTop: "0.5rem", fontSize: "0.85em", opacity: 0.9 }}>
+                Backend musiałby usunąć <strong>{pendingForce.wouldDelete.length}</strong> uzupełnionych incydentów GOAL.
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.7rem", flexWrap: "wrap" }}>
+              <button
+                disabled={isBusy}
+                onClick={async () => {
+                  try {
+                    setBusyMatchId(match.id);
+                    await updateMatchScore(match, { force: true });
+
+                    if (pendingForce.op === "FINISH") {
+                      await finishMatch(match.id);
+                    }
+
+                    setPendingForce(null);
+
+                    setDrafts((prev) => {
+                      const n = { ...prev };
+                      delete n[match.id];
+                      return n;
+                    });
+                    setDirty((prev) => {
+                      const n = new Set(prev);
+                      n.delete(match.id);
+                      return n;
+                    });
+
+                    setEdited((prev) => {
+                      const n = new Set(prev);
+                      n.add(match.id);
+                      return n;
+                    });
+
+                    const t = await loadTournament().catch(() => tournament);
+                    await loadMatches(t ?? null);
+
+                    pushToast(pendingForce.op === "FINISH" ? "Mecz zakończony (wymuszenie)." : "Wynik zapisany (wymuszenie).", "success");
+                  } catch (e2: any) {
+                    pushToast(e2?.message ?? "Błąd.", "error");
+                  } finally {
+                    setBusyMatchId(null);
+                  }
+                }}
+                style={{
+                  padding: "0.45rem 0.85rem",
+                  borderRadius: 6,
+                  border: "1px solid rgba(231, 76, 60, 0.7)",
+                  background: "rgba(231, 76, 60, 0.22)",
+                  color: "#fff",
+                  cursor: isBusy ? "not-allowed" : "pointer",
+                  opacity: isBusy ? 0.6 : 1,
+                  fontSize: "0.85em",
+                }}
+              >
+                Wymuś (usuń uzupełnione incydenty)
+              </button>
+
+              <button
+                disabled={isBusy}
+                onClick={() => setPendingForce(null)}
+                style={{
+                  padding: "0.45rem 0.85rem",
+                  borderRadius: 6,
+                  border: "1px solid #555",
+                  background: "rgba(255,255,255,0.05)",
+                  color: "#fff",
+                  cursor: isBusy ? "not-allowed" : "pointer",
+                  opacity: isBusy ? 0.6 : 1,
+                  fontSize: "0.85em",
+                }}
+              >
+                Anuluj
+              </button>
+            </div>
+
+            <div style={{ marginTop: "0.55rem", fontSize: "0.82em", opacity: 0.8 }}>
+              Wymuszenie spowoduje dopasowanie LIVE do „szybkiego wyniku” poprzez usunięcie także tych incydentów GOAL,
+              które mają już uzupełnionego zawodnika lub czas.
+            </div>
+          </div>
+        )}
+{isFinished && !inEditFinished && (
           <div style={{ marginTop: "0.5rem", fontSize: "0.85em", opacity: 0.75 }}>
             Mecz jest zakończony. Jeśli musisz poprawić wynik, kliknij „Wprowadź zmiany”.
           </div>
@@ -1689,20 +2068,23 @@ export default function TournamentResults() {
         {/* ============================================================
            MATCH LIVE / INCYDENTY (panel)
            ============================================================ */}
-        <div style={{ marginTop: "0.85rem" }}>
-          <MatchLivePanelAny
-            tournamentId={String(tournament?.id ?? "")}
-            discipline={tournament?.discipline ?? ""}
-            matchId={match.id}
-            matchStatus={match.status}
-            homeTeamId={match.home_team_id}
-            awayTeamId={match.away_team_id}
-            homeTeamName={homeName}
-            awayTeamName={awayName}
-            canEdit={!lockByFinish || inEditFinished}
-            onAfterRecompute={() => refreshAfterLiveChange(match.id)}
-          />
-        </div>
+        {openLive.has(match.id) && (
+          <div style={{ marginTop: "0.85rem" }}>
+            <MatchLivePanelAny
+              tournamentId={String(tournament?.id ?? "")}
+              discipline={tournament?.discipline ?? ""}
+              matchId={match.id}
+              matchStatus={match.status}
+              homeTeamId={match.home_team_id}
+              awayTeamId={match.away_team_id}
+              homeTeamName={homeName}
+              awayTeamName={awayName}
+              canEdit={!lockByFinish || inEditFinished}
+              onAfterRecompute={() => refreshAfterLiveChange(match.id)}
+            />
+          </div>
+        )}
+      </div>
       </div>
     );
   };
@@ -1869,8 +2251,8 @@ export default function TournamentResults() {
                     disabled={!allMatchesInLastStageFinished || busyGenerate}
                     onClick={() =>
                       generateNextStage(s.stageId)
-                        .then(() => setMessage("Następny etap wygenerowany."))
-                        .catch((e: any) => setMessage(e.message))
+                        .then(() => pushToast("Następny etap wygenerowany.", "success"))
+                        .catch((e: any) => pushToast(e?.message ?? "Błąd.", "error"))
                     }
                     style={{
                       padding: "0.7rem 1.2rem",
@@ -1898,23 +2280,52 @@ export default function TournamentResults() {
         );
       })}
 
-      {message && (
+{/* Toasts (prawy dolny róg) */}
+{toasts.length > 0 && (
+  <div
+    style={{
+      position: "fixed",
+      bottom: "2rem",
+      right: "2rem",
+      display: "flex",
+      flexDirection: "column",
+      gap: "0.6rem",
+      zIndex: 9999,
+      pointerEvents: "none",
+    }}
+  >
+    {toasts.map((t) => {
+      const borderLeft =
+        t.kind === "error"
+          ? "5px solid #e74c3c"
+          : t.kind === "success" || t.kind === "saved"
+          ? "5px solid #2ecc71"
+          : "5px solid #777";
+
+      return (
         <div
+          key={t.id}
           style={{
-            position: "fixed",
-            bottom: "2rem",
-            right: "2rem",
-            background: "#333",
+            background: "#2b2b2b",
             color: "#fff",
-            padding: "1rem 2rem",
-            borderRadius: "8px",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
-            borderLeft: "5px solid #2ecc71",
+            padding: "0.8rem 1.1rem",
+            borderRadius: 10,
+            boxShadow: "0 6px 18px rgba(0,0,0,0.45)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            borderLeft,
+            minWidth: 260,
+            maxWidth: 520,
+            lineHeight: 1.35,
+            fontSize: "0.95rem",
           }}
         >
-          {message}
+          {t.text}
         </div>
-      )}
+      );
+    })}
+  </div>
+)}
+
     </div>
   );
 }

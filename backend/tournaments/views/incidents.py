@@ -19,6 +19,8 @@ from tournaments.models import (
     TournamentMembership,
 )
 
+from tournaments.serializers.incidents import MatchIncidentSerializer
+
 
 def _get_membership_perms(user, tournament: Tournament) -> dict | None:
     if not user or user.is_anonymous:
@@ -400,6 +402,115 @@ class MatchIncidentListCreateView(APIView):
 class MatchIncidentDeleteView(APIView):
     permission_classes = [IsAuthenticated]
 
+    def patch(self, request, incident_id: int):
+        """Aktualizacja istniejącego incydentu (minuta / zawodnik / meta.note).
+
+        Cel: umożliwić korektę danych LIVE bez usuwania i ponownego dodawania.
+        Nie zmieniamy: match_id, team_id, kind (typ).
+        """
+        with transaction.atomic():
+            incident = get_object_or_404(
+                MatchIncident.objects.select_related("match__tournament").select_for_update(),
+                pk=incident_id,
+            )
+            match = Match.objects.select_related("tournament").select_for_update().get(pk=incident.match_id)
+
+            try:
+                _require_can_manage_incidents(request.user, match)
+            except PermissionError as e:
+                return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
+
+            data = request.data or {}
+
+            # minuta / zapis surowy
+            if "minute" in data:
+                v = data.get("minute")
+                if v in (None, "", "null"):
+                    incident.minute = None
+                else:
+                    try:
+                        incident.minute = int(v)
+                    except (TypeError, ValueError):
+                        return Response({"detail": "Nieprawidłowa minuta."}, status=status.HTTP_400_BAD_REQUEST)
+
+            if "minute_raw" in data:
+                v = data.get("minute_raw")
+                incident.minute_raw = (str(v).strip() if v not in (None, "") else None)
+
+            # player single
+            if "player_id" in data:
+                pid = data.get("player_id")
+                if pid in (None, "", "null"):
+                    incident.player_id = None
+                else:
+                    try:
+                        pid_int = int(pid)
+                    except (TypeError, ValueError):
+                        return Response({"detail": "Nieprawidłowy zawodnik."}, status=status.HTTP_400_BAD_REQUEST)
+                    player = TeamPlayer.objects.filter(pk=pid_int).select_related("team").first()
+                    if not player:
+                        return Response({"detail": "Nie znaleziono zawodnika."}, status=status.HTTP_400_BAD_REQUEST)
+                    if player.team_id != incident.team_id:
+                        return Response({"detail": "Zawodnik nie należy do tej drużyny."}, status=status.HTTP_400_BAD_REQUEST)
+                    incident.player_id = pid_int
+
+            # substitution players
+            if "player_out_id" in data:
+                v = data.get("player_out_id")
+                if v in (None, "", "null"):
+                    incident.player_out_id = None
+                else:
+                    try:
+                        pid_int = int(v)
+                    except (TypeError, ValueError):
+                        return Response({"detail": "Nieprawidłowy zawodnik schodzący."}, status=status.HTTP_400_BAD_REQUEST)
+                    player = TeamPlayer.objects.filter(pk=pid_int).select_related("team").first()
+                    if not player:
+                        return Response({"detail": "Nie znaleziono zawodnika schodzącego."}, status=status.HTTP_400_BAD_REQUEST)
+                    if player.team_id != incident.team_id:
+                        return Response({"detail": "Zawodnik schodzący nie należy do tej drużyny."}, status=status.HTTP_400_BAD_REQUEST)
+                    incident.player_out_id = pid_int
+
+            if "player_in_id" in data:
+                v = data.get("player_in_id")
+                if v in (None, "", "null"):
+                    incident.player_in_id = None
+                else:
+                    try:
+                        pid_int = int(v)
+                    except (TypeError, ValueError):
+                        return Response({"detail": "Nieprawidłowy zawodnik wchodzący."}, status=status.HTTP_400_BAD_REQUEST)
+                    player = TeamPlayer.objects.filter(pk=pid_int).select_related("team").first()
+                    if not player:
+                        return Response({"detail": "Nie znaleziono zawodnika wchodzącego."}, status=status.HTTP_400_BAD_REQUEST)
+                    if player.team_id != incident.team_id:
+                        return Response({"detail": "Zawodnik wchodzący nie należy do tej drużyny."}, status=status.HTTP_400_BAD_REQUEST)
+                    incident.player_in_id = pid_int
+
+            # meta.note
+            if "note" in data:
+                note = data.get("note")
+                meta = incident.meta if isinstance(incident.meta, dict) else {}
+                if note in (None, "", "null"):
+                    meta.pop("note", None)
+                else:
+                    meta["note"] = str(note)
+                incident.meta = meta
+
+            # Walidacja constraintów SUBSTITUTION
+            if incident.kind == MatchIncident.Kind.SUBSTITUTION:
+                if not incident.player_in_id or not incident.player_out_id:
+                    return Response({"detail": "Zmiana wymaga zawodnika schodzącego i wchodzącego."}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                # incydenty inne niż zmiana nie powinny mieć player_in/out
+                incident.player_in_id = None
+                incident.player_out_id = None
+
+            incident.save()
+
+            ser = MatchIncidentSerializer(incident)
+            return Response(ser.data, status=status.HTTP_200_OK)
+
     def delete(self, request, incident_id: int):
         with transaction.atomic():
             incident = get_object_or_404(
@@ -427,14 +538,9 @@ class MatchIncidentDeleteView(APIView):
                 except ValueError:
                     pts = 1
 
-                # delta z metadanych (jeśli incydent był dodany "wypełniając lukę", delta=0)
-                raw_delta = meta.get("_score_delta", None)
-                try:
-                    delta = int(raw_delta) if raw_delta is not None else pts
-                except (TypeError, ValueError):
-                    delta = pts
-
-                delta = max(0, min(delta, pts))
+                                # W nowym modelu (szybki wynik jako prawda) GOAL zawsze wpływa na wynik.
+                # Nie opieramy się na _score_delta (historyczny mechanizm „doganiania”).
+                delta = pts
 
                 team_id = incident.team_id
                 current_score = _team_score_value(match, team_id)

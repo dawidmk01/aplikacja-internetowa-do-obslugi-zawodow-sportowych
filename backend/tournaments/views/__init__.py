@@ -47,6 +47,7 @@ from .matches import (
     MatchScheduleUpdateView,
     MatchResultUpdateView,
     FinishMatchView,
+    ContinueMatchView,
 )
 
 from .stages import (
@@ -120,6 +121,8 @@ __all__ = [
     "MatchScheduleUpdateView",
     "MatchResultUpdateView",
     "FinishMatchView",
+    "ContinueMatchView",
+
 
     # stages
     "AdvanceFromGroupsView",

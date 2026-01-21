@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 
 from django.db import transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 
 from rest_framework import status
 from rest_framework.generics import ListAPIView, RetrieveUpdateAPIView
@@ -225,8 +226,11 @@ def _regenerate_knockout_from_groups_if_safe(tournament: Tournament) -> None:
     advance_from_groups(tournament)
 
 
+SYNC_CODE_WOULD_DELETE_FILLED = "INCIDENTS_SYNC_WOULD_DELETE_FILLED"
+
+
 # =========================
-# Incidents -> score guard
+# Score <-> incidents (GOAL) sync
 # =========================
 
 def _incident_goal_points(discipline: str, meta: object) -> int:
@@ -246,6 +250,14 @@ def _incident_goal_points(discipline: str, meta: object) -> int:
     return 1
 
 
+def _is_goal_based_or_basketball(discipline: str) -> bool:
+    return discipline in (
+        Tournament.Discipline.FOOTBALL,
+        Tournament.Discipline.HANDBALL,
+        Tournament.Discipline.BASKETBALL,
+    )
+
+
 def _incident_counts_for_main_score(discipline: str, period: object) -> bool:
     """
     Na tym etapie pilnujemy spójności głównego wyniku (home_score/away_score)
@@ -262,71 +274,238 @@ def _incident_counts_for_main_score(discipline: str, period: object) -> bool:
     return True
 
 
-def _min_scores_from_goal_incidents(match: Match) -> Tuple[int, int]:
+def _goal_incident_is_filled(i: MatchIncident) -> bool:
     """
-    Minimalny wynik wymagany przez zarejestrowane incydenty GOAL.
-    Wymusza zasadę: nie można zbić wyniku poniżej tego, co już jest opisane incydentami.
+    Uznajemy, że incydent GOAL jest "uzupełniony", jeśli ma jakiekolwiek dane
+    operatora: zawodnika lub czas.
+    """
+    if getattr(i, "player_id", None):
+        return True
+    if getattr(i, "minute", None) is not None:
+        return True
+    mr = (getattr(i, "minute_raw", None) or "").strip()
+    return bool(mr)
+
+
+def _sum_goal_points_for_team(match: Match, *, team_id: int) -> int:
+    d = match.tournament.discipline
+    if not team_id:
+        return 0
+    qs = (
+        MatchIncident.objects
+        .filter(match_id=match.id, kind="GOAL", team_id=team_id)
+        .only("id", "team_id", "meta", "period")
+    )
+    total = 0
+    for i in qs:
+        if not _incident_counts_for_main_score(d, i.period):
+            continue
+        total += _incident_goal_points(d, i.meta)
+    return int(total)
+
+
+def _points_to_basketball_chunks(diff: int) -> List[int]:
+    """Rozbij różnicę punktów na listę 3/2/1 (greedy)."""
+    left = max(0, int(diff))
+    out: List[int] = []
+    for p in (3, 2, 1):
+        while left >= p:
+            out.append(p)
+            left -= p
+    return out
+
+
+def _sync_score_to_goal_incidents_or_409(
+    match: Match,
+    *,
+    force: bool,
+    created_by_id: Optional[int] = None,
+) -> Optional[Response]:
+    """
+    Szybki wynik = źródło prawdy.
+
+    Dla football/handball/basketball synchronizujemy incydenty GOAL tak, aby
+    suma incydentów (w main periods) == match.home_score / match.away_score.
+
+    - dodajemy placeholdery GOAL z meta._score_delta=0 (żeby nie "podnosiły" wyniku),
+    - usuwamy nadmiarowe GOAL: najpierw puste, potem (opcjonalnie) uzupełnione.
+    - jeżeli musielibyśmy usunąć uzupełnione i force==False => 409 + kod.
     """
     t = match.tournament
-    discipline = t.discipline
+    d = t.discipline
 
+    if _is_tennis(t):
+        return None
+    if not _is_goal_based_or_basketball(d):
+        return None
     if not match.home_team_id or not match.away_team_id:
-        return 0, 0
+        return None
 
+    desired_home = int(match.home_score or 0)
+    desired_away = int(match.away_score or 0)
+
+    # Zbierz kandydatów do zmian
     qs = (
         MatchIncident.objects
         .filter(match_id=match.id, kind="GOAL")
-        .only("team_id", "meta", "period")
+        .only("id", "team_id", "meta", "period", "player_id", "minute", "minute_raw")
+        .order_by("-id")
     )
 
-    home_min = 0
-    away_min = 0
-
+    by_team: Dict[int, List[MatchIncident]] = {match.home_team_id: [], match.away_team_id: []}
     for i in qs:
-        if not _incident_counts_for_main_score(discipline, i.period):
+        if i.team_id not in by_team:
             continue
-        pts = _incident_goal_points(discipline, i.meta)
-        if i.team_id == match.home_team_id:
-            home_min += pts
-        elif i.team_id == match.away_team_id:
-            away_min += pts
+        if not _incident_counts_for_main_score(d, i.period):
+            continue
+        by_team[i.team_id].append(i)
 
-    return int(home_min), int(away_min)
+    def current_points(team_id: int) -> int:
+        total = 0
+        for i in by_team.get(team_id, []):
+            total += _incident_goal_points(d, i.meta)
+        return int(total)
+
+    cur_home = current_points(match.home_team_id)
+    cur_away = current_points(match.away_team_id)
+
+    to_delete: List[MatchIncident] = []
+    would_delete_filled: List[MatchIncident] = []
+
+    def plan_deletions(team_id: int, cur: int, desired: int) -> int:
+        """Zwraca nową wartość cur po zaplanowaniu usunięć."""
+        if cur <= desired:
+            return cur
+
+        # preferuj usuwanie pustych (nieuzupełnionych)
+        candidates = by_team.get(team_id, [])
+        candidates_sorted = sorted(candidates, key=lambda x: (_goal_incident_is_filled(x), -int(x.id)))
+
+        new_cur = cur
+        for inc in candidates_sorted:
+            if new_cur <= desired:
+                break
+            pts = _incident_goal_points(d, inc.meta)
+            new_cur -= pts
+            to_delete.append(inc)
+            if _goal_incident_is_filled(inc):
+                would_delete_filled.append(inc)
+
+        return int(new_cur)
+
+    new_home_after_del = plan_deletions(match.home_team_id, cur_home, desired_home)
+    new_away_after_del = plan_deletions(match.away_team_id, cur_away, desired_away)
+
+    if would_delete_filled and not force:
+        return Response(
+            {
+                "detail": (
+                    "Konflikt synchronizacji: Zmiana szybkiego wyniku wymaga usunięcia uzupełnionych incydentów "
+                    "(zawodnik/czas). Użyj opcji \"Wymuś\", jeśli chcesz kontynuować."
+                ),
+                "code": "INCIDENTS_SYNC_WOULD_DELETE_FILLED",
+                "would_delete": [i.id for i in would_delete_filled],
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
 
 
-def _validate_scores_not_below_incidents(match: Match, home_score, away_score) -> Optional[str]:
-    """
-    Blokujemy zapis, gdy ktoś próbuje ustawić wynik < suma GOAL incydentów.
-    (Dokładnie to: „korekta w dół wymaga usunięcia incydentu”.)
-    """
-    if _is_tennis(match.tournament):
-        return None
+    # Usuń zaplanowane
+    if to_delete:
+        MatchIncident.objects.filter(id__in=[i.id for i in to_delete]).delete()
 
-    home_min, away_min = _min_scores_from_goal_incidents(match)
+    # Po usunięciach policz ponownie (żeby poprawnie obsłużyć kosz 2/3 pkt)
+    match.refresh_from_db(fields=["home_score", "away_score"])
+    cur_home2 = _sum_goal_points_for_team(match, team_id=match.home_team_id)
+    cur_away2 = _sum_goal_points_for_team(match, team_id=match.away_team_id)
 
-    if home_score is None:
-        if home_min > 0:
-            return f"Nie można wyczyścić wyniku gospodarzy: istnieją incydenty GOAL ({home_min}). Usuń incydenty lub ustaw wynik >= {home_min}."
-    else:
-        try:
-            hs = int(home_score)
-        except (TypeError, ValueError):
-            return "home_score musi być liczbą."
-        if hs < home_min:
-            return f"Wynik gospodarzy ({hs}) nie może być mniejszy niż suma z incydentów GOAL ({home_min}). Usuń incydenty lub ustaw wynik >= {home_min}."
+    def create_placeholders(team_id: int, need_points: int) -> None:
+        if need_points <= 0:
+            return
+        if d == Tournament.Discipline.BASKETBALL:
+            chunks = _points_to_basketball_chunks(need_points)
+            for pts in chunks:
+                MatchIncident.objects.create(
+                    match_id=match.id,
+                    team_id=team_id,
+                    kind="GOAL",
+                    period="NONE",
+                    time_source="MANUAL",
+                    minute=None,
+                    minute_raw=None,
+                    player_id=None,
+                    meta={"points": pts, "_score_delta": 0, "source": "FAST_SCORE"},
+                    created_by_id=created_by_id,
+                )
+        else:
+            for _ in range(int(need_points)):
+                MatchIncident.objects.create(
+                    match_id=match.id,
+                    team_id=team_id,
+                    kind="GOAL",
+                    period="NONE",
+                    time_source="MANUAL",
+                    minute=None,
+                    minute_raw=None,
+                    player_id=None,
+                    meta={"_score_delta": 0, "source": "FAST_SCORE"},
+                    created_by_id=created_by_id,
+                )
 
-    if away_score is None:
-        if away_min > 0:
-            return f"Nie można wyczyścić wyniku gości: istnieją incydenty GOAL ({away_min}). Usuń incydenty lub ustaw wynik >= {away_min}."
-    else:
-        try:
-            aws = int(away_score)
-        except (TypeError, ValueError):
-            return "away_score musi być liczbą."
-        if aws < away_min:
-            return f"Wynik gości ({aws}) nie może być mniejszy niż suma z incydentów GOAL ({away_min}). Usuń incydenty lub ustaw wynik >= {away_min}."
+    need_home = int(desired_home) - int(cur_home2)
+    need_away = int(desired_away) - int(cur_away2)
+    if need_home > 0:
+        create_placeholders(match.home_team_id, need_home)
+    if need_away > 0:
+        create_placeholders(match.away_team_id, need_away)
 
     return None
+
+
+
+
+
+
+# =========================
+# Match clock helpers
+# =========================
+
+_MAX_MATCH_SECONDS = 3 * 60 * 60  # 3h hard limit (UI safety)
+
+def _stop_match_clock(match: Match) -> None:
+    """Stops the match clock and persists the accumulated elapsed seconds (capped)."""
+    now = timezone.now()
+    elapsed = int(getattr(match, "clock_elapsed_seconds", 0) or 0)
+
+    started_at = getattr(match, "clock_started_at", None)
+    if started_at:
+        try:
+            delta = int((now - started_at).total_seconds())
+        except Exception:
+            delta = 0
+        if delta < 0:
+            delta = 0
+        elapsed += delta
+
+    if elapsed > _MAX_MATCH_SECONDS:
+        elapsed = _MAX_MATCH_SECONDS
+
+    match.clock_elapsed_seconds = elapsed
+    match.clock_started_at = None
+    match.clock_state = Match.ClockState.STOPPED
+
+
+def _continue_match_clock(match: Match) -> None:
+    """Resumes the match clock from the current elapsed seconds."""
+    now = timezone.now()
+    if int(getattr(match, "clock_elapsed_seconds", 0) or 0) >= _MAX_MATCH_SECONDS:
+        # do not resume beyond limit
+        match.clock_state = Match.ClockState.STOPPED
+        match.clock_started_at = None
+        return
+
+    match.clock_state = Match.ClockState.RUNNING
+    match.clock_started_at = now
 
 
 # ============================================================
@@ -474,14 +653,14 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
         serializer = self.get_serializer(match, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
 
-        # --- GUARD: wynik nie może spaść poniżej incydentów GOAL ---
-        proposed_home = serializer.validated_data.get("home_score", match.home_score)
-        proposed_away = serializer.validated_data.get("away_score", match.away_score)
-        err = _validate_scores_not_below_incidents(match, proposed_home, proposed_away)
-        if err:
-            return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
+        force = str(request.query_params.get("force") or "").strip().lower() in {"1", "true", "yes"}
 
         match = serializer.save()
+
+        # Szybki wynik jest źródłem prawdy: dopasuj incydenty GOAL do wyniku.
+        resp = _sync_score_to_goal_incidents_or_409(match, force=force, created_by_id=request.user.id)
+        if resp is not None:
+            return resp
 
         if stage.stage_type in (Stage.StageType.LEAGUE, Stage.StageType.GROUP):
             try:
@@ -543,10 +722,11 @@ class FinishMatchView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # --- GUARD: nie kończymy meczu, jeśli wynik < incydenty GOAL ---
-        err = _validate_scores_not_below_incidents(match, match.home_score, match.away_score)
-        if err:
-            return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
+        # Szybki wynik jest źródłem prawdy: przy zakończeniu też domykamy sync do incydentów.
+        force = str(request.query_params.get("force") or "").strip().lower() in {"1", "true", "yes"}
+        resp = _sync_score_to_goal_incidents_or_409(match, force=force, created_by_id=request.user.id)
+        if resp is not None:
+            return resp
 
         cfg = tournament.format_config or {}
 
@@ -562,7 +742,8 @@ class FinishMatchView(APIView):
                 pass
 
             match.status = Match.Status.FINISHED
-            match.save(update_fields=["status"])
+            _stop_match_clock(match)
+            match.save(update_fields=["status", "clock_state", "clock_started_at", "clock_elapsed_seconds"])
 
             try:
                 _regenerate_knockout_from_groups_if_safe(tournament)
@@ -613,7 +794,8 @@ class FinishMatchView(APIView):
                 old_winner_id = match.winner_id
                 match.winner_id = winner_id
                 match.status = Match.Status.FINISHED
-                match.save(update_fields=["winner", "status"])
+                _stop_match_clock(match)
+                match.save(update_fields=["winner", "status", "clock_state", "clock_started_at", "clock_elapsed_seconds"])
 
                 _handle_knockout_progression(tournament, stage, old_winner_id, winner_id)
                 return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
@@ -623,7 +805,8 @@ class FinishMatchView(APIView):
 
                 if match.status != Match.Status.FINISHED:
                     match.status = Match.Status.FINISHED
-                    match.save(update_fields=["status"])
+                    _stop_match_clock(match)
+                    match.save(update_fields=["status", "clock_state", "clock_started_at", "clock_elapsed_seconds"])
 
                 _sync_two_leg_pair_winner_if_possible(stage, tournament, match)
 
@@ -644,3 +827,44 @@ class FinishMatchView(APIView):
                 return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
 
         return Response({"detail": "Nieobsługiwany typ etapu."}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+class ContinueMatchView(APIView):
+    """
+    POST /api/matches/<pk>/continue/
+    Cofnięcie meczu z Zakończony -> W trakcie + wznowienie zegara od miejsca zatrzymania.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, *args, **kwargs):
+        match_id = kwargs.get("pk") or kwargs.get("id")
+        if not match_id:
+            return Response({"detail": "Brak identyfikatora meczu."}, status=status.HTTP_400_BAD_REQUEST)
+
+        match = get_object_or_404(
+            Match.objects.select_related("stage", "tournament", "home_team", "away_team").select_for_update(),
+            pk=match_id,
+        )
+        tournament = match.tournament
+
+        if not can_edit_results(request.user, tournament):
+            return Response(
+                {"detail": "Nie masz uprawnień do kontynuowania meczu. Dostępny jest tylko podgląd."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Dozwolone tylko z FINISHED -> IN_PROGRESS
+        if match.status != Match.Status.FINISHED:
+            return Response(
+                {"detail": "Mecz nie jest zakończony — nie ma czego kontynuować."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        match.status = Match.Status.IN_PROGRESS
+        _continue_match_clock(match)
+
+        match.save(update_fields=["status", "clock_state", "clock_started_at"])
+
+        return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
