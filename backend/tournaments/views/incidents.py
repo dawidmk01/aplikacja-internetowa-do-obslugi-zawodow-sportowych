@@ -2,23 +2,16 @@
 from __future__ import annotations
 
 from django.db import transaction
+from django.db.models import Case, F, IntegerField, Value, When
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from tournaments.models import (
-    Match,
-    MatchIncident,
-    TeamPlayer,
-    Tournament,
-    TournamentMembership,
-)
-
-from tournaments.serializers.incidents import MatchIncidentSerializer
+from tournaments.models import Match, MatchIncident, TeamPlayer, Tournament, TournamentMembership
 
 
 def _get_membership_perms(user, tournament: Tournament) -> dict | None:
@@ -50,11 +43,7 @@ def _require_can_manage_incidents(user, match: Match) -> None:
 def _kind_display(kind: str, discipline: str) -> str:
     # Celowo nie polegamy na label z choices, bo dla kosza/ręcznej GOAL to „punkt”.
     if discipline == Tournament.Discipline.BASKETBALL:
-        mapping = {
-            "GOAL": "Punkt",
-            "FOUL": "Faul",
-            "TIMEOUT": "Timeout",
-        }
+        mapping = {"GOAL": "Punkt", "FOUL": "Faul", "TIMEOUT": "Timeout"}
         return mapping.get(kind, kind)
     if discipline == Tournament.Discipline.HANDBALL:
         mapping = {
@@ -72,7 +61,7 @@ def _kind_display(kind: str, discipline: str) -> str:
             "TIMEOUT": "Przerwa/timeout",
         }
         return mapping.get(kind, kind)
-    # Football default
+
     mapping = {
         "GOAL": "Bramka",
         "YELLOW_CARD": "Żółta kartka",
@@ -94,11 +83,8 @@ def _allowed_kinds_for_discipline(discipline: str) -> set[str]:
         return {"GOAL", "FOUL", "TIMEOUT"}
     if discipline == Tournament.Discipline.TENNIS:
         return {"TENNIS_POINT", "TENNIS_CODE_VIOLATION", "TIMEOUT"}
-    # fallback
     return {"GOAL", "FOUL", "TIMEOUT"}
 
-
-# --- AUTO CLOCK RULES ---
 
 _TIMEOUT_KIND = getattr(MatchIncident.Kind, "TIMEOUT", "TIMEOUT")
 
@@ -124,65 +110,6 @@ def _pause_clock_if_running(match: Match, *, now) -> None:
     match.save(update_fields=["clock_elapsed_seconds", "clock_started_at", "clock_state"])
 
 
-def _serialize_incident(i: MatchIncident) -> dict:
-    d = i.match.tournament.discipline
-    return {
-        "id": i.id,
-        "match_id": i.match_id,
-        "team_id": i.team_id,
-        "kind": i.kind,
-        "kind_display": _kind_display(i.kind, d),
-        "period": i.period,
-        "time_source": i.time_source,
-        "minute": i.minute,
-        "minute_raw": i.minute_raw,
-        "player_id": i.player_id,
-        "player_name": i.player.display_name if i.player else None,
-        "player_in_id": i.player_in_id,
-        "player_in_name": i.player_in.display_name if i.player_in else None,
-        "player_out_id": i.player_out_id,
-        "player_out_name": i.player_out.display_name if i.player_out else None,
-        "meta": i.meta or {},
-        "created_by": i.created_by_id,
-        "created_at": i.created_at.isoformat() if i.created_at else None,
-    }
-
-
-def _parse_int(v, field: str, allow_none: bool = True) -> int | None:
-    if v is None or v == "":
-        return None if allow_none else 0
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        raise ValueError(f"{field} musi być liczbą całkowitą.")
-
-
-def _team_must_be_in_match(match: Match, team_id: int) -> None:
-    if team_id not in (match.home_team_id, match.away_team_id):
-        raise ValueError("team_id musi być jedną z drużyn tego meczu (home/away).")
-
-
-def _player_must_belong_to_team(player: TeamPlayer, team_id: int) -> None:
-    if player.team_id != team_id:
-        raise ValueError("Zawodnik nie należy do wskazanej drużyny.")
-
-
-def _team_score_value(match: Match, team_id: int) -> int:
-    if team_id == match.home_team_id:
-        return int(match.home_score or 0)
-    if team_id == match.away_team_id:
-        return int(match.away_score or 0)
-    return 0
-
-
-def _set_team_score_value(match: Match, team_id: int, value: int) -> None:
-    v = max(0, int(value))
-    if team_id == match.home_team_id:
-        match.home_score = v
-    elif team_id == match.away_team_id:
-        match.away_score = v
-
-
 # =========================
 # Scoping: REGULAR / EXTRA_TIME
 # =========================
@@ -196,29 +123,40 @@ def _norm_score_scope(scope: str | None) -> str:
     return SCORE_SCOPE_EXTRA_TIME if s == SCORE_SCOPE_EXTRA_TIME else SCORE_SCOPE_REGULAR
 
 
-def _team_score_value_scoped(match: Match, team_id: int, scope: str) -> int:
-    scope = _norm_score_scope(scope)
-    if scope == SCORE_SCOPE_EXTRA_TIME:
-        if team_id == match.home_team_id:
-            return int(getattr(match, "home_extra_time_score", 0) or 0)
-        if team_id == match.away_team_id:
-            return int(getattr(match, "away_extra_time_score", 0) or 0)
-        return 0
-    # REGULAR
-    return _team_score_value(match, team_id)
+def _is_extra_time_period(period: str | None) -> bool:
+    p = (period or "").strip().upper()
+    if not p:
+        return False
+    # defensywnie: różne nazewnictwo w modelach (ET1/ET2/ET/OT)
+    return p in ("ET1", "ET2", "ET", "OT", SCORE_SCOPE_EXTRA_TIME)
 
 
-def _set_team_score_value_scoped(match: Match, team_id: int, scope: str, value: int) -> None:
-    scope = _norm_score_scope(scope)
-    v = max(0, int(value))
-    if scope == SCORE_SCOPE_EXTRA_TIME:
-        if team_id == match.home_team_id:
-            setattr(match, "home_extra_time_score", v)
-        elif team_id == match.away_team_id:
-            setattr(match, "away_extra_time_score", v)
-        return
-    # REGULAR
-    _set_team_score_value(match, team_id, v)
+def _default_period_for_scope(discipline: str, scope: str) -> str:
+    """
+    Wymuszamy spójność: jeśli scope=EXTRA_TIME, period powinien być ET*.
+    """
+    if str(scope).upper() == SCORE_SCOPE_EXTRA_TIME:
+        if discipline in (Tournament.Discipline.FOOTBALL, Tournament.Discipline.HANDBALL):
+            return "ET1"
+        return "ET"
+    return getattr(Match.ClockPeriod, "NONE", "NONE")
+
+
+def _resolve_scope(match: Match, *, data: dict, meta: dict, period: str | None) -> str:
+    """
+    Źródła scope (priorytet):
+    1) data.scope (top-level)
+    2) meta.scope
+    3) period sugeruje dogrywkę (ET1/ET2/ET/OT)
+    4) default: REGULAR
+    """
+    if "scope" in data and data.get("scope") not in (None, "", "null"):
+        return _norm_score_scope(str(data.get("scope")))
+    if isinstance(meta, dict) and meta.get("scope") not in (None, "", "null"):
+        return _norm_score_scope(str(meta.get("scope")))
+    if _is_extra_time_period(period):
+        return SCORE_SCOPE_EXTRA_TIME
+    return SCORE_SCOPE_REGULAR
 
 
 def _incident_scope(incident_meta: dict) -> str:
@@ -270,7 +208,7 @@ def _recompute_match_score_from_goal_incidents(match: Match) -> None:
       - home_score / away_score = suma GOAL(scope=REGULAR)
       - home_extra_time_score / away_extra_time_score = suma GOAL(scope=EXTRA_TIME)
 
-    Nie próbujemy „doganiać” ani utrzymywać rozjazdów. To eliminuje problemy synchronizacji.
+    Nie próbujemy „doganiać” ani utrzymywać rozjazdów.
     """
     d = match.tournament.discipline
     if d == Tournament.Discipline.TENNIS:
@@ -293,7 +231,6 @@ def _recompute_match_score_from_goal_incidents(match: Match) -> None:
         match.away_score = int(away_reg)
         update_fields.append("away_score")
 
-    # extra time fields may not exist in old schema; be defensive
     if hasattr(match, "home_extra_time_score") and int(getattr(match, "home_extra_time_score", 0) or 0) != int(home_et):
         setattr(match, "home_extra_time_score", int(home_et))
         update_fields.append("home_extra_time_score")
@@ -301,7 +238,6 @@ def _recompute_match_score_from_goal_incidents(match: Match) -> None:
         setattr(match, "away_extra_time_score", int(away_et))
         update_fields.append("away_extra_time_score")
 
-    # if any ET goals were recorded, ensure the flag is set; do not auto-unset
     if (home_et + away_et) > 0 and hasattr(match, "went_to_extra_time") and not getattr(match, "went_to_extra_time", False):
         match.went_to_extra_time = True
         update_fields.append("went_to_extra_time")
@@ -310,26 +246,113 @@ def _recompute_match_score_from_goal_incidents(match: Match) -> None:
         match.save(update_fields=update_fields)
 
 
+def _serialize_incident(i: MatchIncident) -> dict:
+    d = i.match.tournament.discipline
+    return {
+        "id": i.id,
+        "match_id": i.match_id,
+        "team_id": i.team_id,
+        "kind": i.kind,
+        "kind_display": _kind_display(i.kind, d),
+        "period": i.period,
+        "time_source": i.time_source,
+        "minute": i.minute,
+        "minute_raw": i.minute_raw,
+        "player_id": i.player_id,
+        "player_name": i.player.display_name if i.player else None,
+        "player_in_id": i.player_in_id,
+        "player_in_name": i.player_in.display_name if i.player_in else None,
+        "player_out_id": i.player_out_id,
+        "player_out_name": i.player_out.display_name if i.player_out else None,
+        "meta": i.meta or {},
+        "created_by": i.created_by_id,
+        "created_at": i.created_at.isoformat() if i.created_at else None,
+    }
+
+
+def _parse_int(v, field: str, allow_none: bool = True) -> int | None:
+    if v is None or v == "":
+        return None if allow_none else 0
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field} musi być liczbą całkowitą.")
+
+
+def _team_must_be_in_match(match: Match, team_id: int) -> None:
+    if team_id not in (match.home_team_id, match.away_team_id):
+        raise ValueError("team_id musi być jedną z drużyn tego meczu (home/away).")
+
+
+def _player_must_belong_to_team(player: TeamPlayer, team_id: int) -> None:
+    if player.team_id != team_id:
+        raise ValueError("Zawodnik nie należy do wskazanej drużyny.")
+
+
 class MatchIncidentListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, match_id: int):
-        match = get_object_or_404(Match.objects.select_related("tournament"), pk=match_id)
-        try:
-            _require_can_manage_incidents(request.user, match)
-        except PermissionError as e:
-            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
+    def get_permissions(self):
+        # Publiczny podgląd incydentów (TournamentPublic) musi działać bez logowania.
+        # Właściwa weryfikacja dostępu (is_published + access_code) jest w get().
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return [AllowAny()]
+        return [IsAuthenticated()]
 
+    def get(self, request, match_id: int):
+        """
+        LISTA incydentów dla meczu.
+
+        Tryby:
+        - panel (autoryzowany): wymagane results_edit (lub organizer)
+        - public (TournamentPublic): dozwolone tylko gdy turniej jest opublikowany
+          + jeśli turniej ma access_code, wymagamy ?code=<access_code>
+
+        Uwaga: POST/DELETE/RECOMPUTE pozostają wyłącznie dla autoryzowanych.
+        """
+
+        match = get_object_or_404(Match.objects.select_related("tournament"), pk=match_id)
+
+        # 1) Panel (autoryzowany) — pełne uprawnienia
+        can_manage = False
+        if request.user and getattr(request.user, "is_authenticated", False):
+            try:
+                _require_can_manage_incidents(request.user, match)
+                can_manage = True
+            except PermissionError:
+                can_manage = False
+
+        # 2) Public — tylko opublikowany + (opcjonalnie) kod dostępu
+        if not can_manage:
+            t = match.tournament
+            if not getattr(t, "is_published", False):
+                return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
+
+            access_code = getattr(t, "access_code", None)
+            if access_code:
+                provided = request.query_params.get("code")
+                if provided != access_code:
+                    return Response({"detail": "Nieprawidłowy kod dostępu."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Wymagana kolejność:
+        # 1) incydenty bez czasu na górze
+        # 2) potem minute DESC
+        # 3) przy remisie id DESC
         qs = (
-            MatchIncident.objects
-            .select_related("match__tournament", "player", "player_in", "player_out")
+            MatchIncident.objects.select_related("match__tournament", "player", "player_in", "player_out")
             .filter(match_id=match_id)
-            .order_by("created_at", "id")
+            .annotate(
+                _no_minute=Case(
+                    When(minute__isnull=True, then=Value(0)),
+                    default=Value(1),
+                    output_field=IntegerField(),
+                )
+            )
+            .order_by("_no_minute", F("minute").desc(nulls_last=True), F("id").desc())
         )
         return Response([_serialize_incident(x) for x in qs])
 
     def post(self, request, match_id: int):
-        # atomic + select_for_update: incydent + recompute wyniku musi być spójne
         with transaction.atomic():
             match = get_object_or_404(
                 Match.objects.select_related("tournament").select_for_update(),
@@ -373,8 +396,8 @@ class MatchIncidentListCreateView(APIView):
                         raise ValueError("Zegar meczu nie jest uruchomiony – podaj minute ręcznie albo uruchom zegar.")
                     minute = match.clock_minute_total(now=timezone.now())
 
-                # period: z zegara jeśli dostępny, w przeciwnym razie z payload lub NONE
-                period = match.clock_period if match.clock_period else Match.ClockPeriod.NONE
+                # period: domyślnie z zegara; payload może nadpisać
+                period = match.clock_period if match.clock_period else getattr(Match.ClockPeriod, "NONE", "NONE")
                 if "period" in data and data.get("period"):
                     period = str(data.get("period")).strip()
 
@@ -399,7 +422,6 @@ class MatchIncidentListCreateView(APIView):
                     _player_must_belong_to_team(player_in, team_id)
                     _player_must_belong_to_team(player_out, team_id)
 
-                # meta
                 meta = data.get("meta")
                 if meta is None:
                     meta = {}
@@ -413,12 +435,16 @@ class MatchIncidentListCreateView(APIView):
                         meta = dict(meta)
                         meta["points"] = int(pts)
 
-                # GOAL: waliduj punkty + ujednolić scope (REGULAR/EXTRA_TIME)
+                # GOAL: scope + walidacja punktacji + spójny period dla dogrywki
                 if kind == "GOAL" and discipline != Tournament.Discipline.TENNIS:
                     meta = dict(meta)
-                    meta["scope"] = _norm_score_scope(meta.get("scope"))
-                    # walidacja punktacji (kosz)
+                    scope = _resolve_scope(match, data=data, meta=meta, period=period)
+                    meta["scope"] = scope
                     _goal_points_for_discipline(discipline, meta)
+
+                    # Jeżeli scope=EXTRA_TIME, a period nie jest ET* -> wymuś period na ET1/ET
+                    if scope == SCORE_SCOPE_EXTRA_TIME and not _is_extra_time_period(period):
+                        period = _default_period_for_scope(discipline, scope)
 
             except (ValueError, AssertionError) as e:
                 return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -427,7 +453,7 @@ class MatchIncidentListCreateView(APIView):
                 match=match,
                 team_id=team_id,
                 kind=kind,
-                period=period or Match.ClockPeriod.NONE,
+                period=period or getattr(Match.ClockPeriod, "NONE", "NONE"),
                 time_source=time_source,
                 minute=minute,
                 minute_raw=minute_raw,
@@ -438,17 +464,18 @@ class MatchIncidentListCreateView(APIView):
                 created_by=request.user,
             )
 
-            # AUTO-PAUSE zegara po TIMEOUT w sportach stop-clock (handball/basketball)
             if kind == _TIMEOUT_KIND and _should_timeout_pause_clock(discipline):
                 _pause_clock_if_running(match, now=timezone.now())
 
-            # GOAL-based: po dodaniu bramki/punktów zawsze recompute wyniku z incydentów
             if kind == "GOAL" and discipline != Tournament.Discipline.TENNIS:
+                meta_scope = _incident_scope(meta if isinstance(meta, dict) else {})
+                if meta_scope == SCORE_SCOPE_EXTRA_TIME and hasattr(match, "went_to_extra_time") and not getattr(match, "went_to_extra_time", False):
+                    match.went_to_extra_time = True
+                    match.save(update_fields=["went_to_extra_time"])
                 _recompute_match_score_from_goal_incidents(match)
 
             incident = (
-                MatchIncident.objects
-                .select_related("match__tournament", "player", "player_in", "player_out")
+                MatchIncident.objects.select_related("match__tournament", "player", "player_in", "player_out")
                 .get(pk=incident.id)
             )
             return Response(_serialize_incident(incident), status=status.HTTP_201_CREATED)
@@ -458,10 +485,9 @@ class MatchIncidentDeleteView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, incident_id: int):
-        """Aktualizacja istniejącego incydentu (minuta / zawodnik / meta.note).
-
-        Cel: umożliwić korektę danych LIVE bez usuwania i ponownego dodawania.
-        Nie zmieniamy: match_id, team_id, kind (typ).
+        """
+        Aktualizacja istniejącego incydentu (minuta / zawodnik / meta.note / scope / points).
+        Nie zmieniamy: match_id, team_id, kind.
         """
         with transaction.atomic():
             incident = get_object_or_404(
@@ -476,8 +502,8 @@ class MatchIncidentDeleteView(APIView):
                 return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
 
             data = request.data or {}
+            discipline = match.tournament.discipline
 
-            # minuta / zapis surowy
             if "minute" in data:
                 v = data.get("minute")
                 if v in (None, "", "null"):
@@ -492,7 +518,6 @@ class MatchIncidentDeleteView(APIView):
                 v = data.get("minute_raw")
                 incident.minute_raw = (str(v).strip() if v not in (None, "") else None)
 
-            # player single
             if "player_id" in data:
                 pid = data.get("player_id")
                 if pid in (None, "", "null"):
@@ -509,7 +534,6 @@ class MatchIncidentDeleteView(APIView):
                         return Response({"detail": "Zawodnik nie należy do tej drużyny."}, status=status.HTTP_400_BAD_REQUEST)
                     incident.player_id = pid_int
 
-            # substitution players
             if "player_out_id" in data:
                 v = data.get("player_out_id")
                 if v in (None, "", "null"):
@@ -542,38 +566,71 @@ class MatchIncidentDeleteView(APIView):
                         return Response({"detail": "Zawodnik wchodzący nie należy do tej drużyny."}, status=status.HTTP_400_BAD_REQUEST)
                     incident.player_in_id = pid_int
 
-            # meta.note
             if "note" in data:
                 note = data.get("note")
                 meta = incident.meta if isinstance(incident.meta, dict) else {}
+                meta = dict(meta)
                 if note in (None, "", "null"):
                     meta.pop("note", None)
                 else:
                     meta["note"] = str(note)
                 incident.meta = meta
 
-            # Walidacja constraintów SUBSTITUTION
+            if "scope" in data and incident.kind == "GOAL" and discipline != Tournament.Discipline.TENNIS:
+                meta = incident.meta if isinstance(incident.meta, dict) else {}
+                meta = dict(meta)
+                meta["scope"] = _norm_score_scope(str(data.get("scope")))
+                incident.meta = meta
+
+                # Spójny period dla dogrywki
+                if meta["scope"] == SCORE_SCOPE_EXTRA_TIME and not _is_extra_time_period(incident.period):
+                    incident.period = _default_period_for_scope(discipline, SCORE_SCOPE_EXTRA_TIME)
+
+            if "points" in data and incident.kind == "GOAL":
+                if discipline != Tournament.Discipline.BASKETBALL:
+                    return Response({"detail": "Pole points jest dozwolone tylko dla koszykówki."}, status=status.HTTP_400_BAD_REQUEST)
+                try:
+                    pts = int(data.get("points"))
+                except (TypeError, ValueError):
+                    return Response({"detail": "Nieprawidłowe points."}, status=status.HTTP_400_BAD_REQUEST)
+                meta = incident.meta if isinstance(incident.meta, dict) else {}
+                meta = dict(meta)
+                meta["points"] = pts
+                try:
+                    _goal_points_for_discipline(discipline, meta)
+                except ValueError as e:
+                    return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                incident.meta = meta
+
             if incident.kind == MatchIncident.Kind.SUBSTITUTION:
                 if not incident.player_in_id or not incident.player_out_id:
                     return Response({"detail": "Zmiana wymaga zawodnika schodzącego i wchodzącego."}, status=status.HTTP_400_BAD_REQUEST)
             else:
-                # incydenty inne niż zmiana nie powinny mieć player_in/out
                 incident.player_in_id = None
                 incident.player_out_id = None
 
             incident.save()
 
-            ser = MatchIncidentSerializer(incident)
-            return Response(ser.data, status=status.HTTP_200_OK)
+            if incident.kind == "GOAL" and discipline != Tournament.Discipline.TENNIS and ("scope" in data or "points" in data):
+                if hasattr(match, "went_to_extra_time"):
+                    meta2 = incident.meta if isinstance(incident.meta, dict) else {}
+                    if _incident_scope(meta2) == SCORE_SCOPE_EXTRA_TIME and not getattr(match, "went_to_extra_time", False):
+                        match.went_to_extra_time = True
+                        match.save(update_fields=["went_to_extra_time"])
+                _recompute_match_score_from_goal_incidents(match)
+
+            incident = (
+                MatchIncident.objects.select_related("match__tournament", "player", "player_in", "player_out")
+                .get(pk=incident.id)
+            )
+            return Response(_serialize_incident(incident), status=status.HTTP_200_OK)
 
     def delete(self, request, incident_id: int):
         with transaction.atomic():
             incident = get_object_or_404(
                 MatchIncident.objects.select_related("match__tournament").select_for_update(),
-                pk=incident_id
+                pk=incident_id,
             )
-
-            # zablokuj również Match, bo będziemy przeliczać wynik
             match = Match.objects.select_related("tournament").select_for_update().get(pk=incident.match_id)
 
             try:
@@ -586,7 +643,6 @@ class MatchIncidentDeleteView(APIView):
 
             incident.delete()
 
-            # GOAL-based: po usunięciu bramki/punktów zawsze recompute wyniku z incydentów
             if was_goal:
                 _recompute_match_score_from_goal_incidents(match)
 
@@ -606,18 +662,14 @@ class MatchIncidentRecomputeScoreView(APIView):
                 return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
 
             d = match.tournament.discipline
-
             if d == Tournament.Discipline.TENNIS:
                 return Response(
-                    {
-                        "detail": "Tenis: punkty są przechowywane jako incydenty. Recompute wyniku (sety/gemy) dopniemy osobno.",
-                    },
+                    {"detail": "Tenis: punkty są przechowywane jako incydenty. Recompute setów/gemów dopniemy osobno."},
                     status=status.HTTP_200_OK,
                 )
 
             _recompute_match_score_from_goal_incidents(match)
 
-            # raport
             home_reg = _sum_goal_points_for_team_scoped(match.id, match.home_team_id, d, SCORE_SCOPE_REGULAR) if match.home_team_id else 0
             away_reg = _sum_goal_points_for_team_scoped(match.id, match.away_team_id, d, SCORE_SCOPE_REGULAR) if match.away_team_id else 0
             home_et = _sum_goal_points_for_team_scoped(match.id, match.home_team_id, d, SCORE_SCOPE_EXTRA_TIME) if match.home_team_id else 0

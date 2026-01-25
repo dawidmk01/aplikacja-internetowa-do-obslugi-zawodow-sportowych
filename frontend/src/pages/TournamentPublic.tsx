@@ -1,5 +1,5 @@
 // frontend/src/pages/TournamentPublic.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams, useSearchParams, useNavigate } from "react-router-dom";
 import { apiFetch } from "../api";
 import PublicMatchesPanel from "../components/PublicMatchesPanel";
@@ -12,6 +12,7 @@ type TournamentPublicDTO = {
   id: number;
   name: string;
   description: string | null;
+  discipline?: string | null;
   start_date: string | null;
   end_date: string | null;
   location: string | null;
@@ -107,6 +108,44 @@ function extractList(payload: any): any[] {
   return [];
 }
 
+// ==========================
+// PUBLIC: incydenty + król strzelców
+// ==========================
+type IncidentDTO = {
+  id: number;
+  match_id: number;
+  team_id: number | null;
+  kind: string;
+  kind_display?: string;
+  period?: string | null;
+  time_source?: string | null;
+  minute: number | null;
+  minute_raw?: number | null;
+  player_id?: number | null;
+  player_name?: string | null;
+  meta?: Record<string, any>;
+  created_at?: string | null;
+};
+
+type ScorerRow = {
+  player_name: string;
+  goals: number;
+};
+
+function incidentMinute(i: IncidentDTO): number | null {
+  if (typeof i.minute === "number") return i.minute;
+  if (typeof i.minute_raw === "number") return i.minute_raw;
+  return null;
+}
+
+function formatIncidentLine(i: IncidentDTO): string {
+  const min = incidentMinute(i);
+  const k = (i.kind_display ?? i.kind ?? "").trim();
+  const p = (i.player_name ?? "").trim();
+  const head = min != null ? `${min}' ${k}` : k;
+  return p ? `${head} — ${p}` : head;
+}
+
 export default function TournamentPublic({ initialView = "MATCHES" }: { initialView?: ViewTab } = {}) {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
@@ -175,6 +214,135 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
   }, [code]);
 
   const publicMatches = useMemo(() => matches.filter((m) => !isByePublic(m)), [matches]);
+
+  // ==========================
+  // PUBLIC: wybór meczu -> podgląd incydentów
+  // ==========================
+  const [selectedMatchId, setSelectedMatchId] = useState<number | null>(null);
+  const [selectedSection, setSelectedSection] = useState<string | null>(null);
+  const [incidentsByMatch, setIncidentsByMatch] = useState<Record<number, IncidentDTO[]>>({});
+  const [incBusy, setIncBusy] = useState(false);
+  const [incError, setIncError] = useState<string | null>(null);
+
+  const matchesPanelRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (selectedMatchId == null) return;
+    const onDown = (e: MouseEvent) => {
+      const root = matchesPanelRef.current;
+      if (!root) return;
+      const t = e.target as any;
+      if (t && t instanceof Node && !root.contains(t)) {
+        setSelectedMatchId(null);
+        setSelectedSection(null);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [selectedMatchId]);
+
+  const loadIncidentsForMatch = async (matchId: number) => {
+    if (!matchId) return;
+    setIncError(null);
+    setIncBusy(true);
+    try {
+      const res = await apiFetch(`/api/matches/${matchId}/incidents/${qs}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || "Nie udało się pobrać incydentów.");
+      }
+      const raw = await res.json().catch(() => []);
+      const list = extractList(raw) as IncidentDTO[];
+      // public: prezentujemy chronologicznie (minute ASC)
+      list.sort((a, b) => {
+        const am = incidentMinute(a);
+        const bm = incidentMinute(b);
+        if (am == null && bm == null) return (a.id ?? 0) - (b.id ?? 0);
+        if (am == null) return 1;
+        if (bm == null) return -1;
+        if (am !== bm) return am - bm;
+        return (a.id ?? 0) - (b.id ?? 0);
+      });
+
+      setIncidentsByMatch((prev) => ({ ...prev, [matchId]: list }));
+    } catch (e: any) {
+      setIncError(e?.message ?? "Błąd pobierania incydentów.");
+    } finally {
+      setIncBusy(false);
+    }
+  };
+
+  const onPublicMatchClick = async (m: MatchPublicDTO, sectionId: string) => {
+    // public: rozwijamy szczegóły tylko dla meczów w trakcie / zakończonych
+    if (m.status !== "IN_PROGRESS" && m.status !== "FINISHED") return;
+
+    const isSame = selectedMatchId === m.id && selectedSection === sectionId;
+    const willOpen = !isSame;
+    setSelectedMatchId(willOpen ? m.id : null);
+    setSelectedSection(willOpen ? sectionId : null);
+
+    // bez przycisku „odśwież” – dociągamy automatycznie przy otwarciu
+    if (willOpen) {
+      await loadIncidentsForMatch(m.id);
+    }
+  };
+
+  // ==========================
+  // PUBLIC: Król strzelców (tylko piłka nożna / ręczna)
+  // ==========================
+  const showTopScorers = useMemo(() => {
+    const d = (tournament?.discipline ?? "").toLowerCase();
+    return d === "football" || d === "handball";
+  }, [tournament?.discipline]);
+
+  const [scorers, setScorers] = useState<ScorerRow[]>([]);
+  const [scorerBusy, setScorerBusy] = useState(false);
+  const [scorerError, setScorerError] = useState<string | null>(null);
+
+  const computeTopScorers = async () => {
+    setScorerError(null);
+    setScorerBusy(true);
+    try {
+      const relevant = publicMatches.filter((m) => m.status === "IN_PROGRESS" || m.status === "FINISHED");
+      const goalCounts = new Map<string, number>();
+
+      // Pobieramy incydenty per mecz (cache -> incidentsByMatch)
+      const lists = await Promise.all(
+        relevant.map(async (m) => {
+          if (!incidentsByMatch[m.id]) {
+            const res = await apiFetch(`/api/matches/${m.id}/incidents/${qs}`);
+            if (res.ok) {
+              const raw = await res.json().catch(() => []);
+              const list = extractList(raw) as IncidentDTO[];
+              setIncidentsByMatch((prev) => ({ ...prev, [m.id]: list }));
+              return list;
+            }
+            return [] as IncidentDTO[];
+          }
+          return incidentsByMatch[m.id];
+        })
+      );
+
+      for (const list of lists) {
+        for (const inc of list) {
+          if ((inc.kind ?? "").toUpperCase() !== "GOAL") continue;
+          const name = (inc.player_name ?? "").trim();
+          if (!name) continue; // wymagamy przypisanego zawodnika
+          goalCounts.set(name, (goalCounts.get(name) ?? 0) + 1);
+        }
+      }
+
+      const rows: ScorerRow[] = Array.from(goalCounts.entries())
+        .map(([player_name, goals]) => ({ player_name, goals }))
+        .sort((a, b) => (b.goals !== a.goals ? b.goals - a.goals : a.player_name.localeCompare(b.player_name)));
+
+      setScorers(rows);
+    } catch (e: any) {
+      setScorerError(e?.message ?? "Błąd liczenia rankingu.");
+    } finally {
+      setScorerBusy(false);
+    }
+  };
 
   const nameChangeApprovalRequired = useMemo(() => {
     const t = tournament as any;
@@ -271,6 +439,7 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
       id: tData.id,
       name: tData.name,
       description: tData.description ?? null,
+      discipline: Object.prototype.hasOwnProperty.call(tData, "discipline") ? (tData.discipline ?? null) : null,
       start_date: tData.start_date ?? null,
       end_date: tData.end_date ?? null,
       location: tData.location ?? null,
@@ -891,7 +1060,51 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
             </section>
           )}
 
-          <PublicMatchesPanel matches={publicMatches} />
+          {/* PODGLĄD INCYDENTÓW – wybór przez kliknięcie meczu */}
+{/* KRÓL STRZELCÓW – niezależna sekcja */}
+          {showTopScorers ? (
+            <section style={{ marginTop: 18, border: "1px solid #333", borderRadius: 12, padding: "1rem" }}>
+              <h2 style={{ margin: "0 0 0.5rem 0" }}>Król strzelców</h2>
+              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                <button onClick={computeTopScorers} disabled={scorerBusy} style={{ padding: "0.35rem 0.6rem" }}>
+                  {scorerBusy ? "Liczenie…" : "Policz / odśwież"}
+                </button>
+                <div style={{ opacity: 0.75, fontSize: "0.9rem" }}>
+                  Liczy gole na podstawie incydentów typu <b>GOAL</b> (zawodnik musi być przypisany do incydentu).
+                </div>
+              </div>
+              {scorerError ? <div style={{ color: "#ff6b6b", marginTop: 8 }}>{scorerError}</div> : null}
+              <div style={{ marginTop: 10 }}>
+                {scorers.length === 0 ? (
+                  <div style={{ opacity: 0.75 }}>Brak danych do rankingu (albo brak zawodników w incydentach).</div>
+                ) : (
+                  <div style={{ borderTop: "1px solid #333", marginTop: 10, paddingTop: 10 }}>
+                    {scorers.map((r) => (
+                      <div
+                        key={r.player_name}
+                        style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "0.35rem 0" }}
+                      >
+                        <div style={{ fontWeight: 700 }}>{r.player_name}</div>
+                        <div style={{ fontWeight: 800 }}>{r.goals}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
+          ) : null}
+
+          <div ref={matchesPanelRef}>
+            <PublicMatchesPanel
+              matches={publicMatches}
+              selectedMatchId={selectedMatchId}
+              selectedSection={selectedSection}
+              incidentsByMatch={incidentsByMatch}
+              incidentsBusy={incBusy}
+              incidentsError={incError}
+              onMatchClick={onPublicMatchClick}
+            />
+          </div>
         </div>
       ) : id ? (
         <StandingsBracket tournamentId={Number(id)} accessCode={code.trim() || undefined} />

@@ -27,6 +27,50 @@ export type MatchPublicDTO = {
   location: string | null;
 };
 
+export type IncidentPublicDTO = {
+  id: number;
+  match_id: number;
+  team_id: number | null;
+  kind: string;
+  kind_display?: string;
+  period?: string | null;
+  time_source?: string | null;
+  minute: number | null;
+  minute_raw?: number | null;
+  player_id?: number | null;
+  player_name?: string | null;
+  meta?: Record<string, any>;
+  created_at?: string | null;
+};
+
+function incidentMinute(i: IncidentPublicDTO): number | null {
+  const mr = (i as any).minute_raw;
+  if (typeof mr === "number" && Number.isFinite(mr)) return mr;
+  if (typeof i.minute === "number" && Number.isFinite(i.minute)) return i.minute;
+  return null;
+}
+
+function kindPl(kind: string, fallback?: string): string {
+  const k = (kind || "").toUpperCase();
+  if (k === "GOAL") return "Gol";
+  if (k === "OWN_GOAL") return "Gol samobójczy";
+  if (k === "YELLOW_CARD") return "Żółta kartka";
+  if (k === "RED_CARD") return "Czerwona kartka";
+  if (k === "PENALTY_GOAL") return "Gol z karnego";
+  if (k === "PENALTY_MISSED") return "Niewykorzystany karny";
+  if (k === "POINT") return "Punkt";
+  if (k === "SET_POINT") return "Punkt (set)";
+  return fallback || kind || "Incydent";
+}
+
+function formatIncidentLine(i: IncidentPublicDTO): string {
+  const min = incidentMinute(i);
+  const minTxt = typeof min === "number" ? `${min}'` : "";
+  const label = kindPl(i.kind, i.kind_display);
+  const player = (i.player_name || "").trim();
+  if (player) return `${minTxt} ${label} — ${player}`.trim();
+  return `${minTxt} ${label}`.trim();
+}
 function statusPl(s?: MatchPublicDTO["status"]): string {
   switch (s) {
     case "IN_PROGRESS":
@@ -111,7 +155,23 @@ function pickUpcomingMatches(list: MatchPublicDTO[], limit = UPCOMING_LIMIT): Ma
     .slice(0, limit);
 }
 
-export default function PublicMatchesPanel({ matches }: { matches: MatchPublicDTO[] }) {
+export default function PublicMatchesPanel({
+  matches,
+  selectedMatchId,
+  selectedSection,
+  incidentsByMatch,
+  incidentsBusy,
+  incidentsError,
+  onMatchClick,
+}: {
+  matches: MatchPublicDTO[];
+  selectedMatchId?: number | null;
+  selectedSection?: string | null;
+  incidentsByMatch?: Record<number, IncidentPublicDTO[]>;
+  incidentsBusy?: boolean;
+  incidentsError?: string | null;
+  onMatchClick?: (m: MatchPublicDTO, sectionId: string) => void;
+}) {
   const liveMatches = useMemo(() => matches.filter((m) => m.status === "IN_PROGRESS"), [matches]);
 
   const upcomingMatches = useMemo(() => pickUpcomingMatches(matches, UPCOMING_LIMIT), [matches]);
@@ -139,43 +199,122 @@ export default function PublicMatchesPanel({ matches }: { matches: MatchPublicDT
 
   const stages = useMemo(() => buildStagesForView(matches, { showBye: false }), [matches]);
 
-  const renderRow = (m: MatchPublicDTO) => {
+  const renderRow = (sectionId: string, m: MatchPublicDTO) => {
     const when = whenText(m);
     const where = (m.location ?? "").trim();
 
     const hasScore = typeof m.home_score === "number" && typeof m.away_score === "number";
     const score = hasScore ? `${m.home_score} : ${m.away_score}` : "";
 
+    const isClickable = Boolean(onMatchClick) && (m.status === "IN_PROGRESS" || m.status === "FINISHED");
+    const isSelected =
+      selectedMatchId != null &&
+      selectedSection != null &&
+      m.id === selectedMatchId &&
+      selectedSection === sectionId;
+
+    const incidents = (incidentsByMatch?.[m.id] ?? []) as IncidentPublicDTO[];
+
     return (
       <div
         key={m.id}
+        role={isClickable ? "button" : undefined}
+        tabIndex={isClickable ? 0 : undefined}
+        onClick={isClickable ? () => onMatchClick?.(m, sectionId) : undefined}
+        onKeyDown={
+          isClickable
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onMatchClick?.(m, sectionId);
+                }
+              }
+            : undefined
+        }
         style={{
           borderBottom: "1px solid #333",
           padding: "0.75rem 0",
-          display: "flex",
-          gap: "1rem",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
+          cursor: isClickable ? "pointer" : "default",
+          outline: isSelected ? "2px solid #555" : "none",
+          outlineOffset: isSelected ? 6 : 0,
+          borderRadius: 10,
         }}
       >
-        <div style={{ minWidth: 260 }}>
-          <div style={{ fontWeight: 700 }}>
-            {m.home_team_name} <span style={{ opacity: 0.6 }}>vs</span> {m.away_team_name}
+        <div
+          style={{
+            display: "flex",
+            gap: "1rem",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            alignItems: "flex-start",
+          }}
+        >
+          <div style={{ minWidth: 260 }}>
+            <div style={{ fontWeight: 700 }}>
+              {m.home_team_name} <span style={{ opacity: 0.6 }}>vs</span> {m.away_team_name}
+            </div>
+
+            {(when || where) && (
+              <div style={{ opacity: 0.75, fontSize: "0.9rem", marginTop: 4 }}>
+                {when ? <span>{when}</span> : null}
+                {when && where ? <span style={{ margin: "0 0.5rem" }}>•</span> : null}
+                {where ? <span>{where}</span> : null}
+              </div>
+            )}
           </div>
 
-          {(when || where) && (
-            <div style={{ opacity: 0.75, fontSize: "0.9rem", marginTop: 4 }}>
-              {when ? <span>{when}</span> : null}
-              {when && where ? <span style={{ margin: "0 0.5rem" }}>•</span> : null}
-              {where ? <span>{where}</span> : null}
+          <div style={{ textAlign: "right", minWidth: 160 }}>
+            <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10 }}>
+              {score ? <div style={{ fontWeight: 800 }}>{score}</div> : <div style={{ opacity: 0.55 }} />}
+              {isSelected && isClickable ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onMatchClick?.(m, sectionId);
+                  }}
+                  aria-label="Zwiń szczegóły"
+                  title="Zwiń"
+                  style={{
+                    border: "1px solid #444",
+                    background: "transparent",
+                    color: "inherit",
+                    borderRadius: 8,
+                    padding: "0.1rem 0.45rem",
+                    lineHeight: 1,
+                    cursor: "pointer",
+                    opacity: 0.9,
+                  }}
+                >
+                  —
+                </button>
+              ) : null}
             </div>
-          )}
+            <div style={{ opacity: 0.75, fontSize: "0.85rem", marginTop: 2 }}>{statusPl(m.status)}</div>
+          </div>
         </div>
 
-        <div style={{ textAlign: "right", minWidth: 140 }}>
-          {score ? <div style={{ fontWeight: 800 }}>{score}</div> : <div style={{ opacity: 0.55 }} />}
-          <div style={{ opacity: 0.75, fontSize: "0.85rem" }}>{statusPl(m.status)}</div>
-        </div>
+        {isSelected && isClickable ? (
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #333" }}>
+            {incidentsError ? (
+              <div style={{ opacity: 0.9, color: "#ff7b7b", marginBottom: 6 }}>{incidentsError}</div>
+            ) : null}
+
+            {incidentsBusy && incidents.length === 0 ? (
+              <div style={{ opacity: 0.75 }}>Ładowanie incydentów…</div>
+            ) : incidents.length === 0 ? (
+              <div style={{ opacity: 0.75 }}>Brak incydentów.</div>
+            ) : (
+              <div style={{ display: "grid", gap: 6 }}>
+                {incidents.map((i) => (
+                  <div key={i.id} style={{ display: "flex", gap: 10 }}>
+                    <div style={{ minWidth: 0, fontSize: "0.95rem" }}>{formatIncidentLine(i)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : null}
       </div>
     );
   };
@@ -188,7 +327,7 @@ export default function PublicMatchesPanel({ matches }: { matches: MatchPublicDT
           <div style={{ opacity: 0.75 }}>Aktualnie nie ma meczów w trakcie.</div>
         ) : (
           <div style={{ border: "1px solid #333", borderRadius: 12, padding: "0.75rem 1rem" }}>
-            {liveMatches.map(renderRow)}
+            {liveMatches.map((m) => renderRow("live", m))}
           </div>
         )}
       </section>
@@ -199,7 +338,7 @@ export default function PublicMatchesPanel({ matches }: { matches: MatchPublicDT
           <div style={{ opacity: 0.75 }}>Brak zaplanowanych meczów.</div>
         ) : (
           <div style={{ border: "1px solid #333", borderRadius: 12, padding: "0.75rem 1rem" }}>
-            {upcomingMatches.map(renderRow)}
+            {upcomingMatches.map((m) => renderRow("upcoming", m))}
           </div>
         )}
       </section>
@@ -210,7 +349,7 @@ export default function PublicMatchesPanel({ matches }: { matches: MatchPublicDT
           <div style={{ opacity: 0.75 }}>Brak zakończonych meczów.</div>
         ) : (
           <div style={{ border: "1px solid #333", borderRadius: 12, padding: "0.75rem 1rem" }}>
-            {recentResults.map(renderRow)}
+            {recentResults.map((m) => renderRow("recent", m))}
           </div>
         )}
       </section>
@@ -240,7 +379,7 @@ export default function PublicMatchesPanel({ matches }: { matches: MatchPublicDT
                           <div style={{ fontSize: "0.8rem", textTransform: "uppercase", opacity: 0.6, marginBottom: 6 }}>
                             Kolejka {round}
                           </div>
-                          {roundMatches.map(renderRow)}
+                          {roundMatches.map((m) => renderRow("schedule", m))}
                         </div>
                       ))}
                     </div>
@@ -251,11 +390,11 @@ export default function PublicMatchesPanel({ matches }: { matches: MatchPublicDT
                       <div style={{ fontSize: "0.8rem", textTransform: "uppercase", opacity: 0.6, marginBottom: 6 }}>
                         Kolejka {round}
                       </div>
-                      {roundMatches.map(renderRow)}
+                      {roundMatches.map((m) => renderRow("schedule", m))}
                     </div>
                   ))
                 ) : (
-                  <div>{s.matches.map(renderRow)}</div>
+                  <div>{s.matches.map((m) => renderRow("schedule", m))}</div>
                 )}
               </section>
             );

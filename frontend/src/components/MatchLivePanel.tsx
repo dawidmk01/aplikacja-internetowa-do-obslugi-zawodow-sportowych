@@ -64,7 +64,68 @@ type PlayerDTO = {
   is_active?: boolean;
 };
 
-type Props = {
+type MatchStatus = "SCHEDULED" | "IN_PROGRESS" | "RUNNING" | "FINISHED";
+
+type PendingConfirm = {
+  kind: "FINISH_FORCE";
+  title: string;
+  detail: string;
+  delete_count?: number;
+  delete_ids?: number[];
+};
+
+function formatClock(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const mm = Math.floor(s / 60);
+  const ss = s % 60;
+  return `${mm}:${String(ss).padStart(2, "0")}`;
+
+
+}
+
+function periodBaseOffsetSeconds(discipline: string, period: ClockPeriod): number {
+  // Wyświetlanie "minuty meczu" jako czasu narastającego (np. 2 połowa startuje od 45:00).
+  // Sam zegar po stronie API nadal pracuje per-okres (seconds_in_period), tu tylko prezentacja.
+  const d = (discipline || "").toLowerCase();
+
+  const isFootballLike = d === "football" || d === "ice_hockey";
+  const isHandballLike = d === "handball";
+  const isBasketballLike = d === "basketball";
+
+  // Football domyślnie: 45/45 + ET 15/15.
+  if (isFootballLike) {
+    if (period === "SH") return 45 * 60;
+    if (period === "ET1") return 90 * 60;
+    if (period === "ET2") return 105 * 60;
+    return 0;
+  }
+
+  // Handball: 30/30 + ET 5/5 (domyślnie).
+  if (isHandballLike) {
+    if (period === "H2") return 30 * 60;
+    if (period === "ET1") return 60 * 60;
+    if (period === "ET2") return 65 * 60;
+    return 0;
+  }
+
+  // Basketball: brak offsetu (w API nie ma kwart).
+  if (isBasketballLike) return 0;
+
+  return 0;
+}
+
+
+export type LiveMatchSummary = {
+  id: number;
+  status: MatchStatus;
+
+  homeTeamId?: number;
+  awayTeamId?: number;
+  homeTeamName: string;
+  awayTeamName: string;
+};
+
+type PropsCommon = {
   // Jeśli w TournamentResults włączona jest dogrywka,
   // bramki/punkty (GOAL) dodane w LIVE powinny trafić do dogrywki.
   goalScope?: "REGULAR" | "EXTRA_TIME";
@@ -72,18 +133,37 @@ type Props = {
   tournamentId: string; // z useParams
   discipline: string;
 
-  matchId: number;
-  matchStatus: "SCHEDULED" | "IN_PROGRESS" | "RUNNING" | "FINISHED";
-
-  homeTeamId?: number;
-  awayTeamId?: number;
-  homeTeamName: string;
-  awayTeamName: string;
-
   canEdit: boolean;
+
+  // Kontekst wyniku / etapu (z karty meczu). Używane m.in. do logiki dogrywki.
+  scoreContext?: {
+    home: number;
+    away: number;
+    stageType?: string;
+    wentToExtraTime?: boolean;
+  };
+
+  // Potwierdzenie (modal) przed usunięciem incydentu.
+  onRequestConfirmIncidentDelete?: (req: any, proceed: () => void) => void;
+
+  // Gdy zegar przełącza się na dogrywkę (ET1) – chcemy natychmiast odzwierciedlić to w karcie meczu.
+  onEnterExtraTime?: () => void;
 
   onAfterRecompute?: () => Promise<void> | void;
 };
+
+type Props =
+  | (PropsCommon & { match: LiveMatchSummary })
+  | (PropsCommon & {
+      matchId: number;
+      matchStatus: MatchStatus;
+
+      homeTeamId?: number;
+      awayTeamId?: number;
+      homeTeamName: string;
+      awayTeamName: string;
+    });
+
 
 type IncidentDraft = {
   kind: string;
@@ -209,7 +289,14 @@ function safeInt(v: string): number | null {
    Break UI helpers (frontend-only)
    ========================= */
 
-type BreakMode = "NONE" | "INTERMISSION" | "TECH";
+// NOTE: the code uses BreakMode.* as values at runtime (e.g. BreakMode.NONE).
+// A TS-only `type` would be erased and cause `ReferenceError: BreakMode is not defined`.
+const BreakMode = {
+  NONE: "NONE",
+  INTERMISSION: "INTERMISSION",
+  TECH: "TECH",
+} as const;
+type BreakMode = (typeof BreakMode)[keyof typeof BreakMode];
 
 function breakKey(matchId: number, key: "mode" | "startedAt") {
   return `matchBreak:${matchId}:${key}`;
@@ -217,9 +304,9 @@ function breakKey(matchId: number, key: "mode" | "startedAt") {
 
 function readBreakMode(matchId: number): BreakMode {
   try {
-    return (localStorage.getItem(breakKey(matchId, "mode")) as BreakMode) || "NONE";
+    return (localStorage.getItem(breakKey(matchId, "mode")) as BreakMode) || BreakMode.NONE;
   } catch {
-    return "NONE";
+    return BreakMode.NONE;
   }
 }
 
@@ -260,6 +347,41 @@ function computeBreakLevel(seconds: number): "NORMAL" | "WARN" | "DANGER" {
   if (seconds >= 15 * 60) return "DANGER";
   if (seconds >= 13 * 60) return "WARN";
   return "NORMAL";
+}
+
+function periodLimitSeconds(discipline: string, period: ClockPeriod): number | null {
+  // Limity per okres (w sekundach). Służą wyłącznie do wizualnej sygnalizacji przekroczenia czasu.
+  if (isFootball(discipline)) {
+    if (period === "FH" || period === "SH") return 45 * 60;
+    if (period === "ET1" || period === "ET2") return 15 * 60;
+  }
+  if (isHandball(discipline)) {
+    if (period === "H1" || period === "H2") return 30 * 60;
+    if (period === "ET1" || period === "ET2") return 5 * 60;
+  }
+  return null;
+}
+
+function isKnockoutLike(stageType?: string): boolean {
+  const s = String(stageType || "").toUpperCase();
+  return s === "KNOCKOUT" || s === "THIRD_PLACE";
+}
+
+function nextPeriodFromIntermission(discipline: string, current: ClockPeriod, opts: { allowExtraTimeStart: boolean }): ClockPeriod | null {
+  const allowExtraTimeStart = !!opts.allowExtraTimeStart;
+  if (isFootball(discipline)) {
+    if (current === "FH") return "SH";
+    if (current === "SH" && allowExtraTimeStart) return "ET1";
+    if (current === "ET1") return "ET2";
+    return null;
+  }
+  if (isHandball(discipline)) {
+    if (current === "H1") return "H2";
+    if (current === "H2" && allowExtraTimeStart) return "ET1";
+    if (current === "ET1") return "ET2";
+    return null;
+  }
+  return null;
 }
 
 function nextPeriodForSecondHalf(discipline: string, current: ClockPeriod): ClockPeriod | null {
@@ -309,28 +431,79 @@ function tennisPointLabelOther(aPts: number, bPts: number): string {
    ========================= */
 
 export default function MatchLivePanel(props: Props) {
-  const {
-    tournamentId,
-    discipline,
-    goalScope = "REGULAR",
+  const { tournamentId, discipline, goalScope = "REGULAR", canEdit, onAfterRecompute } = props;
 
-    matchId,
-    matchStatus,
-    homeTeamId,
-    awayTeamId,
-    homeTeamName,
-    awayTeamName,
-    canEdit,
-    onAfterRecompute,
-  } = props;
+  // Wspieramy dwa kontrakty propsów:
+  // 1) nowy: props.match (bardziej spójny, minimalizuje duplikację pomiędzy stroną i komponentem),
+  // 2) stary: matchId/matchStatus/homeTeamId/... (wsteczna kompatybilność).
+  const liveMatch: LiveMatchSummary =
+    "match" in props
+      ? props.match
+      : {
+          id: props.matchId,
+          status: props.matchStatus,
+          homeTeamId: props.homeTeamId,
+          awayTeamId: props.awayTeamId,
+          homeTeamName: props.homeTeamName,
+          awayTeamName: props.awayTeamName,
+        };
+
+  const matchId = liveMatch.id;
+  const matchStatus = liveMatch.status;
+
+  const homeTeamId = liveMatch.homeTeamId;
+  const awayTeamId = liveMatch.awayTeamId;
+
+  const homeTeamName = liveMatch.homeTeamName;
+  const awayTeamName = liveMatch.awayTeamName;
 
   const [clock, setClock] = useState<MatchClockDTO | null>(null);
+  // lokalny tick do wyświetlania czasu meczu (mm:ss) w UI bez ciągłego odpytywania backendu
+  const [clockTick, setClockTick] = useState(0);
   const [clockLoading, setClockLoading] = useState(false);
   const [clockError, setClockError] = useState<string | null>(null);
+
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  const [pendingConfirmBusy, setPendingConfirmBusy] = useState(false);
+
 
   // break ui
   const [breakMode, setBreakMode] = useState<BreakMode>(() => readBreakMode(matchId));
   const [breakTick, setBreakTick] = useState(0);
+
+  // Aktualizuj wyświetlany czas meczu (mm:ss) lokalnie.
+  useEffect(() => {
+    if (!clock || clock.clock_state !== "RUNNING") return;
+    const t = window.setInterval(() => setClockTick((x) => x + 1), 250);
+    return () => window.clearInterval(t);
+  }, [clock?.clock_state, clock?.clock_started_at, clock?.server_time]);
+
+  const displaySeconds = useMemo(() => {
+    if (!clock) return 0;
+    const snapTotal =
+      typeof clock.seconds_total === "number"
+        ? clock.seconds_total
+        : Math.max(0, Number(clock.clock_elapsed_seconds || 0) + Number(clock.clock_added_seconds || 0));
+
+    const snapInPeriod = typeof clock.seconds_in_period === "number" ? Math.max(0, Number(clock.seconds_in_period || 0)) : snapTotal;
+
+    if (clock.clock_state !== "RUNNING") return snapInPeriod;
+    if (!clock.server_time) return snapInPeriod;
+    const serverMs = new Date(clock.server_time).getTime();
+    if (!Number.isFinite(serverMs)) return snapInPeriod;
+    const delta = Math.max(0, (Date.now() - serverMs) / 1000);
+    return snapInPeriod + delta;
+  }, [clock, clockTick]);
+
+  const baseOffsetSeconds = useMemo(() => {
+    const p = clock?.clock_period || "NONE";
+    return periodBaseOffsetSeconds(discipline, p as ClockPeriod);
+  }, [clock?.clock_period, discipline]);
+
+  const matchDisplaySeconds = useMemo(() => {
+    return Math.max(0, Number(baseOffsetSeconds || 0) + Number(displaySeconds || 0));
+  }, [baseOffsetSeconds, displaySeconds]);
+
 
   // incidents
   const [incidents, setIncidents] = useState<IncidentDTO[]>([]);
@@ -439,67 +612,38 @@ export default function MatchLivePanel(props: Props) {
     setIncError(null);
     setIncLoading(true);
     try {
-      const res = await apiFetch(`/api/matches/${matchId}/incidents/`);
+      const res = await apiFetch(`/api/matches/${matchId}/incidents/`, { method: "GET" });
       const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.detail || "Nie udało się pobrać incydentów.");
-      setIncidents(Array.isArray(data) ? data : []);
+
+      if (!res.ok) {
+        throw new Error(data?.detail || `Błąd pobierania incydentów (${res.status})`);
+      }
+
+      // API bywa zwracane jako lista lub obiekt z polem "incidents" / "results".
+      const list = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.incidents)
+          ? data.incidents
+          : Array.isArray(data?.results)
+            ? data.results
+            : [];
+
+      setIncidents(list);
     } catch (e: any) {
-      setIncError(e?.message ?? "Błąd pobierania incydentów.");
+      setIncError(e?.message || "Błąd pobierania incydentów.");
     } finally {
       setIncLoading(false);
     }
   };
 
-  const loadTeamPlayers = async (teamId: number) => {
-    if (!tournamentId) return;
-    if (!teamId) return;
-    if (playersByTeam[teamId]) return;
-
-    setPlayersLoading((m) => ({ ...m, [teamId]: true }));
-    try {
-      const res = await apiFetch(`/api/tournaments/${tournamentId}/teams/${teamId}/players/`);
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.detail || "Nie udało się pobrać składu.");
-      const list: PlayerDTO[] = Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
-      setPlayersByTeam((p) => ({ ...p, [teamId]: list }));
-    } catch {
-      // opcjonalne
-    } finally {
-      setPlayersLoading((m) => ({ ...m, [teamId]: false }));
-    }
-  };
-
+  // Initial sync on mount (important after refresh)
   useEffect(() => {
-        loadClock();
+    loadClock();
     loadIncidents();
-    if (homeTeamId) loadTeamPlayers(homeTeamId);
-    if (awayTeamId) loadTeamPlayers(awayTeamId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [matchId]);
 
-  // polling zegara gdy RUNNING
-  useEffect(() => {
-        if (!clock || clock.clock_state !== "RUNNING") return;
 
-    const t = setInterval(() => {
-      loadClock().catch(() => null);
-    }, 3000);
-
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ clock?.clock_state]);
-
-  // ticking dla przerwy (UI)
-  useEffect(() => {
-
-    // jeśli backend ma break_seconds i przerwa trwa, tick nie jest konieczny, ale i tak go robimy (fallback)
-    const mode = readBreakMode(matchId);
-    const started = readBreakStartedAt(matchId);
-    if (mode === "NONE" || !started) return;
-
-    const t = setInterval(() => setBreakTick((x) => x + 1), 1000);
-    return () => clearInterval(t);
-  }, [ matchId, breakMode]);
 
   const teamIdForSide = (side: "HOME" | "AWAY") => (side === "HOME" ? homeTeamId : awayTeamId);
   const teamNameForSide = (side: "HOME" | "AWAY") => (side === "HOME" ? homeTeamName : awayTeamName);
@@ -516,6 +660,13 @@ export default function MatchLivePanel(props: Props) {
     clock?.break_level ? clock.break_level : computeBreakLevel(breakSeconds);
 
   const showBreakTimer = (isBreakFromBackend && clock?.clock_state === "PAUSED") || (localMode !== "NONE" && localStarted);
+
+  // Ticker przerwy – wymusza re-render co 1s, aby licznik przerwy aktualizował się w UI.
+  useEffect(() => {
+    if (!showBreakTimer) return;
+    const t = window.setInterval(() => setBreakTick((x) => x + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [showBreakTimer, matchId]);
 
   const canRewind = canEdit && !!clock;
 
@@ -538,9 +689,16 @@ export default function MatchLivePanel(props: Props) {
 
     // 2) jeżeli jesteśmy w przerwie międzypołówkowej – rozpocznij drugą połowę
     if (clock.clock_state === "PAUSED" && localMode === "INTERMISSION") {
-      const next = nextPeriodForSecondHalf(discipline, clock.clock_period);
+      const score = props.scoreContext;
+      const allowExtraTimeStart =
+        !!score && isKnockoutLike(score.stageType) && Number(score.home || 0) === Number(score.away || 0) && !score.wentToExtraTime;
+
+      const next = nextPeriodFromIntermission(discipline, clock.clock_period, { allowExtraTimeStart });
       if (next) {
         await postClock("period/", { period: next });
+        if (next === "ET1") {
+          props.onEnterExtraTime?.();
+        }
       }
       clearBreak(matchId);
       setBreakMode("NONE");
@@ -574,31 +732,63 @@ export default function MatchLivePanel(props: Props) {
     setBreakMode("TECH");
     await postClock("pause/", { break: false });
   };
-
   const handleReset = async () => {
-    if (!canRewind) {
-      setClockError("Cofnięcie zegara jest możliwe tylko, gdy masz uprawnienia do edycji i zegar jest dostępny.");
+    if (!clock) return;
+
+    if (
+      !window.confirm(
+        "To zresetuje zegar bieżącego okresu do jego początku (bez ingerencji w incydenty i wynik). Kontynuować?"
+      )
+    ) {
       return;
     }
-    const ok = window.confirm("Cofnąć zegar do początku aktualnego okresu? Incydenty pozostaną bez zmian.");
-    if (!ok) return;
 
-    clearBreak(matchId);
-    setBreakMode("NONE");
-
-    await postClock("reset_period/");
-    await loadClock();
-  };
-
-  const handleFinish = async () => {
-    if (!canEdit) return;
-
-    setClockError(null);
-    setClockLoading(true);
+    setResetting(true);
     try {
-      const res = await apiFetch(`/api/matches/${matchId}/finish/`, { method: "POST" });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.detail || "Nie udało się zakończyć meczu.");
+      clearBreak(matchId);
+      setBreakMode(BreakMode.NONE);
+
+      // Bezpieczny reset: ustawiamy ten sam okres jeszcze raz (backend zeruje elapsed),
+      // bez kasowania incydentów.
+      const currentPeriod =
+        clock.clock_period && clock.clock_period !== "NONE"
+          ? clock.clock_period
+          : periodOptions(liveMatch.discipline)[0]?.value || "NONE";
+
+      await postClock("period/", { period: currentPeriod });
+      await loadClock();
+    } catch (e: any) {
+      setClockError(e?.message || "Nie udało się zresetować zegara.");
+    } finally {
+      setResetting(false);
+    }
+  };
+  const runFinish = async (force: boolean) => {
+    setClockLoading(true);
+    setClockError(null);
+
+    try {
+      const url = force
+        ? `/api/matches/${matchId}/finish/?force=1`
+        : `/api/matches/${matchId}/finish/`;
+
+      const res = await apiFetch(url, { method: "POST" });
+      const data: any = await res.json().catch(() => ({}));
+
+      if (res.status === 409 && !force && data?.code === "SCORE_SYNC_CONFIRM_REQUIRED") {
+        setPendingConfirm({
+          kind: "FINISH_FORCE",
+          title: "Potwierdź zakończenie meczu",
+          detail: String(data?.detail || "Zmiana wyniku wymaga usunięcia części istniejących incydentów GOAL."),
+          delete_count: Number(data?.delete_count || 0),
+          delete_ids: Array.isArray(data?.delete_ids) ? data.delete_ids : undefined,
+        });
+        return;
+      }
+
+      if (!res.ok) {
+        throw new Error(String(data?.detail || "Nie udało się zakończyć meczu."));
+      }
 
       clearBreak(matchId);
       setBreakMode("NONE");
@@ -611,6 +801,10 @@ export default function MatchLivePanel(props: Props) {
     } finally {
       setClockLoading(false);
     }
+  };
+
+  const handleFinish = async () => {
+    await runFinish(false);
   };
 
   const submitIncident = async () => {
@@ -638,7 +832,20 @@ export default function MatchLivePanel(props: Props) {
       payload.minute = minute;
       payload.minute_raw = (draft.minute_raw || "").trim() || null;
     }
+
+    if (draft.time_source === "CLOCK") {
+      const inIntermission = breakMode === BreakMode.INTERMISSION;
+      // W przerwie dopisujemy do końca okresu (np. 45/90), w trakcie gry bierzemy aktualny czas.
+      const base = Number(baseOffsetSeconds || 0);
+      const absNow = Number(matchDisplaySeconds || 0);
+      const absEnd = timeLimitSeconds ? Math.max(0, base + Number(timeLimitSeconds || 0)) : absNow;
+      const chosen = inIntermission ? absEnd : absNow;
+      payload.minute = Math.max(0, Math.floor(chosen / 60));
+      payload.minute_raw = null;
+    }
+
     // CLOCK + brak minute => backend sam policzy.
+
     // W przerwie backend (po naszej poprawce) przypisze minutę końca okresu (np. 45/90/30/60).
 
     if (draft.kind === "SUBSTITUTION") {
@@ -727,6 +934,30 @@ export default function MatchLivePanel(props: Props) {
     } finally {
       setIncLoading(false);
     }
+  };
+
+  const requestDeleteIncident = (i: IncidentDTO) => {
+    const proceed = () => deleteIncident(i.id);
+
+    const handler = props.onRequestConfirmIncidentDelete;
+    if (!handler) {
+      const ok = window.confirm("Czy na pewno chcesz usunąć ten incydent? Ta operacja jest nieodwracalna.");
+      if (ok) proceed();
+      return;
+    }
+
+    const teamLabel = i.team_id === homeTeamId ? homeTeamName : i.team_id === awayTeamId ? awayTeamName : undefined;
+    handler(
+      {
+        matchId,
+        incidentId: i.id,
+        incidentType: i.kind,
+        teamLabel,
+        minute: i.minute,
+        playerLabel: i.player_name,
+      },
+      proceed
+    );
   };
 
   const beginEditIncident = (i: IncidentDTO) => {
@@ -863,13 +1094,19 @@ export default function MatchLivePanel(props: Props) {
     if (!clock) return "Zacznij mecz";
     if (clock.clock_state === "NOT_STARTED" || clock.clock_state === "STOPPED") return "Zacznij mecz";
     if (clock.clock_state === "PAUSED" && breakMode === "INTERMISSION") {
-      if (isFootball(discipline) && clock.clock_period === "FH") return "Rozpocznij 2 połowę";
-      if (isHandball(discipline) && clock.clock_period === "H1") return "Rozpocznij 2 połowę";
+      const score = props.scoreContext;
+      const allowExtraTimeStart =
+        !!score && isKnockoutLike(score.stageType) && Number(score.home || 0) === Number(score.away || 0) && !score.wentToExtraTime;
+      const next = nextPeriodFromIntermission(discipline, clock.clock_period, { allowExtraTimeStart });
+
+      if (next === "SH" || next === "H2") return "Rozpocznij 2 połowę";
+      if (next === "ET1") return "Rozpocznij dogrywkę";
+      if (next === "ET2") return "Rozpocznij 2 połowę dogrywki";
       return "Rozpocznij kolejny etap";
     }
     if (clock.clock_state === "PAUSED") return "Wznów grę";
     return "W trakcie";
-  }, [clock, breakMode, discipline]);
+  }, [clock, breakMode, discipline, props.scoreContext]);
 
   const breakBadgeStyle = useMemo(() => {
     if (!showBreakTimer) return null;
@@ -880,16 +1117,102 @@ export default function MatchLivePanel(props: Props) {
     return { background: bg, border };
   }, [showBreakTimer, breakLevel, breakTick]);
 
+  const timeLimitSeconds = useMemo(() => {
+    if (!clock) return null;
+    return periodLimitSeconds(discipline, clock.clock_period);
+  }, [clock, discipline]);
+
+  const timeOverLimit = useMemo(() => {
+    if (!timeLimitSeconds) return false;
+    const absLimit = Math.max(0, Number(baseOffsetSeconds || 0) + Number(timeLimitSeconds || 0));
+    return matchDisplaySeconds >= absLimit;
+  }, [baseOffsetSeconds, matchDisplaySeconds, timeLimitSeconds]);
+
+  const timeBadgeStyle = useMemo(() => {
+    const over = timeOverLimit || Boolean(clock?.cap_reached);
+    const bg = over ? "rgba(231,76,60,0.22)" : "rgba(255,255,255,0.06)";
+    const border = over ? "1px solid rgba(231,76,60,0.55)" : "1px solid #444";
+    return { background: bg, border };
+  }, [timeOverLimit, clock?.cap_reached]);
+
   return (
     <div style={{ marginTop: "0.9rem" }}>
+      {pendingConfirm && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            padding: "1rem",
+          }}
+        >
+          <div
+            style={{
+              background: "white",
+              borderRadius: 12,
+              maxWidth: 560,
+              width: "100%",
+              padding: "1rem",
+              boxShadow: "0 10px 25px rgba(0,0,0,0.25)",
+            }}
+          >
+            <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 8 }}>{pendingConfirm.title}</div>
+
+            <div style={{ fontSize: 13, lineHeight: 1.45, marginBottom: 10 }}>{pendingConfirm.detail}</div>
+
+            {typeof pendingConfirm.delete_count === "number" && (
+              <div style={{ fontSize: 13, marginBottom: 12 }}>
+                Do usunięcia: <b>{pendingConfirm.delete_count}</b> incydentów GOAL.
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                onClick={() => (pendingConfirmBusy ? null : setPendingConfirm(null))}
+                style={btnStyle}
+                disabled={pendingConfirmBusy}
+              >
+                Anuluj
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (pendingConfirmBusy) return;
+                  setPendingConfirmBusy(true);
+                  try {
+                    if (pendingConfirm.kind === "FINISH_FORCE") {
+                      await runFinish(true);
+                    }
+                    setPendingConfirm(null);
+                  } finally {
+                    setPendingConfirmBusy(false);
+                  }
+                }}
+                style={{ ...btnStyle, background: "#111", color: "white" }}
+                disabled={pendingConfirmBusy}
+              >
+                Skoryguj i zakończ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
 
         <div
           style={{
-            marginTop: "0.75rem",
-            border: "1px solid #333",
-            borderRadius: 10,
-            padding: "0.85rem",
-            background: "rgba(0,0,0,0.15)",
+            // Styl bazowy kontroluje komponent-rodzic (karta meczu). Ten blok ma być „w środku karty”,
+            // bez własnej ramki/kontrastowego tła, aby LIVE wyglądał jak rozwinięcie meczu, a nie osobny panel.
+            marginTop: 0,
+            border: "none",
+            borderRadius: 0,
+            padding: 0,
+            background: "transparent",
             display: "grid",
             gap: "0.9rem",
           }}
@@ -903,24 +1226,8 @@ export default function MatchLivePanel(props: Props) {
               background: "rgba(255,255,255,0.02)",
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
               <div style={{ fontWeight: 700 }}>Zegar</div>
-              <div style={{ opacity: 0.8, fontSize: "0.9em" }}>
-                Stan: <strong>{clock ? fmtClockState(clock.clock_state) : "—"}</strong>
-                {clock && clock.clock_period !== "NONE" && (
-                  <>
-                    {" "}
-                    | Okres: <strong>{clock.clock_period}</strong>
-                  </>
-                )}
-                {clock && (
-                  <>
-                    {" "}
-                    | Czas: <strong>{clock ? fmtMMSS(clock.seconds_total) : "—"}</strong> | Minuta: <strong>{clock.minute_total ?? "—"}</strong>
-                  </>
-                )}
-                {clock?.cap_reached && <span style={{ marginLeft: 8, color: "rgba(231,76,60,0.9)" }}>limit 3h</span>}
-              </div>
             </div>
 
             {clockError && <div style={{ marginTop: 8, color: "crimson" }}>{clockError}</div>}
@@ -975,7 +1282,7 @@ export default function MatchLivePanel(props: Props) {
                 type="button"
                 disabled={clockLoading || !canRewind}
                 onClick={handleReset}
-                title={canRewind ? "Cofnij zegar do początku okresu." : "Brak uprawnień lub zegar niedostępny."}
+                title={canRewind ? "Resetuj zegar do początku okresu." : "Brak uprawnień lub zegar niedostępny."}
                 style={{
                   padding: "0.35rem 0.7rem",
                   borderRadius: 6,
@@ -985,7 +1292,7 @@ export default function MatchLivePanel(props: Props) {
                   opacity: canRewind ? 1 : 0.7,
                 }}
               >
-                Cofnij zegar
+                Resetuj zegar
               </button>
 
               <button
@@ -1004,27 +1311,55 @@ export default function MatchLivePanel(props: Props) {
               </button>
 </div>
 
-            {showBreakTimer && (
-              <div
-                style={{
-                  marginTop: 10,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "0.35rem 0.6rem",
-                  borderRadius: 999,
-                  ...(breakBadgeStyle as any),
-                  color: "#fff",
-                  fontSize: "0.9em",
-                }}
-              >
-                <strong>{breakMode === "TECH" ? "Pauza techniczna:" : "Przerwa:"}</strong>
-                <span>
-                  {Math.floor(breakSeconds / 60)}:{String(breakSeconds % 60).padStart(2, "0")}
-                </span>
-                <span style={{ opacity: 0.85 }}>
-                  {breakLevel === "WARN" ? "zbliża się 15 min" : breakLevel === "DANGER" ? "przekroczono 15 min" : ""}
-                </span>
+            {clock && (
+              <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "0.35rem 0.6rem",
+                    borderRadius: 999,
+                    ...(timeBadgeStyle as any),
+                    color: "#fff",
+                    fontSize: "0.9em",
+                    fontFamily:
+                      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                  title={
+                    timeLimitSeconds
+                      ? `Limit okresu: ${formatClock(timeLimitSeconds)}. Po przekroczeniu badge zmienia kolor na czerwony.`
+                      : "Czas meczu (mm:ss)"
+                  }
+                >
+                  <strong style={{ fontFamily: "inherit" }}>Czas meczu:</strong>
+                  <span style={{ fontFamily: "inherit" }}>{formatClock(matchDisplaySeconds)}</span>
+                  {(timeOverLimit || Boolean(clock?.cap_reached)) && <span style={{ opacity: 0.9 }}>(po czasie)</span>}
+                </div>
+
+                {showBreakTimer && (
+                  <div
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 10,
+                      padding: "0.35rem 0.6rem",
+                      borderRadius: 999,
+                      ...(breakBadgeStyle as any),
+                      color: "#fff",
+                      fontSize: "0.9em",
+                    }}
+                  >
+                    <strong>{breakMode === "TECH" ? "Pauza techniczna:" : "Przerwa:"}</strong>
+                    <span>
+                      {Math.floor(breakSeconds / 60)}:{String(breakSeconds % 60).padStart(2, "0")}
+                    </span>
+                    <span style={{ opacity: 0.85 }}>
+                      {breakLevel === "WARN" ? "zbliża się 15 min" : breakLevel === "DANGER" ? "przekroczono 15 min" : ""}
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1488,7 +1823,7 @@ export default function MatchLivePanel(props: Props) {
                           <button
                             type="button"
                             disabled={!canEdit || incLoading}
-                            onClick={() => deleteIncident(i.id)}
+                            onClick={() => requestDeleteIncident(i)}
                             style={{
                               padding: "0.25rem 0.55rem",
                               borderRadius: 6,

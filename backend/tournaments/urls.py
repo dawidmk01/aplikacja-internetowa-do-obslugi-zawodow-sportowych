@@ -41,6 +41,7 @@ from .views import (
     MatchResultUpdateView,
     FinishMatchView,
     ContinueMatchView,
+    SetScheduledMatchView,
 
     # standings
     TournamentStandingsView,
@@ -124,6 +125,7 @@ urlpatterns = [
     path("matches/<int:pk>/result/", MatchResultUpdateView.as_view()),
     path("matches/<int:pk>/finish/", FinishMatchView.as_view()),
     path("matches/<int:pk>/continue/", ContinueMatchView.as_view()),
+    path("matches/<int:pk>/set-scheduled/", SetScheduledMatchView.as_view()),
 
     # --- STANDINGS ---
     path("tournaments/<int:pk>/standings/", TournamentStandingsView.as_view()),

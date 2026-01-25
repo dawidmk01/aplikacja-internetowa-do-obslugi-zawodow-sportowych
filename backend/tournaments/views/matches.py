@@ -1,7 +1,7 @@
+# backend/tournaments/views/matches.py
 from __future__ import annotations
 
 import math
-
 from typing import Optional, List, Tuple, Dict, Any
 
 from django.db import transaction
@@ -14,6 +14,9 @@ from rest_framework.generics import ListAPIView, RetrieveUpdateAPIView
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+# Hard cap used when computing clock-based minutes for auto-generated incidents
+_MAX_MATCH_SECONDS = 3 * 60 * 60  # 3h
 
 from tournaments.services.match_result import MatchResultService
 from tournaments.services.match_outcome import (
@@ -228,9 +231,6 @@ def _regenerate_knockout_from_groups_if_safe(tournament: Tournament) -> None:
     advance_from_groups(tournament)
 
 
-SYNC_CODE_WOULD_DELETE_FILLED = "INCIDENTS_SYNC_WOULD_DELETE_FILLED"
-
-
 # =========================
 # Score <-> incidents (GOAL) sync
 # =========================
@@ -260,218 +260,6 @@ def _is_goal_based_or_basketball(discipline: str) -> bool:
     )
 
 
-def _incident_counts_for_main_score(discipline: str, period: object) -> bool:
-    """
-    Na tym etapie pilnujemy spójności głównego wyniku (home_score/away_score)
-    z incydentami GOAL. Jeżeli w przyszłości rozdzielisz ET na osobne pola,
-    to ET1/ET2 nie powinny liczyć się do main-score.
-    """
-    p = str(period or "").strip() or "NONE"
-
-    if discipline == Tournament.Discipline.FOOTBALL:
-        return p in {"NONE", "FH", "SH"}  # ET1/ET2 pomijamy
-    if discipline == Tournament.Discipline.HANDBALL:
-        return p in {"NONE", "H1", "H2"}
-    # kosz + pozostałe: liczymy wszystko
-    return True
-
-
-def _goal_incident_is_filled(i: MatchIncident) -> bool:
-    """
-    Uznajemy, że incydent GOAL jest "uzupełniony", jeśli ma jakiekolwiek dane
-    operatora: zawodnika lub czas.
-    """
-    if getattr(i, "player_id", None):
-        return True
-    if getattr(i, "minute", None) is not None:
-        return True
-    mr = (getattr(i, "minute_raw", None) or "").strip()
-    return bool(mr)
-
-
-def _sum_goal_points_for_team(match: Match, *, team_id: int) -> int:
-    d = match.tournament.discipline
-    if not team_id:
-        return 0
-    qs = (
-        MatchIncident.objects
-        .filter(match_id=match.id, kind="GOAL", team_id=team_id)
-        .only("id", "team_id", "meta", "period")
-    )
-    total = 0
-    for i in qs:
-        if not _incident_counts_for_main_score(d, i.period):
-            continue
-        total += _incident_goal_points(d, i.meta)
-    return int(total)
-
-
-def _points_to_basketball_chunks(diff: int) -> List[int]:
-    """Rozbij różnicę punktów na listę 3/2/1 (greedy)."""
-    left = max(0, int(diff))
-    out: List[int] = []
-    for p in (3, 2, 1):
-        while left >= p:
-            out.append(p)
-            left -= p
-    return out
-
-
-def _sync_score_to_goal_incidents_or_409(
-    match: Match,
-    *,
-    force: bool,
-    created_by_id: Optional[int] = None,
-) -> Optional[Response]:
-    """
-    Szybki wynik = źródło prawdy.
-
-    Dla football/handball/basketball synchronizujemy incydenty GOAL tak, aby
-    suma incydentów (w main periods) == match.home_score / match.away_score.
-
-    - dodajemy placeholdery GOAL z meta._score_delta=0 (żeby nie "podnosiły" wyniku),
-    - usuwamy nadmiarowe GOAL: najpierw puste, potem (opcjonalnie) uzupełnione.
-    - jeżeli musielibyśmy usunąć uzupełnione i force==False => 409 + kod.
-    """
-    t = match.tournament
-    d = t.discipline
-
-    if _is_tennis(t):
-        return None
-    if not _is_goal_based_or_basketball(d):
-        return None
-    if not match.home_team_id or not match.away_team_id:
-        return None
-
-    desired_home = int(match.home_score or 0)
-    desired_away = int(match.away_score or 0)
-
-    # Zbierz kandydatów do zmian
-    qs = (
-        MatchIncident.objects
-        .filter(match_id=match.id, kind="GOAL")
-        .only("id", "team_id", "meta", "period", "player_id", "minute", "minute_raw")
-        .order_by("-id")
-    )
-
-    by_team: Dict[int, List[MatchIncident]] = {match.home_team_id: [], match.away_team_id: []}
-    for i in qs:
-        if i.team_id not in by_team:
-            continue
-        if not _incident_counts_for_main_score(d, i.period):
-            continue
-        by_team[i.team_id].append(i)
-
-    def current_points(team_id: int) -> int:
-        total = 0
-        for i in by_team.get(team_id, []):
-            total += _incident_goal_points(d, i.meta)
-        return int(total)
-
-    cur_home = current_points(match.home_team_id)
-    cur_away = current_points(match.away_team_id)
-
-    to_delete: List[MatchIncident] = []
-    would_delete_filled: List[MatchIncident] = []
-
-    def plan_deletions(team_id: int, cur: int, desired: int) -> int:
-        """Zwraca nową wartość cur po zaplanowaniu usunięć."""
-        if cur <= desired:
-            return cur
-
-        # preferuj usuwanie pustych (nieuzupełnionych)
-        candidates = by_team.get(team_id, [])
-        candidates_sorted = sorted(candidates, key=lambda x: (_goal_incident_is_filled(x), -int(x.id)))
-
-        new_cur = cur
-        for inc in candidates_sorted:
-            if new_cur <= desired:
-                break
-            pts = _incident_goal_points(d, inc.meta)
-            new_cur -= pts
-            to_delete.append(inc)
-            if _goal_incident_is_filled(inc):
-                would_delete_filled.append(inc)
-
-        return int(new_cur)
-
-    new_home_after_del = plan_deletions(match.home_team_id, cur_home, desired_home)
-    new_away_after_del = plan_deletions(match.away_team_id, cur_away, desired_away)
-
-    if would_delete_filled and not force:
-        return Response(
-            {
-                "detail": (
-                    "Konflikt synchronizacji: Zmiana szybkiego wyniku wymaga usunięcia uzupełnionych incydentów "
-                    "(zawodnik/czas). Użyj opcji \"Wymuś\", jeśli chcesz kontynuować."
-                ),
-                "code": "INCIDENTS_SYNC_WOULD_DELETE_FILLED",
-                "would_delete": [i.id for i in would_delete_filled],
-            },
-            status=status.HTTP_409_CONFLICT,
-        )
-
-
-    # Usuń zaplanowane
-    if to_delete:
-        MatchIncident.objects.filter(id__in=[i.id for i in to_delete]).delete()
-
-    # Po usunięciach policz ponownie (żeby poprawnie obsłużyć kosz 2/3 pkt)
-    match.refresh_from_db(fields=["home_score", "away_score"])
-    cur_home2 = _sum_goal_points_for_team(match, team_id=match.home_team_id)
-    cur_away2 = _sum_goal_points_for_team(match, team_id=match.away_team_id)
-
-    def create_placeholders(team_id: int, need_points: int) -> None:
-        if need_points <= 0:
-            return
-        if d == Tournament.Discipline.BASKETBALL:
-            chunks = _points_to_basketball_chunks(need_points)
-            for pts in chunks:
-                MatchIncident.objects.create(
-                    match_id=match.id,
-                    team_id=team_id,
-                    kind="GOAL",
-                    period="NONE",
-                    time_source="MANUAL",
-                    minute=None,
-                    minute_raw=None,
-                    player_id=None,
-                    meta={"points": pts, "_score_delta": 0, "source": "FAST_SCORE"},
-                    created_by_id=created_by_id,
-                )
-        else:
-            for _ in range(int(need_points)):
-                MatchIncident.objects.create(
-                    match_id=match.id,
-                    team_id=team_id,
-                    kind="GOAL",
-                    period="NONE",
-                    time_source="MANUAL",
-                    minute=None,
-                    minute_raw=None,
-                    player_id=None,
-                    meta={"_score_delta": 0, "source": "FAST_SCORE"},
-                    created_by_id=created_by_id,
-                )
-
-    need_home = int(desired_home) - int(cur_home2)
-    need_away = int(desired_away) - int(cur_away2)
-    if need_home > 0:
-        create_placeholders(match.home_team_id, need_home)
-    if need_away > 0:
-        create_placeholders(match.away_team_id, need_away)
-
-    return None
-
-
-
-
-
-
-
-MANUAL_SCORE_CODE_WOULD_DELETE_REAL = "MANUAL_SCORE_WOULD_DELETE_REAL_GOALS"
-
-
 def _incident_scope(match: Match, i: MatchIncident) -> str:
     """
     Określa bucket wyniku, do którego liczy się dany GOAL:
@@ -490,74 +278,61 @@ def _incident_scope(match: Match, i: MatchIncident) -> str:
     return "REGULAR"
 
 
-def _goal_incident_is_synthetic(i: MatchIncident) -> bool:
-    """
-    Syntetyczne = wygenerowane przez szybki/ręczny wynik (a nie realne zdarzenie live).
-    """
-    m = i.meta if isinstance(getattr(i, "meta", None), dict) else {}
-    if m.get("synthetic") is True:
-        return True
-    src = str(m.get("source") or m.get("origin") or "").strip().upper()
-    return src in {"FAST_SCORE", "MANUAL_SCORE"}
-
-
-def _sum_goal_points_for_team_scoped(match: Match, *, team_id: int, scope: str) -> int:
-    d = match.tournament.discipline
-    if not team_id:
-        return 0
-    qs = (
-        MatchIncident.objects
-        .filter(match_id=match.id, kind="GOAL", team_id=team_id)
-        .only("id", "team_id", "meta", "period")
-    )
-    total = 0
-    want = str(scope or "REGULAR").upper()
-    for i in qs:
-        if _incident_scope(match, i) != want:
-            continue
-        total += _incident_goal_points(d, i.meta)
-    return int(total)
+def _points_to_basketball_chunks(diff: int) -> List[int]:
+    """Rozbij różnicę punktów na listę 3/2/1 (greedy)."""
+    left = max(0, int(diff))
+    out: List[int] = []
+    for p in (3, 2, 1):
+        while left >= p:
+            out.append(p)
+            left -= p
+    return out
 
 
 def _clock_minute_payload(match: Match) -> Tuple[str, Optional[int], Optional[str]]:
     """
-    Jeśli zegar działa (RUNNING), to syntetyczne incydenty dostają minutę z zegara.
+    Jeśli zegar ma jakiekolwiek dane (uruchomiony / wstrzymany / zatrzymany z elapsed),
+    to nowe incydenty mogą dostać minutę z zegara.
+
     Zwraca: (time_source, minute, minute_raw)
     """
     state = str(getattr(match, "clock_state", "") or "")
-    is_running = state == str(getattr(Match.ClockState, "RUNNING", "RUNNING"))
-    if not is_running:
-        return ("MANUAL", None, None)
-
-    now = timezone.now()
     elapsed = int(getattr(match, "clock_elapsed_seconds", 0) or 0)
     started_at = getattr(match, "clock_started_at", None)
-    if started_at:
-        try:
-            delta = int((now - started_at).total_seconds())
-        except Exception:
-            delta = 0
-        if delta < 0:
-            delta = 0
-        elapsed += delta
 
-    # cap (UI safety)
-    if elapsed > _MAX_MATCH_SECONDS:
-        elapsed = _MAX_MATCH_SECONDS
-    if elapsed < 0:
-        elapsed = 0
+    not_started_value = str(getattr(Match.ClockState, "NOT_STARTED", "NOT_STARTED"))
+    if state == not_started_value and elapsed == 0 and not started_at:
+        return ("MANUAL", None, None)
 
-    minute = int(math.ceil(elapsed / 60.0)) if elapsed > 0 else 0
-    return ("CLOCK", minute, str(minute))
+    try:
+        minute = match.clock_minute_total(now=timezone.now())
+    except Exception:
+        now = timezone.now()
+        total = elapsed
+        running_value = str(getattr(Match.ClockState, "RUNNING", "RUNNING"))
+        if state == running_value and started_at:
+            try:
+                total += max(0, int((now - started_at).total_seconds()))
+            except Exception:
+                pass
+        if total < 0:
+            total = 0
+        if total > _MAX_MATCH_SECONDS:
+            total = _MAX_MATCH_SECONDS
+        minute = int(math.ceil(total / 60.0)) if total > 0 else 0
+
+    return ("CLOCK", int(minute), str(int(minute)))
 
 
 def _default_period_for_scope(discipline: str, scope: str) -> str:
     if str(scope).upper() == "EXTRA_TIME":
-        # dla czytelności w UI
         if discipline in (Tournament.Discipline.FOOTBALL, Tournament.Discipline.HANDBALL):
             return "ET1"
         return "ET"
     return "NONE"
+
+
+SCORE_SYNC_CONFIRM_REQUIRED = "SCORE_SYNC_CONFIRM_REQUIRED"
 
 
 def _apply_manual_result_via_goal_incidents_or_409(
@@ -567,14 +342,18 @@ def _apply_manual_result_via_goal_incidents_or_409(
     created_by_id: Optional[int] = None,
 ) -> Optional[Response]:
     """
-    Ręczny "sztywny" wynik działa przez incydenty GOAL:
-    - dodajemy brakujące GOAL jako syntetyczne (meta.synthetic/source=MANUAL_SCORE)
-    - odejmujemy tylko syntetyczne (chyba że force==True)
-    - jeżeli zegar RUNNING, syntetyczne dostają minute z zegara
+    Wynik liczbowy (szybki/ręczny) jest źródłem prawdy.
 
-    Obsługujemy dwa scope'y:
-    - REGULAR => home_score/away_score
-    - EXTRA_TIME => home_extra_time_score/away_extra_time_score (gdy went_to_extra_time)
+    Synchronizujemy incydenty GOAL tak, aby:
+      - suma punktów GOAL w scope REGULAR == home_score / away_score
+      - suma punktów GOAL w scope EXTRA_TIME == home_extra_time_score / away_extra_time_score (gdy dogrywka)
+
+    Zasady:
+      - dodajemy brakujące GOAL (jeśli zegar ma dane -> dodajemy minutę z zegara),
+      - usuwamy nadmiarowe GOAL zawsze od najwyższego id,
+      - jeśli jakiekolwiek usunięcie jest potrzebne i force==False -> 409 + informacja ile incydentów zniknie.
+
+    Wszystkie incydenty GOAL traktujemy jednakowo (bez rozróżniania synthetic/real).
     """
     t = match.tournament
     d = t.discipline
@@ -586,29 +365,40 @@ def _apply_manual_result_via_goal_incidents_or_409(
     if not match.home_team_id or not match.away_team_id:
         return None
 
+    match = (
+        Match.objects
+        .select_related("tournament")
+        .select_for_update()
+        .get(pk=match.pk)
+    )
+
     desired_regular_home = int(match.home_score or 0)
     desired_regular_away = int(match.away_score or 0)
 
-    et_enabled = bool(getattr(match, "went_to_extra_time", False))
-    desired_et_home = int(match.home_extra_time_score or 0) if et_enabled else 0
-    desired_et_away = int(match.away_extra_time_score or 0) if et_enabled else 0
+    desired_et_home = int(getattr(match, "home_extra_time_score", 0) or 0)
+    desired_et_away = int(getattr(match, "away_extra_time_score", 0) or 0)
 
-    # jeśli ktoś wpisał ET>0, dopnij toggle
-    if (desired_et_home > 0 or desired_et_away > 0) and not et_enabled:
+    et_enabled = bool(getattr(match, "went_to_extra_time", False)) or (desired_et_home > 0 or desired_et_away > 0)
+    if et_enabled and not getattr(match, "went_to_extra_time", False):
         match.went_to_extra_time = True
-        et_enabled = True
+        match.save(update_fields=["went_to_extra_time"])
+
+    if not et_enabled:
+        desired_et_home = 0
+        desired_et_away = 0
 
     desired_map: Dict[Tuple[int, str], int] = {
         (match.home_team_id, "REGULAR"): desired_regular_home,
         (match.away_team_id, "REGULAR"): desired_regular_away,
-        (match.home_team_id, "EXTRA_TIME"): desired_et_home if et_enabled else 0,
-        (match.away_team_id, "EXTRA_TIME"): desired_et_away if et_enabled else 0,
+        (match.home_team_id, "EXTRA_TIME"): desired_et_home,
+        (match.away_team_id, "EXTRA_TIME"): desired_et_away,
     }
 
     qs = (
         MatchIncident.objects
+        .select_for_update()
         .filter(match_id=match.id, kind="GOAL")
-        .only("id", "team_id", "meta", "period", "player_id", "minute", "minute_raw")
+        .only("id", "team_id", "meta", "period")
         .order_by("-id")
     )
 
@@ -619,157 +409,122 @@ def _apply_manual_result_via_goal_incidents_or_409(
         (match.away_team_id, "EXTRA_TIME"): [],
     }
 
-    for i in qs:
-        if i.team_id not in (match.home_team_id, match.away_team_id):
+    for inc in qs:
+        if inc.team_id not in (match.home_team_id, match.away_team_id):
             continue
-        scope = _incident_scope(match, i)
-        key = (i.team_id, scope)
+        scope = _incident_scope(match, inc)
+        key = (inc.team_id, scope)
         if key in by_key:
-            by_key[key].append(i)
+            by_key[key].append(inc)
 
-    def current_points(key: Tuple[int, str]) -> int:
+    def _points(inc: MatchIncident) -> int:
+        return int(_incident_goal_points(d, inc.meta))
+
+    current_points: Dict[Tuple[int, str], int] = {}
+    for key, lst in by_key.items():
         total = 0
-        for i in by_key.get(key, []):
-            total += _incident_goal_points(d, i.meta)
-        return int(total)
+        for inc in lst:
+            total += _points(inc)
+        current_points[key] = int(total)
 
-    to_delete: List[MatchIncident] = []
-    would_delete_real: List[MatchIncident] = []
-
-    def plan_deletions(key: Tuple[int, str], cur: int, desired: int) -> int:
-        if cur <= desired:
-            return cur
-
-        candidates = by_key.get(key, [])
-        # preferuj syntetyczne, potem "puste", potem najnowsze
-        def _sort_k(inc: MatchIncident):
-            synthetic = _goal_incident_is_synthetic(inc)
-            filled = _goal_incident_is_filled(inc)
-            return (0 if synthetic else 1, 0 if not filled else 1, -int(inc.id))
-
-        candidates_sorted = sorted(candidates, key=_sort_k)
-
-        new_cur = cur
-        for inc in candidates_sorted:
-            if new_cur <= desired:
-                break
-            pts = _incident_goal_points(d, inc.meta)
-            new_cur -= pts
-            to_delete.append(inc)
-            if not _goal_incident_is_synthetic(inc):
-                would_delete_real.append(inc)
-        return int(new_cur)
+    delete_ids: List[int] = []
+    remaining_points: Dict[Tuple[int, str], int] = dict(current_points)
 
     for key, desired in desired_map.items():
-        cur = current_points(key)
-        plan_deletions(key, cur, desired)
+        cur = int(remaining_points.get(key, 0))
+        if cur <= int(desired):
+            continue
 
-    if would_delete_real and not force:
+        for inc in by_key.get(key, []):  # already ordered by -id
+            if cur <= int(desired):
+                break
+            cur -= _points(inc)
+            delete_ids.append(int(inc.id))
+        remaining_points[key] = int(cur)
+
+    delete_ids = sorted(set(delete_ids), reverse=True)
+    if delete_ids and not force:
         return Response(
             {
                 "detail": (
-                    "Konflikt: obniżenie wyniku wymaga usunięcia REALNYCH bramek/punktów (incydenty live). "
-                    "Usuń je ręcznie z listy incydentów lub użyj opcji \"Wymuś\"."
+                    f"Zmiana wyniku spowoduje usunięcie {len(delete_ids)} istniejących incydentów GOAL. "
+                    "Czy chcesz kontynuować?"
                 ),
-                "code": MANUAL_SCORE_CODE_WOULD_DELETE_REAL,
-                "would_delete": [i.id for i in would_delete_real],
+                "code": SCORE_SYNC_CONFIRM_REQUIRED,
+                "delete_count": len(delete_ids),
+                "delete_ids": delete_ids,
             },
             status=status.HTTP_409_CONFLICT,
         )
 
-    if to_delete:
-        MatchIncident.objects.filter(id__in=[i.id for i in to_delete]).delete()
+    if delete_ids:
+        MatchIncident.objects.filter(id__in=delete_ids).delete()
 
-    # Po usunięciach policz ponownie i dodaj brakujące
     time_source, minute, minute_raw = _clock_minute_payload(match)
 
-    def create_synthetic(team_id: int, scope: str, need_points: int) -> None:
-        if need_points <= 0:
-            return
-        meta_base: Dict[str, Any] = {"synthetic": True, "source": "MANUAL_SCORE"}
-        if str(scope).upper() == "EXTRA_TIME":
-            meta_base["scope"] = "EXTRA_TIME"
+    def _period_for_new_goal(scope: str) -> str:
+        if str(scope or "REGULAR").upper() == "EXTRA_TIME":
+            return _default_period_for_scope(d, "EXTRA_TIME")
+        return "NONE"
 
-        period = _default_period_for_scope(d, scope)
+    def _meta_for_new_goal(scope: str, pts: Optional[int] = None) -> Dict[str, Any]:
+        m: Dict[str, Any] = {}
+        if str(scope).upper() == "EXTRA_TIME":
+            m["scope"] = "EXTRA_TIME"
+        if pts is not None:
+            m["points"] = int(pts)
+        return m
+
+    creates: List[MatchIncident] = []
+
+    for (team_id, scope), desired in desired_map.items():
+        desired = int(desired)
+        cur = int(remaining_points.get((team_id, scope), 0))
+
+        need = desired - cur
+        if need <= 0:
+            continue
+
+        period = _period_for_new_goal(scope)
 
         if d == Tournament.Discipline.BASKETBALL:
-            chunks = _points_to_basketball_chunks(need_points)
-            for pts in chunks:
-                meta = dict(meta_base)
-                meta["points"] = pts
-                MatchIncident.objects.create(
-                    match_id=match.id,
-                    team_id=team_id,
-                    kind="GOAL",
-                    period=period,
-                    time_source=time_source,
-                    minute=minute,
-                    minute_raw=minute_raw,
-                    player_id=None,
-                    meta=meta,
-                    created_by_id=created_by_id,
+            for pts in _points_to_basketball_chunks(need):
+                creates.append(
+                    MatchIncident(
+                        match_id=match.id,
+                        team_id=team_id,
+                        kind="GOAL",
+                        period=period,
+                        time_source=time_source,
+                        minute=minute,
+                        minute_raw=minute_raw,
+                        player_id=None,
+                        meta=_meta_for_new_goal(scope, pts=pts),
+                        created_by_id=created_by_id,
+                    )
                 )
         else:
-            for _ in range(int(need_points)):
-                MatchIncident.objects.create(
-                    match_id=match.id,
-                    team_id=team_id,
-                    kind="GOAL",
-                    period=period,
-                    time_source=time_source,
-                    minute=minute,
-                    minute_raw=minute_raw,
-                    player_id=None,
-                    meta=dict(meta_base),
-                    created_by_id=created_by_id,
+            for _ in range(int(need)):
+                creates.append(
+                    MatchIncident(
+                        match_id=match.id,
+                        team_id=team_id,
+                        kind="GOAL",
+                        period=period,
+                        time_source=time_source,
+                        minute=minute,
+                        minute_raw=minute_raw,
+                        player_id=None,
+                        meta=_meta_for_new_goal(scope),
+                        created_by_id=created_by_id,
+                    )
                 )
 
-    # aktualne po delete
-    cur_reg_home = _sum_goal_points_for_team_scoped(match, team_id=match.home_team_id, scope="REGULAR")
-    cur_reg_away = _sum_goal_points_for_team_scoped(match, team_id=match.away_team_id, scope="REGULAR")
-    cur_et_home = _sum_goal_points_for_team_scoped(match, team_id=match.home_team_id, scope="EXTRA_TIME")
-    cur_et_away = _sum_goal_points_for_team_scoped(match, team_id=match.away_team_id, scope="EXTRA_TIME")
-
-    create_synthetic(match.home_team_id, "REGULAR", desired_regular_home - cur_reg_home)
-    create_synthetic(match.away_team_id, "REGULAR", desired_regular_away - cur_reg_away)
-
-    if et_enabled:
-        create_synthetic(match.home_team_id, "EXTRA_TIME", desired_et_home - cur_et_home)
-        create_synthetic(match.away_team_id, "EXTRA_TIME", desired_et_away - cur_et_away)
-
-    # Zapisz pola wynikowe jako cache z incydentów (spójność na przyszłość)
-    # (po create musimy policzyć jeszcze raz)
-    reg_home = _sum_goal_points_for_team_scoped(match, team_id=match.home_team_id, scope="REGULAR")
-    reg_away = _sum_goal_points_for_team_scoped(match, team_id=match.away_team_id, scope="REGULAR")
-    et_home = _sum_goal_points_for_team_scoped(match, team_id=match.home_team_id, scope="EXTRA_TIME")
-    et_away = _sum_goal_points_for_team_scoped(match, team_id=match.away_team_id, scope="EXTRA_TIME")
-
-    match.home_score = reg_home
-    match.away_score = reg_away
-
-    update_fields = ["home_score", "away_score", "went_to_extra_time"]
-
-    if et_enabled:
-        match.went_to_extra_time = True
-        match.home_extra_time_score = et_home
-        match.away_extra_time_score = et_away
-        update_fields += ["home_extra_time_score", "away_extra_time_score"]
-    else:
-        # gdy ET wyłączone, czyścimy cache ET
-        match.home_extra_time_score = None
-        match.away_extra_time_score = None
-        update_fields += ["home_extra_time_score", "away_extra_time_score"]
-
-    match.save(update_fields=update_fields)
+    if creates:
+        MatchIncident.objects.bulk_create(creates)
 
     return None
 
-
-# =========================
-# Match clock helpers
-# =========================
-
-_MAX_MATCH_SECONDS = 3 * 60 * 60  # 3h hard limit (UI safety)
 
 def _stop_match_clock(match: Match) -> None:
     """Stops the match clock and persists the accumulated elapsed seconds (capped)."""
@@ -798,7 +553,6 @@ def _continue_match_clock(match: Match) -> None:
     """Resumes the match clock from the current elapsed seconds."""
     now = timezone.now()
     if int(getattr(match, "clock_elapsed_seconds", 0) or 0) >= _MAX_MATCH_SECONDS:
-        # do not resume beyond limit
         match.clock_state = Match.ClockState.STOPPED
         match.clock_started_at = None
         return
@@ -916,7 +670,6 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
-        # zablokuj rekord meczu na czas update
         match = self.get_object()
         match = (
             Match.objects
@@ -956,9 +709,33 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
 
         match = serializer.save()
 
-        # Szybki wynik jest źródłem prawdy: dopasuj incydenty GOAL do wyniku.
+        # UX: samo wprowadzenie wyniku (nawet 0:0) lub ustawień ET/karne
+        # traktujemy jako rozpoczęcie meczu. Dzięki temu status zmienia się także
+        # bez konieczności dodawania incydentu lub otwierania panelu LIVE.
+        if match.status == Match.Status.SCHEDULED:
+            touched = False
+            for k in (
+                "home_score",
+                "away_score",
+                "tennis_sets",
+                "went_to_extra_time",
+                "home_extra_time_score",
+                "away_extra_time_score",
+                "decided_by_penalties",
+                "home_penalty_score",
+                "away_penalty_score",
+            ):
+                if k in (request.data or {}):
+                    touched = True
+                    break
+            if touched:
+                match.status = Match.Status.IN_PROGRESS
+                match.save(update_fields=["status"])
+
         resp = _apply_manual_result_via_goal_incidents_or_409(match, force=force, created_by_id=request.user.id)
         if resp is not None:
+            if transaction.get_connection().in_atomic_block:
+                transaction.set_rollback(True)
             return resp
 
         if stage.stage_type in (Stage.StageType.LEAGUE, Stage.StageType.GROUP):
@@ -1021,10 +798,11 @@ class FinishMatchView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Szybki wynik jest źródłem prawdy: przy zakończeniu też domykamy sync do incydentów.
         force = str(request.query_params.get("force") or "").strip().lower() in {"1", "true", "yes"}
         resp = _apply_manual_result_via_goal_incidents_or_409(match, force=force, created_by_id=request.user.id)
         if resp is not None:
+            if transaction.get_connection().in_atomic_block:
+                transaction.set_rollback(True)
             return resp
 
         cfg = tournament.format_config or {}
@@ -1128,7 +906,6 @@ class FinishMatchView(APIView):
         return Response({"detail": "Nieobsługiwany typ etapu."}, status=status.HTTP_400_BAD_REQUEST)
 
 
-
 class ContinueMatchView(APIView):
     """
     POST /api/matches/<pk>/continue/
@@ -1154,7 +931,6 @@ class ContinueMatchView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Dozwolone tylko z FINISHED -> IN_PROGRESS
         if match.status != Match.Status.FINISHED:
             return Response(
                 {"detail": "Mecz nie jest zakończony — nie ma czego kontynuować."},
@@ -1165,5 +941,91 @@ class ContinueMatchView(APIView):
         _continue_match_clock(match)
 
         match.save(update_fields=["status", "clock_state", "clock_started_at"])
+
+        return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
+
+class SetScheduledMatchView(APIView):
+    """
+    POST /api/matches/<pk>/set-scheduled/
+    Ustawia status meczu na „Zaplanowany” i resetuje zegar (bez ruszania wyniku/incydentów).
+
+    Użyteczne do korekt organizacyjnych (np. pomyłkowo rozpoczęty lub zakończony mecz).
+    """
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, *args, **kwargs):
+        match_id = kwargs.get("pk") or kwargs.get("id")
+        if not match_id:
+            return Response({"detail": "Brak identyfikatora meczu."}, status=status.HTTP_400_BAD_REQUEST)
+
+        match = get_object_or_404(
+            Match.objects.select_related("stage", "tournament").select_for_update(),
+            pk=match_id,
+        )
+        tournament = match.tournament
+
+        # Bezpieczeństwo domenowe: cofnięcie do „Zaplanowany” ma sens tylko, gdy
+        # mecz faktycznie nie ma przebiegu (brak incydentów) oraz nie ma wyniku.
+        # W przeciwnym razie użytkownik powinien świadomie usuwać incydenty / wynik.
+        from tournaments.models import MatchIncident  # local import (unikamy cykli)
+
+        has_incidents = MatchIncident.objects.filter(match_id=match.id).exists()
+
+        score_home = int(match.home_score or 0)
+        score_away = int(match.away_score or 0)
+        has_any_score = (score_home != 0) or (score_away != 0)
+
+        # dodatkowe pola wyniku (dogrywka/kary/tenis)
+        if getattr(match, "went_to_extra_time", False):
+            has_any_score = True
+        if getattr(match, "decided_by_penalties", False):
+            has_any_score = True
+        if int(getattr(match, "home_extra_time_score", 0) or 0) != 0:
+            has_any_score = True
+        if int(getattr(match, "away_extra_time_score", 0) or 0) != 0:
+            has_any_score = True
+        if int(getattr(match, "home_penalty_score", 0) or 0) != 0:
+            has_any_score = True
+        if int(getattr(match, "away_penalty_score", 0) or 0) != 0:
+            has_any_score = True
+        # tenis: jakiekolwiek sety oznaczają wynik
+        if hasattr(match, "tennis_sets") and match.tennis_sets:
+            has_any_score = True
+
+        if has_incidents or has_any_score:
+            return Response(
+                {
+                    "detail": "Nie można ustawić meczu jako zaplanowany: wymagany jest wynik 0:0 oraz brak incydentów.",
+                    "code": "CANNOT_SET_SCHEDULED_WITH_DATA",
+                    "has_incidents": bool(has_incidents),
+                    "has_score": bool(has_any_score),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # Status to element organizacyjny powiązany z wynikami oraz „live”,
+        # dlatego dopuszczamy users z results_edit lub schedule_edit (organizator ma oba).
+        if not (can_edit_results(request.user, tournament) or can_edit_schedule(request.user, tournament)):
+            return Response(
+                {"detail": "Nie masz uprawnień do zmiany statusu meczu. Dostępny jest tylko podgląd."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        match.status = Match.Status.SCHEDULED
+
+        # Reset zegara do stanu początkowego.
+        match.clock_state = Match.ClockState.NOT_STARTED
+        match.clock_started_at = None
+        match.clock_elapsed_seconds = 0
+        if hasattr(match, "clock_added_seconds"):
+            match.clock_added_seconds = 0
+        match.clock_period = Match.ClockPeriod.NONE
+
+        update_fields = ["status", "clock_state", "clock_started_at", "clock_elapsed_seconds", "clock_period"]
+        if hasattr(match, "clock_added_seconds"):
+            update_fields.append("clock_added_seconds")
+
+        match.save(update_fields=update_fields)
 
         return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
