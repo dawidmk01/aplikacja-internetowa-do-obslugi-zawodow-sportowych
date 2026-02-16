@@ -1,75 +1,59 @@
-// frontend/src/components/TournamentStepFooter.tsx
+import React from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, ArrowRight, Trophy } from "lucide-react";
+
 import { useTournamentFlowGuard } from "../flow/TournamentFlowGuardContext";
 import { FLOW_STEPS, getCurrentStepIndex } from "../flow/flowSteps";
+import { Button } from "../ui/Button";
+import { cn } from "../lib/cn";
 
 type Props = {
   getCreatedId?: () => string | null;
+  className?: string;
 };
 
-export default function TournamentStepFooter({ getCreatedId }: Props) {
+export default function TournamentStepFooter({ getCreatedId, className }: Props) {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
   const navigate = useNavigate();
 
-  const { saveIfDirty, saving } = useTournamentFlowGuard();
+  const { saveIfDirty, saving, createdId } = useTournamentFlowGuard();
 
-  const resolvedId = id ?? getCreatedId?.() ?? null;
+  const resolvedId = id ?? createdId ?? getCreatedId?.() ?? null;
 
-  // 1) Wykrycie strony Standings (poza flow managementu)
+  // Standings poza flow
   const isStandings = location.pathname.endsWith("/standings");
-
-  // =========================
-  // SPECJALNY PRZYPADEK: TABELA / DRABINKA
-  // =========================
   if (isStandings && resolvedId) {
     return (
-      <div
-        style={{
-          marginTop: "2rem",
-          display: "flex",
-          justifyContent: "space-between",
-          gap: "1rem",
-        }}
-      >
-        <button
+      <div className={cn("mt-8 flex flex-wrap items-center justify-between gap-3", className)}>
+        <Button
+          variant="secondary"
           onClick={() => navigate(`/tournaments/${resolvedId}/detail/results`)}
           disabled={saving}
+          leftIcon={<ArrowLeft className="h-4 w-4" />}
         >
-          ← Wyniki
-        </button>
+          Wyniki
+        </Button>
 
-        <button onClick={() => navigate("/")} disabled={saving}>
-          Home →
-        </button>
+        {/* Usunięto powrót do Home */}
+        <div />
       </div>
     );
   }
 
-  // =========================
-  // STANDARDOWY FLOW
-  // =========================
   const idx = getCurrentStepIndex(location.pathname);
   const current = FLOW_STEPS[idx];
-
-  // Jeśli nie jesteśmy na standings i nie ma nas w flow steps -> null
   if (!current) return null;
 
   const isFirst = idx === 0;
   const isLast = idx === FLOW_STEPS.length - 1;
 
-  /* --- POPRZEDNIA STRONA --- */
-  const backLabel = isFirst ? "Home" : FLOW_STEPS[idx - 1].label;
+  // USUNIĘTE: cofanie do "/" w pierwszym kroku
+  const backLabel = isFirst ? "Wstecz" : FLOW_STEPS[idx - 1].label;
+  const backPath =
+    !isFirst && resolvedId ? FLOW_STEPS[idx - 1].path(resolvedId) : null;
 
-  const backPath = isFirst
-    ? "/"
-    : resolvedId
-      ? FLOW_STEPS[idx - 1].path(resolvedId)
-      : null;
-
-  /* --- NASTĘPNA STRONA --- */
   const nextLabel = isLast ? "Tabela / Drabinka" : FLOW_STEPS[idx + 1].label;
-
   const nextPath = isLast
     ? resolvedId
       ? `/tournaments/${resolvedId}/standings`
@@ -78,15 +62,8 @@ export default function TournamentStepFooter({ getCreatedId }: Props) {
       ? FLOW_STEPS[idx + 1].path(resolvedId)
       : null;
 
-  /* --- HANDLERY --- */
   const goBack = async () => {
     if (!backPath) return;
-
-    // Wyjście do Home → bez zapisu
-    if (isFirst) {
-      navigate(backPath);
-      return;
-    }
 
     const ok = await saveIfDirty();
     if (!ok) return;
@@ -95,20 +72,18 @@ export default function TournamentStepFooter({ getCreatedId }: Props) {
   };
 
   const goNext = async () => {
-    // CREATE → musimy zapisać i uzyskać ID
+    // CREATE -> zapis i dopiero mamy ID
     if (!resolvedId) {
       const ok = await saveIfDirty();
       if (!ok) return;
 
-      const newId = getCreatedId?.();
+      const newId = createdId ?? getCreatedId?.();
       if (!newId) return;
 
-      // Przechodzimy do kroku 2 (czyli FLOW_STEPS[1]) zgodnie z Twoją kolejnością w flowSteps.ts
       navigate(FLOW_STEPS[1].path(newId));
       return;
     }
 
-    // Pozostałe kroki flow (gdy mamy już ID)
     if (!nextPath) return;
 
     const ok = await saveIfDirty();
@@ -118,21 +93,25 @@ export default function TournamentStepFooter({ getCreatedId }: Props) {
   };
 
   return (
-    <div
-      style={{
-        marginTop: "2rem",
-        display: "flex",
-        justifyContent: "space-between",
-        gap: "1rem",
-      }}
-    >
-      <button onClick={goBack} disabled={saving}>
-        ← {backLabel}
-      </button>
+    <div className={cn("mt-8 flex flex-wrap items-center justify-between gap-3", className)}>
+      <Button
+        variant="secondary"
+        onClick={goBack}
+        disabled={saving || !backPath}
+        leftIcon={<ArrowLeft className="h-4 w-4" />}
+      >
+        {backLabel}
+      </Button>
 
-      <button onClick={goNext} disabled={saving}>
-        {nextLabel} →
-      </button>
+      <Button
+        variant="primary"
+        onClick={goNext}
+        disabled={saving || (!nextPath && !!resolvedId)}
+        leftIcon={isLast ? <Trophy className="h-4 w-4" /> : undefined}
+        rightIcon={<ArrowRight className="h-4 w-4" />}
+      >
+        {nextLabel}
+      </Button>
     </div>
   );
 }

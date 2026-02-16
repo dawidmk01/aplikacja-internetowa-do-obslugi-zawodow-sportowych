@@ -1,3 +1,4 @@
+// frontend/src/pages/TournamentSchedule.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { apiFetch } from "../api";
@@ -8,6 +9,7 @@ import {
   groupMatchesByRound,
   stageHeaderTitle,
 } from "../flow/stagePresentation";
+import { Calendar, Clock, Eraser, MapPin, X } from "lucide-react";
 
 /* =========================
    Typy
@@ -16,7 +18,7 @@ import {
 type TournamentScheduleDTO = {
   id: number;
   start_date: string | null; // "YYYY-MM-DD"
-  end_date: string | null;   // "YYYY-MM-DD"
+  end_date: string | null; // "YYYY-MM-DD"
   location: string | null;
   participants_count?: number;
 };
@@ -91,6 +93,32 @@ function sameDraft(a: MatchDraft, b: MatchDraft): boolean {
 }
 
 /* =========================
+   Toast (zawsze widoczny + pozycja)
+   ========================= */
+
+type ToastKind = "success" | "error" | "info";
+type ToastPos = "br" | "bl" | "tr" | "tl";
+
+function toastPosClass(pos: ToastPos): string {
+  switch (pos) {
+    case "br":
+      return "bottom-6 right-6";
+    case "bl":
+      return "bottom-6 left-6";
+    case "tr":
+      return "top-6 right-6";
+    case "tl":
+      return "top-6 left-6";
+  }
+}
+
+function toastRingClass(kind: ToastKind): string {
+  if (kind === "success") return "ring-1 ring-emerald-400/30";
+  if (kind === "error") return "ring-1 ring-rose-400/30";
+  return "ring-1 ring-slate-400/25";
+}
+
+/* =========================
    Komponent
    ========================= */
 
@@ -99,8 +127,6 @@ export default function TournamentSchedule() {
 
   const [tournament, setTournament] = useState<TournamentScheduleDTO | null>(null);
   const [matches, setMatches] = useState<MatchScheduleDTO[]>([]);
-  const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [showBye, setShowBye] = useState(false);
 
   const [savingTournament, setSavingTournament] = useState(false);
@@ -108,8 +134,17 @@ export default function TournamentSchedule() {
   // Autosave: draft + status per mecz
   const [draftMap, setDraftMap] = useState<Record<number, MatchDraft>>({});
   const [savingById, setSavingById] = useState<Record<number, boolean>>({});
-  const [saveOkAt, setSaveOkAt] = useState<Record<number, number>>({});
   const [saveErrorById, setSaveErrorById] = useState<Record<number, string>>({});
+
+  // Toast state (zawsze renderowany)
+  const [toastText, setToastText] = useState<string>("");
+  const [toastKind, setToastKind] = useState<ToastKind>("info");
+  const [toastPos, setToastPos] = useState<ToastPos>("br");
+
+  const pushToast = (kind: ToastKind, text: string) => {
+    setToastKind(kind);
+    setToastText(text);
+  };
 
   // Refs, żeby timery nie łapały starych wartości
   const matchesRef = useRef<MatchScheduleDTO[]>([]);
@@ -127,7 +162,7 @@ export default function TournamentSchedule() {
   const savedSnapshotRef = useRef<Record<number, MatchDraft>>({});
 
   // Debounce per mecz + kontrola równoległych zapisów
-  const SAVE_DEBOUNCE_MS = 2000; // czas
+  const SAVE_DEBOUNCE_MS = 1100;
   const saveTimersRef = useRef<Record<number, number | undefined>>({});
   const inFlightRef = useRef<Record<number, boolean | undefined>>({});
   const pendingAfterFlightRef = useRef<Record<number, boolean | undefined>>({});
@@ -136,29 +171,6 @@ export default function TournamentSchedule() {
   const storageKey = useMemo(() => {
     return id ? `tournament_schedule_draft_${id}` : "";
   }, [id]);
-
-  /* =========================
-     TOAST (auto-hide) – tylko komunikaty globalne
-     ========================= */
-
-  const toastText = error ?? message;
-  const toastKind: "error" | "success" | null = error ? "error" : message ? "success" : null;
-
-  useEffect(() => {
-    if (!toastText) return;
-
-    const t = window.setTimeout(() => {
-      setError(null);
-      setMessage(null);
-    }, 2200);
-
-    return () => window.clearTimeout(t);
-  }, [toastText]);
-
-  const closeToast = () => {
-    setError(null);
-    setMessage(null);
-  };
 
   /* =========================
      LocalStorage draft
@@ -209,8 +221,7 @@ export default function TournamentSchedule() {
   const loadData = async () => {
     if (!id) return;
 
-    setError(null);
-    setMessage(null);
+    pushToast("info", "Ładowanie harmonogramu…");
 
     const [tRes, mRes] = await Promise.all([
       apiFetch(`/api/tournaments/${id}/`),
@@ -249,12 +260,7 @@ export default function TournamentSchedule() {
     const merged = list.map((m) => {
       const d = storedDrafts[m.id];
       if (!d) return m;
-      return {
-        ...m,
-        scheduled_date: d.scheduled_date,
-        scheduled_time: d.scheduled_time,
-        location: d.location,
-      };
+      return { ...m, scheduled_date: d.scheduled_date, scheduled_time: d.scheduled_time, location: d.location };
     });
 
     setMatches(merged);
@@ -271,11 +277,12 @@ export default function TournamentSchedule() {
 
     setSavingById({});
     setSaveErrorById({});
-    setSaveOkAt({});
+
+    pushToast("info", "Gotowe. Zmiany zapisują się automatycznie.");
   };
 
   useEffect(() => {
-    loadData().catch((e: any) => setError(e.message));
+    loadData().catch((e: any) => pushToast("error", e?.message || "Błąd ładowania."));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -295,12 +302,9 @@ export default function TournamentSchedule() {
       tournamentRef.current = next;
     }
 
-    setError(null);
-    setMessage(null);
-
     const datesCheck = validateTournamentDates(next.start_date, next.end_date);
     if (!datesCheck.ok) {
-      setError(datesCheck.message);
+      pushToast("error", datesCheck.message);
       return;
     }
 
@@ -321,7 +325,9 @@ export default function TournamentSchedule() {
         throw new Error(data?.end_date?.[0] || data?.detail || "Nie udało się zapisać danych turnieju.");
       }
 
-      setMessage("Dane turnieju zapisane.");
+      pushToast("success", "Dane turnieju zapisane.");
+    } catch (e: any) {
+      pushToast("error", e?.message || "Błąd zapisu danych turnieju.");
     } finally {
       setSavingTournament(false);
     }
@@ -368,7 +374,7 @@ export default function TournamentSchedule() {
     const current = overrideDraft ?? toDraft(m);
     const base = savedSnapshotRef.current[matchId] ?? { scheduled_date: null, scheduled_time: null, location: null };
 
-    // Jeżeli wartości wróciły do stanu zapisanego
+    // Jeżeli wróciło do zapisanego – usuń draft
     if (sameDraft(current, base)) {
       setDraftMap((prevMap) => {
         if (!prevMap[matchId]) return prevMap;
@@ -380,18 +386,19 @@ export default function TournamentSchedule() {
       return;
     }
 
-    // Walidacja
+    // Walidacja daty w obrębie turnieju
     if (current.scheduled_date) {
       const check = isIsoDateBetween(current.scheduled_date, t.start_date, t.end_date);
       if (!check.ok) {
         setSaveErrorById((prev) => ({ ...prev, [matchId]: check.message }));
+        pushToast("error", `Mecz #${matchId}: ${check.message}`);
         return;
       }
     }
 
     inFlightRef.current[matchId] = true;
     setSavingById((prev) => ({ ...prev, [matchId]: true }));
-    setSaveErrorById((prev) => ({ ...prev, [matchId]: "" })); // czyścimy błąd przed próbą
+    setSaveErrorById((prev) => ({ ...prev, [matchId]: "" }));
 
     try {
       const res = await apiFetch(`/api/matches/${matchId}/`, {
@@ -409,31 +416,20 @@ export default function TournamentSchedule() {
         throw new Error(data?.detail || "Nie udało się zapisać danych meczu.");
       }
 
-      // Sukces
+      // sukces
       savedSnapshotRef.current[matchId] = current;
-
       setDraftMap((prevMap) => {
         const nextMap = { ...prevMap };
         delete nextMap[matchId];
         return nextMap;
       });
 
-      // Ustaw "Zapisano"
-      setSaveOkAt((prev) => ({ ...prev, [matchId]: Date.now() }));
-      setSaveErrorById((prev) => ({ ...prev, [matchId]: "" }));
-
-      // NOWOŚĆ: Usuń status "Zapisano" po 2 sekundach (wymusi re-render)
-      setTimeout(() => {
-        setSaveOkAt((prev) => {
-          // Jeśli w międzyczasie pojawił się inny zapis, sprawdźmy timestamp (opcjonalne, ale tutaj bezpieczne po prostu usunąć)
-          const next = { ...prev };
-          delete next[matchId];
-          return next;
-        });
-      }, 2000);
-
+      // komunikat globalny
+      pushToast("success", `Zapisano: mecz #${matchId}`);
     } catch (e: any) {
-      setSaveErrorById((prev) => ({ ...prev, [matchId]: e?.message || "Błąd zapisu." }));
+      const msg = e?.message || "Błąd zapisu.";
+      setSaveErrorById((prev) => ({ ...prev, [matchId]: msg }));
+      pushToast("error", `Mecz #${matchId}: ${msg}`);
     } finally {
       inFlightRef.current[matchId] = false;
       setSavingById((prev) => ({ ...prev, [matchId]: false }));
@@ -506,6 +502,7 @@ export default function TournamentSchedule() {
       location: null,
     });
     flushAutosave(matchId, cleared).catch(() => void 0);
+    pushToast("info", `Wyczyszczono pola: mecz #${matchId}`);
   };
 
   /* =========================
@@ -514,50 +511,17 @@ export default function TournamentSchedule() {
 
   const stages = useMemo(() => buildStagesForView(matches, { showBye }), [matches, showBye]);
 
-  const renderRowStatus = (matchId: number) => {
-    const isSaving = Boolean(savingById[matchId]);
-    const err = (saveErrorById[matchId] ?? "").trim();
-    const okAt = saveOkAt[matchId]; // Jeśli timestamp istnieje, to znaczy że pokazujemy (bo setTimeout go usunie)
-    const hasDraft = Boolean(draftMap[matchId]);
+  const inputBase =
+    "h-9 w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 text-sm text-slate-100 " +
+    "placeholder:text-slate-400 outline-none focus-visible:ring-4 focus-visible:ring-white/10 focus-visible:border-white/20 " +
+    // klucz: białe ikonki w Chrome (date/time)
+    "[color-scheme:dark]";
 
-    if (isSaving) {
-      return <span style={{ opacity: 0.85 }}>Zapisywanie…</span>;
-    }
-    // Jeśli błąd -> pokaż komunikat + przycisk Retry
-    if (err) {
-      return (
-        <span style={{ color: "#e74c3c", display: "inline-flex", alignItems: "center" }}>
-          Błąd zapisu
-          <button
-            type="button"
-            onClick={() => flushAutosave(matchId).catch(() => void 0)}
-            style={{
-              marginLeft: 8,
-              border: "1px solid #c0392b",
-              background: "rgba(231, 76, 60, 0.15)",
-              color: "#e74c3c",
-              borderRadius: 6,
-              padding: "0.15rem 0.5rem",
-              cursor: "pointer",
-              fontSize: "0.75rem",
-              fontWeight: "bold"
-            }}
-            title="Spróbuj zapisać ponownie"
-          >
-            PONÓW
-          </button>
-        </span>
-      );
-    }
-    if (okAt) {
-      return <span style={{ color: "#2ecc71", fontWeight: "bold" }}>Zapisano</span>;
-    }
-    if (hasDraft) {
-      return <span style={{ opacity: 0.7 }}>Oczekuje na zapis…</span>;
-    }
+  const iconWrap =
+    "relative flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.06] px-3 h-9";
 
-    return <span style={{ opacity: 0.55 }} />;
-  };
+  const icon =
+    "h-4 w-4 text-slate-200/90 shrink-0";
 
   const renderMatchRow = (m: MatchScheduleDTO) => {
     const matchId = m.id;
@@ -565,150 +529,242 @@ export default function TournamentSchedule() {
     const minDate = tournament?.start_date ?? undefined;
     const maxDate = tournament?.end_date ?? undefined;
     const err = (saveErrorById[matchId] ?? "").trim();
+    const hasDraft = Boolean(draftMap[matchId]);
 
     return (
       <div
         key={m.id}
-        style={{
-          borderBottom: "1px solid #333",
-          padding: "0.75rem 0",
-          marginBottom: "0.25rem",
-          opacity: isSaving ? 0.82 : 1,
-        }}
+        className={[
+          "py-3",
+          "border-t border-white/10",
+          isSaving ? "opacity-75" : "",
+        ].join(" ")}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ marginBottom: "0.5rem" }}>
-            <strong>{m.home_team_name}</strong> <span style={{ opacity: 0.6 }}>vs</span>{" "}
-            <strong>{m.away_team_name}</strong>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-[240px]">
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
+              <span className="truncate">
+                {m.home_team_name} <span className="font-normal text-slate-400">vs</span> {m.away_team_name}
+              </span>
+              {hasDraft ? (
+                <span
+                  className="inline-block h-2 w-2 rounded-full bg-amber-300/80"
+                  title="Niezapisane zmiany"
+                />
+              ) : null}
+            </div>
+
+            {/* Jeśli chcesz 100% bez tekstu w wierszu: usuń ten blok */}
+            {err ? <div className="mt-1 text-xs text-rose-300">{err}</div> : null}
           </div>
 
-          <div style={{ fontSize: "0.85rem", display: "flex", alignItems: "center", gap: 10 }}>
-            {renderRowStatus(matchId)}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={isSaving}
+              onClick={() => clearRow(matchId)}
+              className="inline-flex h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.06] px-3 text-sm text-slate-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+              title="Wyczyść datę, godzinę i lokalizację"
+            >
+              <Eraser className="h-4 w-4 text-slate-100" />
+            </button>
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
-          <input
-            type="date"
-            value={m.scheduled_date ?? ""}
-            min={minDate}
-            max={maxDate}
-            disabled={isSaving}
-            onChange={(e) => setMatchDraftAndSchedule(matchId, { scheduled_date: e.target.value || null })}
-            onBlur={() => flushAutosave(matchId).catch(() => void 0)}
-            style={{ padding: "0.3rem" }}
-          />
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className={iconWrap}>
+            <Calendar className={icon} />
+            <input
+              className="h-9 w-full bg-transparent text-sm text-slate-100 outline-none [color-scheme:dark]"
+              type="date"
+              value={m.scheduled_date ?? ""}
+              min={minDate}
+              max={maxDate}
+              disabled={isSaving}
+              onChange={(e) => setMatchDraftAndSchedule(matchId, { scheduled_date: e.target.value || null })}
+              onBlur={() => flushAutosave(matchId).catch(() => void 0)}
+            />
+          </div>
 
-          <input
-            type="time"
-            value={m.scheduled_time ?? ""}
-            disabled={isSaving}
-            onChange={(e) => setMatchDraftAndSchedule(matchId, { scheduled_time: e.target.value || null })}
-            onBlur={() => flushAutosave(matchId).catch(() => void 0)}
-            style={{ padding: "0.3rem" }}
-          />
+          <div className={iconWrap}>
+            <Clock className={icon} />
+            <input
+              className="h-9 w-full bg-transparent text-sm text-slate-100 outline-none [color-scheme:dark]"
+              type="time"
+              value={m.scheduled_time ?? ""}
+              disabled={isSaving}
+              onChange={(e) => setMatchDraftAndSchedule(matchId, { scheduled_time: e.target.value || null })}
+              onBlur={() => flushAutosave(matchId).catch(() => void 0)}
+            />
+          </div>
 
-          <input
-            type="text"
-            placeholder="Lokalizacja"
-            value={m.location ?? ""}
-            disabled={isSaving}
-            onChange={(e) => setMatchDraftAndSchedule(matchId, { location: e.target.value || null })}
-            onBlur={() => flushAutosave(matchId).catch(() => void 0)}
-            style={{ padding: "0.3rem", width: "180px" }}
-          />
-
-          <button
-            type="button"
-            disabled={isSaving}
-            onClick={() => clearRow(matchId)}
-            style={{
-              padding: "0.3rem 0.8rem",
-              border: "1px solid #555",
-              background: "rgba(255,255,255,0.06)",
-              color: "#fff",
-              cursor: isSaving ? "not-allowed" : "pointer",
-              borderRadius: "6px",
-            }}
-            title="Wyczyść datę, godzinę i lokalizację"
-          >
-            Wyczyść
-          </button>
+          <div className={iconWrap}>
+            <MapPin className={icon} />
+            <input
+              className="h-9 w-full bg-transparent text-sm text-slate-100 outline-none"
+              type="text"
+              placeholder="Lokalizacja"
+              value={m.location ?? ""}
+              disabled={isSaving}
+              onChange={(e) => setMatchDraftAndSchedule(matchId, { location: e.target.value || null })}
+              onBlur={() => flushAutosave(matchId).catch(() => void 0)}
+            />
+          </div>
         </div>
-
-        {err ? <div style={{ marginTop: 8, color: "#e74c3c", fontSize: "0.9rem" }}>{err}</div> : null}
       </div>
     );
   };
 
-  if (!tournament) return <p style={{ padding: "2rem" }}>Ładowanie…</p>;
+  if (!tournament) {
+    return (
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+        {/* Toast zawsze */}
+        <div
+          className={[
+            "fixed z-[200] w-[340px] rounded-2xl border border-white/10 bg-slate-950/80 p-4 text-sm text-slate-100 shadow-xl backdrop-blur",
+            toastPosClass(toastPos),
+            toastRingClass(toastKind),
+          ].join(" ")}
+          role="status"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="leading-snug">
+              {toastText?.trim()?.length ? toastText : "…"}
+            </div>
+            <div className="flex items-center gap-2">
+              <select
+                className="h-8 rounded-lg border border-white/10 bg-white/5 px-2 text-xs text-slate-100 outline-none"
+                value={toastPos}
+                onChange={(e) => setToastPos(e.target.value as ToastPos)}
+                title="Pozycja komunikatów"
+              >
+                <option value="br">Prawy dół</option>
+                <option value="bl">Lewy dół</option>
+                <option value="tr">Prawy góra</option>
+                <option value="tl">Lewy góra</option>
+              </select>
+
+              <button
+                onClick={() => setToastText("")}
+                className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-100 hover:bg-white/10"
+                aria-label="Wyczyść komunikat"
+                title="Wyczyść komunikat"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-slate-200">Ładowanie…</div>
+      </div>
+    );
+  }
 
   const startMax = tournament.end_date ?? undefined;
   const endMin = tournament.start_date ?? undefined;
 
   return (
-    <div style={{ padding: "2rem", maxWidth: 900 }}>
-      <h1>Harmonogram i lokalizacja</h1>
-
-      <p style={{ opacity: 0.8, marginBottom: "2rem" }}>
-        Edycja meczów zapisuje się automatycznie po krótkiej przerwie lub po wyjściu z pola.
-        Zmiany są przechowywane lokalnie do czasu poprawnego zapisu.
-      </p>
-
-      {/* TOAST: komunikaty globalne */}
-      {toastKind && toastText && (
-        <div
-          role="status"
-          style={{
-            position: "fixed",
-            bottom: "2rem",
-            right: "2rem",
-            background: "#333",
-            color: "#fff",
-            padding: "0.9rem 1.2rem",
-            borderRadius: "10px",
-            borderLeft: `5px solid ${toastKind === "success" ? "#2ecc71" : "#e74c3c"}`,
-            zIndex: 100,
-            minWidth: 320,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-          }}
-        >
-          <div style={{ lineHeight: 1.25 }}>{toastText}</div>
-          <button
-            onClick={closeToast}
-            aria-label="Zamknij"
-            style={{
-              border: "1px solid #555",
-              background: "transparent",
-              color: "#fff",
-              borderRadius: 8,
-              padding: "0.25rem 0.5rem",
-              cursor: "pointer",
-            }}
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
-      {/* --- DANE OGÓLNE --- */}
-      <section
-        style={{
-          marginBottom: "2rem",
-          padding: "1rem",
-          background: "rgba(255,255,255,0.02)",
-          borderRadius: "8px",
-        }}
+    <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+      {/* Toast zawsze widoczny */}
+      <div
+        className={[
+          "fixed z-[200] w-[360px] rounded-2xl border border-white/10 bg-slate-950/80 p-4 text-sm text-slate-100 shadow-xl backdrop-blur",
+          toastPosClass(toastPos),
+          toastRingClass(toastKind),
+        ].join(" ")}
+        role="status"
       >
-        <h2 style={{ marginTop: 0 }}>Dane ogólne turnieju</h2>
+        <div className="flex items-start justify-between gap-3">
+          <div className="leading-snug">
+            {toastText?.trim()?.length ? toastText : "Brak komunikatów"}
+          </div>
 
-        <div style={{ display: "grid", gap: "1rem", maxWidth: 420 }}>
+          <div className="flex items-center gap-2">
+            <select
+              className="h-8 rounded-lg border border-white/10 bg-white/5 px-2 text-xs text-slate-100 outline-none"
+              value={toastPos}
+              onChange={(e) => setToastPos(e.target.value as ToastPos)}
+              title="Pozycja komunikatów"
+            >
+              <option value="br">Prawy dół</option>
+              <option value="bl">Lewy dół</option>
+              <option value="tr">Prawy góra</option>
+              <option value="tl">Lewy góra</option>
+            </select>
+
+            <button
+              onClick={() => setToastText("")}
+              className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-100 hover:bg-white/10"
+              aria-label="Wyczyść komunikat"
+              title="Wyczyść komunikat"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Header */}
+      <div className="mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <label style={{ display: "block", marginBottom: "0.25rem" }}>Data rozpoczęcia</label>
+            <h1 className="text-2xl font-semibold text-slate-100">Harmonogram i lokalizacja</h1>
+            <p className="mt-1 text-sm text-slate-300">
+              Zmiany zapisują się automatycznie (debounce) oraz po wyjściu z pola.
+            </p>
+          </div>
+
+          <label className="inline-flex select-none items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200">
             <input
+              type="checkbox"
+              className="h-4 w-4 accent-slate-200"
+              checked={showBye}
+              onChange={(e) => setShowBye(e.target.checked)}
+            />
+            Pokaż mecze techniczne (BYE)
+          </label>
+        </div>
+      </div>
+
+      {/* Card: dane ogólne */}
+      <section className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-100">Dane ogólne turnieju</h2>
+            <p className="mt-1 text-sm text-slate-300">Zakres dat oraz domyślna lokalizacja (opcjonalnie).</p>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => saveTournament().catch((e: any) => pushToast("error", e?.message || "Błąd zapisu."))}
+              disabled={savingTournament}
+              className="h-9 rounded-xl bg-slate-100 px-3 text-sm font-semibold text-slate-900 hover:bg-white disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {savingTournament ? "Zapisywanie…" : "Zapisz dane"}
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                saveTournament({ start_date: null, end_date: null, location: null }).catch((e: any) =>
+                  pushToast("error", e?.message || "Błąd zapisu.")
+                )
+              }
+              disabled={savingTournament}
+              className="h-9 rounded-xl border border-white/10 bg-white/5 px-3 text-sm text-slate-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-70"
+              title="Wyczyść datę rozpoczęcia, datę zakończenia i lokalizację"
+            >
+              Wyczyść
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-4 sm:max-w-xl sm:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-sm text-slate-300">Data rozpoczęcia</label>
+            <input
+              className={inputBase}
               type="date"
               value={tournament.start_date ?? ""}
               max={startMax}
@@ -721,13 +777,13 @@ export default function TournamentSchedule() {
                   return next;
                 })
               }
-              style={{ width: "100%", padding: "0.4rem" }}
             />
           </div>
 
           <div>
-            <label style={{ display: "block", marginBottom: "0.25rem" }}>Data zakończenia</label>
+            <label className="mb-1 block text-sm text-slate-300">Data zakończenia</label>
             <input
+              className={inputBase}
               type="date"
               value={tournament.end_date ?? ""}
               min={endMin}
@@ -740,13 +796,13 @@ export default function TournamentSchedule() {
                   return next;
                 })
               }
-              style={{ width: "100%", padding: "0.4rem" }}
             />
           </div>
 
-          <div>
-            <label style={{ display: "block", marginBottom: "0.25rem" }}>Lokalizacja (domyślna)</label>
+          <div className="sm:col-span-2">
+            <label className="mb-1 block text-sm text-slate-300">Lokalizacja (domyślna)</label>
             <input
+              className={inputBase}
               type="text"
               value={tournament.location ?? ""}
               disabled={savingTournament}
@@ -758,138 +814,67 @@ export default function TournamentSchedule() {
                   return next;
                 })
               }
-              style={{ width: "100%", padding: "0.4rem" }}
+              placeholder="np. Hala sportowa, boisko, adres…"
             />
-          </div>
-
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button
-              onClick={() => saveTournament().catch((e: any) => setError(e.message))}
-              disabled={savingTournament}
-              style={{
-                padding: "0.6rem",
-                cursor: savingTournament ? "not-allowed" : "pointer",
-                marginTop: "0.5rem",
-                fontWeight: "bold",
-                opacity: savingTournament ? 0.75 : 1,
-              }}
-            >
-              {savingTournament ? "Zapisywanie…" : "Zapisz dane turnieju"}
-            </button>
-
-            <button
-              type="button"
-              onClick={() =>
-                saveTournament({ start_date: null, end_date: null, location: null }).catch((e: any) =>
-                  setError(e.message)
-                )
-              }
-              disabled={savingTournament}
-              style={{
-                padding: "0.6rem",
-                cursor: savingTournament ? "not-allowed" : "pointer",
-                marginTop: "0.5rem",
-                border: "1px solid #555",
-                background: "rgba(255,255,255,0.06)",
-                color: "#fff",
-                borderRadius: 8,
-                opacity: savingTournament ? 0.75 : 1,
-              }}
-              title="Wyczyść datę rozpoczęcia, datę zakończenia i lokalizację"
-            >
-              Wyczyść dane
-            </button>
           </div>
         </div>
       </section>
 
-      <hr style={{ borderColor: "#444", margin: "2rem 0" }} />
+      {/* Lista meczów */}
+      <div className="mt-6 space-y-6">
+        {stages.map((s) => {
+          const header = stageHeaderTitle(s.stageType, s.stageOrder, s.allMatches);
 
-      {/* --- LISTA MECZÓW --- */}
-      <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1rem" }}>
-        <h2 style={{ margin: 0 }}>Harmonogram meczów</h2>
-        <label
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "0.5rem",
-            opacity: 0.85,
-            cursor: "pointer",
-            fontSize: "0.9em",
-          }}
-        >
-          <input type="checkbox" checked={showBye} onChange={(e) => setShowBye(e.target.checked)} />
-          Pokaż mecze techniczne (BYE)
-        </label>
-      </div>
+          return (
+            <section key={s.stageId} className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <h3 className="text-base font-semibold text-slate-100">{header}</h3>
+                <div className="text-xs text-slate-400">
+                  {s.stageType === "GROUP" ? "Faza grupowa" : s.stageType === "LEAGUE" ? "Liga" : "Puchar"}
+                </div>
+              </div>
 
-      {stages.map((s) => {
-        const header = stageHeaderTitle(s.stageType, s.stageOrder, s.allMatches);
+              {s.stageType === "GROUP" ? (
+                <div className="space-y-6">
+                  {groupMatchesByGroup(s.matches).map(([groupName, groupMatches], idx) => (
+                    <div key={groupName} className="rounded-2xl border border-white/10 bg-black/10 p-4">
+                      <div className="mb-3 flex items-center justify-between">
+                        <h4 className="text-sm font-semibold text-slate-200">{displayGroupName(groupName, idx)}</h4>
+                      </div>
 
-        return (
-          <section key={s.stageId} style={{ marginTop: "2rem" }}>
-            <h3
-              style={{
-                borderBottom: "2px solid #444",
-                paddingBottom: "0.5rem",
-                marginBottom: "1rem",
-                color: "#eee",
-              }}
-            >
-              {header}
-            </h3>
-
-            {s.stageType === "GROUP" ? (
-              groupMatchesByGroup(s.matches).map(([groupName, groupMatches], idx) => (
-                <div
-                  key={groupName}
-                  style={{ marginBottom: "1.5rem", paddingLeft: "1rem", borderLeft: "2px solid #333" }}
-                >
-                  <h4 style={{ color: "#aaa", margin: "0.5rem 0" }}>{displayGroupName(groupName, idx)}</h4>
-
-                  {groupMatchesByRound(groupMatches).map(([round, roundMatches]) => (
-                    <div key={round} style={{ marginBottom: "1rem" }}>
-                      <div
-                        style={{
-                          fontSize: "0.8rem",
-                          textTransform: "uppercase",
-                          opacity: 0.6,
-                          letterSpacing: "1px",
-                          marginBottom: "0.25rem",
-                        }}
-                      >
+                      <div className="space-y-4">
+                        {groupMatchesByRound(groupMatches).map(([round, roundMatches]) => (
+                          <div key={round}>
+                            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                              Kolejka {round}
+                            </div>
+                            {roundMatches.map((m) => renderMatchRow(m))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : s.stageType === "LEAGUE" ? (
+                <div className="space-y-5">
+                  {groupMatchesByRound(s.matches).map(([round, roundMatches]) => (
+                    <div key={round} className="rounded-2xl border border-white/10 bg-black/10 p-4">
+                      <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">
                         Kolejka {round}
                       </div>
                       {roundMatches.map((m) => renderMatchRow(m))}
                     </div>
                   ))}
                 </div>
-              ))
-            ) : s.stageType === "LEAGUE" ? (
-              groupMatchesByRound(s.matches).map(([round, roundMatches]) => (
-                <div key={round} style={{ marginBottom: "1.5rem" }}>
-                  <h4
-                    style={{
-                      margin: "0.5rem 0",
-                      fontSize: "0.9rem",
-                      textTransform: "uppercase",
-                      opacity: 0.6,
-                      letterSpacing: "1px",
-                      borderBottom: "1px solid #333",
-                      paddingBottom: "0.25rem",
-                    }}
-                  >
-                    Kolejka {round}
-                  </h4>
-                  {roundMatches.map((m) => renderMatchRow(m))}
+              ) : (
+                <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
+                  {s.matches.map((m) => renderMatchRow(m))}
                 </div>
-              ))
-            ) : (
-              <div>{s.matches.map((m) => renderMatchRow(m))}</div>
-            )}
-          </section>
-        );
-      })}
+              )}
+            </section>
+          );
+        })}
+      </div>
     </div>
   );
 }

@@ -1,51 +1,221 @@
-import { Link } from "react-router-dom";
+import React, { useEffect, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import { Trophy, Menu, X, LogOut, Search, Plus } from "lucide-react";
+import { cn } from "../lib/cn";
+import { Button } from "../ui/Button";
 
 type Props = {
   username: string | null;
   onLogout: () => void;
 };
 
-export default function NavBar({ username, onLogout }: Props) {
+function isActivePath(current: string, target: string) {
+  if (target === "/") return current === "/";
+  return current === target || current.startsWith(target + "/");
+}
+
+function DesktopNavLink({
+  to,
+  children,
+  active,
+}: {
+  to: string;
+  children: React.ReactNode;
+  active: boolean;
+}) {
   return (
-    <header
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        padding: "1rem 2rem",
-        borderBottom: "1px solid #333",
-        marginBottom: "1.5rem",
-      }}
+    <Link
+      to={to}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "flex items-center rounded-full px-3.5 py-2 text-sm font-medium transition",
+        "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
+        active
+          ? "bg-white/10 text-white border border-white/15 shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
+          : "text-slate-300 hover:text-white hover:bg-white/10"
+      )}
     >
-      {/* LEWA STRONA – NAWIGACJA */}
-      <nav style={{ display: "flex", gap: 16 }}>
-        <Link to="/">Strona główna</Link>
+      {children}
+    </Link>
+  );
+}
 
-        {username && (
-          <>
-            <Link to="/find-tournament">Wyszukaj turniej</Link>
-            <Link to="/my-tournaments">Moje turnieje</Link>
-            <Link to="/tournaments/new">Utwórz turniej</Link>
-          </>
-        )}
-      </nav>
+export default function NavBar({ username, onLogout }: Props) {
+  const location = useLocation();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
 
-      {/* PRAWA STRONA – SESJA */}
-      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-        {!username ? (
-          <>
-            <Link to="/login">Zaloguj</Link>
-            <Link to="/login?mode=register">Zarejestruj</Link>
-          </>
-        ) : (
-          <>
-            <span>
-              Zalogowany: <strong>{username}</strong>
-            </span>
-            <button onClick={onLogout}>Wyloguj</button>
-          </>
+  useEffect(() => {
+    const handleScroll = () => setScrolled(window.scrollY > 16);
+    window.addEventListener("scroll", handleScroll);
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  const authedLinks = [
+    { to: "/", label: "Strona główna" },
+    { to: "/find-tournament", label: "Szukaj" },
+    { to: "/my-tournaments", label: "Moje turnieje" },
+    { to: "/tournaments/new", label: "Utwórz" },
+  ] as const;
+
+  const isActive = (path: string) => isActivePath(location.pathname, path);
+
+  useEffect(() => {
+    if (!username && mobileMenuOpen) setMobileMenuOpen(false);
+  }, [username, mobileMenuOpen]);
+
+  return (
+    <>
+      <header
+        className={cn(
+          "fixed top-0 left-0 right-0 z-50 transition-all duration-300 border-b",
+          scrolled
+            ? "bg-slate-950/65 backdrop-blur-xl border-white/10 py-3 shadow-lg shadow-indigo-500/5"
+            : "bg-transparent border-transparent py-5"
         )}
-      </div>
-    </header>
+      >
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 sm:px-6">
+          {/* LEFT: Logo */}
+          <Link to="/" className="group flex items-center gap-3">
+            <div className="relative grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 shadow-[0_0_20px_rgba(99,102,241,0.35)] transition-transform group-hover:scale-[1.03]">
+              <Trophy className="h-5 w-5 text-white" />
+              <div className="absolute inset-0 rounded-xl bg-white/15 opacity-0 group-hover:opacity-100 transition-opacity" />
+            </div>
+
+            <div className="hidden sm:block">
+              <div className="text-lg font-bold leading-none text-white tracking-wide">
+                Turnieje<span className="text-indigo-400">.pro</span>
+              </div>
+              <div className="text-[10px] font-medium text-slate-400 tracking-widest uppercase opacity-70">
+                System Zarządzania
+              </div>
+            </div>
+          </Link>
+
+          {/* CENTER: Nav — tylko po zalogowaniu */}
+          <nav className="hidden md:flex items-center gap-1">
+            {username &&
+              authedLinks.map((l) => (
+                <DesktopNavLink key={l.to} to={l.to} active={isActive(l.to)}>
+                  {l.label}
+                </DesktopNavLink>
+              ))}
+          </nav>
+
+          {/* RIGHT: User / Auth */}
+          <div className="flex items-center gap-3">
+            {!username ? (
+              <>
+                <Link to="/login">
+                  <Button variant="secondary">Zaloguj</Button>
+                </Link>
+
+                {/* Zarejestruj — WRACAMY DO BIAŁEGO jak w Home */}
+                <Link to="/login?mode=register">
+                  <Button variant="primary">Zarejestruj</Button>
+                </Link>
+              </>
+            ) : (
+              <div className="flex items-center gap-3">
+                {/* User Pill */}
+                <div className="hidden sm:flex items-center gap-3 rounded-full border border-white/10 bg-white/5 pl-2 pr-4 py-1.5 backdrop-blur-md">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-tr from-indigo-500 to-violet-500 shadow-inner">
+                    <span className="text-xs font-bold text-white">
+                      {username.slice(0, 1).toUpperCase()}
+                    </span>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-xs text-slate-400 leading-none mb-0.5">
+                      Witaj,
+                    </span>
+                    <span className="text-sm font-semibold text-white leading-none">
+                      {username}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Logout */}
+                <button
+                  onClick={onLogout}
+                  className="group flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-slate-300 transition-colors hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-300"
+                  title="Wyloguj"
+                >
+                  <LogOut className="h-5 w-5" />
+                </button>
+              </div>
+            )}
+
+            {/* Mobile Hamburger */}
+            <button
+              className="md:hidden rounded-xl border border-white/10 bg-white/5 p-2 text-slate-200 hover:bg-white/10"
+              onClick={() => setMobileMenuOpen((v) => !v)}
+              aria-label="Otwórz menu"
+            >
+              {mobileMenuOpen ? (
+                <X className="h-5 w-5" />
+              ) : (
+                <Menu className="h-5 w-5" />
+              )}
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* MOBILE MENU — tylko po zalogowaniu */}
+      <AnimatePresence>
+        {mobileMenuOpen && username && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="fixed top-[72px] left-0 right-0 z-40 overflow-hidden border-b border-white/10 bg-slate-950/90 backdrop-blur-2xl md:hidden"
+          >
+            <div className="p-4 space-y-2">
+              {authedLinks.map((l) => {
+                const active = isActive(l.to);
+
+                const icon =
+                  l.to === "/" ? (
+                    <Trophy className="h-4 w-4 opacity-70" />
+                  ) : l.to === "/find-tournament" ? (
+                    <Search className="h-4 w-4 opacity-80" />
+                  ) : l.to === "/tournaments/new" ? (
+                    <Plus className="h-4 w-4 opacity-80" />
+                  ) : (
+                    <Trophy className="h-4 w-4 opacity-70" />
+                  );
+
+                return (
+                  <Link
+                    key={l.to}
+                    to={l.to}
+                    onClick={() => setMobileMenuOpen(false)}
+                    className={cn(
+                      "flex items-center justify-between rounded-xl px-4 py-3 text-base font-medium transition",
+                      active
+                        ? "bg-white/10 text-white border border-white/10"
+                        : "text-slate-300 hover:bg-white/5 hover:text-white"
+                    )}
+                  >
+                    <span className="flex items-center gap-2">
+                      {icon}
+                      {l.label}
+                    </span>
+
+                    {active && (
+                      <div className="h-2 w-2 rounded-full bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.7)]" />
+                    )}
+                  </Link>
+                );
+              })}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* spacer pod fixed header */}
+      <div className={cn(scrolled ? "h-[72px]" : "h-[84px]")} />
+    </>
   );
 }

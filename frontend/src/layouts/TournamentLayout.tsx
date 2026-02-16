@@ -4,6 +4,8 @@ import TournamentFlowNav from "../components/TournamentFlowNav";
 import { TournamentFlowGuardProvider } from "../flow/TournamentFlowGuardContext";
 import TournamentStepFooter from "../components/TournamentStepFooter";
 import { apiGet } from "../api";
+import { Card } from "../ui/Card";
+import { Button } from "../ui/Button";
 
 type TournamentLite = {
   id: number;
@@ -12,14 +14,18 @@ type TournamentLite = {
 };
 
 function canOpenPanel(t: TournamentLite) {
-  // Nowa strategia: asystent wchodzi do panelu (podgląd),
-  // blokujemy dopiero konkretne akcje per-permission.
+  // Asystent ma dostęp do panelu (podgląd), a blokady są per-akcja.
   return t.my_role === "ORGANIZER" || t.my_role === "ASSISTANT";
 }
 
 function isAuthError(message: string) {
   const m = (message || "").toLowerCase();
-  return m.includes("401") || m.includes("403") || m.includes("unauthorized") || m.includes("forbidden");
+  return (
+    m.includes("401") ||
+    m.includes("403") ||
+    m.includes("unauthorized") ||
+    m.includes("forbidden")
+  );
 }
 
 export default function TournamentLayout() {
@@ -45,12 +51,17 @@ export default function TournamentLayout() {
 
   if (!id) return null;
 
-  // Stan: ładowanie / błąd
+  // ===== Stany: ładowanie / błąd / brak roli =====
   if (loading) {
     return (
       <TournamentFlowGuardProvider>
-        <div style={{ padding: "2rem", maxWidth: 900 }}>
-          <p>Ładowanie…</p>
+        <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
+          <Card className="p-5 sm:p-6">
+            <div className="flex items-center gap-3">
+              <div className="h-2 w-2 rounded-full bg-slate-300 animate-pulse" />
+              <div className="text-sm text-slate-600">Ładowanie panelu…</div>
+            </div>
+          </Card>
         </div>
       </TournamentFlowGuardProvider>
     );
@@ -61,132 +72,85 @@ export default function TournamentLayout() {
 
     return (
       <TournamentFlowGuardProvider>
-        <div style={{ padding: "2rem", maxWidth: 900 }}>
-          <div
-            style={{
-              border: "1px solid #333",
-              borderRadius: 10,
-              padding: "1rem",
-              display: "grid",
-              gap: 10,
-            }}
-          >
-            <div style={{ fontWeight: 800, fontSize: "1.05rem" }}>Nie można otworzyć panelu</div>
+        <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
+          <Card className="p-5 sm:p-6">
+            <div className="text-base font-semibold text-slate-900">
+              Nie można otworzyć panelu
+            </div>
+            <div className="mt-2 text-sm text-slate-600">{err}</div>
 
-            <div style={{ opacity: 0.9 }}>{err}</div>
-
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <Link
-                to={`/tournaments/${id}`}
-                style={{
-                  border: "1px solid #444",
-                  padding: "0.45rem 0.75rem",
-                  borderRadius: 8,
-                  textDecoration: "none",
-                  display: "inline-block",
-                }}
-              >
-                Przejdź do podglądu
+            <div className="mt-5 flex flex-wrap gap-2">
+              <Link to={`/tournaments/${id}`}>
+                <Button variant="secondary">Przejdź do podglądu</Button>
               </Link>
 
               {isAuthError(err) && (
-                <Link
-                  to={`/login?next=${next}`}
-                  style={{
-                    border: "1px solid #444",
-                    padding: "0.45rem 0.75rem",
-                    borderRadius: 8,
-                    textDecoration: "none",
-                    display: "inline-block",
-                  }}
-                >
-                  Zaloguj się
+                <Link to={`/login?next=${next}`}>
+                  <Button>Zaloguj się</Button>
                 </Link>
               )}
 
-              <Link
-                to="/my-tournaments"
-                style={{
-                  border: "1px solid #444",
-                  padding: "0.45rem 0.75rem",
-                  borderRadius: 8,
-                  textDecoration: "none",
-                  display: "inline-block",
-                }}
-              >
-                Wróć do moich turniejów
+              <Link to="/my-tournaments">
+                <Button variant="ghost">Wróć do moich turniejów</Button>
               </Link>
             </div>
-          </div>
+          </Card>
         </div>
       </TournamentFlowGuardProvider>
     );
   }
 
-  // Stan: pobrano turniej, ale rola nie daje dostępu do panelu
   if (tournament && !canOpenPanel(tournament)) {
     return (
       <TournamentFlowGuardProvider>
-        <div style={{ padding: "2rem", maxWidth: 900 }}>
-          <div
-            style={{
-              border: "1px solid #333",
-              borderRadius: 10,
-              padding: "1rem",
-              display: "grid",
-              gap: 10,
-            }}
-          >
-            <div style={{ fontWeight: 800, fontSize: "1.05rem" }}>Brak dostępu do panelu</div>
-
-            <div style={{ opacity: 0.9 }}>
-              Turniej: <b>{tournament.name ?? `#${tournament.id}`}</b>
+        <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
+          <Card className="p-5 sm:p-6">
+            <div className="text-base font-semibold text-slate-900">
+              Brak dostępu do panelu
             </div>
 
-            <div style={{ opacity: 0.9 }}>Ta część jest dostępna tylko dla organizatora i asystentów.</div>
+            <div className="mt-2 text-sm text-slate-600">
+              Turniej:{" "}
+              <span className="font-semibold text-slate-900">
+                {tournament.name ?? `#${tournament.id}`}
+              </span>
+            </div>
 
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <Link
-                to={`/tournaments/${id}`}
-                style={{
-                  border: "1px solid #444",
-                  padding: "0.45rem 0.75rem",
-                  borderRadius: 8,
-                  textDecoration: "none",
-                  display: "inline-block",
-                }}
-              >
-                Przejdź do podglądu
+            <div className="mt-2 text-sm text-slate-600">
+              Ta część jest dostępna tylko dla organizatora i asystentów.
+            </div>
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              <Link to={`/tournaments/${id}`}>
+                <Button variant="secondary">Przejdź do podglądu</Button>
               </Link>
 
-              <Link
-                to="/my-tournaments"
-                style={{
-                  border: "1px solid #444",
-                  padding: "0.45rem 0.75rem",
-                  borderRadius: 8,
-                  textDecoration: "none",
-                  display: "inline-block",
-                }}
-              >
-                Wróć do moich turniejów
+              <Link to="/my-tournaments">
+                <Button variant="ghost">Wróć do moich turniejów</Button>
               </Link>
             </div>
-          </div>
+          </Card>
         </div>
       </TournamentFlowGuardProvider>
     );
   }
 
-  // Stan: panel dostępny
+  // ===== Stan: panel dostępny =====
   return (
     <TournamentFlowGuardProvider>
-      <div style={{ padding: "2rem", maxWidth: 900 }}>
-        <TournamentFlowNav />
-        <Outlet />
-        <TournamentStepFooter />
+      <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
+        <div className="mb-4">
+          <TournamentFlowNav />
+        </div>
+
+        <Card className="p-5 sm:p-6">
+          <Outlet />
+        </Card>
+
+        <div className="mt-6">
+          <TournamentStepFooter />
+        </div>
       </div>
     </TournamentFlowGuardProvider>
   );
 }
-

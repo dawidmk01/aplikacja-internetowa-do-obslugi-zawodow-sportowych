@@ -1,6 +1,6 @@
 // frontend/src/pages/TournamentPublic.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useParams, useSearchParams, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { apiFetch } from "../api";
 import PublicMatchesPanel from "../components/PublicMatchesPanel";
 import type { MatchPublicDTO } from "../components/PublicMatchesPanel";
@@ -47,6 +47,12 @@ type NameChangeRequestDTO = {
   created_at?: string;
 };
 
+type ViewTab = "MATCHES" | "STANDINGS";
+
+// ==========================
+// Helpers
+// ==========================
+
 function formatDateRange(start: string | null, end: string | null) {
   if (!start && !end) return null;
   if (start && end) return `${start} - ${end}`;
@@ -59,8 +65,6 @@ function isByePublic(m: MatchPublicDTO): boolean {
   const needles = ["BYE", "__SYSTEM_BYE__", "WOLNY LOS"];
   return needles.some((n) => h.includes(n) || a.includes(n));
 }
-
-type ViewTab = "MATCHES" | "STANDINGS";
 
 function hasAccessToken(): boolean {
   try {
@@ -95,7 +99,6 @@ function looksLikeJoinDisabledMessage(msg: string) {
 
 function looksLikeRenameRequiresApprovalMessage(msg: string) {
   const t = (msg ?? "").toLowerCase();
-  // heurystyka: komunikaty typu "wymaga akceptacji", "zatwierdzenia", "prośba o zmianę"
   const approval =
     t.includes("akcept") || t.includes("zatwier") || t.includes("approval") || t.includes("request") || t.includes("prośb");
   const rename = t.includes("zmian") && (t.includes("nazw") || t.includes("name"));
@@ -111,6 +114,7 @@ function extractList(payload: any): any[] {
 // ==========================
 // PUBLIC: incydenty + król strzelców
 // ==========================
+
 type IncidentDTO = {
   id: number;
   match_id: number;
@@ -138,13 +142,9 @@ function incidentMinute(i: IncidentDTO): number | null {
   return null;
 }
 
-function formatIncidentLine(i: IncidentDTO): string {
-  const min = incidentMinute(i);
-  const k = (i.kind_display ?? i.kind ?? "").trim();
-  const p = (i.player_name ?? "").trim();
-  const head = min != null ? `${min}' ${k}` : k;
-  return p ? `${head} — ${p}` : head;
-}
+// ==========================
+// Page
+// ==========================
 
 export default function TournamentPublic({ initialView = "MATCHES" }: { initialView?: ViewTab } = {}) {
   const { id } = useParams<{ id: string }>();
@@ -218,6 +218,7 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
   // ==========================
   // PUBLIC: wybór meczu -> podgląd incydentów
   // ==========================
+
   const [selectedMatchId, setSelectedMatchId] = useState<number | null>(null);
   const [selectedSection, setSelectedSection] = useState<string | null>(null);
   const [incidentsByMatch, setIncidentsByMatch] = useState<Record<number, IncidentDTO[]>>({});
@@ -253,6 +254,7 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
       }
       const raw = await res.json().catch(() => []);
       const list = extractList(raw) as IncidentDTO[];
+
       // public: prezentujemy chronologicznie (minute ASC)
       list.sort((a, b) => {
         const am = incidentMinute(a);
@@ -290,6 +292,7 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
   // ==========================
   // PUBLIC: Król strzelców (tylko piłka nożna / ręczna)
   // ==========================
+
   const showTopScorers = useMemo(() => {
     const d = (tournament?.discipline ?? "").toLowerCase();
     return d === "football" || d === "handball";
@@ -381,9 +384,7 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
     }
 
     try {
-      const res = await apiFetch(
-        `/api/tournaments/${id}/teams/name-change-requests/?status=PENDING&team_id=${teamId}`
-      );
+      const res = await apiFetch(`/api/tournaments/${id}/teams/name-change-requests/?status=PENDING&team_id=${teamId}`);
 
       if (!res.ok) {
         // 403/404 ignorujemy (np. endpoint tylko dla organizerów)
@@ -486,11 +487,7 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
     if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
 
     const raw = await mRes.json().catch(() => []);
-    const list: MatchPublicDTO[] = Array.isArray(raw)
-      ? raw
-      : Array.isArray((raw as any)?.results)
-        ? (raw as any).results
-        : [];
+    const list: MatchPublicDTO[] = Array.isArray(raw) ? raw : Array.isArray((raw as any)?.results) ? (raw as any).results : [];
     setMatches(list);
   };
 
@@ -654,10 +651,7 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
   const requestNameChangeApproval = async (dn: string) => {
     if (!id) return;
 
-    const payload: any = {
-      requested_name: dn,
-    };
-
+    const payload: any = { requested_name: dn };
     if (regMe?.team_id) payload.team_id = regMe.team_id;
 
     const res = await apiFetch(`/api/tournaments/${id}/teams/name-change-requests/`, {
@@ -736,167 +730,211 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
   const shouldShowJoinPanel = joinFlag || !!regMe || Boolean(tournament?.allow_join_by_code);
 
   // „Join wyłączony” pokazujemy tylko, gdy wiemy to na pewno i użytkownik NIE jest zapisany
-  const joinIsDisabledKnown =
-    !regMe && (joinDisabledByServer || (tournament ? tournament.allow_join_by_code === false : false));
+  const joinIsDisabledKnown = !regMe && (joinDisabledByServer || (tournament ? tournament.allow_join_by_code === false : false));
+
+  // ==========================
+  // UI
+  // ==========================
+
+  const inputBase =
+    "h-9 rounded-lg border border-white/10 bg-white/5 px-3 text-sm text-slate-100 placeholder:text-slate-400 outline-none focus:border-white/20 focus:bg-white/10";
+
+  const btnPrimary =
+    "h-9 rounded-lg bg-slate-100 px-3 text-sm font-semibold text-slate-900 hover:bg-white disabled:cursor-not-allowed disabled:opacity-70";
+  const btnGhost =
+    "h-9 rounded-lg border border-white/10 bg-white/5 px-3 text-sm text-slate-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-70";
+
+  const pill =
+    "inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200";
 
   return (
-    <div style={{ padding: "2rem", maxWidth: 980 }}>
-      <div style={{ marginBottom: "1.25rem" }}>
-        <h1 style={{ marginBottom: 6 }}>{tournament?.name ?? "Turniej"}</h1>
+    <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+      {/* Header */}
+      <div className="mb-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-[260px]">
+            <h1 className="text-2xl font-semibold text-slate-100">{tournament?.name ?? "Turniej"}</h1>
 
-        {tournament?.description ? (
-          <p style={{ opacity: 0.85, marginTop: 0, maxWidth: 820 }}>{tournament.description}</p>
-        ) : (
-          <p style={{ opacity: 0.7, marginTop: 0, maxWidth: 820 }}>Strona publiczna turnieju.</p>
-        )}
+            {tournament?.description ? (
+              <p className="mt-1 max-w-3xl text-sm text-slate-300">{tournament.description}</p>
+            ) : (
+              <p className="mt-1 max-w-3xl text-sm text-slate-400">Strona publiczna turnieju.</p>
+            )}
 
-        <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", opacity: 0.85 }}>
-          {dateRange ? (
-            <div>
-              <strong>Termin:</strong> {dateRange}
+            <div className="mt-3 flex flex-wrap gap-3 text-sm text-slate-300">
+              {dateRange ? (
+                <div className={pill}>
+                  <span className="text-slate-400">Termin</span>
+                  <span className="font-semibold text-slate-100">{dateRange}</span>
+                </div>
+              ) : null}
+
+              {tournament?.location ? (
+                <div className={pill}>
+                  <span className="text-slate-400">Miejsce</span>
+                  <span className="font-semibold text-slate-100">{tournament.location}</span>
+                </div>
+              ) : null}
             </div>
-          ) : null}
-          {tournament?.location ? (
-            <div>
-              <strong>Miejsce:</strong> {tournament.location}
-            </div>
-          ) : null}
+          </div>
+
+          {/* Tabs */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setView("MATCHES")}
+              className={`h-9 rounded-lg border px-3 text-sm font-semibold ${
+                view === "MATCHES"
+                  ? "border-white/15 bg-white/10 text-slate-100"
+                  : "border-white/10 bg-white/5 text-slate-200 hover:bg-white/10"
+              }`}
+            >
+              Mecze
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setView("STANDINGS")}
+              className={`h-9 rounded-lg border px-3 text-sm font-semibold ${
+                view === "STANDINGS"
+                  ? "border-white/15 bg-white/10 text-slate-100"
+                  : "border-white/10 bg-white/5 text-slate-200 hover:bg-white/10"
+              }`}
+            >
+              Tabela / Drabinka
+            </button>
+          </div>
         </div>
 
-        {/* PANEL DOŁĄCZANIA / ZMIANY NAZWY */}
-        {shouldShowJoinPanel && (
-          <section
-            style={{
-              marginTop: "1.25rem",
-              padding: "1rem",
-              border: "1px solid #333",
-              borderRadius: 12,
-              maxWidth: 620,
-            }}
-          >
-            <h3 style={{ marginTop: 0, marginBottom: 6 }}>
-              {regMe ? "Twoje dane w turnieju" : "Dołącz do turnieju"}
-            </h3>
+        {error ? <div className="mt-4 rounded-xl border border-rose-400/20 bg-rose-500/10 p-3 text-sm text-rose-200">{error}</div> : null}
+      </div>
 
+      {/* Access code panel */}
+      {needsCode && (
+        <section className="mb-6 rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-100">Kod dostępu</h2>
+              <p className="mt-1 text-sm text-slate-300">Ten turniej wymaga kodu. Wpisz kod i odśwież dane.</p>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            <input className={`${inputBase} w-[260px]`} value={code} onChange={(e) => setCode(e.target.value)} placeholder="Wpisz kod" />
+            <button
+              type="button"
+              className={btnPrimary}
+              onClick={() => loadTournamentAndMatches().catch((e: any) => setError(e.message))}
+            >
+              Otwórz
+            </button>
+          </div>
+        </section>
+      )}
+
+      {/* JOIN / RENAME panel */}
+      {shouldShowJoinPanel && (
+        <section className="mb-6 rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-100">{regMe ? "Twoje dane w turnieju" : "Dołącz do turnieju"}</h2>
+              <p className="mt-1 text-sm text-slate-300">
+                {regMe
+                  ? "Możesz zmienić nazwę (lub wysłać prośbę, jeśli wymagana jest akceptacja)."
+                  : "Wpisz kod dołączania, sprawdź go i uzupełnij nazwę."}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4">
             {!isLogged ? (
-              <div style={{ display: "grid", gap: 10 }}>
-                <div style={{ opacity: 0.85 }}>Aby dołączyć, musisz się zalogować lub utworzyć konto.</div>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <Link
-                    to={`/login?next=${nextParam}`}
-                    style={{
-                      border: "1px solid #444",
-                      padding: "0.45rem 0.75rem",
-                      borderRadius: 10,
-                      textDecoration: "none",
-                      display: "inline-block",
-                    }}
-                  >
+              <div className="grid gap-3">
+                <div className="text-sm text-slate-300">Aby dołączyć, musisz się zalogować lub utworzyć konto.</div>
+                <div className="flex flex-wrap gap-2">
+                  <Link to={`/login?next=${nextParam}`} className="h-9 rounded-lg border border-white/10 bg-white/5 px-3 text-sm font-semibold text-slate-100 hover:bg-white/10">
                     Zaloguj
                   </Link>
                   <Link
                     to={`/login?mode=register&next=${nextParam}`}
-                    style={{
-                      border: "1px solid #444",
-                      padding: "0.45rem 0.75rem",
-                      borderRadius: 10,
-                      textDecoration: "none",
-                      display: "inline-block",
-                    }}
+                    className="h-9 rounded-lg border border-white/10 bg-white/5 px-3 text-sm font-semibold text-slate-100 hover:bg-white/10"
                   >
                     Zarejestruj konto
                   </Link>
                 </div>
               </div>
             ) : joinIsDisabledKnown ? (
-              <div style={{ opacity: 0.92, lineHeight: 1.45 }}>
-                <div style={{ fontWeight: 800, marginBottom: 6 }}>Dołączanie do turnieju jest wyłączone</div>
-                <div style={{ opacity: 0.85 }}>
+              <div className="rounded-xl border border-white/10 bg-black/10 p-4">
+                <div className="text-sm font-semibold text-slate-100">Dołączanie do turnieju jest wyłączone</div>
+                <div className="mt-1 text-sm text-slate-300">
                   Organizator nie włączył opcji dołączania przez konto i kod dla tego turnieju.
                 </div>
 
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
-                  <button
-                    type="button"
-                    onClick={() => loadTournamentAndMatches().catch(() => null)}
-                    style={{ padding: "0.5rem 0.9rem" }}
-                  >
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" className={btnGhost} onClick={() => loadTournamentAndMatches().catch(() => null)}>
                     Odśwież
                   </button>
                   <button
                     type="button"
+                    className={btnGhost}
                     onClick={() => {
                       const keepAccess = code.trim() ? `?code=${encodeURIComponent(code.trim())}` : "";
                       navigate(location.pathname + keepAccess, { replace: true });
                     }}
-                    style={{ padding: "0.5rem 0.9rem" }}
                   >
                     Przejdź do podglądu
                   </button>
                 </div>
               </div>
             ) : (
-              <div style={{ display: "grid", gap: 12 }}>
+              <div className="grid gap-3">
                 {/* Stan: już zapisany -> zmiana nazwy (lub prośba) */}
                 {regMe ? (
                   <>
-                    <div style={{ opacity: 0.9 }}>
-                      Jesteś zapisany jako: <strong>{regMe.display_name}</strong>
-                      <div style={{ marginTop: 6, opacity: 0.75 }}>
-                        Kod dołączania służy tylko do pierwszego dołączenia.
+                    <div className="rounded-xl border border-white/10 bg-black/10 p-4">
+                      <div className="text-sm text-slate-200">
+                        Jesteś zapisany jako: <span className="font-semibold text-slate-100">{regMe.display_name}</span>
                       </div>
+                      <div className="mt-1 text-xs text-slate-400">Kod dołączania służy tylko do pierwszego dołączenia.</div>
 
                       {pendingNameReq?.status === "PENDING" && (
-                        <div
-                          style={{
-                            marginTop: 10,
-                            padding: "10px 12px",
-                            border: "1px solid rgba(201,162,39,0.35)",
-                            borderRadius: 10,
-                            color: "#c9a227",
-                            lineHeight: 1.4,
-                          }}
-                        >
-                          <div style={{ fontWeight: 800, marginBottom: 6 }}>Oczekująca prośba o zmianę nazwy</div>
-                          <div style={{ opacity: 0.95 }}>
+                        <div className="mt-3 rounded-xl border border-amber-400/20 bg-amber-500/10 p-3 text-sm text-amber-200">
+                          <div className="font-semibold">Oczekująca prośba o zmianę nazwy</div>
+                          <div className="mt-1">
                             {pendingNameReq.old_name ? (
                               <>
-                                {pendingNameReq.old_name} → <strong>{pendingNameReq.requested_name ?? "…"}</strong>
+                                {pendingNameReq.old_name} → <span className="font-semibold">{pendingNameReq.requested_name ?? "…"}</span>
                               </>
                             ) : (
                               <>
-                                Nowa nazwa: <strong>{pendingNameReq.requested_name ?? "…"}</strong>
+                                Nowa nazwa: <span className="font-semibold">{pendingNameReq.requested_name ?? "…"}</span>
                               </>
                             )}
                           </div>
-                          <div style={{ marginTop: 6, opacity: 0.85 }}>
+                          <div className="mt-1 text-xs text-amber-200/80">
                             Nie możesz wysłać kolejnej prośby, dopóki organizator nie podejmie decyzji.
                           </div>
                         </div>
                       )}
 
                       {nameChangeApprovalRequired && (
-                        <div style={{ marginTop: 10, opacity: 0.8 }}>
+                        <div className="mt-3 text-sm text-slate-300">
                           Zmiana nazwy wymaga akceptacji organizatora — zostanie wysłana prośba.
                         </div>
                       )}
                     </div>
 
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <div className="flex flex-wrap gap-2">
                       <input
+                        className={`${inputBase} flex-1 min-w-[260px]`}
                         value={displayName}
                         onChange={(e) => setDisplayName(e.target.value)}
-                        placeholder={
-                          tournament?.competition_type === "INDIVIDUAL"
-                            ? "Imię i nazwisko"
-                            : "Nazwa drużyny / imię i nazwisko"
-                        }
-                        style={{ flex: 1, minWidth: 260, padding: "0.55rem" }}
+                        placeholder={tournament?.competition_type === "INDIVIDUAL" ? "Imię i nazwisko" : "Nazwa drużyny / imię i nazwisko"}
                       />
                       <button
+                        type="button"
+                        className={btnPrimary}
                         onClick={handleRenameOrRequest}
                         disabled={regBusy || pendingNameReq?.status === "PENDING"}
-                        style={{ padding: "0.55rem 0.9rem" }}
                       >
                         {regBusy ? "…" : nameChangeApprovalRequired ? "Wyślij prośbę" : "Zmień nazwę"}
                       </button>
@@ -905,33 +943,27 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
                 ) : (
                   <>
                     {/* Stan: nie zapisany -> join przez kod */}
-                    <div style={{ opacity: 0.9 }}>Wpisz kod dołączania, sprawdź go i uzupełnij nazwę.</div>
-
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <div className="flex flex-wrap gap-2">
                       <input
+                        className={`${inputBase} flex-1 min-w-[220px]`}
                         value={regCode}
                         onChange={(e) => setRegCode(e.target.value)}
                         placeholder="Kod dołączania"
-                        style={{ flex: 1, minWidth: 220, padding: "0.55rem" }}
                       />
-                      <button onClick={verifyRegistrationCode} disabled={regBusy} style={{ padding: "0.55rem 0.9rem" }}>
+                      <button type="button" className={btnGhost} onClick={verifyRegistrationCode} disabled={regBusy}>
                         {regBusy ? "…" : "Sprawdź kod"}
                       </button>
                     </div>
 
                     {(verified || joinFlag) && (
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <div className="flex flex-wrap gap-2">
                         <input
+                          className={`${inputBase} flex-1 min-w-[220px]`}
                           value={displayName}
                           onChange={(e) => setDisplayName(e.target.value)}
-                          placeholder={
-                            tournament?.competition_type === "INDIVIDUAL"
-                              ? "Imię i nazwisko"
-                              : "Nazwa drużyny / imię i nazwisko"
-                          }
-                          style={{ flex: 1, minWidth: 220, padding: "0.55rem" }}
+                          placeholder={tournament?.competition_type === "INDIVIDUAL" ? "Imię i nazwisko" : "Nazwa drużyny / imię i nazwisko"}
                         />
-                        <button onClick={joinTournament} disabled={regBusy} style={{ padding: "0.55rem 0.9rem" }}>
+                        <button type="button" className={btnPrimary} onClick={joinTournament} disabled={regBusy}>
                           {regBusy ? "…" : "Dołącz"}
                         </button>
                       </div>
@@ -939,175 +971,134 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
                   </>
                 )}
 
-                {regError && <div style={{ color: "crimson" }}>{regError}</div>}
-                {regInfo && <div style={{ opacity: 0.85 }}>{regInfo}</div>}
+                {regError ? (
+                  <div className="rounded-xl border border-rose-400/20 bg-rose-500/10 p-3 text-sm text-rose-200">{regError}</div>
+                ) : null}
+                {regInfo ? (
+                  <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 p-3 text-sm text-emerald-200">{regInfo}</div>
+                ) : null}
               </div>
             )}
-          </section>
-        )}
-
-        <div style={{ marginTop: "1rem", display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button
-            onClick={() => setView("MATCHES")}
-            style={{
-              padding: "0.55rem 0.9rem",
-              borderRadius: 10,
-              border: "1px solid #444",
-              background: view === "MATCHES" ? "rgba(255,255,255,0.10)" : "transparent",
-              color: "#fff",
-              fontWeight: 800,
-              cursor: "pointer",
-            }}
-          >
-            Mecze
-          </button>
-
-          <button
-            onClick={() => setView("STANDINGS")}
-            style={{
-              padding: "0.55rem 0.9rem",
-              borderRadius: 10,
-              border: "1px solid #444",
-              background: view === "STANDINGS" ? "rgba(255,255,255,0.10)" : "transparent",
-              color: "#fff",
-              fontWeight: 800,
-              cursor: "pointer",
-            }}
-          >
-            Tabela / Drabinka
-          </button>
-        </div>
-      </div>
-
-      {error && <div style={{ marginBottom: "1rem", color: "crimson" }}>{error}</div>}
-
-      {needsCode && (
-        <section
-          style={{
-            marginBottom: "1.25rem",
-            padding: "1rem",
-            border: "1px solid #333",
-            borderRadius: 10,
-            maxWidth: 420,
-          }}
-        >
-          <h3 style={{ marginTop: 0 }}>Kod dostępu</h3>
-          <p style={{ opacity: 0.8, marginTop: 0 }}>Ten turniej wymaga kodu. Wpisz kod i odśwież dane.</p>
-
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              placeholder="Wpisz kod"
-              style={{ flex: 1, padding: "0.5rem" }}
-            />
-            <button
-              onClick={() => loadTournamentAndMatches().catch((e: any) => setError(e.message))}
-              style={{ padding: "0.5rem 0.9rem" }}
-            >
-              Otwórz
-            </button>
           </div>
         </section>
       )}
 
+      {/* Main content */}
       {view === "MATCHES" ? (
-        <div>
-          {/* Moje mecze pokazuj tylko gdy są dostępne (to jest niezależne od rename) */}
+        <div className="space-y-6">
+          {/* Moje mecze */}
           {regMe && tournament?.is_published && (
-            <section style={{ marginBottom: "1.5rem" }}>
-              <h2 style={{ margin: "0 0 0.5rem 0" }}>Moje mecze</h2>
+            <section className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold text-slate-100">Moje mecze</h2>
+                <div className="text-xs text-slate-400">Widoczne tylko dla zapisanych uczestników</div>
+              </div>
 
               {myMatches.length === 0 ? (
-                <div style={{ opacity: 0.75 }}>Brak meczów do wyświetlenia.</div>
+                <div className="text-sm text-slate-300">Brak meczów do wyświetlenia.</div>
               ) : (
-                <div style={{ border: "1px solid #333", borderRadius: 12, padding: "0.75rem 1rem" }}>
-                  {myMatches.map((m) => (
-                    <div
-                      key={m.id}
-                      style={{
-                        borderBottom: "1px solid #333",
-                        padding: "0.75rem 0",
-                        display: "flex",
-                        gap: "1rem",
-                        justifyContent: "space-between",
-                        flexWrap: "wrap",
-                      }}
-                    >
-                      <div style={{ minWidth: 260 }}>
-                        <div style={{ fontWeight: 700 }}>
-                          {m.home_team_name} <span style={{ opacity: 0.6 }}>vs</span> {m.away_team_name}
-                        </div>
-                        <div style={{ opacity: 0.75, fontSize: "0.9rem", marginTop: 4 }}>
-                          {[m.scheduled_date, m.scheduled_time, m.location].filter(Boolean).join(" • ")}
-                        </div>
-                      </div>
-
-                      <div style={{ textAlign: "right", minWidth: 140 }}>
-                        {typeof m.home_score === "number" && typeof m.away_score === "number" ? (
-                          <div style={{ fontWeight: 800 }}>
-                            {m.home_score} : {m.away_score}
+                <div className="rounded-xl border border-white/10 bg-black/10 p-4">
+                  <div className="divide-y divide-white/10">
+                    {myMatches.map((m) => (
+                      <div key={m.id} className="py-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-[260px]">
+                            <div className="text-sm font-semibold text-slate-100">
+                              {m.home_team_name} <span className="font-normal text-slate-400">vs</span> {m.away_team_name}
+                            </div>
+                            <div className="mt-1 text-xs text-slate-400">
+                              {[m.scheduled_date, m.scheduled_time, m.location].filter(Boolean).join(" • ")}
+                            </div>
                           </div>
-                        ) : (
-                          <div style={{ opacity: 0.55 }} />
-                        )}
-                        <div style={{ opacity: 0.75, fontSize: "0.85rem" }}>{m.status ?? ""}</div>
+
+                          <div className="min-w-[140px] text-right">
+                            {typeof m.home_score === "number" && typeof m.away_score === "number" ? (
+                              <div className="text-sm font-semibold text-slate-100">
+                                {m.home_score} : {m.away_score}
+                              </div>
+                            ) : (
+                              <div className="text-sm text-slate-600">&nbsp;</div>
+                            )}
+                            <div className="mt-1 text-xs text-slate-400">{m.status ?? ""}</div>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
               )}
             </section>
           )}
 
-          {/* PODGLĄD INCYDENTÓW – wybór przez kliknięcie meczu */}
-{/* KRÓL STRZELCÓW – niezależna sekcja */}
+          {/* Król strzelców */}
           {showTopScorers ? (
-            <section style={{ marginTop: 18, border: "1px solid #333", borderRadius: 12, padding: "1rem" }}>
-              <h2 style={{ margin: "0 0 0.5rem 0" }}>Król strzelców</h2>
-              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                <button onClick={computeTopScorers} disabled={scorerBusy} style={{ padding: "0.35rem 0.6rem" }}>
+            <section className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-100">Król strzelców</h2>
+                  <p className="mt-1 text-sm text-slate-300">
+                    Liczy gole na podstawie incydentów typu <span className="font-semibold text-slate-100">GOAL</span> (zawodnik musi być przypisany).
+                  </p>
+                </div>
+                <button type="button" className={btnGhost} onClick={computeTopScorers} disabled={scorerBusy}>
                   {scorerBusy ? "Liczenie…" : "Policz / odśwież"}
                 </button>
-                <div style={{ opacity: 0.75, fontSize: "0.9rem" }}>
-                  Liczy gole na podstawie incydentów typu <b>GOAL</b> (zawodnik musi być przypisany do incydentu).
-                </div>
               </div>
-              {scorerError ? <div style={{ color: "#ff6b6b", marginTop: 8 }}>{scorerError}</div> : null}
-              <div style={{ marginTop: 10 }}>
+
+              {scorerError ? (
+                <div className="mt-4 rounded-xl border border-rose-400/20 bg-rose-500/10 p-3 text-sm text-rose-200">{scorerError}</div>
+              ) : null}
+
+              <div className="mt-4">
                 {scorers.length === 0 ? (
-                  <div style={{ opacity: 0.75 }}>Brak danych do rankingu (albo brak zawodników w incydentach).</div>
+                  <div className="text-sm text-slate-300">Brak danych do rankingu (albo brak zawodników w incydentach).</div>
                 ) : (
-                  <div style={{ borderTop: "1px solid #333", marginTop: 10, paddingTop: 10 }}>
-                    {scorers.map((r) => (
-                      <div
-                        key={r.player_name}
-                        style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "0.35rem 0" }}
-                      >
-                        <div style={{ fontWeight: 700 }}>{r.player_name}</div>
-                        <div style={{ fontWeight: 800 }}>{r.goals}</div>
-                      </div>
-                    ))}
+                  <div className="rounded-xl border border-white/10 bg-black/10 p-4">
+                    <div className="divide-y divide-white/10">
+                      {scorers.map((r) => (
+                        <div key={r.player_name} className="flex items-center justify-between gap-3 py-2">
+                          <div className="text-sm font-semibold text-slate-100">{r.player_name}</div>
+                          <div className="text-sm font-semibold text-slate-100">{r.goals}</div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
             </section>
           ) : null}
 
-          <div ref={matchesPanelRef}>
-            <PublicMatchesPanel
-              matches={publicMatches}
-              selectedMatchId={selectedMatchId}
-              selectedSection={selectedSection}
-              incidentsByMatch={incidentsByMatch}
-              incidentsBusy={incBusy}
-              incidentsError={incError}
-              onMatchClick={onPublicMatchClick}
-            />
-          </div>
+          {/* Matches panel */}
+          <section className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold text-slate-100">Mecze</h2>
+              <div className="text-xs text-slate-400">
+                Kliknij mecz (w trakcie / zakończony), aby rozwinąć incydenty.
+              </div>
+            </div>
+
+            <div ref={matchesPanelRef}>
+              <PublicMatchesPanel
+                matches={publicMatches}
+                selectedMatchId={selectedMatchId}
+                selectedSection={selectedSection}
+                incidentsByMatch={incidentsByMatch}
+                incidentsBusy={incBusy}
+                incidentsError={incError}
+                onMatchClick={onPublicMatchClick}
+              />
+            </div>
+          </section>
         </div>
       ) : id ? (
-        <StandingsBracket tournamentId={Number(id)} accessCode={code.trim() || undefined} />
+        <section className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold text-slate-100">Tabela / Drabinka</h2>
+            <div className="text-xs text-slate-400">Widok publiczny</div>
+          </div>
+
+          <StandingsBracket tournamentId={Number(id)} accessCode={code.trim() || undefined} />
+        </section>
       ) : null}
     </div>
   );

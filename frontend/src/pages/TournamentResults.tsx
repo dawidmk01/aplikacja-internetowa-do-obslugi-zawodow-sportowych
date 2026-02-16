@@ -1,6 +1,5 @@
-// frontend/src/pages/TournamentResults.tsx
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useParams } from "react-router-dom";
 import { apiFetch } from "../api";
 import MatchRow from "../components/MatchRow";
@@ -28,6 +27,11 @@ async function parseApiError(res: Response): Promise<string> {
   }
 }
 
+function ToastPortal({ children }: { children: React.ReactNode }) {
+  if (typeof document === "undefined") return null;
+  return createPortal(children, document.body);
+}
+
 export default function TournamentResults() {
   const { id } = useParams<{ id: string }>();
 
@@ -35,22 +39,38 @@ export default function TournamentResults() {
   const [matches, setMatches] = useState<MatchDTO[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Stage actions (np. generowanie kolejnego etapu)
   const [busyGenerate, setBusyGenerate] = useState(false);
 
-  // Toasty globalne (page-level)
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastSeq = useRef(1);
+  const toastTimersRef = useRef<Record<number, number>>({});
 
-  const pushToast = useCallback((text: string, kind: ToastKind = "info") => {
-    const durationMs = kind === "saved" ? TOAST_DURATION_SAVED_MS : TOAST_DURATION_STANDARD_MS;
-    const tid = toastSeq.current++;
-    const item: ToastItem = { id: tid, text, kind, durationMs };
-    setToasts((prev) => [...prev, item]);
-    window.setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== tid));
-    }, durationMs);
+  useEffect(() => {
+    return () => {
+      for (const t of Object.values(toastTimersRef.current)) window.clearTimeout(t);
+      toastTimersRef.current = {};
+    };
   }, []);
+
+  const dismissToast = useCallback((tid: number) => {
+    const h = toastTimersRef.current[tid];
+    if (h) window.clearTimeout(h);
+    delete toastTimersRef.current[tid];
+    setToasts((prev) => prev.filter((t) => t.id !== tid));
+  }, []);
+
+  const pushToast = useCallback(
+    (text: string, kind: ToastKind = "info") => {
+      const durationMs = kind === "saved" ? TOAST_DURATION_SAVED_MS : TOAST_DURATION_STANDARD_MS;
+      const tid = toastSeq.current++;
+      const item: ToastItem = { id: tid, text, kind, durationMs };
+      setToasts((prev) => [...prev, item]);
+
+      const h = window.setTimeout(() => dismissToast(tid), durationMs);
+      toastTimersRef.current[tid] = h;
+    },
+    [dismissToast]
+  );
 
   const loadTournament = useCallback(async (): Promise<TournamentDTO> => {
     if (!id) throw new Error("Brak ID turnieju.");
@@ -66,8 +86,9 @@ export default function TournamentResults() {
     const res = await apiFetch(`/api/tournaments/${id}/matches/`);
     if (!res.ok) throw new Error(await parseApiError(res));
     const data = (await res.json()) as MatchDTO[];
-    setMatches(Array.isArray(data) ? data : []);
-    return Array.isArray(data) ? data : [];
+    const list = Array.isArray(data) ? data : [];
+    setMatches(list);
+    return list;
   }, [id]);
 
   const reloadAll = useCallback(async () => {
@@ -145,200 +166,220 @@ export default function TournamentResults() {
     }
   }, [id, pushToast, reloadAll]);
 
-  if (loading) return <p style={{ padding: "2rem" }}>Ładowanie…</p>;
-  if (!tournament) return <p style={{ padding: "2rem" }}>Brak danych turnieju.</p>;
+  if (loading) {
+    return (
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-slate-200">Ładowanie…</div>
+      </div>
+    );
+  }
+
+  if (!tournament) {
+    return (
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-slate-200">
+          Brak danych turnieju.
+        </div>
+      </div>
+    );
+  }
 
   if (!matches.length) {
     return (
-      <div style={{ padding: "2rem" }}>
-        <h1>Wprowadzanie wyników</h1>
-        <p>Brak meczów.</p>
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-slate-200">
+          <h1 className="text-2xl font-semibold text-slate-100">Wprowadzanie wyników</h1>
+          <p className="mt-2 text-sm text-slate-300">Brak meczów.</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div style={{ padding: "2rem", maxWidth: 980 }}>
-      <h1>Wprowadzanie wyników</h1>
+    <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+      {/* TOASTS (portal do body -> zawsze widoczne, niezależnie od transform/overflow) */}
+      {toasts.length > 0 && (
+        <ToastPortal>
+          <div className="fixed inset-x-4 bottom-4 z-[99999] flex flex-col gap-2 sm:inset-auto sm:bottom-6 sm:right-6 sm:w-[420px]">
+            {toasts.map((t) => {
+              const ring =
+                t.kind === "error"
+                  ? "ring-1 ring-rose-400/30"
+                  : t.kind === "success"
+                  ? "ring-1 ring-emerald-400/30"
+                  : t.kind === "saved"
+                  ? "ring-1 ring-sky-400/30"
+                  : "ring-1 ring-white/10";
 
-      <section
-        style={{
-          opacity: 0.85,
-          marginBottom: "2rem",
-          fontSize: "0.9em",
-          borderLeft: "4px solid #555",
-          paddingLeft: "1rem",
-        }}
-      >
-        {tournament.name && (
-          <div style={{ marginBottom: "0.25rem" }}>
-            <strong>Turniej:</strong> {tournament.name}
+              const bg =
+                t.kind === "error"
+                  ? "bg-rose-500/10"
+                  : t.kind === "success"
+                  ? "bg-emerald-500/10"
+                  : t.kind === "saved"
+                  ? "bg-sky-500/10"
+                  : "bg-white/5";
+
+              return (
+                <div
+                  key={t.id}
+                  className={`rounded-xl border border-white/10 ${bg} p-4 text-sm text-slate-100 shadow-xl backdrop-blur ${ring}`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="leading-snug">{t.text}</div>
+                    <button
+                      onClick={() => dismissToast(t.id)}
+                      aria-label="Zamknij"
+                      className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-100 hover:bg-white/10"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
-        )}
+        </ToastPortal>
+      )}
 
-        <div>
-          Wyniki zapisują się dopiero po kliknięciu <strong>„Zapisz wynik / Zapisz zmiany”</strong> (lub{" "}
-          <strong>„Zakończ mecz”</strong>). Zmiany w checkboxach (dogrywka/karne) również wymagają zapisu.
+      {/* Header */}
+      <div className="mb-6">
+        <h1 className="text-2xl font-semibold text-slate-100">Wprowadzanie wyników</h1>
+        <p className="mt-1 text-sm text-slate-300">
+          Wyniki zapisują się dopiero po kliknięciu <span className="font-semibold">„Zapisz wynik / Zapisz zmiany”</span>{" "}
+          lub <span className="font-semibold">„Zakończ mecz”</span>. Zmiany w checkboxach (dogrywka/karne) również wymagają zapisu.
+        </p>
+        <div className="mt-2 text-sm text-slate-300">
+          <span className="text-slate-400">Turniej:</span> <span className="font-semibold text-slate-100">{tournament.name}</span>
         </div>
-      </section>
+      </div>
 
-      {stages.map((s: any) => {
-        const headerTitle = stageHeaderTitle(s.stageType, s.stageOrder, s.allMatches);
+      {/* Stage list */}
+      <div className="space-y-6">
+        {stages.map((s: any) => {
+          const headerTitle = stageHeaderTitle(s.stageType, s.stageOrder, s.allMatches);
+          const isLastStage = s.stageId === lastStageId;
 
-        const isLastStage = s.stageId === lastStageId;
-        const canAdvanceFromGroups =
-          tournament?.tournament_format === "MIXED" && isLastStage && s.stageType === "GROUP" && allMatchesInLastStageFinished;
+          const canAdvanceFromGroups =
+            tournament?.tournament_format === "MIXED" &&
+            isLastStage &&
+            s.stageType === "GROUP" &&
+            allMatchesInLastStageFinished;
 
-        return (
-          <section key={s.stageId} style={{ marginTop: "3rem", paddingTop: "1rem", borderTop: "1px solid #333" }}>
-            <h2 style={{ marginBottom: "1.5rem", color: "#eee" }}>{headerTitle}</h2>
+          const showGenerateNext =
+            typeof s.stageId === "number" &&
+            s.stageType !== "LEAGUE" &&
+            s.stageType !== "GROUP" &&
+            headerTitle !== "Finał" &&
+            headerTitle !== "Mecz o 3. miejsce";
 
-            {s.stageType === "GROUP" ? (
-              groupMatchesByGroup(s.matches).map(([groupName, gm], idx) => (
-                <div key={groupName} style={{ marginBottom: "2rem", paddingLeft: "1rem", borderLeft: "2px solid #333" }}>
-                  <h3 style={{ color: "#aaa", marginBottom: "1rem" }}>{displayGroupName(groupName, idx)}</h3>
+          return (
+            <section key={s.stageId} className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-base font-semibold text-slate-100">{headerTitle}</h2>
+                  <div className="mt-1 text-xs text-slate-400">
+                    {s.stageType === "GROUP" ? "Faza grupowa" : s.stageType === "LEAGUE" ? "Liga" : "Puchar"}
+                  </div>
+                </div>
 
-                  {groupMatchesByRound(gm).map(([round, roundMatches]) => (
-                    <div key={round} style={{ marginBottom: "1.5rem" }}>
-                      <h4
-                        style={{
-                          margin: "0.5rem 0",
-                          fontSize: "0.85rem",
-                          textTransform: "uppercase",
-                          opacity: 0.6,
-                          letterSpacing: "1px",
-                        }}
-                      >
-                        Kolejka {round}
-                      </h4>
-                      {roundMatches.map((m: MatchDTO) => (
-                        <MatchRow
-                          key={m.id}
-                          tournamentId={String(tournament.id)}
-                          tournament={tournament}
-                          match={m}
-                          onReload={reloadAll}
-                          onToast={pushToast}
-                        />
-                      ))}
+                <div className="flex items-center gap-2">
+                  {showGenerateNext ? (
+                    <button
+                      disabled={busyGenerate}
+                      onClick={() => generateNextStage(s.stageId)}
+                      className="h-9 rounded-lg border border-white/10 bg-white/5 px-3 text-sm text-slate-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {busyGenerate ? "Generowanie…" : "Generuj następny etap"}
+                    </button>
+                  ) : null}
+
+                  {canAdvanceFromGroups ? (
+                    <button
+                      disabled={busyGenerate}
+                      onClick={advanceFromGroups}
+                      className="h-9 rounded-lg bg-slate-100 px-3 text-sm font-semibold text-slate-900 hover:bg-white disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      {busyGenerate ? "Generowanie…" : "Generuj fazę pucharową"}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+
+              {s.stageType === "GROUP" ? (
+                <div className="space-y-6">
+                  {groupMatchesByGroup(s.matches).map(([groupName, gm], idx) => (
+                    <div key={groupName} className="rounded-xl border border-white/10 bg-black/10 p-4">
+                      <div className="mb-3 flex items-center justify-between">
+                        <h3 className="text-sm font-semibold text-slate-200">{displayGroupName(groupName, idx)}</h3>
+                      </div>
+
+                      <div className="space-y-5">
+                        {groupMatchesByRound(gm).map(([round, roundMatches]) => (
+                          <div key={round}>
+                            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                              Kolejka {round}
+                            </div>
+                            <div className="space-y-3">
+                              {roundMatches.map((m: MatchDTO) => (
+                                <MatchRow
+                                  key={m.id}
+                                  tournamentId={String(tournament.id)}
+                                  tournament={tournament}
+                                  match={m}
+                                  onReload={reloadAll}
+                                  onToast={pushToast}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ))}
                 </div>
-              ))
-            ) : s.stageType === "LEAGUE" ? (
-              groupMatchesByRound(s.matches).map(([round, roundMatches]) => (
-                <div key={round} style={{ marginBottom: "2rem" }}>
-                  <h4
-                    style={{
-                      margin: "0.5rem 0",
-                      fontSize: "0.85rem",
-                      textTransform: "uppercase",
-                      opacity: 0.6,
-                      letterSpacing: "1px",
-                    }}
-                  >
-                    Kolejka {round}
-                  </h4>
-
-                  {roundMatches.map((m: MatchDTO) => (
-                    <MatchRow
-                      key={m.id}
-                      tournamentId={String(tournament.id)}
-                      tournament={tournament}
-                      match={m}
-                      onReload={reloadAll}
-                      onToast={pushToast}
-                    />
+              ) : s.stageType === "LEAGUE" ? (
+                <div className="space-y-5">
+                  {groupMatchesByRound(s.matches).map(([round, roundMatches]) => (
+                    <div key={round} className="rounded-xl border border-white/10 bg-black/10 p-4">
+                      <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                        Kolejka {round}
+                      </div>
+                      <div className="space-y-3">
+                        {roundMatches.map((m: MatchDTO) => (
+                          <MatchRow
+                            key={m.id}
+                            tournamentId={String(tournament.id)}
+                            tournament={tournament}
+                            match={m}
+                            onReload={reloadAll}
+                            onToast={pushToast}
+                          />
+                        ))}
+                      </div>
+                    </div>
                   ))}
                 </div>
-              ))
-            ) : (
-              <div style={{ marginBottom: "2rem" }}>
-                {s.matches.map((m: MatchDTO) => (
-                  <MatchRow
-                    key={m.id}
-                    tournamentId={String(tournament.id)}
-                    tournament={tournament}
-                    match={m}
-                    onReload={reloadAll}
-                    onToast={pushToast}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Stage-level actions */}
-            {typeof s.stageId === "number" && s.stageType !== "LEAGUE" && s.stageType !== "GROUP" && headerTitle !== "Finał" && headerTitle !== "Mecz o 3. miejsce" ? (
-              <div style={{ marginTop: "1.25rem" }}>
-                <button
-                  disabled={busyGenerate}
-                  onClick={() => generateNextStage(s.stageId)}
-                  style={{
-                    padding: "0.55rem 0.95rem",
-                    borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.14)",
-                    background: "rgba(255,255,255,0.06)",
-                    color: "#fff",
-                    cursor: busyGenerate ? "not-allowed" : "pointer",
-                    opacity: busyGenerate ? 0.6 : 0.95,
-                  }}
-                >
-                  Generuj następny etap
-                </button>
-              </div>
-            ) : null}
-
-            {canAdvanceFromGroups ? (
-              <div style={{ marginTop: "1.25rem" }}>
-                <button
-                  disabled={busyGenerate}
-                  onClick={advanceFromGroups}
-                  style={{
-                    padding: "0.55rem 0.95rem",
-                    borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.14)",
-                    background: "rgba(255,255,255,0.06)",
-                    color: "#fff",
-                    cursor: busyGenerate ? "not-allowed" : "pointer",
-                    opacity: busyGenerate ? 0.6 : 0.95,
-                  }}
-                >
-                  Generuj fazę pucharową
-                </button>
-              </div>
-            ) : null}
-          </section>
-        );
-      })}
-
-      {/* Toasts */}
-      {toasts.length > 0 && (
-        <div style={{ position: "fixed", right: 16, bottom: 16, display: "flex", flexDirection: "column", gap: 10, zIndex: 12000 }}>
-          {toasts.map((t) => (
-            <div
-              key={t.id}
-              style={{
-                padding: "0.75rem 0.95rem",
-                borderRadius: 12,
-                border: "1px solid rgba(255,255,255,0.12)",
-                background:
-                  t.kind === "error"
-                    ? "rgba(231, 76, 60, 0.18)"
-                    : t.kind === "success"
-                    ? "rgba(46, 204, 113, 0.16)"
-                    : t.kind === "saved"
-                    ? "rgba(52, 152, 219, 0.16)"
-                    : "rgba(255,255,255,0.10)",
-                color: "#fff",
-                maxWidth: 420,
-                boxShadow: "0 10px 24px rgba(0,0,0,0.45)",
-              }}
-            >
-              {t.text}
-            </div>
-          ))}
-        </div>
-      )}
+              ) : (
+                <div className="rounded-xl border border-white/10 bg-black/10 p-4">
+                  <div className="space-y-3">
+                    {s.matches.map((m: MatchDTO) => (
+                      <MatchRow
+                        key={m.id}
+                        tournamentId={String(tournament.id)}
+                        tournament={tournament}
+                        match={m}
+                        onReload={reloadAll}
+                        onToast={pushToast}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
     </div>
   );
 }

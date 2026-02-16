@@ -1,9 +1,29 @@
 // frontend/src/pages/TournamentDetail.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { apiFetch } from "../api";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { QRCodeCanvas } from "qrcode.react";
+import {
+  CheckCircle2,
+  Copy,
+  Download,
+  Info,
+  Link as LinkIcon,
+  QrCode,
+  Send,
+  Settings,
+  Shield,
+  Users,
+  X,
+  AlertTriangle,
+  PlayCircle,
+} from "lucide-react";
+
+import { apiFetch } from "../api";
 import AddAssistantForm from "../components/AddAssistantForm";
+import { Button } from "../ui/Button";
+import { Card } from "../ui/Card";
+import { Input } from "../ui/Input";
+import { cn } from "../lib/cn";
 
 /* =========================
    Typy danych
@@ -16,11 +36,9 @@ type MyPermissions = {
   bracket_edit: boolean;
   tournament_edit: boolean;
 
-  // NOWE
-  roster_edit: boolean; // składy (zawodnicy)
-  name_change_approve: boolean; // akceptacja kolejki zmian nazw
+  roster_edit: boolean;
+  name_change_approve: boolean;
 
-  // organizer-only (informacyjnie)
   publish: boolean;
   archive: boolean;
   manage_assistants: boolean;
@@ -35,20 +53,16 @@ type Tournament = {
   status: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
   is_published: boolean;
   access_code: string | null;
-
   description: string | null;
 
-  // Toggle: dołączanie uczestników przez konto + kod
   allow_join_by_code?: boolean;
   join_code?: string | null;
 
-  // Toggle: podgląd TournamentPublic dla zarejestrowanych uczestników przed publikacją
   participants_public_preview_enabled?: boolean;
 
-  // Polityka zmiany nazwy (różne wersje zależnie od backendu)
-  participants_self_rename_enabled?: boolean; // true => mogą sami; false => wymaga akceptacji
-  participants_self_rename_requires_approval?: boolean; // true => wymaga akceptacji
-  participants_self_rename_approval_required?: boolean; // true => wymaga akceptacji
+  participants_self_rename_enabled?: boolean;
+  participants_self_rename_requires_approval?: boolean;
+  participants_self_rename_approval_required?: boolean;
 
   my_role: "ORGANIZER" | "ASSISTANT" | null;
   my_permissions?: MyPermissions;
@@ -66,8 +80,6 @@ type AssistantPermissionsPayload = {
   results_edit?: boolean;
   bracket_edit?: boolean;
   tournament_edit?: boolean;
-
-  // NOWE
   roster_edit?: boolean;
   name_change_approve?: boolean;
 };
@@ -78,7 +90,7 @@ type AssistantPermsResponse = {
 };
 
 /* =========================
-   Narzędzia UI
+   Helpers
    ========================= */
 
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -107,104 +119,191 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
-function PermissionRow({ label, value }: { label: string; value: boolean }) {
+function Badge({
+  children,
+  tone = "neutral",
+}: {
+  children: React.ReactNode;
+  tone?: "neutral" | "success" | "warning";
+}) {
+  const cls =
+    tone === "success"
+      ? "bg-emerald-500/15 text-emerald-200 border-emerald-500/20"
+      : tone === "warning"
+        ? "bg-amber-500/15 text-amber-200 border-amber-500/20"
+        : "bg-white/10 text-slate-200 border-white/10";
   return (
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        gap: 12,
-        padding: "8px 0",
-        borderBottom: "1px solid rgba(255,255,255,0.06)",
-      }}
-    >
-      <span style={{ opacity: 0.92 }}>{label}</span>
-      <span style={{ fontWeight: 800, color: value ? "#5fd38a" : "#d36a6a" }}>
-        {value ? "TAK" : "NIE"}
-      </span>
+    <span className={cn("inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold", cls)}>
+      {children}
+    </span>
+  );
+}
+
+function SwitchRow({
+  label,
+  description,
+  checked,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  description?: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4 border-b border-white/10 py-3">
+      <div>
+        <div className="text-sm font-semibold text-slate-100">{label}</div>
+        {description ? <div className="mt-1 text-xs text-slate-300/80">{description}</div> : null}
+      </div>
+      <label className={cn("relative inline-flex cursor-pointer select-none items-center", disabled && "opacity-60")}>
+        <input
+          type="checkbox"
+          className="peer sr-only"
+          checked={checked}
+          onChange={(e) => onChange(e.target.checked)}
+          disabled={disabled}
+        />
+        <div className="h-6 w-11 rounded-full border border-white/10 bg-white/10 peer-checked:bg-white/25" />
+        <div className="absolute left-1 top-1 h-4 w-4 rounded-full bg-white/80 transition peer-checked:translate-x-5" />
+      </label>
     </div>
   );
 }
 
-function Section({
-  title,
-  children,
-  hint,
+function KeyValue({
+  k,
+  v,
 }: {
-  title: string;
-  children: React.ReactNode;
-  hint?: string;
+  k: string;
+  v: React.ReactNode;
 }) {
   return (
-    <section
-      style={{
-        marginTop: "1.25rem",
-        padding: "1rem",
-        border: "1px solid #333",
-        borderRadius: 12,
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <h3 style={{ marginTop: 0, marginBottom: 6 }}>{title}</h3>
-        {hint ? <div style={{ opacity: 0.7, fontSize: "0.9rem" }}>{hint}</div> : null}
+    <div className="flex items-center justify-between gap-3 border-b border-white/10 py-2 text-sm">
+      <span className="text-slate-300/90">{k}</span>
+      <span className="font-semibold text-slate-100">{v}</span>
+    </div>
+  );
+}
+
+type ToastKind = "success" | "error" | "info";
+
+function Toast({
+  open,
+  kind,
+  text,
+  onClose,
+}: {
+  open: boolean;
+  kind: ToastKind;
+  text: string;
+  onClose: () => void;
+}) {
+  if (!open) return null;
+
+  const Icon = kind === "success" ? CheckCircle2 : kind === "error" ? AlertTriangle : Info;
+  const left =
+    kind === "success" ? "border-emerald-400/30" : kind === "error" ? "border-rose-400/30" : "border-sky-400/30";
+  const bg =
+    kind === "success" ? "bg-emerald-500/10" : kind === "error" ? "bg-rose-500/10" : "bg-sky-500/10";
+  const ic =
+    kind === "success" ? "text-emerald-200" : kind === "error" ? "text-rose-200" : "text-sky-200";
+
+  return (
+    <div className="fixed bottom-6 right-6 z-[200] w-[min(420px,calc(100vw-2rem))]">
+      <div className={cn("rounded-2xl border border-white/10 backdrop-blur", bg, "shadow-lg")}>
+        <div className={cn("flex items-start gap-3 border-l-4 p-4", left)}>
+          <Icon className={cn("mt-0.5 h-5 w-5", ic)} />
+          <div className="flex-1 text-sm text-slate-100">{text}</div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1 text-slate-200/80 hover:bg-white/10 hover:text-slate-100"
+            aria-label="Zamknij"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       </div>
-      {children}
-    </section>
+    </div>
   );
 }
 
 /* =========================
-   Komponent
+   Zakładki / układ
    ========================= */
+
+type TabKey = "overview" | "access" | "join" | "assistants" | "share" | "permissions" | "dev";
+
+const TABS: Array<{
+  key: TabKey;
+  label: string;
+  icon: React.ReactNode;
+  organizerOnly?: boolean;
+  manageOnly?: boolean; // organizer lub assistant
+}> = [
+  { key: "overview", label: "Podsumowanie", icon: <Info className="h-4 w-4" /> },
+  { key: "access", label: "Dostęp i opis", icon: <Settings className="h-4 w-4" />, organizerOnly: true },
+  { key: "join", label: "Dołączanie", icon: <Users className="h-4 w-4" />, organizerOnly: true },
+  { key: "assistants", label: "Asystenci", icon: <Shield className="h-4 w-4" />, manageOnly: true },
+  { key: "share", label: "Udostępnianie", icon: <QrCode className="h-4 w-4" />, manageOnly: true },
+  { key: "permissions", label: "Twoje uprawnienia", icon: <Shield className="h-4 w-4" />, manageOnly: true },
+  { key: "dev", label: "Narzędzia", icon: <PlayCircle className="h-4 w-4" />, organizerOnly: true },
+];
 
 export default function TournamentDetail() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [tournament, setTournament] = useState<Tournament | null>(null);
   const [loading, setLoading] = useState(true);
-
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Publiczny odczyt turnieju z kodem dostępu (jeśli wymagany)
+  // dostęp z kodem (jeśli wymagany)
   const [accessCode, setAccessCode] = useState("");
   const [needsCode, setNeedsCode] = useState(false);
 
-  // ====== DRAFTY: Ustawienia (publikacja/kod/opis)
+  // drafty: publikacja/kod/opis
   const [isPublishedDraft, setIsPublishedDraft] = useState(false);
   const [accessCodeDraft, setAccessCodeDraft] = useState("");
   const [descriptionDraft, setDescriptionDraft] = useState("");
 
-  // status zapisu ustawień
-  const [savingSettings, setSavingSettings] = useState(false);
-  const [settingsMsg, setSettingsMsg] = useState<string | null>(null);
-  const [settingsError, setSettingsError] = useState<string | null>(null);
-
-  // ====== DRAFTY: Dołączanie zawodników
+  // drafty: dołączanie
   const [allowJoinByCodeDraft, setAllowJoinByCodeDraft] = useState(false);
   const [joinCodeDraft, setJoinCodeDraft] = useState("");
   const [participantsPreviewDraft, setParticipantsPreviewDraft] = useState(false);
-
-  // Zmiana nazwy uczestników: wymagaj akceptacji (przeniesione do sekcji dołączania)
   const [renameRequiresApprovalDraft, setRenameRequiresApprovalDraft] = useState(false);
 
-  // "Udostępniaj kod razem czy osobno" (dla link/QR/share) – osobno dla join i dla public share
+  // “kod w linku/QR”
   const [includeJoinCodeInLink, setIncludeJoinCodeInLink] = useState(true);
   const [includeShareCodeInLink, setIncludeShareCodeInLink] = useState(false);
 
-  // status zapisu dołączania
+  // busy flags
+  const [savingSettings, setSavingSettings] = useState(false);
   const [savingJoin, setSavingJoin] = useState(false);
-  const [joinMsg, setJoinMsg] = useState<string | null>(null);
-  const [joinError, setJoinError] = useState<string | null>(null);
+
+  // toast (globalny)
+  const [toastOpen, setToastOpen] = useState(false);
+  const [toastKind, setToastKind] = useState<ToastKind>("info");
+  const [toastText, setToastText] = useState("");
+
+  const toast = (kind: ToastKind, text: string) => {
+    setToastKind(kind);
+    setToastText(text);
+    setToastOpen(true);
+    // auto-hide
+    window.setTimeout(() => setToastOpen(false), 2600);
+  };
 
   // QR refs
   const shareQrRef = useRef<HTMLCanvasElement | null>(null);
   const joinQrRef = useRef<HTMLCanvasElement | null>(null);
 
-  // === Asystenci + uprawnienia (tylko organizer) ===
+  // assistants
   const [assistants, setAssistants] = useState<AssistantListItem[]>([]);
-  const [assistantDrafts, setAssistantDrafts] = useState<
-    Record<number, Required<AssistantPermissionsPayload>>
-  >({});
+  const [assistantDrafts, setAssistantDrafts] = useState<Record<number, Required<AssistantPermissionsPayload>>>({});
   const [assistantBusy, setAssistantBusy] = useState<Record<number, boolean>>({});
   const [assistantMsg, setAssistantMsg] = useState<Record<number, string | null>>({});
 
@@ -214,14 +313,36 @@ export default function TournamentDetail() {
   const isAssistant = tournament?.my_role === "ASSISTANT";
   const canManage = tournament?.my_role === "ORGANIZER" || tournament?.my_role === "ASSISTANT";
 
+  const activeTab = (searchParams.get("tab") as TabKey | null) ?? "overview";
+  const setTab = (k: TabKey) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("tab", k);
+    setSearchParams(next, { replace: true });
+  };
+
+  const allowedTabs = useMemo(() => {
+    return TABS.filter((t) => {
+      if (t.organizerOnly && !isOrganizer) return false;
+      if (t.manageOnly && !canManage) return false;
+      return true;
+    });
+  }, [isOrganizer, canManage]);
+
+  useEffect(() => {
+    // jeśli aktywna zakładka nie jest dozwolona -> przestaw
+    if (!allowedTabs.some((t) => t.key === activeTab)) {
+      setTab(allowedTabs[0]?.key ?? "overview");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allowedTabs.length, isOrganizer, canManage]);
+
   const fetchTournament = () => {
     if (!id) return;
 
     setLoading(true);
     setLoadError(null);
 
-    const url =
-      `/api/tournaments/${id}/` + (accessCode ? `?code=${encodeURIComponent(accessCode)}` : "");
+    const url = `/api/tournaments/${id}/` + (accessCode ? `?code=${encodeURIComponent(accessCode)}` : "");
 
     apiFetch(url)
       .then(async (res) => {
@@ -232,19 +353,18 @@ export default function TournamentDetail() {
             throw new Error("Wymagany poprawny kod dostępu.");
           }
         }
-
         if (!res.ok) throw new Error("Brak dostępu do turnieju.");
         return res.json();
       })
       .then((data: Tournament) => {
         setTournament(data);
 
-        // ====== ustawienia
+        // ustawienia
         setIsPublishedDraft(Boolean(data.is_published));
         setAccessCodeDraft(data.access_code ?? "");
         setDescriptionDraft(data.description ?? "");
 
-        // ====== dołączanie
+        // dołączanie
         if (Object.prototype.hasOwnProperty.call(data, "allow_join_by_code")) {
           setAllowJoinByCodeDraft(Boolean((data as any).allow_join_by_code));
         } else {
@@ -261,7 +381,7 @@ export default function TournamentDetail() {
           setParticipantsPreviewDraft(false);
         }
 
-        // ====== rename policy (defensywnie)
+        // rename policy
         if (Object.prototype.hasOwnProperty.call(data, "participants_self_rename_enabled")) {
           const enabled = Boolean((data as any).participants_self_rename_enabled);
           setRenameRequiresApprovalDraft(!enabled);
@@ -270,38 +390,38 @@ export default function TournamentDetail() {
         } else if (Object.prototype.hasOwnProperty.call(data, "participants_self_rename_approval_required")) {
           setRenameRequiresApprovalDraft(Boolean((data as any).participants_self_rename_approval_required));
         } else {
-          // brak pola -> domyślnie bez akceptacji
           setRenameRequiresApprovalDraft(false);
         }
 
         setNeedsCode(false);
-
-        // czyścimy komunikaty po odświeżeniu
-        setSettingsMsg(null);
-        setSettingsError(null);
-        setJoinMsg(null);
-        setJoinError(null);
       })
       .catch((e) => setLoadError(e.message))
       .finally(() => setLoading(false));
   };
 
+  useEffect(() => {
+    fetchTournament();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
   const loadAssistants = async () => {
     if (!id) return;
-
     const res = await apiFetch(`/api/tournaments/${id}/assistants/`);
     if (!res.ok) {
       setAssistants([]);
       return;
     }
     const raw = await res.json().catch(() => []);
-    const list: AssistantListItem[] = Array.isArray(raw)
-      ? raw
-      : Array.isArray((raw as any)?.results)
-        ? (raw as any).results
-        : [];
+    const list: AssistantListItem[] = Array.isArray(raw) ? raw : Array.isArray((raw as any)?.results) ? (raw as any).results : [];
     setAssistants(list);
   };
+
+  useEffect(() => {
+    if (!id) return;
+    if (!isOrganizer) return;
+    loadAssistants().catch(() => setAssistants([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, isOrganizer]);
 
   const loadAssistantPerms = async (userId: number) => {
     if (!id) return;
@@ -312,7 +432,6 @@ export default function TournamentDetail() {
     try {
       const res = await apiFetch(`/api/tournaments/${id}/assistants/${userId}/permissions/`);
       if (!res.ok) throw new Error("Nie udało się pobrać uprawnień asystenta.");
-
       const data = (await res.json().catch(() => null)) as AssistantPermsResponse | null;
       const eff = data?.effective ?? {};
 
@@ -322,8 +441,6 @@ export default function TournamentDetail() {
         results_edit: Boolean(eff.results_edit),
         bracket_edit: Boolean(eff.bracket_edit),
         tournament_edit: Boolean(eff.tournament_edit),
-
-        // NOWE
         roster_edit: Boolean(eff.roster_edit),
         name_change_approve: Boolean(eff.name_change_approve),
       };
@@ -336,9 +453,19 @@ export default function TournamentDetail() {
     }
   };
 
+  // Organizer: auto-load perms for new assistants
+  useEffect(() => {
+    if (!isOrganizer) return;
+    for (const a of assistants) {
+      if (!assistantDrafts[a.user_id]) {
+        loadAssistantPerms(a.user_id);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assistants, isOrganizer]);
+
   const saveAssistantPerms = async (userId: number) => {
     if (!id) return;
-
     const draft = assistantDrafts[userId];
     if (!draft) return;
 
@@ -346,24 +473,12 @@ export default function TournamentDetail() {
     setAssistantMsg((m) => ({ ...m, [userId]: null }));
 
     try {
-      const payload: AssistantPermissionsPayload = {
-        teams_edit: draft.teams_edit,
-        schedule_edit: draft.schedule_edit,
-        results_edit: draft.results_edit,
-        bracket_edit: draft.bracket_edit,
-        tournament_edit: draft.tournament_edit,
-
-        // NOWE
-        roster_edit: draft.roster_edit,
-        name_change_approve: draft.name_change_approve,
-      };
-
+      const payload: AssistantPermissionsPayload = { ...draft };
       const res = await apiFetch(`/api/tournaments/${id}/assistants/${userId}/permissions/`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data as any)?.detail || "Nie udało się zapisać uprawnień.");
 
@@ -374,15 +489,15 @@ export default function TournamentDetail() {
         results_edit: Boolean(eff.results_edit),
         bracket_edit: Boolean(eff.bracket_edit),
         tournament_edit: Boolean(eff.tournament_edit),
-
-        // NOWE
         roster_edit: Boolean(eff.roster_edit),
         name_change_approve: Boolean(eff.name_change_approve),
       };
       setAssistantDrafts((m) => ({ ...m, [userId]: normalized }));
       setAssistantMsg((m) => ({ ...m, [userId]: "Zapisano." }));
+      toast("success", "Uprawnienia asystenta zapisane.");
     } catch (e: any) {
       setAssistantMsg((m) => ({ ...m, [userId]: e?.message ?? "Błąd zapisu." }));
+      toast("error", e?.message ?? "Błąd zapisu uprawnień.");
     } finally {
       setAssistantBusy((m) => ({ ...m, [userId]: false }));
     }
@@ -395,56 +510,28 @@ export default function TournamentDetail() {
     setAssistantMsg((m) => ({ ...m, [userId]: null }));
 
     try {
-      const res = await apiFetch(`/api/tournaments/${id}/assistants/${userId}/remove/`, {
-        method: "DELETE",
-      });
+      const res = await apiFetch(`/api/tournaments/${id}/assistants/${userId}/remove/`, { method: "DELETE" });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error((data as any)?.detail || "Nie udało się usunąć asystenta.");
       }
-
       setAssistants((prev) => prev.filter((a) => a.user_id !== userId));
       setAssistantDrafts((m) => {
         const copy = { ...m };
         delete copy[userId];
         return copy;
       });
+      toast("success", "Asystent usunięty.");
     } catch (e: any) {
       setAssistantMsg((m) => ({ ...m, [userId]: e?.message ?? "Błąd usuwania." }));
+      toast("error", e?.message ?? "Błąd usuwania asystenta.");
     } finally {
       setAssistantBusy((m) => ({ ...m, [userId]: false }));
     }
   };
 
-  useEffect(() => {
-    fetchTournament();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
-
-  // Organizer: ładuj asystentów
-  useEffect(() => {
-    if (!id) return;
-    if (!isOrganizer) return;
-
-    loadAssistants().catch(() => setAssistants([]));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, isOrganizer]);
-
-  // Organizer: gdy zmienia się lista asystentów, dociągnij ich uprawnienia (tylko brakujące)
-  useEffect(() => {
-    if (!isOrganizer) return;
-
-    for (const a of assistants) {
-      if (!assistantDrafts[a.user_id]) {
-        loadAssistantPerms(a.user_id);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assistants, isOrganizer]);
-
   /**
-   * ASSISTANT: dociągnij swoje "effective permissions" z endpointu membership
-   * i nadpisz tournament.my_permissions, żeby UI nie bazował na niepełnym my_permissions z /tournaments/<id>/.
+   * ASSISTANT: dociągnij effective perms
    */
   useEffect(() => {
     if (!id) return;
@@ -455,113 +542,75 @@ export default function TournamentDetail() {
 
     (async () => {
       try {
-        // 1) pobierz swoje user_id
         const meRes = await apiFetch("/api/auth/me/");
         const me = await meRes.json().catch(() => null);
         if (!meRes.ok || !me) return;
 
-        const myUserId =
-          (me as any).id ??
-          (me as any).user_id ??
-          (me as any).pk ??
-          null;
-
+        const myUserId = (me as any).id ?? (me as any).user_id ?? (me as any).pk ?? null;
         if (!myUserId) return;
 
-        // 2) pobierz effective perms z tego samego źródła co organizator
         const pRes = await apiFetch(`/api/tournaments/${id}/assistants/${myUserId}/permissions/`);
         const pdata = await pRes.json().catch(() => null);
         if (!pRes.ok || !pdata) return;
 
         const eff = (pdata as any).effective ?? pdata ?? {};
-
         if (cancelled) return;
 
-        // 3) zmerguj defensywnie, żeby nie zgubić niczego co backend już zwrócił
         setTournament((prev) => {
           if (!prev) return prev;
 
           const prevPerms = prev.my_permissions ?? ({} as MyPermissions);
-
           const mergedPerms: MyPermissions = {
-            // istniejące (jeśli były)
             teams_edit: Boolean((prevPerms as any).teams_edit),
             schedule_edit: Boolean((prevPerms as any).schedule_edit),
             results_edit: Boolean((prevPerms as any).results_edit),
             bracket_edit: Boolean((prevPerms as any).bracket_edit),
             tournament_edit: Boolean((prevPerms as any).tournament_edit),
 
-            // nowe pola (prawda z effective)
             roster_edit: Boolean(eff.roster_edit),
             name_change_approve: Boolean(eff.name_change_approve),
 
-            // organizer-only informacyjnie (też mogą przyjść w effective)
             publish: Boolean(eff.publish),
             archive: Boolean(eff.archive),
             manage_assistants: Boolean(eff.manage_assistants),
             join_settings: Boolean(eff.join_settings),
           };
 
-          // jeśli backend my_permissions miał komplet podstawowych pól, możesz też je nadpisać z effective,
-          // ale zostawiamy minimalnie: podstawowe bierzemy z prevPerms, nowe z eff (sedno problemu).
           return { ...prev, my_permissions: mergedPerms };
         });
       } catch {
-        // celowo ignorujemy – to tylko dogranie uprawnień
+        // ignore
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [id, tournament?.my_role, tournament?.id]); // celowo zależność od roli/turnieju
+  }, [id, tournament?.my_role, tournament?.id]);
 
-  const generateTournament = () => {
-    if (!tournament) return;
-
-    apiFetch(`/api/tournaments/${tournament.id}/generate/`, { method: "POST" })
-      .then((res) => {
-        if (!res.ok) throw new Error("Nie udało się wygenerować rozgrywek.");
-        return res.json();
-      })
-      .then(() => {
-        fetchTournament();
-        alert("Rozgrywki zostały wygenerowane.");
-      })
-      .catch((e) => alert(e.message));
-  };
-
-  // helper: bezpiecznie nadpisuj stan turnieju nawet jeśli backend nie zwróci pól
   const applyPatchedTournament = (patch: Partial<Tournament>, responseBody: any) => {
     setTournament((prev) => {
       if (!prev) return prev;
-
       const merged = { ...prev, ...patch };
-
       if (responseBody && typeof responseBody === "object") {
-        for (const k of Object.keys(responseBody)) {
-          (merged as any)[k] = (responseBody as any)[k];
-        }
+        for (const k of Object.keys(responseBody)) (merged as any)[k] = (responseBody as any)[k];
       }
-
       return merged;
     });
   };
 
   /* =========================
-     ZAPIS: Ustawienia
+     SAVE: Access & description
      ========================= */
+
   const saveSettings = async () => {
     if (!tournament) return;
-
-    setSettingsMsg(null);
-    setSettingsError(null);
 
     const normalizedCode = accessCodeDraft.trim();
     const normalizedDesc = descriptionDraft.trim();
 
     if (normalizedDesc.length > DESCRIPTION_MAX) {
-      setSettingsError(`Opis jest za długi (max ${DESCRIPTION_MAX} znaków).`);
+      toast("error", `Opis jest za długi (max ${DESCRIPTION_MAX} znaków).`);
       return;
     }
 
@@ -600,44 +649,39 @@ export default function TournamentDetail() {
           : ((payload.description ?? "") as string)
       );
 
-      setSettingsMsg("Zapisano.");
+      toast("success", "Ustawienia zapisane.");
     } catch (e: any) {
-      setSettingsError(e?.message || "Błąd połączenia z serwerem.");
+      toast("error", e?.message || "Błąd połączenia z serwerem.");
     } finally {
       setSavingSettings(false);
     }
   };
 
   /* =========================
-     ZAPIS: Dołączanie zawodników (+ preview + rename approval)
+     SAVE: Join settings
      ========================= */
+
   const buildRenameApprovalPatch = (): Partial<Tournament> => {
     if (!tournament) return {};
 
     if (Object.prototype.hasOwnProperty.call(tournament, "participants_self_rename_enabled")) {
       return { participants_self_rename_enabled: !renameRequiresApprovalDraft };
     }
-
     if (Object.prototype.hasOwnProperty.call(tournament, "participants_self_rename_requires_approval")) {
       return { participants_self_rename_requires_approval: renameRequiresApprovalDraft };
     }
     if (Object.prototype.hasOwnProperty.call(tournament, "participants_self_rename_approval_required")) {
       return { participants_self_rename_approval_required: renameRequiresApprovalDraft };
     }
-
     return { participants_self_rename_requires_approval: renameRequiresApprovalDraft } as any;
   };
 
   const saveJoinAndParticipantSettings = async () => {
     if (!tournament) return;
 
-    setJoinMsg(null);
-    setJoinError(null);
-
     const normalizedJoinCode = joinCodeDraft.trim();
-
     if (allowJoinByCodeDraft && normalizedJoinCode.length < 3) {
-      setJoinError("Dla dołączania przez kod wymagany jest kod (min. 3 znaki).");
+      toast("error", "Dla dołączania przez kod wymagany jest kod (min. 3 znaki).");
       return;
     }
 
@@ -678,7 +722,6 @@ export default function TournamentDetail() {
         Object.prototype.hasOwnProperty.call(data, "participants_public_preview_enabled")
           ? Boolean((data as any).participants_public_preview_enabled)
           : Boolean((payload as any).participants_public_preview_enabled);
-
       setParticipantsPreviewDraft(nextPreview);
 
       if (Object.prototype.hasOwnProperty.call(data, "participants_self_rename_enabled")) {
@@ -689,17 +732,13 @@ export default function TournamentDetail() {
         setRenameRequiresApprovalDraft(Boolean((data as any).participants_self_rename_approval_required));
       }
 
-      setJoinMsg("Zapisano.");
+      toast("success", "Ustawienia dołączania zapisane.");
     } catch (e: any) {
-      setJoinError(e?.message || "Błąd połączenia z serwerem.");
+      toast("error", e?.message || "Błąd połączenia z serwerem.");
     } finally {
       setSavingJoin(false);
     }
   };
-
-  const clearAccessCode = () => setAccessCodeDraft("");
-  const clearDescription = () => setDescriptionDraft("");
-  const clearJoinCode = () => setJoinCodeDraft("");
 
   /* =========================
      Linki / QR / Share
@@ -718,12 +757,10 @@ export default function TournamentDetail() {
   const shareUrl = useMemo(() => {
     if (!tournament) return "";
     const u = new URL(`/tournaments/${tournament.id}`, window.location.origin);
-
     if (includeShareCodeInLink) {
       const c = shareAccessCodeValue;
       if (c) u.searchParams.set("code", c);
     }
-
     return u.toString();
   }, [tournament, includeShareCodeInLink, shareAccessCodeValue]);
 
@@ -731,29 +768,22 @@ export default function TournamentDetail() {
     if (!tournament) return "";
     const u = new URL(`/tournaments/${tournament.id}`, window.location.origin);
     u.searchParams.set("join", "1");
-
     if (includeJoinCodeInLink) {
       const jc = (joinCodeDraft ?? tournament.join_code ?? "").trim();
       if (jc) u.searchParams.set("join_code", jc);
     }
-
     return u.toString();
   }, [tournament, includeJoinCodeInLink, joinCodeDraft]);
 
   const handleNativeShare = async (url: string, title?: string, text?: string) => {
-    if (!url) return;
-
+    if (!url) return false;
     const navAny = navigator as any;
     if (navAny?.share) {
       try {
-        await navAny.share({
-          title: title ?? tournament?.name ?? "Turniej",
-          text: text ?? "Link",
-          url,
-        });
+        await navAny.share({ title: title ?? tournament?.name ?? "Turniej", text: text ?? "Link", url });
         return true;
       } catch {
-        // anulowanie
+        // cancel
       }
     }
     return false;
@@ -762,7 +792,6 @@ export default function TournamentDetail() {
   const downloadQrFromRef = (ref: React.RefObject<HTMLCanvasElement>, filename: string) => {
     const canvas = ref.current;
     if (!canvas) return false;
-
     try {
       const pngUrl = canvas.toDataURL("image/png");
       const a = document.createElement("a");
@@ -778,578 +807,816 @@ export default function TournamentDetail() {
   };
 
   /* =========================
+     DEV: generate
+     ========================= */
+
+  const generateTournament = () => {
+    if (!tournament) return;
+
+    apiFetch(`/api/tournaments/${tournament.id}/generate/`, { method: "POST" })
+      .then((res) => {
+        if (!res.ok) throw new Error("Nie udało się wygenerować rozgrywek.");
+        return res.json();
+      })
+      .then(() => {
+        fetchTournament();
+        toast("success", "Rozgrywki wygenerowane.");
+      })
+      .catch((e) => toast("error", e.message));
+  };
+
+  /* =========================
      Widoki dostępu (kod)
      ========================= */
 
   if (needsCode) {
     return (
-      <div style={{ padding: "2rem" }}>
-        <h2>Dostęp do turnieju</h2>
-        <p>Ten turniej wymaga kodu dostępu.</p>
-        <input
-          type="text"
-          placeholder="Kod dostępu"
-          value={accessCode}
-          onChange={(e) => setAccessCode(e.target.value)}
-        />
-        <button onClick={fetchTournament} style={{ marginLeft: 8 }}>
-          Potwierdź
-        </button>
-        {loadError && <p style={{ color: "crimson" }}>{loadError}</p>}
+      <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6 lg:px-8">
+        <Card className="p-6">
+          <div className="text-lg font-extrabold text-slate-100">Dostęp do turnieju</div>
+          <div className="mt-2 text-sm text-slate-300/90">Ten turniej wymaga kodu dostępu.</div>
+
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <Input
+              value={accessCode}
+              onChange={(e) => setAccessCode(e.target.value)}
+              placeholder="Kod dostępu"
+              className="max-w-xs"
+            />
+            <Button
+              variant="primary"
+              onClick={() => fetchTournament()}
+              leftIcon={<Shield className="h-4 w-4" />}
+            >
+              Potwierdź
+            </Button>
+          </div>
+
+          {loadError ? (
+            <div className="mt-4 rounded-xl border border-rose-400/25 bg-rose-500/10 p-3 text-sm text-rose-200">
+              {loadError}
+            </div>
+          ) : null}
+        </Card>
       </div>
     );
   }
 
-  if (loading) return <p>Ładowanie…</p>;
+  if (loading) return <div className="px-4 py-8 text-slate-200">Ładowanie…</div>;
 
   if (!tournament) {
-    return <p style={{ color: "crimson" }}>{loadError || "Nie udało się załadować turnieju."}</p>;
+    return (
+      <div className="px-4 py-8">
+        <div className="rounded-xl border border-rose-400/25 bg-rose-500/10 p-4 text-rose-200">
+          {loadError || "Nie udało się załadować turnieju."}
+        </div>
+      </div>
+    );
   }
 
-  return (
-    <div style={{ padding: "2rem", maxWidth: 980 }}>
-      <h1 style={{ marginBottom: 6 }}>{tournament.name}</h1>
+  const headerStatusTone =
+    tournament.status === "FINISHED" ? "success" : tournament.status === "DRAFT" ? "warning" : "neutral";
 
-      {loadError && (
-        <div
-          style={{
-            margin: "10px 0 16px",
-            padding: "10px 12px",
-            border: "1px solid rgba(255,0,0,0.35)",
-            borderRadius: 10,
-            color: "crimson",
-          }}
-        >
-          {loadError}
+  /* =========================
+     Renderers per tab
+     ========================= */
+
+  const OverviewTab = () => (
+    <div className="space-y-4">
+      <Card className="p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="text-xl font-extrabold text-slate-100">{tournament.name}</div>
+            <div className="mt-1 text-sm text-slate-300/90">
+              Panel zarządzania: dostęp, asystenci, dołączanie i udostępnianie.
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge>{tournament.discipline}</Badge>
+            <Badge>{tournament.tournament_format}</Badge>
+            <Badge tone={headerStatusTone}>{tournament.status}</Badge>
+            <Badge tone={tournament.is_published ? "success" : "warning"}>
+              {tournament.is_published ? "Opublikowany" : "Prywatny"}
+            </Badge>
+            {tournament.access_code ? <Badge>Kod: {tournament.access_code}</Badge> : null}
+          </div>
         </div>
-      )}
 
-      <section
-        style={{
-          marginTop: 10,
-          marginBottom: "1.25rem",
-          padding: "0.9rem 1rem",
-          border: "1px solid #333",
-          borderRadius: 10,
-          background: "rgba(255,255,255,0.03)",
-        }}
-      >
-        <div style={{ fontWeight: 800, marginBottom: 6 }}>
-          Krok 2: Ustawienia dostępu, asystenci, dołączanie i udostępnianie
-        </div>
-        <div style={{ opacity: 0.9, lineHeight: 1.5 }}>
-          W tym kroku ustawiasz: publikację, kody, asystentów, dołączanie zawodników oraz sposób udostępniania linków/QR.
-        </div>
-      </section>
-
-      <p>
-        <strong>Dyscyplina:</strong> {tournament.discipline}
-      </p>
-      <p>
-        <strong>Status:</strong> {tournament.status}
-      </p>
-      <p>
-        <strong>Widoczność:</strong> {tournament.is_published ? "Opublikowany" : "Prywatny"}
-        {tournament.access_code ? " (z kodem dostępu)" : ""}
-      </p>
-
-      <div style={{ marginTop: 10 }}>
-        <Link to={`/tournaments/${tournament.id}`} style={{ color: "#9fd3ff" }}>
-          Otwórz stronę publiczną turnieju
-        </Link>
-      </div>
-
-      {/* 1) USTAWIENIA */}
-      {isOrganizer && (
-        <Section title="1) Ustawienia turnieju">
-          <div style={{ marginTop: 6, padding: "12px", background: "rgba(255,255,255,0.05)", borderRadius: 10 }}>
-            <div style={{ fontWeight: 800, marginBottom: 10 }}>Publikacja i dostęp dla widzów</div>
-
-            <label style={{ display: "block", marginTop: 4 }}>
-              <input
-                type="checkbox"
-                checked={isPublishedDraft}
-                onChange={(e) => {
-                  setIsPublishedDraft(e.target.checked);
-                  setSettingsMsg(null);
-                  setSettingsError(null);
+        <div className="mt-5 grid gap-3 md:grid-cols-2">
+          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+            <div className="text-sm font-extrabold text-slate-100">Skróty</div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Link to={`/tournaments/${tournament.id}`} className="inline-flex">
+                <Button variant="secondary" leftIcon={<LinkIcon className="h-4 w-4" />}>
+                  Otwórz publiczny widok
+                </Button>
+              </Link>
+              <Button
+                variant="ghost"
+                leftIcon={<Copy className="h-4 w-4" />}
+                onClick={async () => {
+                  const ok = await copyToClipboard(basePublicUrl);
+                  toast(ok ? "success" : "error", ok ? "Skopiowano link publiczny." : "Nie udało się skopiować linku.");
                 }}
-              />{" "}
-              Opublikuj turniej
-            </label>
+              >
+                Kopiuj link
+              </Button>
+            </div>
+          </div>
 
-            <div style={{ marginTop: 14 }}>
-              <label style={{ display: "block", marginBottom: 6 }}>Kod dostępu (dla widzów/podglądu)</label>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                <input
-                  type="text"
+          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+            <div className="text-sm font-extrabold text-slate-100">Informacje</div>
+            <div className="mt-2 text-xs text-slate-300/90">
+              Najczęściej używane akcje są w zakładkach: <b>Dostęp i opis</b>, <b>Dołączanie</b>, <b>Udostępnianie</b>.
+            </div>
+            <div className="mt-3 text-xs text-slate-300/70">
+              Rola: <b>{tournament.my_role ?? "brak"}</b>
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {loadError ? (
+        <Card className="p-4">
+          <div className="rounded-xl border border-rose-400/25 bg-rose-500/10 p-3 text-sm text-rose-200">
+            {loadError}
+          </div>
+        </Card>
+      ) : null}
+    </div>
+  );
+
+  const AccessTab = () => (
+    <div className="space-y-4">
+      <Card className="p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-base font-extrabold text-slate-100">Dostęp i opis</div>
+            <div className="mt-1 text-sm text-slate-300/90">
+              Publikacja + kod dla widzów + opis widoczny w publicznym widoku.
+            </div>
+          </div>
+
+          <Button
+            variant="primary"
+            leftIcon={<SaveIcon />}
+            onClick={saveSettings}
+            disabled={savingSettings}
+          >
+            {savingSettings ? "Zapisywanie…" : "Zapisz"}
+          </Button>
+        </div>
+
+        <div className="mt-5 space-y-4">
+          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+            <SwitchRow
+              label="Opublikuj turniej"
+              description="Gdy wyłączone, widok publiczny ma sens głównie z kodem dostępu lub w trybie podglądu uczestników."
+              checked={isPublishedDraft}
+              onChange={(v) => setIsPublishedDraft(v)}
+              disabled={savingSettings}
+            />
+
+            <div className="mt-4">
+              <div className="mb-2 text-xs font-semibold text-slate-300">Kod dostępu (dla widzów / link ?code=...)</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
                   value={accessCodeDraft}
-                  onChange={(e) => {
-                    setAccessCodeDraft(e.target.value);
-                    setSettingsMsg(null);
-                    setSettingsError(null);
-                  }}
+                  onChange={(e) => setAccessCodeDraft(e.target.value)}
                   placeholder="np. WIDZ123"
                   maxLength={20}
+                  className="max-w-xs"
+                  disabled={savingSettings}
                 />
-                <button type="button" onClick={clearAccessCode}>
-                  Wyczyść kod
-                </button>
+                <Button
+                  variant="ghost"
+                  leftIcon={<X className="h-4 w-4" />}
+                  onClick={() => setAccessCodeDraft("")}
+                  disabled={savingSettings}
+                >
+                  Wyczyść
+                </Button>
               </div>
-              <div style={{ marginTop: 6, opacity: 0.75, fontSize: "0.9rem" }}>
-                Jeśli ustawione, widzowie mogą otworzyć turniej również poprzez link z parametrem <code>?code=...</code>.
-              </div>
-            </div>
-
-            <div style={{ marginTop: 14 }}>
-              <label style={{ display: "block", marginBottom: 6 }}>Opis turnieju (publiczny)</label>
-              <textarea
-                value={descriptionDraft}
-                onChange={(e) => {
-                  setDescriptionDraft(e.target.value);
-                  setSettingsMsg(null);
-                  setSettingsError(null);
-                }}
-                placeholder="Informacje organizacyjne, zasady..."
-                rows={6}
-                style={{ width: "min(680px, 100%)" }}
-                maxLength={DESCRIPTION_MAX}
-              />
-              <div style={{ marginTop: 6, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <small style={{ opacity: 0.85 }}>
-                  {descriptionDraft.trim().length}/{DESCRIPTION_MAX}
-                </small>
-                <button type="button" onClick={clearDescription}>
-                  Wyczyść opis
-                </button>
+              <div className="mt-2 text-xs text-slate-300/70">
+                Jeśli ustawisz kod, możesz go dopinać do linków/QR w zakładce „Udostępnianie”.
               </div>
             </div>
+          </div>
 
-            {settingsError && <div style={{ color: "crimson", marginTop: 10 }}>{settingsError}</div>}
-            {settingsMsg && <div style={{ color: "green", marginTop: 10 }}>{settingsMsg}</div>}
-
-            <div style={{ marginTop: 14 }}>
-              <button disabled={savingSettings} onClick={saveSettings}>
-                {savingSettings ? "Zapisywanie…" : "Zapisz ustawienia"}
+          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+            <div className="mb-2 text-xs font-semibold text-slate-300">Opis turnieju (publiczny)</div>
+            <textarea
+              value={descriptionDraft}
+              onChange={(e) => setDescriptionDraft(e.target.value)}
+              placeholder="Informacje organizacyjne, zasady..."
+              rows={7}
+              maxLength={DESCRIPTION_MAX}
+              disabled={savingSettings}
+              className={cn(
+                "w-full rounded-2xl border border-white/10 bg-white/[0.06] p-3 text-sm text-slate-100",
+                "placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10"
+              )}
+            />
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300/70">
+              <span>
+                {descriptionDraft.trim().length}/{DESCRIPTION_MAX}
+              </span>
+              <button
+                type="button"
+                className="rounded-lg px-2 py-1 hover:bg-white/10"
+                onClick={() => setDescriptionDraft("")}
+                disabled={savingSettings}
+              >
+                Wyczyść
               </button>
             </div>
           </div>
-        </Section>
-      )}
+        </div>
+      </Card>
+    </div>
+  );
 
-      {/* 2) ASYSTENCI */}
-      {canManage && (
-        <Section title="2) Asystenci i uprawnienia">
-          {/* Panel "Twoje uprawnienia" – tylko asystent */}
-          {isAssistant && (
-            <div style={{ marginTop: 6 }}>
-              <p style={{ opacity: 0.9, marginTop: 0 }}>
-                Jesteś asystentem – zakres uprawnień zależy od ustawień nadanych przez organizatora.
-              </p>
-
-              {tournament.my_permissions ? (
-                <div style={{ marginTop: 10 }}>
-                  <PermissionRow label="Edycja drużyn" value={!!tournament.my_permissions.teams_edit} />
-                  <PermissionRow
-                    label="Składy: dodawanie/edycja zawodników"
-                    value={!!tournament.my_permissions.roster_edit}
-                  />
-                  <PermissionRow label="Edycja harmonogramu" value={!!tournament.my_permissions.schedule_edit} />
-                  <PermissionRow label="Wprowadzanie wyników" value={!!tournament.my_permissions.results_edit} />
-                  <PermissionRow label="Edycja drabinki" value={!!tournament.my_permissions.bracket_edit} />
-                  <PermissionRow label="Edycja ustawień turnieju" value={!!tournament.my_permissions.tournament_edit} />
-                  <PermissionRow
-                    label="Akceptacja zmian nazw (kolejka)"
-                    value={!!tournament.my_permissions.name_change_approve}
-                  />
-
-                  <div style={{ marginTop: 10, opacity: 0.75, fontSize: "0.9rem" }}>
-                    Publikacja, archiwizacja, zarządzanie asystentami i ustawienia dołączania są zarezerwowane dla organizatora.
-                  </div>
-                </div>
-              ) : (
-                <p style={{ opacity: 0.75 }}>Brak danych o uprawnieniach (backend nie zwrócił my_permissions).</p>
-              )}
+  const JoinTab = () => (
+    <div className="space-y-4">
+      <Card className="p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-base font-extrabold text-slate-100">Dołączanie zawodników</div>
+            <div className="mt-1 text-sm text-slate-300/90">
+              Uczestnik loguje się → podaje kod → uzupełnia nazwę / dane. Dodatkowo możesz włączyć podgląd przed publikacją.
             </div>
-          )}
+          </div>
 
-          {/* Edycja asystentów – tylko organizer */}
-          {isOrganizer && (
-            <div style={{ marginTop: 6 }}>
-              <div style={{ marginTop: 10 }}>
-                <AddAssistantForm
-                  tournamentId={tournament.id}
-                  onAdded={async () => {
-                    await loadAssistants();
-                  }}
+          <Button variant="primary" leftIcon={<SaveIcon />} onClick={saveJoinAndParticipantSettings} disabled={savingJoin}>
+            {savingJoin ? "Zapisywanie…" : "Zapisz"}
+          </Button>
+        </div>
+
+        <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+          <SwitchRow
+            label="Zezwól dołączać przez konto i kod"
+            description="Jeśli włączone, udostępniasz uczestnikom link do dołączania (+ opcjonalnie kod w URL/QR)."
+            checked={allowJoinByCodeDraft}
+            onChange={setAllowJoinByCodeDraft}
+            disabled={savingJoin}
+          />
+
+          {allowJoinByCodeDraft ? (
+            <>
+              <div className="mt-4">
+                <div className="mb-2 text-xs font-semibold text-slate-300">Kod dołączania</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Input
+                    value={joinCodeDraft}
+                    onChange={(e) => setJoinCodeDraft(e.target.value)}
+                    placeholder="np. START2024"
+                    maxLength={32}
+                    className="max-w-xs"
+                    disabled={savingJoin}
+                  />
+                  <Button
+                    variant="ghost"
+                    leftIcon={<X className="h-4 w-4" />}
+                    onClick={() => setJoinCodeDraft("")}
+                    disabled={savingJoin}
+                  >
+                    Wyczyść
+                  </Button>
+                </div>
+                <div className="mt-2 text-xs text-slate-300/70">Minimalnie 3 znaki.</div>
+              </div>
+
+              <div className="mt-4">
+                <SwitchRow
+                  label="Wymagaj akceptacji zmiany nazwy"
+                  description="Gdy włączone, uczestnik wysyła prośbę, a organizator/asystent ją akceptuje."
+                  checked={renameRequiresApprovalDraft}
+                  onChange={setRenameRequiresApprovalDraft}
+                  disabled={savingJoin}
                 />
               </div>
 
-              {assistants.length === 0 ? (
-                <div style={{ marginTop: 12, opacity: 0.8 }}>Brak asystentów.</div>
-              ) : (
-                <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
-                  {assistants.map((a) => {
-                    const draft = assistantDrafts[a.user_id];
-                    const busy = Boolean(assistantBusy[a.user_id]);
-                    const msg = assistantMsg[a.user_id];
+              <div className="mt-4">
+                <SwitchRow
+                  label="Podgląd dla uczestników przed publikacją"
+                  description="Jeśli wyłączone, uczestnicy nie zobaczą publicznego widoku dopóki nie opublikujesz turnieju."
+                  checked={participantsPreviewDraft}
+                  onChange={setParticipantsPreviewDraft}
+                  disabled={savingJoin}
+                />
+              </div>
 
-                    const setDraft = (patch: Partial<Required<AssistantPermissionsPayload>>) => {
-                      setAssistantDrafts((m) => ({
-                        ...m,
-                        [a.user_id]: {
-                          teams_edit: m[a.user_id]?.teams_edit ?? false,
-                          schedule_edit: m[a.user_id]?.schedule_edit ?? false,
-                          results_edit: m[a.user_id]?.results_edit ?? false,
-                          bracket_edit: m[a.user_id]?.bracket_edit ?? false,
-                          tournament_edit: m[a.user_id]?.tournament_edit ?? false,
-
-                          // NOWE
-                          roster_edit: m[a.user_id]?.roster_edit ?? false,
-                          name_change_approve: m[a.user_id]?.name_change_approve ?? false,
-
-                          ...patch,
-                        },
-                      }));
-                    };
-
-                    return (
-                      <div
-                        key={a.user_id}
-                        style={{
-                          border: "1px solid rgba(255,255,255,0.08)",
-                          borderRadius: 12,
-                          padding: "0.9rem 1rem",
-                          background: "rgba(255,255,255,0.03)",
-                        }}
-                      >
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                          <div>
-                            <div style={{ fontWeight: 800 }}>{a.username || a.email}</div>
-                            <div style={{ opacity: 0.75, fontSize: "0.92rem" }}>{a.email}</div>
-                          </div>
-
-                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                            <button type="button" onClick={() => saveAssistantPerms(a.user_id)} disabled={busy || !draft}>
-                              {busy ? "…" : "Zapisz"}
-                            </button>
-
-                            <button type="button" onClick={() => loadAssistantPerms(a.user_id)} disabled={busy}>
-                              Odśwież uprawnienia
-                            </button>
-
-                            <button type="button" onClick={() => removeAssistant(a.user_id)} disabled={busy}>
-                              Usuń
-                            </button>
-                          </div>
-                        </div>
-
-                        <div style={{ marginTop: 12 }}>
-                          <div style={{ fontWeight: 800, marginBottom: 8 }}>Uprawnienia asystenta</div>
-
-                          {!draft ? (
-                            <div style={{ opacity: 0.75 }}>Ładowanie…</div>
-                          ) : (
-                            <div style={{ display: "grid", gap: 8 }}>
-                              {[
-                                ["teams_edit", "Edycja drużyn"],
-                                ["roster_edit", "Składy: dodawanie/edycja zawodników"],
-                                ["schedule_edit", "Edycja harmonogramu"],
-                                ["results_edit", "Wprowadzanie wyników"],
-                                ["bracket_edit", "Edycja drabinki"],
-                                ["tournament_edit", "Edycja ustawień turnieju"],
-                                ["name_change_approve", "Akceptacja zmian nazw (kolejka)"],
-                              ].map(([k, label]) => (
-                                <label
-                                  key={k}
-                                  style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "space-between",
-                                    gap: 12,
-                                    padding: "8px 0",
-                                    borderBottom: "1px solid rgba(255,255,255,0.06)",
-                                  }}
-                                >
-                                  <span style={{ opacity: 0.92 }}>{label}</span>
-                                  <input
-                                    type="checkbox"
-                                    checked={Boolean((draft as any)[k])}
-                                    onChange={(e) => setDraft({ [k]: e.target.checked } as any)}
-                                  />
-                                </label>
-                              ))}
-
-                              <div style={{ marginTop: 8, opacity: 0.75, fontSize: "0.9rem" }}>
-                                Nie obejmuje: publikacji, archiwizacji, zarządzania asystentami i ustawień dołączania.
-                              </div>
-
-                              {msg ? <div style={{ marginTop: 6, opacity: 0.9 }}>{msg}</div> : null}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-        </Section>
-      )}
-
-      {/* 3) DOŁĄCZANIE ZAWODNIKÓW */}
-      {isOrganizer && (
-        <Section title="3) Dołączanie zawodników">
-          <div style={{ marginTop: 6, padding: "12px", background: "rgba(255,255,255,0.05)", borderRadius: 10 }}>
-            <div style={{ fontWeight: 800, marginBottom: 10 }}>Ustawienia dołączania</div>
-
-            <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <input
-                type="checkbox"
-                checked={allowJoinByCodeDraft}
-                onChange={(e) => {
-                  setAllowJoinByCodeDraft(e.target.checked);
-                  setJoinMsg(null);
-                  setJoinError(null);
-                }}
-              />
-              Zezwól uczestnikom dołączać przez konto i kod (join link + code)
-            </label>
-
-            <div style={{ marginTop: 8, opacity: 0.8, fontSize: "0.9rem" }}>
-              Jeśli włączone, uczestnik po zalogowaniu podaje kod i uzupełnia swoje dane (np. nazwę drużyny).
-            </div>
-
-            {allowJoinByCodeDraft && (
-              <>
-                <div style={{ marginTop: 12 }}>
-                  <label style={{ display: "block", fontSize: "0.85rem", marginBottom: 4 }}>
-                    Kod dołączania (dla uczestników)
-                  </label>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                    <input
-                      type="text"
-                      value={joinCodeDraft}
-                      onChange={(e) => {
-                        setJoinCodeDraft(e.target.value);
-                        setJoinMsg(null);
-                        setJoinError(null);
-                      }}
-                      placeholder="np. START2024"
-                      maxLength={32}
-                      style={{ padding: "0.55rem", width: "260px" }}
-                    />
-                    <button type="button" onClick={clearJoinCode}>
-                      Wyczyść kod
-                    </button>
-                  </div>
-                  <div style={{ marginTop: 6, opacity: 0.75, fontSize: "0.9rem" }}>Minimalnie 3 znaki.</div>
-                </div>
-
-                <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
-                  <div style={{ fontWeight: 800, marginBottom: 8 }}>Zmiana nazwy uczestników</div>
-                  <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <input
-                      type="checkbox"
-                      checked={renameRequiresApprovalDraft}
-                      onChange={(e) => {
-                        setRenameRequiresApprovalDraft(e.target.checked);
-                        setJoinMsg(null);
-                        setJoinError(null);
-                      }}
-                    />
-                    Wymagaj akceptacji zmiany nazwy (zamiast samodzielnej zmiany przez uczestnika)
-                  </label>
-                  <div style={{ marginTop: 6, opacity: 0.8, fontSize: "0.9rem" }}>
-                    Gdy włączone, uczestnik w TournamentPublic wyśle prośbę o zmianę nazwy, a organizator/asystent ją zaakceptuje.
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
-                  <div style={{ fontWeight: 800, marginBottom: 8 }}>Podgląd przed publikacją</div>
-
-                  <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <input
-                      type="checkbox"
-                      checked={participantsPreviewDraft}
-                      onChange={(e) => {
-                        setParticipantsPreviewDraft(e.target.checked);
-                        setJoinMsg(null);
-                        setJoinError(null);
-                      }}
-                    />
-                    Zezwól uczestnikom na podgląd TournamentPublic przed publikacją turnieju
-                  </label>
-
-                  <div style={{ marginTop: 6, opacity: 0.8, fontSize: "0.9rem" }}>
-                    Jeśli wyłączone, uczestnicy (nawet zapisani) nie zobaczą meczów / tabeli / harmonogramu w widoku publicznym dopóki nie opublikujesz turnieju.
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
-                  <div style={{ fontWeight: 800, marginBottom: 8 }}>Link / QR do dołączania</div>
-
-                  <label style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-extrabold text-slate-100">Link / QR do dołączania</div>
+                  <label className="flex items-center gap-2 text-xs text-slate-300/90">
                     <input
                       type="checkbox"
                       checked={includeJoinCodeInLink}
                       onChange={(e) => setIncludeJoinCodeInLink(e.target.checked)}
                     />
-                    Udostępniaj kod razem czy osobno (jeśli zaznaczone – kod będzie w linku i w QR)
+                    Kod w linku/QR
                   </label>
-
-                  <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const ok = await copyToClipboard(joinUrl);
-                        setJoinMsg(ok ? "Link do dołączania został skopiowany." : "Nie udało się skopiować linku.");
-                      }}
-                    >
-                      Kopiuj link
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const shared = await handleNativeShare(
-                          joinUrl,
-                          tournament.name,
-                          "Link do dołączania do turnieju"
-                        );
-                        if (!shared) {
-                          const ok = await copyToClipboard(joinUrl);
-                          setJoinMsg(ok ? "Link do dołączania został skopiowany." : "Nie udało się skopiować linku.");
-                        }
-                      }}
-                    >
-                      Udostępnij
-                    </button>
-                  </div>
-
-                  <div style={{ marginTop: "0.75rem", wordBreak: "break-all", opacity: 0.9 }}>
-                    <small>{joinUrl}</small>
-                  </div>
-
-                  <div style={{ marginTop: "1rem", display: "flex", gap: "1rem", alignItems: "center", flexWrap: "wrap" }}>
-                    <div style={{ padding: 8, background: "white", borderRadius: 6 }}>
-                      <QRCodeCanvas value={joinUrl} size={180} includeMargin ref={joinQrRef} />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const ok = downloadQrFromRef(joinQrRef, `tournament-${tournament.id}-join.png`);
-                        setJoinMsg(ok ? "Kod QR (dołączanie) pobrany jako PNG." : "Nie udało się pobrać QR.");
-                      }}
-                    >
-                      Pobierz kod QR (PNG)
-                    </button>
-                  </div>
                 </div>
-              </>
-            )}
 
-            {!allowJoinByCodeDraft && (
-              <div style={{ marginTop: 12, opacity: 0.75 }}>
-                Dołączanie po link + kod jest wyłączone, więc link/QR do dołączania nie mają zastosowania.
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    leftIcon={<Copy className="h-4 w-4" />}
+                    onClick={async () => {
+                      const ok = await copyToClipboard(joinUrl);
+                      toast(ok ? "success" : "error", ok ? "Skopiowano link dołączania." : "Nie udało się skopiować linku.");
+                    }}
+                  >
+                    Kopiuj
+                  </Button>
+
+                  <Button
+                    variant="ghost"
+                    leftIcon={<Send className="h-4 w-4" />}
+                    onClick={async () => {
+                      const shared = await handleNativeShare(joinUrl, tournament.name, "Link do dołączania do turnieju");
+                      if (!shared) {
+                        const ok = await copyToClipboard(joinUrl);
+                        toast(ok ? "success" : "error", ok ? "Skopiowano link dołączania." : "Nie udało się skopiować linku.");
+                      }
+                    }}
+                  >
+                    Udostępnij
+                  </Button>
+                </div>
+
+                <div className="mt-3 break-all rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-200/90">
+                  {joinUrl}
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-center gap-4">
+                  <div className="rounded-xl bg-white p-2">
+                    <QRCodeCanvas value={joinUrl} size={170} includeMargin ref={joinQrRef} />
+                  </div>
+
+                  <Button
+                    variant="secondary"
+                    leftIcon={<Download className="h-4 w-4" />}
+                    onClick={() => {
+                      const ok = downloadQrFromRef(joinQrRef, `tournament-${tournament.id}-join.png`);
+                      toast(ok ? "success" : "error", ok ? "Pobrano QR dołączania." : "Nie udało się pobrać QR.");
+                    }}
+                  >
+                    Pobierz QR
+                  </Button>
+                </div>
               </div>
-            )}
-
-            {joinError && <div style={{ color: "crimson", marginTop: 10 }}>{joinError}</div>}
-            {joinMsg && <div style={{ color: "green", marginTop: 10 }}>{joinMsg}</div>}
-
-            <div style={{ marginTop: 14 }}>
-              <button disabled={savingJoin} onClick={saveJoinAndParticipantSettings}>
-                {savingJoin ? "Zapisywanie…" : "Zapisz (dołączanie zawodników)"}
-              </button>
-            </div>
-          </div>
-        </Section>
-      )}
-
-      {/* 4) UDOSTĘPNIANIE */}
-      {canManage && (
-        <Section title="4) Udostępnianie" hint={tournament.is_published ? "Turniej opublikowany" : "Turniej prywatny"}>
-          {!tournament.is_published && (
-            <p style={{ color: "#c9a227", marginTop: 0 }}>
-              Turniej jest prywatny. Link/QR dla widzów ma sens głównie po publikacji (lub gdy używasz kodu dostępu).
-            </p>
-          )}
-
-          <div style={{ marginTop: 6, opacity: 0.9 }}>
-            <strong>Kod dostępu:</strong>{" "}
-            {tournament.access_code ? tournament.access_code : <span style={{ opacity: 0.7 }}>brak</span>}
-          </div>
-
-          <label style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
-            <input
-              type="checkbox"
-              checked={includeShareCodeInLink}
-              onChange={(e) => setIncludeShareCodeInLink(e.target.checked)}
-              disabled={!shareAccessCodeValue}
-            />
-            Udostępniaj kod razem czy osobno (jeśli zaznaczone – kod będzie w linku i w QR)
-          </label>
-          {!shareAccessCodeValue && (
-            <div style={{ marginTop: 6, opacity: 0.75, fontSize: "0.9rem" }}>
-              Aby dołączać kod do linku/QR, ustaw kod dostępu w sekcji „Ustawienia”.
+            </>
+          ) : (
+            <div className="mt-3 text-sm text-slate-300/80">
+              Dołączanie po link + kod jest wyłączone.
             </div>
           )}
+        </div>
+      </Card>
+    </div>
+  );
 
-          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
-            <button
-              type="button"
+  const AssistantsTab = () => (
+    <div className="space-y-4">
+      <Card className="p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-base font-extrabold text-slate-100">Asystenci i uprawnienia</div>
+            <div className="mt-1 text-sm text-slate-300/90">
+              {isOrganizer
+                ? "Dodawaj asystentów i ustawiaj im zakres uprawnień."
+                : "Jesteś asystentem – możesz podejrzeć swoje uprawnienia."}
+            </div>
+          </div>
+
+          {isOrganizer ? (
+            <Button
+              variant="secondary"
+              leftIcon={<Users className="h-4 w-4" />}
+              onClick={() => loadAssistants().then(() => toast("success", "Odświeżono listę asystentów."))}
+            >
+              Odśwież
+            </Button>
+          ) : null}
+        </div>
+
+        {isOrganizer ? (
+          <div className="mt-5">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+              <div className="text-sm font-extrabold text-slate-100">Dodaj asystenta</div>
+              <div className="mt-3">
+                <AddAssistantForm
+                  tournamentId={tournament.id}
+                  onAdded={async () => {
+                    await loadAssistants();
+                    toast("success", "Dodano asystenta.");
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {assistants.length === 0 ? (
+                <div className="text-sm text-slate-300/80">Brak asystentów.</div>
+              ) : (
+                assistants.map((a) => {
+                  const draft = assistantDrafts[a.user_id];
+                  const busy = Boolean(assistantBusy[a.user_id]);
+                  const msg = assistantMsg[a.user_id];
+
+                  const setDraft = (patch: Partial<Required<AssistantPermissionsPayload>>) => {
+                    setAssistantDrafts((m) => ({
+                      ...m,
+                      [a.user_id]: {
+                        teams_edit: m[a.user_id]?.teams_edit ?? false,
+                        schedule_edit: m[a.user_id]?.schedule_edit ?? false,
+                        results_edit: m[a.user_id]?.results_edit ?? false,
+                        bracket_edit: m[a.user_id]?.bracket_edit ?? false,
+                        tournament_edit: m[a.user_id]?.tournament_edit ?? false,
+                        roster_edit: m[a.user_id]?.roster_edit ?? false,
+                        name_change_approve: m[a.user_id]?.name_change_approve ?? false,
+                        ...patch,
+                      },
+                    }));
+                  };
+
+                  return (
+                    <Card key={a.user_id} className="p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div>
+                          <div className="font-extrabold text-slate-100">{a.username || a.email}</div>
+                          <div className="mt-1 text-xs text-slate-300/80">{a.email}</div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            variant="primary"
+                            onClick={() => saveAssistantPerms(a.user_id)}
+                            disabled={busy || !draft}
+                          >
+                            {busy ? "…" : "Zapisz"}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            onClick={() => loadAssistantPerms(a.user_id)}
+                            disabled={busy}
+                          >
+                            Odśwież
+                          </Button>
+                          <Button
+                            variant="danger"
+                            onClick={() => removeAssistant(a.user_id)}
+                            disabled={busy}
+                          >
+                            Usuń
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                        <div className="text-sm font-extrabold text-slate-100">Uprawnienia</div>
+
+                        {!draft ? (
+                          <div className="mt-2 text-sm text-slate-300/80">Ładowanie…</div>
+                        ) : (
+                          <div className="mt-3 space-y-2">
+                            {[
+                              ["teams_edit", "Edycja drużyn"],
+                              ["roster_edit", "Składy: zawodnicy"],
+                              ["schedule_edit", "Edycja harmonogramu"],
+                              ["results_edit", "Wprowadzanie wyników"],
+                              ["bracket_edit", "Edycja drabinki"],
+                              ["tournament_edit", "Edycja ustawień turnieju"],
+                              ["name_change_approve", "Akceptacja zmian nazw"],
+                            ].map(([k, label]) => (
+                              <div key={k} className="flex items-center justify-between gap-3 border-b border-white/10 py-2">
+                                <div className="text-sm text-slate-200/90">{label}</div>
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean((draft as any)[k])}
+                                  onChange={(e) => setDraft({ [k]: e.target.checked } as any)}
+                                />
+                              </div>
+                            ))}
+
+                            <div className="pt-2 text-xs text-slate-300/70">
+                              Nie obejmuje: publikacji/archiwizacji, zarządzania asystentami i ustawień dołączania.
+                            </div>
+
+                            {msg ? <div className="pt-2 text-xs text-slate-200/90">{msg}</div> : null}
+                          </div>
+                        )}
+                      </div>
+                    </Card>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="mt-5 text-sm text-slate-300/80">
+            Tę zakładkę edytuje organizator. Swoje uprawnienia zobaczysz w „Twoje uprawnienia”.
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+
+  const ShareTab = () => (
+    <div className="space-y-4">
+      <Card className="p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-base font-extrabold text-slate-100">Udostępnianie (link + QR)</div>
+            <div className="mt-1 text-sm text-slate-300/90">
+              Link/QR do widoku publicznego. Opcjonalnie dopinaj kod dostępu do URL.
+            </div>
+          </div>
+
+          <Button
+            variant="secondary"
+            leftIcon={<Copy className="h-4 w-4" />}
+            onClick={async () => {
+              const ok = await copyToClipboard(shareUrl);
+              toast(ok ? "success" : "error", ok ? "Skopiowano link." : "Nie udało się skopiować linku.");
+            }}
+          >
+            Kopiuj link
+          </Button>
+        </div>
+
+        {!tournament.is_published ? (
+          <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-500/10 p-4 text-sm text-amber-200">
+            Turniej jest prywatny. Link/QR dla widzów ma sens głównie po publikacji (lub gdy używasz kodu dostępu).
+          </div>
+        ) : null}
+
+        <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+          <KeyValue
+            k="Kod dostępu"
+            v={tournament.access_code ? tournament.access_code : <span className="opacity-70">brak</span>}
+          />
+
+          <div className="pt-3">
+            <label className="flex items-center gap-2 text-xs text-slate-300/90">
+              <input
+                type="checkbox"
+                checked={includeShareCodeInLink}
+                onChange={(e) => setIncludeShareCodeInLink(e.target.checked)}
+                disabled={!shareAccessCodeValue}
+              />
+              Kod w linku/QR
+            </label>
+            {!shareAccessCodeValue ? (
+              <div className="mt-2 text-xs text-slate-300/70">
+                Aby dopinać kod, ustaw go w „Dostęp i opis”.
+              </div>
+            ) : null}
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button
+                variant="ghost"
+                leftIcon={<Send className="h-4 w-4" />}
+                onClick={async () => {
+                  const shared = await handleNativeShare(shareUrl, tournament.name, "Link do turnieju");
+                  if (!shared) {
+                    const ok = await copyToClipboard(shareUrl);
+                    toast(ok ? "success" : "error", ok ? "Skopiowano link." : "Nie udało się skopiować linku.");
+                  }
+                }}
+              >
+                Udostępnij
+              </Button>
+            </div>
+
+            <div className="mt-3 break-all rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-slate-200/90">
+              {shareUrl}
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-4">
+              <div className="rounded-xl bg-white p-2">
+                <QRCodeCanvas value={shareUrl} size={170} includeMargin ref={shareQrRef} />
+              </div>
+
+              <Button
+                variant="secondary"
+                leftIcon={<Download className="h-4 w-4" />}
+                onClick={() => {
+                  const ok = downloadQrFromRef(shareQrRef, `tournament-${tournament.id}-share.png`);
+                  toast(ok ? "success" : "error", ok ? "Pobrano QR." : "Nie udało się pobrać QR.");
+                }}
+              >
+                Pobierz QR
+              </Button>
+            </div>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+
+  const PermissionsTab = () => (
+    <div className="space-y-4">
+      <Card className="p-5">
+        <div className="text-base font-extrabold text-slate-100">Twoje uprawnienia</div>
+        <div className="mt-1 text-sm text-slate-300/90">
+          Podgląd efektywnych uprawnień (szczególnie ważne dla asystenta).
+        </div>
+
+        <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+          <KeyValue k="Rola" v={tournament.my_role ?? "brak"} />
+          <KeyValue k="Turniej" v={`ID ${tournament.id}`} />
+        </div>
+
+        <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+          {!tournament.my_permissions ? (
+            <div className="text-sm text-slate-300/80">Brak danych o uprawnieniach (backend nie zwrócił my_permissions).</div>
+          ) : (
+            <div className="space-y-1 text-sm">
+              <PermLine label="Edycja drużyn" ok={!!tournament.my_permissions.teams_edit} />
+              <PermLine label="Składy: zawodnicy" ok={!!tournament.my_permissions.roster_edit} />
+              <PermLine label="Edycja harmonogramu" ok={!!tournament.my_permissions.schedule_edit} />
+              <PermLine label="Wprowadzanie wyników" ok={!!tournament.my_permissions.results_edit} />
+              <PermLine label="Edycja drabinki" ok={!!tournament.my_permissions.bracket_edit} />
+              <PermLine label="Edycja ustawień turnieju" ok={!!tournament.my_permissions.tournament_edit} />
+              <PermLine label="Akceptacja zmian nazw" ok={!!tournament.my_permissions.name_change_approve} />
+              <div className="pt-2 text-xs text-slate-300/70">
+                Publikacja/archiwizacja oraz zarządzanie asystentami są zarezerwowane dla organizatora.
+              </div>
+            </div>
+          )}
+        </div>
+      </Card>
+    </div>
+  );
+
+  const DevTab = () => (
+    <div className="space-y-4">
+      <Card className="p-5">
+        <div className="text-base font-extrabold text-slate-100">Narzędzia</div>
+        <div className="mt-1 text-sm text-slate-300/90">
+          Operacje pomocnicze. (Docelowo możesz to schować, ale na etapie developmentu jest przydatne.)
+        </div>
+
+        <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-extrabold text-slate-100">Generowanie rozgrywek</div>
+              <div className="mt-1 text-xs text-slate-300/80">
+                Dostępne tylko gdy status = DRAFT.
+              </div>
+            </div>
+
+            <Button
+              variant="primary"
+              leftIcon={<PlayCircle className="h-4 w-4" />}
+              onClick={generateTournament}
+              disabled={tournament.status !== "DRAFT"}
+            >
+              Generuj
+            </Button>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+
+  const Content = () => {
+    if (activeTab === "overview") return <OverviewTab />;
+    if (activeTab === "access") return <AccessTab />;
+    if (activeTab === "join") return <JoinTab />;
+    if (activeTab === "assistants") return <AssistantsTab />;
+    if (activeTab === "share") return <ShareTab />;
+    if (activeTab === "permissions") return <PermissionsTab />;
+    if (activeTab === "dev") return <DevTab />;
+    return <OverviewTab />;
+  };
+
+  return (
+    <>
+      <Toast open={toastOpen} kind={toastKind} text={toastText} onClose={() => setToastOpen(false)} />
+
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+        {/* Header */}
+        <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-2xl font-extrabold text-slate-100">Turniej</div>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <Badge>{tournament.name}</Badge>
+              <Badge>{`ID ${tournament.id}`}</Badge>
+              <Badge tone={headerStatusTone}>{tournament.status}</Badge>
+              <Badge tone={tournament.is_published ? "success" : "warning"}>
+                {tournament.is_published ? "Opublikowany" : "Prywatny"}
+              </Badge>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Link to={`/tournaments/${tournament.id}`} className="inline-flex">
+              <Button variant="secondary" leftIcon={<LinkIcon className="h-4 w-4" />}>
+                Publiczny widok
+              </Button>
+            </Link>
+
+            <Button
+              variant="ghost"
+              leftIcon={<Copy className="h-4 w-4" />}
               onClick={async () => {
-                const ok = await copyToClipboard(shareUrl);
-                setSettingsMsg(ok ? "Link został skopiowany do schowka." : "Nie udało się skopiować linku.");
+                const ok = await copyToClipboard(basePublicUrl);
+                toast(ok ? "success" : "error", ok ? "Skopiowano link publiczny." : "Nie udało się skopiować linku.");
               }}
             >
               Kopiuj link
-            </button>
-
-            <button
-              type="button"
-              onClick={async () => {
-                const shared = await handleNativeShare(shareUrl, tournament.name, "Link do turnieju");
-                if (!shared) {
-                  const ok = await copyToClipboard(shareUrl);
-                  setSettingsMsg(ok ? "Link został skopiowany do schowka." : "Nie udało się skopiować linku.");
-                }
-              }}
-            >
-              Udostępnij
-            </button>
+            </Button>
           </div>
-
-          <div style={{ marginTop: "0.75rem", wordBreak: "break-all", opacity: 0.9 }}>
-            <small>{shareUrl}</small>
-          </div>
-
-          <div style={{ marginTop: "1rem", display: "flex", gap: "1rem", alignItems: "center", flexWrap: "wrap" }}>
-            <div style={{ padding: 8, background: "white", borderRadius: 6 }}>
-              <QRCodeCanvas value={shareUrl} size={180} includeMargin ref={shareQrRef} />
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                const ok = downloadQrFromRef(shareQrRef, `tournament-${tournament.id}-share.png`);
-                setSettingsMsg(ok ? "Kod QR pobrany jako PNG." : "Nie udało się pobrać QR.");
-              }}
-            >
-              Pobierz kod QR (PNG)
-            </button>
-          </div>
-
-          {settingsMsg && <div style={{ marginTop: 10, color: "green" }}>{settingsMsg}</div>}
-        </Section>
-      )}
-
-      {canManage && tournament.status === "DRAFT" && (
-        <div style={{ marginTop: "1rem" }}>
-          <button onClick={generateTournament}>Generuj rozgrywki</button>
         </div>
-      )}
+
+        {/* Mobile Tabs */}
+        <div className="mb-4 flex gap-2 overflow-auto pb-1 md:hidden">
+          {allowedTabs.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setTab(t.key)}
+              className={cn(
+                "inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold",
+                activeTab === t.key
+                  ? "border-white/20 bg-white/15 text-white"
+                  : "border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/10"
+              )}
+            >
+              {t.icon}
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-[260px_1fr]">
+          {/* Desktop Sidebar */}
+          <Card className="hidden p-3 md:block">
+            <div className="sticky top-4">
+              <div className="px-2 pb-2 text-xs font-extrabold uppercase tracking-wider text-slate-300/70">
+                Menu
+              </div>
+              <div className="space-y-1">
+                {allowedTabs.map((t) => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => setTab(t.key)}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold",
+                      activeTab === t.key
+                        ? "bg-white/15 text-white"
+                        : "text-slate-200 hover:bg-white/10"
+                    )}
+                  >
+                    {t.icon}
+                    <span>{t.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+                <div className="text-xs font-extrabold text-slate-200/90">Skrót</div>
+                <div className="mt-2 text-xs text-slate-300/80">
+                  Ustawienia publikacji + kod: <b>Dostęp i opis</b><br />
+                  Join: <b>Dołączanie</b><br />
+                  Link/QR: <b>Udostępnianie</b>
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          {/* Content */}
+          <div className="min-w-0">
+            <Content />
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* =========================
+   Mini components
+   ========================= */
+
+function SaveIcon() {
+  // prosta ikonka “save” w stylu app (bez importu kolejnych lucide)
+  return <CheckCircle2 className="h-4 w-4" />;
+}
+
+function PermLine({ label, ok }: { label: string; ok: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-white/10 py-2">
+      <span className="text-slate-200/90">{label}</span>
+      <span className={cn("text-xs font-extrabold", ok ? "text-emerald-200" : "text-rose-200")}>
+        {ok ? "TAK" : "NIE"}
+      </span>
     </div>
   );
 }

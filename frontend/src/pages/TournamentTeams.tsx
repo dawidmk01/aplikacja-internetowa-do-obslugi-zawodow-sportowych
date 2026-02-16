@@ -3,6 +3,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { apiFetch } from "../api";
 
+import { Card } from "../ui/Card";
+import { Button } from "../ui/Button";
+import { Input } from "../ui/Input";
+
 type Team = { id: number; name: string; players_count?: number };
 
 type TournamentFormat = "LEAGUE" | "CUP" | "MIXED";
@@ -19,7 +23,6 @@ type MyPermissions = {
   roster_edit: boolean;
   name_change_approve: boolean;
 
-  // organizer-only informacyjnie (mogą przyjść z backendu)
   publish?: boolean;
   archive?: boolean;
   manage_assistants?: boolean;
@@ -35,7 +38,7 @@ type TournamentDTO = {
   competition_type?: "INDIVIDUAL" | "TEAM";
   my_role?: MyRole;
   my_permissions?: MyPermissions;
-  matches_started?: boolean; // REALNY start (bez BYE)
+  matches_started?: boolean;
   [key: string]: any;
 };
 
@@ -95,8 +98,29 @@ function getRoleAndPerms(t: TournamentDTO | null): { role: MyRole; perms: MyPerm
   return { role, perms };
 }
 
+type ToastKind = "success" | "error" | "info";
+function useToast() {
+  const [toast, setToast] = useState<{ kind: ToastKind; text: string } | null>(null);
+  const tRef = useRef<number | null>(null);
+
+  const show = (kind: ToastKind, text: string) => {
+    setToast({ kind, text });
+    if (tRef.current) window.clearTimeout(tRef.current);
+    tRef.current = window.setTimeout(() => setToast(null), 2200);
+  };
+
+  const clear = () => {
+    if (tRef.current) window.clearTimeout(tRef.current);
+    setToast(null);
+  };
+
+  return { toast, show, clear };
+}
+
 export default function TournamentTeams() {
   const { id } = useParams<{ id: string }>();
+
+  const { toast, show: showToast, clear: clearToast } = useToast();
 
   const [tournament, setTournament] = useState<TournamentDTO | null>(null);
   const tournamentRef = useRef<TournamentDTO | null>(null);
@@ -104,7 +128,6 @@ export default function TournamentTeams() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
 
   // kolejka
   const [queueLoading, setQueueLoading] = useState(false);
@@ -116,12 +139,11 @@ export default function TournamentTeams() {
   const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
   const [playersLoading, setPlayersLoading] = useState(false);
   const [playersBusy, setPlayersBusy] = useState(false);
-  const [playersMessage, setPlayersMessage] = useState<string | null>(null);
   const [players, setPlayers] = useState<PlayerRow[]>([{ display_name: "", jersey_number: null }]);
   const [playersDirty, setPlayersDirty] = useState(false);
 
   // participant shortcut
-  const [participantMode, setParticipantMode] = useState(false); // używamy /my-team/players/
+  const [participantMode, setParticipantMode] = useState(false);
 
   const inFlightRef = useRef(false);
 
@@ -162,7 +184,6 @@ export default function TournamentTeams() {
   };
 
   // ===== kolejka (name-change requests) =====
-
   const canViewOrApproveQueue = (): boolean => {
     const t = tournamentRef.current;
     const { role, perms } = getRoleAndPerms(t);
@@ -199,17 +220,15 @@ export default function TournamentTeams() {
     if (!id) return;
 
     if (!canViewOrApproveQueue()) {
-      setMessage("Brak uprawnień do obsługi kolejki zmian nazw.");
+      showToast("error", "Brak uprawnień do obsługi kolejki zmian nazw.");
       return;
     }
 
     setQueueBusy(true);
-    setMessage(null);
     try {
-      const res = await apiFetch(
-        `/api/tournaments/${id}/teams/name-change-requests/${requestId}/approve/`,
-        { method: "POST" }
-      );
+      const res = await apiFetch(`/api/tournaments/${id}/teams/name-change-requests/${requestId}/approve/`, {
+        method: "POST",
+      });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         throw new Error(data?.detail || "Nie udało się zaakceptować prośby.");
@@ -217,9 +236,9 @@ export default function TournamentTeams() {
 
       await loadPendingQueue();
       await loadTeams().catch(() => null);
-      setMessage("Prośba zaakceptowana.");
+      showToast("success", "Prośba zaakceptowana.");
     } catch (e: any) {
-      setMessage(e?.message || "Błąd akceptacji prośby.");
+      showToast("error", e?.message || "Błąd akceptacji prośby.");
     } finally {
       setQueueBusy(false);
     }
@@ -229,33 +248,30 @@ export default function TournamentTeams() {
     if (!id) return;
 
     if (!canViewOrApproveQueue()) {
-      setMessage("Brak uprawnień do obsługi kolejki zmian nazw.");
+      showToast("error", "Brak uprawnień do obsługi kolejki zmian nazw.");
       return;
     }
 
     setQueueBusy(true);
-    setMessage(null);
     try {
-      const res = await apiFetch(
-        `/api/tournaments/${id}/teams/name-change-requests/${requestId}/reject/`,
-        { method: "POST" }
-      );
+      const res = await apiFetch(`/api/tournaments/${id}/teams/name-change-requests/${requestId}/reject/`, {
+        method: "POST",
+      });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         throw new Error(data?.detail || "Nie udało się odrzucić prośby.");
       }
 
       await loadPendingQueue();
-      setMessage("Prośba odrzucona.");
+      showToast("success", "Prośba odrzucona.");
     } catch (e: any) {
-      setMessage(e?.message || "Błąd odrzucenia prośby.");
+      showToast("error", e?.message || "Błąd odrzucenia prośby.");
     } finally {
       setQueueBusy(false);
     }
   };
 
-  // ===== role/perms (render + blokady) =====
-
+  // ===== role/perms =====
   const myRole: MyRole = tournament?.my_role ?? null;
   const myPerms: MyPermissions | null = (tournament?.my_permissions as MyPermissions | undefined) ?? null;
 
@@ -263,12 +279,10 @@ export default function TournamentTeams() {
   const isAssistant = myRole === "ASSISTANT";
   const isParticipant = !isOrganizer && !isAssistant;
 
-  // PUSTY SYSTEM: brak fallbacków. Roster i kolejka mają OSOBNE flagi.
   const canEditTeams = isOrganizer || (isAssistant && Boolean(myPerms?.teams_edit));
   const canEditRosterAsManager = isOrganizer || (isAssistant && Boolean(myPerms?.roster_edit));
   const canManageQueue = isOrganizer || (isAssistant && Boolean(myPerms?.name_change_approve));
 
-  // zmiana count to realnie "ustawienia turnieju" – wymagamy tournament_edit
   const matchesStarted = Boolean(tournament?.matches_started);
   const canChangeTeamsCount = isOrganizer || (isAssistant && Boolean(myPerms?.tournament_edit) && !matchesStarted);
 
@@ -279,8 +293,7 @@ export default function TournamentTeams() {
         ? "Puchar"
         : "Grupy + puchar";
 
-  // ===== roster API helpers =====
-
+  // ===== roster helpers =====
   const ensureRosterStateForEmpty = (rows: PlayerRow[]): PlayerRow[] => {
     const cleaned = rows.filter((r) => normName(r.display_name).length > 0);
     if (cleaned.length === 0) return [{ display_name: "", jersey_number: null }];
@@ -300,9 +313,7 @@ export default function TournamentTeams() {
     const t = tournamentRef.current;
     const { role, perms } = getRoleAndPerms(t);
 
-    const canManager =
-      role === "ORGANIZER" || (role === "ASSISTANT" && Boolean(perms?.roster_edit));
-
+    const canManager = role === "ORGANIZER" || (role === "ASSISTANT" && Boolean(perms?.roster_edit));
     if (canManager) {
       return { endpoint: `/api/tournaments/${id}/teams/${teamId}/players/`, mode: "MANAGER" };
     }
@@ -312,16 +323,14 @@ export default function TournamentTeams() {
   const loadTeamPlayers = async (teamId: number) => {
     if (!id) return;
 
-    // twarda blokada dla asystenta bez roster_edit (żadnych fallbacków)
     const t = tournamentRef.current;
     const { role, perms } = getRoleAndPerms(t);
     if (role === "ASSISTANT" && !Boolean(perms?.roster_edit)) {
-      setPlayersMessage("Brak uprawnień do edycji składów (roster_edit = false).");
+      showToast("error", "Brak uprawnień do edycji składów (roster_edit = false).");
       return;
     }
 
     setPlayersLoading(true);
-    setPlayersMessage(null);
     try {
       const { endpoint, mode } = getRosterEndpoint(teamId);
 
@@ -334,7 +343,6 @@ export default function TournamentTeams() {
 
       setPlayers(mapApiPlayersToRows(data));
       setPlayersDirty(false);
-      setPlayersMessage(null);
 
       if (mode === "PARTICIPANT") {
         setParticipantMode(true);
@@ -345,7 +353,7 @@ export default function TournamentTeams() {
     } catch (e: any) {
       setPlayers([{ display_name: "", jersey_number: null }]);
       setPlayersDirty(false);
-      setPlayersMessage(e?.message || "Błąd pobierania składu.");
+      showToast("error", e?.message || "Błąd pobierania składu.");
     } finally {
       setPlayersLoading(false);
     }
@@ -354,16 +362,14 @@ export default function TournamentTeams() {
   const saveTeamPlayers = async (teamId: number) => {
     if (!id) return;
 
-    // twarda blokada dla asystenta bez roster_edit (żadnych fallbacków)
     const t = tournamentRef.current;
     const { role, perms } = getRoleAndPerms(t);
     if (role === "ASSISTANT" && !Boolean(perms?.roster_edit)) {
-      setPlayersMessage("Brak uprawnień do edycji składów (roster_edit = false).");
+      showToast("error", "Brak uprawnień do edycji składów (roster_edit = false).");
       return;
     }
 
     setPlayersBusy(true);
-    setPlayersMessage(null);
     try {
       const { endpoint } = getRosterEndpoint(teamId);
 
@@ -389,11 +395,11 @@ export default function TournamentTeams() {
       const data: TeamPlayersResponse = await res.json();
       setPlayers(mapApiPlayersToRows(data));
       setPlayersDirty(false);
-      setPlayersMessage("Skład zapisany.");
 
       await loadTeams().catch(() => null);
+      showToast("success", "Skład zapisany.");
     } catch (e: any) {
-      setPlayersMessage(e?.message || "Błąd zapisu składu.");
+      showToast("error", e?.message || "Błąd zapisu składu.");
     } finally {
       setPlayersBusy(false);
     }
@@ -402,10 +408,10 @@ export default function TournamentTeams() {
   const revertTeamPlayers = async () => {
     if (!selectedTeamId) return;
     await loadTeamPlayers(selectedTeamId);
+    showToast("info", "Przywrócono dane z serwera.");
   };
 
   // ===== init =====
-
   useEffect(() => {
     if (!id) return;
 
@@ -413,7 +419,7 @@ export default function TournamentTeams() {
 
     const init = async () => {
       try {
-        setMessage(null);
+        clearToast();
         setLoading(true);
 
         const t = await loadTournament();
@@ -421,17 +427,10 @@ export default function TournamentTeams() {
 
         const { role, perms } = getRoleAndPerms(t);
 
-        // kolejka tylko gdy organizer lub (assistant + name_change_approve)
         const allowQueue = role === "ORGANIZER" || (role === "ASSISTANT" && Boolean(perms?.name_change_approve));
-        if (mounted && allowQueue) {
-          await loadPendingQueue();
-        } else {
-          setPendingRequests([]);
-        }
+        if (mounted && allowQueue) await loadPendingQueue();
+        if (mounted && !allowQueue) setPendingRequests([]);
 
-        // roster:
-        // - manager view: organizer lub (assistant + roster_edit) -> domyślnie 1. drużyna
-        // - participant view: /my-team/players/
         if (mounted && hasRosterFeature(t)) {
           const allowManagerRoster = role === "ORGANIZER" || (role === "ASSISTANT" && Boolean(perms?.roster_edit));
 
@@ -447,7 +446,7 @@ export default function TournamentTeams() {
           }
         }
       } catch (e: any) {
-        if (mounted) setMessage(e.message || "Błąd ładowania danych.");
+        if (mounted) showToast("error", e?.message || "Błąd ładowania danych.");
       } finally {
         if (mounted) {
           setBusy(false);
@@ -465,24 +464,15 @@ export default function TournamentTeams() {
   }, [id]);
 
   // ===== teams count =====
-
   const currentCount = useMemo(() => Math.max(2, teams.length), [teams.length]);
 
   const confirmChangeCount = (): boolean => {
     if (!canChangeTeamsCount) {
       if (isAssistant) {
-        if (!myPerms?.tournament_edit) {
-          setMessage("Brak uprawnień: asystent nie ma tournament_edit.");
-          return false;
-        }
-        if (matchesStarted) {
-          setMessage("Asystent nie może zmieniać liczby uczestników po rozpoczęciu turnieju.");
-          return false;
-        }
-      }
-      if (isParticipant) {
-        setMessage("Brak uprawnień.");
-        return false;
+        if (!myPerms?.tournament_edit) showToast("error", "Brak uprawnień: asystent nie ma tournament_edit.");
+        else if (matchesStarted) showToast("error", "Asystent nie może zmieniać liczby uczestników po starcie.");
+      } else {
+        showToast("error", "Brak uprawnień.");
       }
       return false;
     }
@@ -499,16 +489,14 @@ export default function TournamentTeams() {
           "- skasowanie wyników i postępu drabinki/tabel",
           "- skasowanie harmonogramu meczów",
           "",
-          "Nazwy zawodników/drużyn pozostaną (część może zostać dezaktywowana przy zmniejszeniu liczby).",
+          "Nazwy drużyn pozostaną (część może zostać dezaktywowana przy zmniejszeniu liczby).",
           "",
           "Kontynuować?",
         ].join("\n")
       );
     }
 
-    return window.confirm(
-      "Zmiana liczby uczestników spowoduje reset rozgrywek (etapy i mecze).\nKontynuować?"
-    );
+    return window.confirm("Zmiana liczby uczestników spowoduje reset rozgrywek (etapy i mecze).\nKontynuować?");
   };
 
   const changeTeamsCount = async (delta: number) => {
@@ -523,18 +511,14 @@ export default function TournamentTeams() {
     try {
       inFlightRef.current = true;
       setBusy(true);
-      setMessage(null);
 
       const resp = await setupTeams(next);
-      setMessage(resp.detail || "Zmieniono liczbę uczestników.");
+      showToast("success", resp.detail || "Zmieniono liczbę uczestników.");
 
       if (canManageQueue) await loadPendingQueue();
 
-      // roster: jeśli manager i selectedTeamId już nie istnieje (np. zmniejszenie),
-      // przestaw na pierwszą aktywną drużynę
       const { role, perms } = getRoleAndPerms(resp.tournament);
-      const allowManagerRoster =
-        role === "ORGANIZER" || (role === "ASSISTANT" && Boolean(perms?.roster_edit));
+      const allowManagerRoster = role === "ORGANIZER" || (role === "ASSISTANT" && Boolean(perms?.roster_edit));
 
       if (hasRosterFeature(resp.tournament) && allowManagerRoster) {
         const ids = new Set(resp.teams.map((t) => t.id));
@@ -544,7 +528,7 @@ export default function TournamentTeams() {
         if (nextSelected) await loadTeamPlayers(nextSelected);
       }
     } catch (e: any) {
-      setMessage(e.message || "Nie udało się zmienić liczby uczestników.");
+      showToast("error", e?.message || "Nie udało się zmienić liczby uczestników.");
     } finally {
       setBusy(false);
       inFlightRef.current = false;
@@ -552,11 +536,8 @@ export default function TournamentTeams() {
   };
 
   // ===== team name edit =====
-
   const updateTeamName = async (teamId: number, name: string) => {
-    if (!canEditTeams) {
-      throw new Error("Brak uprawnień do edycji nazw (teams_edit = false).");
-    }
+    if (!canEditTeams) throw new Error("Brak uprawnień do edycji nazw (teams_edit = false).");
 
     const res = await apiFetch(`/api/tournaments/${id}/teams/${teamId}/`, {
       method: "PATCH",
@@ -571,17 +552,6 @@ export default function TournamentTeams() {
   };
 
   // ===== UI helpers =====
-
-  const busyButtonStyle: React.CSSProperties = {
-    opacity: busy ? 0.6 : 1,
-    cursor: busy ? "wait" : "pointer",
-  };
-
-  const rosterButtonStyle: React.CSSProperties = {
-    opacity: playersBusy || playersLoading ? 0.7 : 1,
-    cursor: playersBusy || playersLoading ? "wait" : "pointer",
-  };
-
   const addPlayerRow = () => {
     setPlayersDirty(true);
     setPlayers((prev) => [...prev, { display_name: "", jersey_number: null }]);
@@ -600,241 +570,246 @@ export default function TournamentTeams() {
     setPlayers((prev) => prev.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
   };
 
-  // ===== render =====
+  if (loading) return <div className="px-4 py-8 text-slate-200/80">Ładowanie…</div>;
+  if (!tournament) return <div className="px-4 py-8 text-rose-300">Brak danych turnieju.</div>;
 
-  if (loading) return <p>Ładowanie…</p>;
-  if (!tournament) return null;
+  const titleLabel = tournament?.competition_type === "INDIVIDUAL" ? "Zawodnicy" : "Drużyny";
 
   return (
-    <div style={{ padding: "2rem", maxWidth: 980, minHeight: "100vh" }}>
-      <h1>Uczestnicy turnieju</h1>
-
-      <section style={{ opacity: 0.85, marginBottom: "0.75rem" }}>
-        <div>
-          <strong>Turniej:</strong> {tournament.name}
-        </div>
-        <div>
-          <strong>Format:</strong> {formatLabel}
-        </div>
-        <div>
-          <strong>Status:</strong> {tournament.status}
-        </div>
-      </section>
-
-      {isAssistant && !myPerms && (
+    <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+      {/* TOAST */}
+      {toast && (
         <div
-          style={{
-            border: "1px solid #7a6a2a",
-            padding: "0.75rem",
-            marginBottom: "1rem",
-            borderRadius: 8,
-          }}
+          className={[
+            "fixed bottom-6 right-6 z-[60] w-[min(420px,calc(100vw-2rem))]",
+            "rounded-2xl border border-white/10 bg-slate-950/90 backdrop-blur",
+            "px-4 py-3 shadow-[0_20px_80px_rgba(0,0,0,0.55)]",
+          ].join(" ")}
+          role="status"
         >
-          Uwaga: backend nie zwrócił <code>my_permissions</code>. Dla bezpieczeństwa UI traktuje uprawnienia asystenta jako
-          wyłączone.
+          <div className="flex items-start justify-between gap-3">
+            <div className="text-sm text-slate-100">
+              <span
+                className={[
+                  "mr-2 inline-block h-2 w-2 rounded-full align-middle",
+                  toast.kind === "success"
+                    ? "bg-emerald-400"
+                    : toast.kind === "error"
+                      ? "bg-rose-400"
+                      : "bg-sky-400",
+                ].join(" ")}
+              />
+              {toast.text}
+            </div>
+            <button
+              type="button"
+              onClick={clearToast}
+              className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-100 hover:bg-white/10"
+              aria-label="Zamknij"
+            >
+              ✕
+            </button>
+          </div>
         </div>
+      )}
+
+      {/* HEADER */}
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Uczestnicy</h1>
+          <div className="mt-1 text-sm text-slate-200/70">
+            Turniej: <span className="text-slate-100">{tournament.name}</span> • Format:{" "}
+            <span className="text-slate-100">{formatLabel}</span> • Status:{" "}
+            <span className="text-slate-100">{tournament.status}</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            disabled={busy}
+            onClick={async () => {
+              try {
+                setBusy(true);
+                await loadTournament();
+                await loadTeams();
+                if (canManageQueue) await loadPendingQueue();
+                showToast("success", "Odświeżono dane.");
+              } catch {
+                showToast("error", "Nie udało się odświeżyć danych.");
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Odśwież
+          </Button>
+        </div>
+      </div>
+
+      {/* WARNINGS */}
+      {isAssistant && !myPerms && (
+        <Card className="mb-4 p-4">
+          <div className="text-sm text-amber-200/90">
+            Uwaga: backend nie zwrócił <code className="text-amber-100">my_permissions</code>. UI traktuje uprawnienia
+            asystenta jako wyłączone.
+          </div>
+        </Card>
       )}
 
       {isAssistant && matchesStarted && (
-        <div
-          style={{
-            border: "1px solid #6a3b3b",
-            padding: "0.75rem",
-            marginBottom: "1rem",
-            borderRadius: 8,
-          }}
-        >
-          Turniej już się rozpoczął — zmiana liczby uczestników jest zablokowana dla asystenta.
-        </div>
+        <Card className="mb-4 p-4">
+          <div className="text-sm text-rose-200/90">
+            Turniej już się rozpoczął — zmiana liczby uczestników jest zablokowana dla asystenta.
+          </div>
+        </Card>
       )}
 
       {isOrganizer && matchesStarted && (
-        <div
-          style={{
-            border: "1px solid #7a6a2a",
-            padding: "0.75rem",
-            marginBottom: "1rem",
-            borderRadius: 8,
-          }}
-        >
-          Turniej jest rozpoczęty. Organizator może zmienić liczbę uczestników, ale spowoduje to pełny reset:
-          usunięcie meczów, wyników i harmonogramu oraz ponowną generację rozgrywek.
-        </div>
+        <Card className="mb-4 p-4">
+          <div className="text-sm text-amber-200/90">
+            Turniej jest rozpoczęty. Zmiana liczby uczestników spowoduje pełny reset (mecze, wyniki, harmonogram).
+          </div>
+        </Card>
       )}
 
       {!matchesStarted && tournament.status !== "DRAFT" && (
-        <div
-          style={{
-            border: "1px solid #444",
-            padding: "0.75rem",
-            marginBottom: "1rem",
-            borderRadius: 8,
-          }}
-        >
-          Zmiana nazw jest bezpieczna. Zmiana liczby uczestników (+/−) spowoduje reset rozgrywek.
-        </div>
+        <Card className="mb-4 p-4">
+          <div className="text-sm text-slate-200/80">
+            Zmiana nazw jest bezpieczna. Zmiana liczby uczestników (+/−) spowoduje reset rozgrywek.
+          </div>
+        </Card>
       )}
 
-      <section style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-        <strong>Liczba uczestników</strong>
-        <button
-          type="button"
-          onClick={() => changeTeamsCount(-1)}
-          disabled={busy || !canChangeTeamsCount}
-          style={busyButtonStyle}
-        >
-          −
-        </button>
-        <span>{currentCount}</span>
-        <button
-          type="button"
-          onClick={() => changeTeamsCount(1)}
-          disabled={busy || !canChangeTeamsCount}
-          style={busyButtonStyle}
-        >
-          +
-        </button>
-
-        {isAssistant && !canChangeTeamsCount && (
-          <span style={{ opacity: 0.8 }}>
-            (wymaga <code>tournament_edit</code> i braku startu)
-          </span>
-        )}
-      </section>
-
-      <hr />
-
-      {/* =========================
-          KOLEJKA PROŚB (PENDING)
-         ========================= */}
-      {canManageQueue && (
-        <>
-          <section style={{ margin: "1rem 0" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <h2 style={{ margin: 0 }}>Kolejka próśb o zmianę nazwy</h2>
-
-              <button
-                type="button"
-                onClick={() => loadPendingQueue()}
-                disabled={queueLoading || queueBusy}
-                style={{
-                  opacity: queueLoading || queueBusy ? 0.7 : 1,
-                  cursor: queueLoading || queueBusy ? "wait" : "pointer",
-                }}
-              >
-                Odśwież
-              </button>
-
-              <span style={{ opacity: 0.8 }}>
-                {queueLoading ? "Ładowanie…" : `Oczekuje: ${pendingRequests.length}`}
-              </span>
+      {/* TOP: COUNT + QUEUE */}
+      <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
+        <Card className="p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-slate-100">Liczba uczestników</div>
+              <div className="mt-1 text-xs text-slate-200/60">
+                Zmiana może wymagać resetu (zależnie od statusu).
+              </div>
             </div>
 
-            {pendingRequests.length === 0 && !queueLoading ? (
-              <p style={{ opacity: 0.7, fontStyle: "italic" }}>Brak oczekujących próśb.</p>
-            ) : (
-              <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
-                {pendingRequests.map((r) => (
+            <div className="flex items-center gap-2">
+              <Button variant="secondary" disabled={busy || !canChangeTeamsCount} onClick={() => changeTeamsCount(-1)}>
+                −
+              </Button>
+              <div className="min-w-[2.5rem] text-center text-lg font-semibold text-slate-100">{currentCount}</div>
+              <Button variant="secondary" disabled={busy || !canChangeTeamsCount} onClick={() => changeTeamsCount(1)}>
+                +
+              </Button>
+            </div>
+          </div>
+
+          {isAssistant && !canChangeTeamsCount && (
+            <div className="mt-3 text-xs text-slate-200/60">
+              Wymaga <code className="text-slate-100">tournament_edit</code> i braku startu.
+            </div>
+          )}
+        </Card>
+
+        {canManageQueue ? (
+          <Card className="p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-slate-100">Kolejka próśb o zmianę nazwy</div>
+                <div className="mt-1 text-xs text-slate-200/60">
+                  Oczekuje: <span className="text-slate-100">{pendingRequests.length}</span>
+                </div>
+              </div>
+
+              <Button
+                variant="secondary"
+                disabled={queueLoading || queueBusy}
+                onClick={() => loadPendingQueue().catch(() => void 0)}
+              >
+                {queueLoading ? "Ładowanie…" : "Odśwież"}
+              </Button>
+            </div>
+
+            <div className="mt-3 grid gap-2">
+              {pendingRequests.length === 0 && !queueLoading ? (
+                <div className="text-sm text-slate-200/60 italic">Brak oczekujących próśb.</div>
+              ) : (
+                pendingRequests.map((r) => (
                   <div
                     key={r.id}
-                    style={{
-                      border: "1px solid #444",
-                      borderRadius: 10,
-                      padding: "0.75rem",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      gap: 12,
-                      alignItems: "center",
-                    }}
+                    className="rounded-xl border border-white/10 bg-white/[0.04] p-3"
                   >
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: 700, marginBottom: 4 }}>Team #{r.team_id}</div>
-                      <div style={{ opacity: 0.9, wordBreak: "break-word" }}>
-                        <span style={{ opacity: 0.7 }}>Było:</span> {r.old_name}
-                        <br />
-                        <span style={{ opacity: 0.7 }}>Chce:</span> {r.requested_name}
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-slate-100">Team #{r.team_id}</div>
+                        <div className="mt-1 text-xs text-slate-200/70 break-words">
+                          <div>
+                            <span className="text-slate-200/50">Było:</span> {r.old_name}
+                          </div>
+                          <div>
+                            <span className="text-slate-200/50">Chce:</span> {r.requested_name}
+                          </div>
+                        </div>
                       </div>
-                      <div style={{ opacity: 0.6, fontSize: 12, marginTop: 6 }}>
-                        request_id: {r.id} • user_id: {r.requested_by_id}
-                      </div>
-                    </div>
 
-                    <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                      <button
-                        type="button"
-                        disabled={queueBusy}
-                        onClick={() => approveRequest(r.id)}
-                        style={{
-                          padding: "0.35rem 0.6rem",
-                          borderRadius: 8,
-                          border: "1px solid #2f7a2f",
-                          opacity: queueBusy ? 0.7 : 1,
-                          cursor: queueBusy ? "wait" : "pointer",
-                        }}
-                      >
-                        Akceptuj
-                      </button>
-                      <button
-                        type="button"
-                        disabled={queueBusy}
-                        onClick={() => rejectRequest(r.id)}
-                        style={{
-                          padding: "0.35rem 0.6rem",
-                          borderRadius: 8,
-                          border: "1px solid #7a2f2f",
-                          opacity: queueBusy ? 0.7 : 1,
-                          cursor: queueBusy ? "wait" : "pointer",
-                        }}
-                      >
-                        Odrzuć
-                      </button>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Button
+                          variant="secondary"
+                          disabled={queueBusy}
+                          onClick={() => approveRequest(r.id)}
+                        >
+                          Akceptuj
+                        </Button>
+                        <Button
+                          variant="danger"
+                          disabled={queueBusy}
+                          onClick={() => rejectRequest(r.id)}
+                        >
+                          Odrzuć
+                        </Button>
+                      </div>
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <hr />
-        </>
-      )}
-
-      {/* =========================
-          ROSTER (PLAYERS) — DLA DRUŻYN
-         ========================= */}
-      {hasRosterFeature(tournament) && (
-        <>
-          <section style={{ margin: "1rem 0" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, justifyContent: "space-between" }}>
-              <h2 style={{ margin: 0 }}>Składy (zawodnicy)</h2>
-              <button
-                type="button"
-                onClick={() => setRosterOpen((v) => !v)}
-                style={{ padding: "0.35rem 0.6rem", borderRadius: 8, border: "1px solid #444" }}
-              >
-                {rosterOpen ? "Zwiń" : "Rozwiń"}
-              </button>
+                ))
+              )}
             </div>
+          </Card>
+        ) : (
+          <Card className="p-4">
+            <div className="text-sm text-slate-200/70">
+              Kolejka zmian nazw jest niedostępna (brak uprawnień).
+            </div>
+          </Card>
+        )}
+      </div>
 
-            {rosterOpen && (
-              <div
-                style={{
-                  marginTop: 10,
-                  border: "1px solid #333",
-                  borderRadius: 12,
-                  padding: "0.9rem",
-                }}
-              >
-                {/* Asystent bez roster_edit: informacja i brak panelu */}
-                {isAssistant && !canEditRosterAsManager ? (
-                  <div style={{ opacity: 0.85 }}>
-                    Brak uprawnień do składów (wymagane: <code>roster_edit</code>).
-                  </div>
-                ) : canEditRosterAsManager ? (
-                  <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                      <strong>Wybierz drużynę:</strong>
+      {/* ROSTER */}
+      {hasRosterFeature(tournament) && (
+        <Card className="mt-4 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-slate-100">Składy (zawodnicy)</div>
+              <div className="mt-1 text-xs text-slate-200/60">
+                {participantMode ? "Tryb uczestnika" : "Tryb organizatora/asystenta"}
+              </div>
+            </div>
+            <Button variant="secondary" onClick={() => setRosterOpen((v) => !v)}>
+              {rosterOpen ? "Zwiń" : "Rozwiń"}
+            </Button>
+          </div>
+
+          {rosterOpen && (
+            <div className="mt-4">
+              {isAssistant && !canEditRosterAsManager ? (
+                <div className="text-sm text-slate-200/70">
+                  Brak uprawnień do składów (wymagane: <code className="text-slate-100">roster_edit</code>).
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2">
+                  {canEditRosterAsManager ? (
+                    <>
+                      <div className="text-sm text-slate-200/80">Drużyna:</div>
                       <select
+                        className="rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10"
                         value={selectedTeamId ?? ""}
                         onChange={async (e) => {
                           const nextId = Number(e.target.value || 0);
@@ -856,253 +831,199 @@ export default function TournamentTeams() {
                           </option>
                         ))}
                       </select>
+
+                      <Button
+                        variant="secondary"
+                        disabled={!selectedTeamId || playersBusy || playersLoading}
+                        onClick={() => selectedTeamId && loadTeamPlayers(selectedTeamId)}
+                      >
+                        Odśwież
+                      </Button>
+
+                      <Button
+                        variant="primary"
+                        disabled={!selectedTeamId || playersBusy || playersLoading || !playersDirty}
+                        onClick={() => selectedTeamId && saveTeamPlayers(selectedTeamId)}
+                      >
+                        Zapisz
+                      </Button>
+
+                      <Button
+                        variant="ghost"
+                        disabled={!selectedTeamId || playersBusy || playersLoading || !playersDirty}
+                        onClick={() => revertTeamPlayers()}
+                      >
+                        Cofnij
+                      </Button>
+
+                      <div className="ml-auto text-xs text-slate-200/60">
+                        {playersLoading ? "Ładowanie…" : playersDirty ? "Niezapisane zmiany" : " "}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-sm text-slate-200/80">Twoja drużyna</div>
+                      <Button
+                        variant="secondary"
+                        disabled={playersBusy || playersLoading}
+                        onClick={() => loadTeamPlayers(selectedTeamId ?? 0)}
+                      >
+                        Odśwież
+                      </Button>
+                      <Button
+                        variant="primary"
+                        disabled={playersBusy || playersLoading || !selectedTeamId || !playersDirty}
+                        onClick={() => (selectedTeamId ? saveTeamPlayers(selectedTeamId) : null)}
+                      >
+                        Zapisz
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        disabled={playersBusy || playersLoading || !selectedTeamId || !playersDirty}
+                        onClick={() => revertTeamPlayers()}
+                      >
+                        Cofnij
+                      </Button>
+
+                      <div className="ml-auto text-xs text-slate-200/60">
+                        {playersLoading ? "Ładowanie…" : playersDirty ? "Niezapisane zmiany" : " "}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* editor */}
+              {(!isAssistant || canEditRosterAsManager) && (
+                <div className="mt-4 grid gap-2">
+                  {players.map((p, idx) => (
+                    <div
+                      key={p.id ?? `new-${idx}`}
+                      className="grid items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] p-3 md:grid-cols-[1fr_220px_44px]"
+                    >
+                      <Input
+                        value={p.display_name}
+                        disabled={playersBusy || playersLoading}
+                        placeholder={`Zawodnik ${idx + 1} — imię i nazwisko`}
+                        onChange={(e) => updatePlayerField(idx, { display_name: e.target.value })}
+                      />
+
+                      <Input
+                        value={p.jersey_number ?? ""}
+                        disabled={playersBusy || playersLoading}
+                        placeholder="Nr (opcjonalnie)"
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (raw === "") {
+                            updatePlayerField(idx, { jersey_number: null });
+                            return;
+                          }
+                          const n = Number(raw);
+                          if (Number.isNaN(n)) return;
+                          updatePlayerField(idx, { jersey_number: n });
+                        }}
+                      />
+
+                      <Button
+                        variant="danger"
+                        disabled={playersBusy || playersLoading}
+                        onClick={() => removePlayerRow(idx)}
+                        title="Usuń wiersz"
+                      >
+                        −
+                      </Button>
                     </div>
+                  ))}
 
-                    <button
-                      type="button"
-                      onClick={() => selectedTeamId && loadTeamPlayers(selectedTeamId)}
-                      disabled={!selectedTeamId || playersBusy || playersLoading}
-                      style={rosterButtonStyle}
-                    >
-                      Odśwież skład
-                    </button>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <Button variant="secondary" disabled={playersBusy || playersLoading} onClick={addPlayerRow}>
+                      + Dodaj zawodnika
+                    </Button>
 
-                    <button
-                      type="button"
-                      onClick={() => selectedTeamId && saveTeamPlayers(selectedTeamId)}
-                      disabled={!selectedTeamId || playersBusy || playersLoading || !playersDirty}
-                      style={rosterButtonStyle}
-                    >
-                      Zapisz
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => revertTeamPlayers()}
-                      disabled={!selectedTeamId || playersBusy || playersLoading || !playersDirty}
-                      style={rosterButtonStyle}
-                    >
-                      Cofnij
-                    </button>
-
-                    <span style={{ opacity: 0.8 }}>
-                      {playersLoading ? "Ładowanie…" : playersDirty ? "Niezapisane zmiany" : " "}
-                    </span>
+                    <div className="text-xs text-slate-200/60">
+                      {participantMode
+                        ? "Uwaga: zapis może być zablokowany, jeśli organizator wyłączył edycję składu przez właściciela drużyny."
+                        : "Skład zapisujesz osobno dla każdej drużyny."}
+                    </div>
                   </div>
-                ) : (
-                  // participant
-                  <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                    <strong>Twoja drużyna</strong>
-                    <button
-                      type="button"
-                      onClick={() => loadTeamPlayers(selectedTeamId ?? 0)}
-                      disabled={playersBusy || playersLoading}
-                      style={rosterButtonStyle}
-                    >
-                      Odśwież skład
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => (selectedTeamId ? saveTeamPlayers(selectedTeamId) : null)}
-                      disabled={playersBusy || playersLoading || !selectedTeamId || !playersDirty}
-                      style={rosterButtonStyle}
-                    >
-                      Zapisz
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => revertTeamPlayers()}
-                      disabled={playersBusy || playersLoading || !selectedTeamId || !playersDirty}
-                      style={rosterButtonStyle}
-                    >
-                      Cofnij
-                    </button>
-                    <span style={{ opacity: 0.8 }}>
-                      {playersLoading ? "Ładowanie…" : playersDirty ? "Niezapisane zmiany" : " "}
-                    </span>
-                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* TEAMS LIST */}
+      <Card className="mt-4 p-4">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-slate-100">{titleLabel}</div>
+            {!canEditTeams && (isOrganizer || isAssistant) && (
+              <div className="mt-1 text-xs text-slate-200/60">
+                Edycja nazw zablokowana (wymagane: <code className="text-slate-100">teams_edit</code>).
+              </div>
+            )}
+          </div>
+        </div>
+
+        {teams.length === 0 && !busy ? (
+          <div className="text-sm text-slate-200/60 italic">
+            Brak aktywnych uczestników — ustaw liczbę miejsc (+), aby utworzyć listę.
+          </div>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {teams.map((team) => (
+              <div key={team.id} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+                <Input
+                  value={team.name}
+                  disabled={busy || !canEditTeams}
+                  onChange={(e) =>
+                    setTeams((prev) => prev.map((t) => (t.id === team.id ? { ...t, name: e.target.value } : t)))
+                  }
+                  onBlur={async (e) => {
+                    if (!canEditTeams) return;
+                    try {
+                      await updateTeamName(team.id, e.target.value);
+                      if (canManageQueue) await loadPendingQueue();
+                      showToast("success", "Nazwa zapisana.");
+                    } catch (err: any) {
+                      showToast("error", err?.message || "Nie udało się zapisać nazwy.");
+                      await loadTeams().catch(() => null);
+                    }
+                  }}
+                />
+
+                {typeof team.players_count === "number" && hasRosterFeature(tournament) && (
+                  <div className="mt-2 text-xs text-slate-200/60">Skład: {team.players_count}</div>
                 )}
 
-                {/* Panel edycji roster - pokazujemy gdy organizer/asystent(roster_edit) lub participant */}
-                {(!isAssistant || canEditRosterAsManager) && (
-                  <div style={{ marginTop: 12 }}>
-                    <div style={{ display: "grid", gap: 8 }}>
-                      {players.map((p, idx) => (
-                        <div
-                          key={p.id ?? `new-${idx}`}
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: "120px 1fr 160px 46px",
-                            gap: 8,
-                            alignItems: "center",
-                          }}
-                        >
-                          <div style={{ opacity: 0.8 }}>Zawodnik {idx + 1}</div>
-
-                          <input
-                            value={p.display_name}
-                            disabled={playersBusy || playersLoading}
-                            placeholder="Imię i nazwisko"
-                            onChange={(e) => updatePlayerField(idx, { display_name: e.target.value })}
-                            style={{ padding: "0.45rem 0.6rem", borderRadius: 8, border: "1px solid #444" }}
-                          />
-
-                          <input
-                            value={p.jersey_number ?? ""}
-                            disabled={playersBusy || playersLoading}
-                            placeholder="Nr koszulki (opcjonalnie)"
-                            onChange={(e) => {
-                              const raw = e.target.value;
-                              if (raw === "") {
-                                updatePlayerField(idx, { jersey_number: null });
-                                return;
-                              }
-                              const n = Number(raw);
-                              if (Number.isNaN(n)) return;
-                              updatePlayerField(idx, { jersey_number: n });
-                            }}
-                            style={{ padding: "0.45rem 0.6rem", borderRadius: 8, border: "1px solid #444" }}
-                          />
-
-                          <button
-                            type="button"
-                            disabled={playersBusy || playersLoading}
-                            onClick={() => removePlayerRow(idx)}
-                            title="Usuń wiersz"
-                            style={{
-                              padding: "0.45rem 0.6rem",
-                              borderRadius: 8,
-                              border: "1px solid #7a2f2f",
-                              opacity: playersBusy || playersLoading ? 0.7 : 1,
-                              cursor: playersBusy || playersLoading ? "wait" : "pointer",
-                            }}
-                          >
-                            −
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center" }}>
-                      <button
-                        type="button"
-                        onClick={addPlayerRow}
-                        disabled={playersBusy || playersLoading}
-                        style={{
-                          padding: "0.45rem 0.75rem",
-                          borderRadius: 8,
-                          border: "1px solid #2f7a2f",
-                          opacity: playersBusy || playersLoading ? 0.7 : 1,
-                          cursor: playersBusy || playersLoading ? "wait" : "pointer",
-                        }}
-                      >
-                        + Dodaj zawodnika
-                      </button>
-
-                      <span style={{ opacity: 0.75 }}>
-                        {participantMode
-                          ? "Uwaga: zapis może być zablokowany, jeśli organizator wyłączył edycję składu przez właściciela drużyny."
-                          : "Skład zapisujesz osobno dla każdej drużyny."}
-                      </span>
-                    </div>
-
-                    {playersMessage && <div style={{ marginTop: 10, opacity: 0.9 }}>{playersMessage}</div>}
+                {canEditRosterAsManager && hasRosterFeature(tournament) && (
+                  <div className="mt-3">
+                    <Button
+                      variant="secondary"
+                      disabled={playersBusy || playersLoading}
+                      onClick={async () => {
+                        if (playersDirty) {
+                          const ok = window.confirm(
+                            "Masz niezapisane zmiany w składzie. Przełączyć drużynę i porzucić zmiany?"
+                          );
+                          if (!ok) return;
+                        }
+                        setSelectedTeamId(team.id);
+                        setRosterOpen(true);
+                        await loadTeamPlayers(team.id);
+                        window.scrollTo({ top: 0, behavior: "smooth" });
+                      }}
+                    >
+                      Edytuj skład
+                    </Button>
                   </div>
                 )}
               </div>
-            )}
-          </section>
-
-          <hr />
-        </>
-      )}
-
-      {/* =========================
-          EDYCJA NAZW (PANEL)
-         ========================= */}
-      <h2>{tournament?.competition_type === "INDIVIDUAL" ? "Zawodnicy" : "Drużyny"}</h2>
-
-      {!canEditTeams && (isOrganizer || isAssistant) && (
-        <div style={{ opacity: 0.8, marginBottom: 10 }}>
-          Edycja nazw jest zablokowana (wymagane: <code>teams_edit</code>).
-        </div>
-      )}
-
-      {teams.length === 0 && !busy ? (
-        <p style={{ opacity: 0.6, fontStyle: "italic" }}>
-          Brak aktywnych uczestników — ustaw liczbę miejsc (+) aby utworzyć listę.
-        </p>
-      ) : (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-            gap: "0.5rem",
-          }}
-        >
-          {teams.map((team) => (
-            <div key={team.id} style={{ display: "grid", gap: 6 }}>
-              <input
-                value={team.name}
-                disabled={busy || !canEditTeams}
-                onChange={(e) =>
-                  setTeams((prev) =>
-                    prev.map((t) => (t.id === team.id ? { ...t, name: e.target.value } : t))
-                  )
-                }
-                onBlur={async (e) => {
-                  if (!canEditTeams) return;
-
-                  try {
-                    await updateTeamName(team.id, e.target.value);
-
-                    // po manualnej zmianie nazwy odśwież kolejkę (jeśli mamy uprawnienia)
-                    if (canManageQueue) await loadPendingQueue();
-                  } catch (err: any) {
-                    setMessage(err.message);
-                    await loadTeams().catch(() => null);
-                  }
-                }}
-                style={{ padding: "0.5rem 0.65rem", borderRadius: 8, border: "1px solid #444" }}
-              />
-
-              {typeof team.players_count === "number" && hasRosterFeature(tournament) && (
-                <div style={{ fontSize: 12, opacity: 0.75 }}>Skład: {team.players_count}</div>
-              )}
-
-              {canEditRosterAsManager && hasRosterFeature(tournament) && (
-                <button
-                  type="button"
-                  disabled={playersBusy || playersLoading}
-                  onClick={async () => {
-                    if (playersDirty) {
-                      const ok = window.confirm(
-                        "Masz niezapisane zmiany w składzie. Przełączyć drużynę i porzucić zmiany?"
-                      );
-                      if (!ok) return;
-                    }
-                    setSelectedTeamId(team.id);
-                    setRosterOpen(true);
-                    await loadTeamPlayers(team.id);
-                    window.scrollTo({ top: 0, behavior: "smooth" });
-                  }}
-                  style={{
-                    padding: "0.35rem 0.6rem",
-                    borderRadius: 8,
-                    border: "1px solid #444",
-                    opacity: playersBusy || playersLoading ? 0.7 : 1,
-                    cursor: playersBusy || playersLoading ? "wait" : "pointer",
-                  }}
-                >
-                  Edytuj skład
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {message && <p style={{ marginTop: "1rem" }}>{message}</p>}
+            ))}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

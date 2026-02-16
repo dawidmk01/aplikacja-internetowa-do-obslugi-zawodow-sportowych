@@ -1,4 +1,6 @@
 // frontend/src/api.ts
+import { toast } from "./ui/Toast";
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 
 /* =====================
@@ -58,10 +60,84 @@ function isFormData(body: any): body is FormData {
 }
 
 /* =====================
+   TOAST / ERROR MAPPING
+===================== */
+
+type ApiFetchInit = RequestInit & {
+  /** Domyślnie: true. Ustaw na false, jeśli dany ekran sam obsługuje błąd. */
+  toastOnError?: boolean;
+
+  /** Nadpisuje komunikat błędu, jeśli chcesz zawsze stały tekst. */
+  errorToastMessage?: string;
+
+  /** Nadpisuje tytuł (opcjonalnie) */
+  errorToastTitle?: string;
+};
+
+function pickFirstString(x: any): string | null {
+  if (!x) return null;
+  if (typeof x === "string" && x.trim()) return x.trim();
+  if (Array.isArray(x)) {
+    for (const v of x) {
+      const s = pickFirstString(v);
+      if (s) return s;
+    }
+  }
+  if (typeof x === "object") {
+    // typowe: { detail }, { message }, { non_field_errors: [] }, { field: [] }
+    const direct =
+      pickFirstString((x as any).detail) ||
+      pickFirstString((x as any).message) ||
+      pickFirstString((x as any).error) ||
+      pickFirstString((x as any).non_field_errors);
+    if (direct) return direct;
+
+    for (const k of Object.keys(x)) {
+      const s = pickFirstString((x as any)[k]);
+      if (s) return s;
+    }
+  }
+  return null;
+}
+
+async function getResponseErrorMessage(res: Response): Promise<string> {
+  const fallback = `Błąd (${res.status})`;
+
+  try {
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      const data = await res.json().catch(() => null);
+      return pickFirstString(data) || fallback;
+    }
+
+    const text = await res.text().catch(() => "");
+    const t = (text || "").trim();
+    return t ? t.slice(0, 240) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function defaultTitleForStatus(status: number): string | undefined {
+  if (status === 401) return "Sesja";
+  if (status === 403) return "Brak uprawnień";
+  if (status === 404) return "Nie znaleziono";
+  if (status >= 500) return "Serwer";
+  return undefined;
+}
+
+function defaultMessageForStatus(status: number): string | undefined {
+  if (status === 401) return "Sesja wygasła. Zaloguj się ponownie.";
+  if (status === 403) return "Nie masz uprawnień do wykonania tej operacji.";
+  if (status >= 500) return "Wystąpił błąd serwera. Spróbuj ponownie za chwilę.";
+  return undefined;
+}
+
+/* =====================
    CORE API FETCH
 ===================== */
 
-export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+export async function apiFetch(path: string, init: ApiFetchInit = {}): Promise<Response> {
   const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
   const method = (init.method || "GET").toUpperCase();
   const body: any = (init as any).body;
@@ -85,27 +161,60 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
       headers: makeHeaders(token),
     });
 
-  let res = await doFetch(getAccess() ?? undefined);
+  const toastOnError = init.toastOnError !== false;
 
-  if (res.status === 401) {
-    const newAccess = await refreshAccessToken();
-    if (!newAccess) {
-      clearTokens();
-      return res;
+  try {
+    let res = await doFetch(getAccess() ?? undefined);
+
+    // 401 → spróbuj refresh
+    if (res.status === 401) {
+      const newAccess = await refreshAccessToken();
+      if (!newAccess) {
+        clearTokens();
+        if (toastOnError) {
+          toast.error(init.errorToastMessage || defaultMessageForStatus(401) || "Brak autoryzacji", {
+            title: init.errorToastTitle || defaultTitleForStatus(401),
+          });
+        }
+        return res;
+      }
+      res = await doFetch(newAccess);
     }
-    res = await doFetch(newAccess);
-  }
 
-  return res;
+    // Inne błędy → toast (bez konsumowania body)
+    if (!res.ok && toastOnError) {
+      const msg =
+        init.errorToastMessage ||
+        defaultMessageForStatus(res.status) ||
+        (await getResponseErrorMessage(res.clone()));
+      const title = init.errorToastTitle || defaultTitleForStatus(res.status);
+
+      toast.error(msg, { title });
+    }
+
+    return res;
+  } catch {
+    // network / CORS / offline
+    if (toastOnError) {
+      toast.error("Brak połączenia z serwerem. Sprawdź internet i spróbuj ponownie.", {
+        title: "Sieć",
+      });
+    }
+    // “udajemy” Response? Nie — zachowujemy kontrakt: rzucamy dalej (łatwiej debugować)
+    throw new Error("Network error");
+  }
 }
 
 /* =====================
    HELPERS
 ===================== */
 
-export async function apiGet<T>(path: string): Promise<T> {
-  const res = await apiFetch(path);
-  if (!res.ok) throw new Error(`API error ${res.status}`);
+export async function apiGet<T>(path: string, init: ApiFetchInit = {}): Promise<T> {
+  const res = await apiFetch(path, init);
+  if (!res.ok) {
+    const msg = await getResponseErrorMessage(res.clone());
+    throw new Error(msg);
+  }
   return res.json();
 }
 
@@ -117,6 +226,8 @@ export async function addAssistant(tournamentId: number, email: string): Promise
   const res = await apiFetch(`/api/tournaments/${tournamentId}/assistants/add/`, {
     method: "POST",
     body: JSON.stringify({ email }),
+    // tu toast może zostać włączony globalnie, ale zostawiamy też sensowny wyjątek:
+    toastOnError: false,
   });
 
   if (!res.ok) {

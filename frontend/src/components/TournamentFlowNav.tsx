@@ -1,11 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { motion } from "framer-motion";
+
 import { useTournamentFlowGuard } from "../flow/TournamentFlowGuardContext";
 import { FLOW_STEPS, getCurrentStepIndex } from "../flow/flowSteps";
 import { apiFetch } from "../api";
+import { cn } from "../lib/cn";
 
 type Props = {
   getCreatedId?: () => string | null; // dla /tournaments/new
+  className?: string;
 };
 
 type MyRole = "ORGANIZER" | "ASSISTANT" | "PARTICIPANT" | null;
@@ -22,34 +26,26 @@ function toIntSafe(v: any): number | null {
 }
 
 function extractCount(payload: any): number | null {
-  // 1) { count: number }
   const c = toIntSafe(payload?.count);
   if (c !== null) return c;
-
-  // 2) { results: [] }
   if (Array.isArray(payload?.results)) return payload.results.length;
-
-  // 3) []
   if (Array.isArray(payload)) return payload.length;
-
   return null;
 }
 
-export default function TournamentFlowNav({ getCreatedId }: Props) {
+export default function TournamentFlowNav({ getCreatedId, className }: Props) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const { saveIfDirty, saving, lastError, clearError } = useTournamentFlowGuard();
+  const { saveIfDirty, saving, lastError, clearError, createdId } = useTournamentFlowGuard();
 
   const currentIdx = getCurrentStepIndex(location.pathname);
   const currentLabel = FLOW_STEPS[currentIdx]?.label ?? "Konfiguracja";
 
-  const resolveIdAfterSave = () => id ?? getCreatedId?.() ?? null;
+  const resolvedId = id ?? createdId ?? getCreatedId?.() ?? null;
 
-  // =========================
   // Badge: kolejka próśb o zmianę nazwy
-  // =========================
   const [myRole, setMyRole] = useState<MyRole>(null);
   const [pendingNameReqCount, setPendingNameReqCount] = useState<number>(0);
 
@@ -58,16 +54,15 @@ export default function TournamentFlowNav({ getCreatedId }: Props) {
     [myRole]
   );
 
-  // 1) załaduj my_role
+  // 1) my_role
   useEffect(() => {
-    const rid = resolveIdAfterSave();
-    if (!rid) return;
+    if (!resolvedId) return;
 
     let cancelled = false;
 
-    const loadRole = async () => {
+    (async () => {
       try {
-        const tRes = await apiFetch(`/api/tournaments/${rid}/`);
+        const tRes = await apiFetch(`/api/tournaments/${resolvedId}/`);
         if (!tRes.ok) {
           if (!cancelled) setMyRole(null);
           return;
@@ -77,19 +72,17 @@ export default function TournamentFlowNav({ getCreatedId }: Props) {
       } catch {
         if (!cancelled) setMyRole(null);
       }
-    };
+    })();
 
-    loadRole();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [resolvedId]);
 
-  // 2) załaduj liczbę pending (i odświeżaj na focus)
+  // 2) pending count
   useEffect(() => {
-    const rid = resolveIdAfterSave();
-    if (!rid) return;
+    if (!resolvedId) return;
 
     if (!canSeeQueue) {
       setPendingNameReqCount(0);
@@ -100,9 +93,10 @@ export default function TournamentFlowNav({ getCreatedId }: Props) {
 
     const loadPendingCount = async () => {
       try {
-        const res = await apiFetch(`/api/tournaments/${rid}/teams/name-change-requests/`);
+        const res = await apiFetch(
+          `/api/tournaments/${resolvedId}/teams/name-change-requests/`
+        );
 
-        // 403/404 traktujemy jak "brak funkcji / brak dostępu"
         if (!res.ok) {
           if (!cancelled) setPendingNameReqCount(0);
           return;
@@ -125,8 +119,7 @@ export default function TournamentFlowNav({ getCreatedId }: Props) {
       cancelled = true;
       window.removeEventListener("focus", onFocus);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canSeeQueue, id]);
+  }, [canSeeQueue, resolvedId]);
 
   const handleClick = (stepIndex: number) => async () => {
     if (saving) return;
@@ -136,11 +129,10 @@ export default function TournamentFlowNav({ getCreatedId }: Props) {
     const ok = await saveIfDirty();
     if (!ok) return;
 
-    const rid = resolveIdAfterSave();
-    if (!rid) return;
+    if (!resolvedId) return;
 
     const target = FLOW_STEPS[stepIndex];
-    navigate(target.path(rid), {
+    navigate(target.path(resolvedId), {
       state: {
         fromPath: location.pathname,
         fromLabel: currentLabel,
@@ -149,69 +141,57 @@ export default function TournamentFlowNav({ getCreatedId }: Props) {
   };
 
   return (
-    <nav style={{ margin: "1.5rem 0" }}>
-      <ol
-        style={{
-          display: "flex",
-          gap: "1rem",
-          listStyle: "none",
-          padding: 0,
-          flexWrap: "wrap",
-        }}
-      >
+    <nav className={cn("my-6", className)} aria-label="Nawigacja kroków turnieju">
+      <div className="flex flex-wrap gap-2">
         {FLOW_STEPS.map((step, index) => {
           const isActive = index === currentIdx;
 
           const isTeamsStep = step.key === "teams";
           const showPending = isTeamsStep && canSeeQueue && pendingNameReqCount > 0;
 
-          const style: React.CSSProperties = {
-            padding: "0.35rem 0.6rem",
-            borderRadius: 6,
-            border: showPending ? "1px solid #b36b00" : "1px solid #333",
-            background: isActive
-              ? "#2a2a2a"
-              : showPending
-                ? "rgba(255, 165, 0, 0.08)"
-                : "transparent",
-            fontWeight: isActive ? 700 : 400,
-            color: "inherit",
-            opacity: saving ? 0.7 : 1,
-            cursor: "pointer",
-            transition: "opacity 0.2s, background 0.2s, border-color 0.2s",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 8,
-          };
-
-          const badgeStyle: React.CSSProperties = {
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            minWidth: 18,
-            height: 18,
-            padding: "0 6px",
-            borderRadius: 999,
-            border: "1px solid #b36b00",
-            fontSize: 12,
-            lineHeight: "18px",
-            fontWeight: 700,
-            background: "rgba(255, 165, 0, 0.12)",
-          };
-
           return (
-            <li key={step.key}>
-              <button type="button" onClick={handleClick(index)} style={style}>
-                {index + 1}. {step.label}
-                {showPending && <span style={badgeStyle}>{pendingNameReqCount}</span>}
-              </button>
-            </li>
+            <button
+              key={step.key}
+              type="button"
+              onClick={handleClick(index)}
+              disabled={saving}
+              className={cn(
+                "relative inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-sm font-semibold transition",
+                "border border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10]",
+                "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
+                "disabled:opacity-60 disabled:pointer-events-none",
+                showPending && "border-amber-500/30"
+              )}
+            >
+              {isActive && (
+                <motion.div
+                  layoutId="flow-step-active"
+                  className="absolute inset-0 rounded-full bg-white/10"
+                  transition={{ type: "spring", bounce: 0.18, duration: 0.55 }}
+                />
+              )}
+
+              <span className="relative z-10 opacity-80">{index + 1}.</span>
+              <span className="relative z-10">{step.label}</span>
+
+              {showPending && (
+                <span
+                  className={cn(
+                    "relative z-10 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full",
+                    "border border-amber-500/40 bg-amber-500/10 px-1.5 text-xs font-bold text-amber-200"
+                  )}
+                  title="Oczekujące prośby o zmianę nazwy"
+                >
+                  {pendingNameReqCount}
+                </span>
+              )}
+            </button>
           );
         })}
-      </ol>
+      </div>
 
       {lastError && (
-        <div style={{ marginTop: 8, color: "crimson", fontSize: "0.9em" }}>
+        <div className="mt-3 text-sm text-rose-300">
           Błąd zapisu: {lastError}
         </div>
       )}
