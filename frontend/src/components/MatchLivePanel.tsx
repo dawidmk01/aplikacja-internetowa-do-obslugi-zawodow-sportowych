@@ -74,6 +74,56 @@ type PendingConfirm = {
   delete_ids?: number[];
 };
 
+const btnStyle = {
+  padding: "0.45rem 0.8rem",
+  borderRadius: 8,
+  border: "1px solid #444",
+  background: "rgba(255,255,255,0.04)",
+  color: "#fff",
+  fontWeight: 650,
+} as const;
+
+type LiveCommentaryEntry = {
+  id: string;
+  match_id: number;
+  minute: number;
+  text: string;
+  created_at: string;
+};
+
+function commentaryKey(matchId: number) {
+  return `matchCommentary:${matchId}`;
+}
+
+function readCommentary(matchId: number): LiveCommentaryEntry[] {
+  try {
+    const raw = localStorage.getItem(commentaryKey(matchId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((x) => x && typeof x === 'object')
+      .map((x) => ({
+        id: String((x as any).id || ''),
+        match_id: Number((x as any).match_id || matchId),
+        minute: Math.max(0, Math.floor(Number((x as any).minute || 0))),
+        text: String((x as any).text || ''),
+        created_at: String((x as any).created_at || new Date().toISOString()),
+      }))
+      .filter((x) => x.id && x.text.trim().length > 0 && x.match_id === matchId);
+  } catch {
+    return [];
+  }
+}
+
+function writeCommentary(matchId: number, items: LiveCommentaryEntry[]) {
+  try {
+    localStorage.setItem(commentaryKey(matchId), JSON.stringify(items));
+  } catch {
+    // ignore
+  }
+}
+
 function formatClock(totalSeconds: number): string {
   const s = Math.max(0, Math.floor(totalSeconds));
   const mm = Math.floor(s / 60);
@@ -402,7 +452,7 @@ function nextPeriodForSecondHalf(discipline: string, current: ClockPeriod): Cloc
 
 function tennisPointLabel(aPts: number, bPts: number): string {
   if (aPts >= 4 && aPts - bPts >= 2) return "G";
-  if (bPts >= 4 && bPts - aPts >= 2) return "—";
+  if (bPts >= 4 && bPts - aPts >= 2) return "-";
 
   const map = ["0", "15", "30", "40"];
   if (aPts >= 3 && bPts >= 3) {
@@ -415,7 +465,7 @@ function tennisPointLabel(aPts: number, bPts: number): string {
 
 function tennisPointLabelOther(aPts: number, bPts: number): string {
   if (bPts >= 4 && bPts - aPts >= 2) return "G";
-  if (aPts >= 4 && aPts - bPts >= 2) return "—";
+  if (aPts >= 4 && aPts - bPts >= 2) return "-";
 
   const map = ["0", "15", "30", "40"];
   if (aPts >= 3 && bPts >= 3) {
@@ -462,6 +512,7 @@ export default function MatchLivePanel(props: Props) {
   const [clockTick, setClockTick] = useState(0);
   const [clockLoading, setClockLoading] = useState(false);
   const [clockError, setClockError] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
 
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [pendingConfirmBusy, setPendingConfirmBusy] = useState(false);
@@ -509,6 +560,45 @@ export default function MatchLivePanel(props: Props) {
   const [incidents, setIncidents] = useState<IncidentDTO[]>([]);
   const [incLoading, setIncLoading] = useState(false);
   const [incError, setIncError] = useState<string | null>(null);
+
+  const [commentary, setCommentary] = useState<LiveCommentaryEntry[]>(() => readCommentary(matchId));
+  const [commentDraft, setCommentDraft] = useState("");
+
+  useEffect(() => {
+    setCommentary(readCommentary(matchId));
+    setCommentDraft("");
+  }, [matchId]);
+
+  useEffect(() => {
+    writeCommentary(matchId, commentary);
+  }, [matchId, commentary]);
+
+  const commentaryMinute = useMemo(() => Math.max(0, Math.floor(Number(matchDisplaySeconds || 0) / 60)), [matchDisplaySeconds]);
+
+  const addCommentary = () => {
+    const text = (commentDraft || "").trim();
+    if (!text) return;
+    const entry: LiveCommentaryEntry = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      match_id: matchId,
+      minute: commentaryMinute,
+      text,
+      created_at: new Date().toISOString(),
+    };
+    setCommentary((prev) => [entry, ...prev]);
+    setCommentDraft("");
+  };
+
+  const deleteCommentary = (id: string) => {
+    setCommentary((prev) => prev.filter((x) => x.id !== id));
+  };
+
+  const handleCommentKeyDown = (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      addCommentary();
+    }
+  };
 
   const [editIncidentId, setEditIncidentId] = useState<number | null>(null);
   const [editIncidentDraft, setEditIncidentDraft] = useState<{
@@ -753,7 +843,7 @@ export default function MatchLivePanel(props: Props) {
       const currentPeriod =
         clock.clock_period && clock.clock_period !== "NONE"
           ? clock.clock_period
-          : periodOptions(liveMatch.discipline)[0]?.value || "NONE";
+          : periodOptions(discipline)[0]?.value || "NONE";
 
       await postClock("period/", { period: currentPeriod });
       await loadClock();
@@ -1280,7 +1370,7 @@ export default function MatchLivePanel(props: Props) {
 
               <button
                 type="button"
-                disabled={clockLoading || !canRewind}
+                disabled={clockLoading || resetting || !canRewind}
                 onClick={handleReset}
                 title={canRewind ? "Resetuj zegar do początku okresu." : "Brak uprawnień lub zegar niedostępny."}
                 style={{
@@ -1425,7 +1515,9 @@ export default function MatchLivePanel(props: Props) {
 
             {incError && <div style={{ marginTop: 8, color: "crimson" }}>{incError}</div>}
 
-            {/* form */}
+            <div className="mt-3 grid gap-4 lg:grid-cols-2">
+              <div>
+                {/* form */}
             <div
               style={{
                 marginTop: 10,
@@ -1840,8 +1932,117 @@ export default function MatchLivePanel(props: Props) {
                 </div>
               )}
             </div>
+              </div>
+
+              <div
+                style={{
+                  border: "1px dashed #444",
+                  borderRadius: 10,
+                  padding: "0.75rem",
+                  opacity: canEdit ? 1 : 0.75,
+                  background: "rgba(0,0,0,0.08)",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ fontWeight: 700 }}>Komentarz LIVE</div>
+                  <div style={{ opacity: 0.65, fontSize: "0.85em" }}>Minuta: <strong>{commentaryMinute}' </strong> (Ctrl+Enter dodaje)</div>
+                </div>
+
+                <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                  <textarea
+                    value={commentDraft}
+                    disabled={!canEdit}
+                    onChange={(e) => setCommentDraft(e.target.value)}
+                    onKeyDown={handleCommentKeyDown}
+                    placeholder="Opis akcji (np. Lewandowski biegnie do bramki, strzał nieudany)"
+                    rows={4}
+                    style={{
+                      width: "100%",
+                      resize: "vertical",
+                      padding: "0.6rem 0.65rem",
+                      borderRadius: 10,
+                      border: "1px solid #444",
+                      background: "rgba(0,0,0,0.25)",
+                      color: "#fff",
+                      lineHeight: 1.35,
+                    }}
+                  />
+
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <button
+                      type="button"
+                      disabled={!canEdit || !commentDraft.trim()}
+                      onClick={addCommentary}
+                      style={{
+                        padding: "0.38rem 0.75rem",
+                        borderRadius: 6,
+                        border: "1px solid #444",
+                        background: "rgba(46,204,113,0.15)",
+                        color: "#fff",
+                      }}
+                    >
+                      Dodaj komentarz
+                    </button>
+                    <div style={{ opacity: 0.7, fontSize: "0.85em" }}>Komentarze są lokalne (backend zostanie dodany później).</div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 12 }}>
+                  {commentary.length === 0 && <div style={{ opacity: 0.7 }}>Brak komentarzy.</div>}
+                  {commentary.length > 0 && (
+                    <div style={{ display: "grid", gap: 6 }}>
+                      {commentary.map((c) => (
+                        <div
+                          key={c.id}
+                          style={{
+                            border: "1px solid #333",
+                            borderRadius: 8,
+                            padding: "0.55rem 0.65rem",
+                            background: "rgba(0,0,0,0.18)",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            gap: 10,
+                            alignItems: "flex-start",
+                          }}
+                        >
+                          <div style={{ display: "grid", gap: 4 }}>
+                            <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+                              <strong style={{ opacity: 0.95 }}>{c.minute}'</strong>
+                              <span style={{ opacity: 0.6, fontSize: "0.82em" }}>{new Date(c.created_at).toLocaleString()}</span>
+                            </div>
+                            <div style={{ whiteSpace: "pre-wrap" }}>{c.text}</div>
+                          </div>
+
+                          {canEdit && (
+                            <button
+                              type="button"
+                              onClick={() => deleteCommentary(c.id)}
+                              style={{
+                                padding: "0.25rem 0.55rem",
+                                borderRadius: 6,
+                                border: "1px solid #444",
+                                background: "rgba(231,76,60,0.10)",
+                                color: "#fff",
+                              }}
+                            >
+                              Usuń
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
     </div>
   );
 }
+
+// Co zmieniono:
+// - Dodano prawą kolumnę z komentarzem LIVE (minuta dopisywana automatycznie, wpisy lokalnie w localStorage).
+// - Ujednolicono końcówki i poprawiono stabilność (brakujące stany resetting, btnStyle, naprawa periodOptions).
+// - Ujednolicono zapis myslnika w etykietach punktów tenisa (zamiast długiego myslnika użyto '-').
+// - Zachowano dotychczasową logikę incydentów i zegara, zmieniając jedynie układ sekcji.

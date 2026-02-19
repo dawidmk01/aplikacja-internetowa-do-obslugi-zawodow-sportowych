@@ -1,11 +1,14 @@
-// frontend/src/components/MatchRow.tsx
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
 import { apiFetch } from "../api";
+import { cn } from "../lib/cn";
+import type { MatchDTO, MatchStatus, TennisSetDTO, TournamentDTO } from "../types/results";
+
+import { Card } from "../ui/Card";
+
 import ConfirmIncidentDeleteModal from "./ConfirmIncidentDeleteModal";
 import ConfirmScoreSyncModal from "./ConfirmScoreSyncModal";
 import MatchLivePanel from "./MatchLivePanel";
-import type { MatchDTO, MatchStatus, TennisSetDTO, TournamentDTO } from "../types/results";
 
 type ToastKind = "saved" | "success" | "error" | "info";
 
@@ -17,7 +20,7 @@ type Props = {
   // Rodzic trzyma fetch + układ stron. Row może poprosić o odświeżenie listy.
   onReload: () => Promise<void> | void;
 
-  // Opcjonalnie: toast w rodzicu (jeśli podasz) – w przeciwnym razie row użyje alert().
+  // Opcjonalnie: toast w rodzicu (jeśli podasz) - w przeciwnym razie row użyje alert().
   onToast?: (text: string, kind?: ToastKind) => void;
 };
 
@@ -83,7 +86,7 @@ function inputValueToScore(v: string): number {
 
 function teamLabel(s: string | null | undefined): string {
   const v = (s ?? "").trim();
-  return v ? v : "—";
+  return v ? v : "-";
 }
 
 function comparableResult(m: MatchDraft) {
@@ -124,6 +127,28 @@ function uiStatusLabelFromBackend(status: MatchStatus | string) {
   return "Zaplanowany";
 }
 
+function toneForStatus(status: MatchStatus) {
+  if (status === "IN_PROGRESS" || status === "RUNNING") {
+    return {
+      card: "border-emerald-400/20 bg-emerald-500/[0.06]",
+      badge: "border-emerald-400/25 bg-emerald-500/[0.10] text-emerald-100",
+      dot: "bg-emerald-400/80",
+    } as const;
+  }
+  if (status === "FINISHED") {
+    return {
+      card: "border-amber-400/20 bg-amber-500/[0.06]",
+      badge: "border-amber-400/25 bg-amber-500/[0.10] text-amber-100",
+      dot: "bg-amber-400/80",
+    } as const;
+  }
+  return {
+    card: "border-sky-400/20 bg-sky-500/[0.06]",
+    badge: "border-sky-400/25 bg-sky-500/[0.10] text-sky-100",
+    dot: "bg-sky-400/80",
+  } as const;
+}
+
 async function parseApiError(res: Response): Promise<{ message: string; code?: string; data?: any }> {
   const fallback = res.statusText || "Błąd.";
   try {
@@ -155,23 +180,13 @@ function tennisSetsWon(sets: TennisSetDTO[]): { home: number; away: number } {
   return { home, away };
 }
 
-function bgForStatus(status: MatchStatus): { background: string; border: string } {
-  if (status === "IN_PROGRESS" || status === "RUNNING") {
-    return { background: "rgba(255, 193, 7, 0.14)", border: "1px solid rgba(255, 193, 7, 0.40)" };
-  }
-  if (status === "FINISHED") {
-    return { background: "rgba(52, 152, 219, 0.14)", border: "1px solid rgba(52, 152, 219, 0.40)" };
-  }
-  return { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)" };
-}
-
 export default function MatchRow(props: Props) {
   const { tournamentId, tournament, match, onReload, onToast } = props;
 
   const toast = useCallback(
     (text: string, kind: ToastKind = "info") => {
       if (onToast) return onToast(text, kind);
-      // fallback (żeby nie zgubić informacji w UI, jeśli rodzic nie podaje toasta)
+      // Fallback (żeby nie zgubić informacji w UI, jeśli rodzic nie podaje toasta).
       if (kind === "error") window.alert(text);
     },
     [onToast]
@@ -190,10 +205,10 @@ export default function MatchRow(props: Props) {
   const [edited, setEdited] = useState(false);
   const [editFinished, setEditFinished] = useState(false);
 
-  // potwierdzenie synchronizacji: "szybki wynik" -> LIVE (usunięcie GOAL)
+  // Potwierdzenie synchronizacji: "szybki wynik" - LIVE (usunięcie GOAL).
   const [confirmScoreSync, setConfirmScoreSync] = useState<ConfirmScoreSyncState | null>(null);
 
-  // potwierdzenie usunięcia incydentu w LIVE
+  // Potwierdzenie usunięcia incydentu w LIVE.
   const [confirmIncidentDelete, setConfirmIncidentDelete] = useState<ConfirmIncidentDeleteState | null>(null);
   const incidentDeleteProceedRef = useRef<(() => void) | null>(null);
 
@@ -222,7 +237,6 @@ export default function MatchRow(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scoreSyncPrefKey, skipScoreSyncConfirm]);
 
-
   useEffect(() => {
     try {
       window.localStorage.setItem(openLiveKey, openLive ? "1" : "0");
@@ -230,8 +244,6 @@ export default function MatchRow(props: Props) {
       // ignore
     }
   }, [openLiveKey, openLive]);
-
-  // (celowo brak zapisu do localStorage)
 
   // Synchronizuj draft z zewnętrznym stanem meczu, o ile user nie ma lokalnych zmian.
   const originalDraft = useMemo(() => draftFromMatch(match), [match]);
@@ -241,21 +253,29 @@ export default function MatchRow(props: Props) {
     if (!isDirty) {
       setDraft(originalDraft);
       setEdited(false);
-      // nie zamykamy LIVE automatycznie
+      // Nie zamykamy LIVE automatycznie.
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [match.id, match.status, match.home_score, match.away_score, JSON.stringify(match.tennis_sets), match.went_to_extra_time, match.decided_by_penalties]);
+  }, [
+    match.id,
+    match.status,
+    match.home_score,
+    match.away_score,
+    JSON.stringify(match.tennis_sets),
+    match.went_to_extra_time,
+    match.decided_by_penalties,
+  ]);
 
   const lockByFinished = match.status === "FINISHED" && !editFinished;
   const canEditResult = !busy && !lockByFinished;
-
-  const statusStyle = useMemo(() => bgForStatus(match.status), [match.status]);
 
   const homeName = teamLabel(match.home_team_name);
   const awayName = teamLabel(match.away_team_name);
 
   const tn = isTennis(tournament);
   const hb = isHandball(tournament);
+
+  const tone = useMemo(() => toneForStatus(match.status), [match.status]);
 
   const updateMatchScore = useCallback(
     async (opts?: { force?: boolean }) => {
@@ -300,7 +320,9 @@ export default function MatchRow(props: Props) {
         const code = err.code;
         if (res.status === 409 && code === "SCORE_SYNC_CONFIRM_REQUIRED") {
           const delCount = Number(err.data?.delete_count || 0) || 0;
-          const delIds = Array.isArray(err.data?.delete_ids) ? err.data.delete_ids.map((x: any) => Number(x)).filter((n: any) => Number.isFinite(n)) : [];
+          const delIds = Array.isArray(err.data?.delete_ids)
+            ? err.data.delete_ids.map((x: any) => Number(x)).filter((n: any) => Number.isFinite(n))
+            : [];
           setConfirmScoreSync({
             op: "SAVE",
             message: err.message,
@@ -389,11 +411,11 @@ export default function MatchRow(props: Props) {
       }
 
       if (match.status === "IN_PROGRESS" || match.status === "RUNNING") {
-        // przed finishem zawsze zapisujemy wynik
+        // Przed finishem zawsze zapisujemy wynik.
         try {
           await updateMatchScore();
         } catch (e: any) {
-          // 409 → modal
+          // 409 -> modal
           throw e;
         }
         await finishMatch();
@@ -429,7 +451,7 @@ export default function MatchRow(props: Props) {
     const a = Number(draft.away_score ?? 0) || 0;
     if (h !== 0 || a !== 0) return false;
 
-    // jeżeli user ma ustawione dogrywka/kary/tenis, to nie pozwalamy „cofnąć” statusu
+    // Jeżeli user ma ustawione dogrywka/kary/tenis, to nie pozwalamy "cofnąć" statusu.
     if (draft.went_to_extra_time) return false;
     if (draft.decided_by_penalties) return false;
     if ((Number(draft.home_extra_time_score ?? 0) || 0) !== 0) return false;
@@ -448,18 +470,24 @@ export default function MatchRow(props: Props) {
     }
 
     if (!canAttemptSetScheduled) {
-      toast("Możesz ustawić mecz jako zaplanowany tylko przy wyniku 0:0 (bez dogrywki/karnych/setów) i braku incydentów.", "error");
+      toast(
+        "Możesz ustawić mecz jako zaplanowany tylko przy wyniku 0:0 (bez dogrywki/karnych/setów) i braku incydentów.",
+        "error"
+      );
       return;
     }
 
     setBusy(true);
     try {
-      // warunek „brak incydentów” weryfikujemy przed akcją (żeby użytkownik dostał natychmiastowy komunikat)
+      // Warunek "brak incydentów" weryfikujemy przed akcją.
       const incRes = await apiFetch(`/api/matches/${match.id}/incidents/`, { method: "GET" });
       if (incRes.ok) {
         const list = await incRes.json().catch(() => []);
         if (Array.isArray(list) && list.length > 0) {
-          toast("Nie można ustawić jako zaplanowany: mecz ma już zarejestrowane incydenty. Usuń incydenty i spróbuj ponownie.", "error");
+          toast(
+            "Nie można ustawić jako zaplanowany: mecz ma już zarejestrowane incydenty. Usuń incydenty i spróbuj ponownie.",
+            "error"
+          );
           return;
         }
       }
@@ -475,7 +503,7 @@ export default function MatchRow(props: Props) {
     }
   }, [canAttemptSetScheduled, doReload, match.id, match.status, setScheduled, toast]);
 
-  // ----- LIVE: delete confirm integration
+  // LIVE: delete confirm integration
   const onRequestConfirmIncidentDelete = useCallback(
     (req: any, proceed: () => void) => {
       incidentDeleteProceedRef.current = proceed;
@@ -491,7 +519,7 @@ export default function MatchRow(props: Props) {
     [match.id]
   );
 
-  // ----- SCORE SYNC modal actions
+  // SCORE SYNC modal actions
   const forceSync = useCallback(
     async (op: ConfirmScoreSyncOp, deleteCount: number, deleteIds: number[]) => {
       setBusy(true);
@@ -515,156 +543,110 @@ export default function MatchRow(props: Props) {
 
   const goalScope = draft.went_to_extra_time ? "EXTRA_TIME" : "REGULAR";
 
+  const scoreInputClass =
+    "h-9 w-[72px] rounded-xl border border-white/10 bg-white/[0.04] px-2 text-center text-base font-semibold text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-white/10 disabled:opacity-60";
+
+  const miniScoreInputClass =
+    "h-8 w-[60px] rounded-lg border border-white/10 bg-white/[0.04] px-2 text-center text-sm font-semibold text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-white/10 disabled:opacity-60";
+
+  const actionBtnBase =
+    "h-9 rounded-xl border border-white/12 bg-white/[0.05] px-3 text-sm text-white hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60";
+
+  const liveBtnClass =
+    "h-9 rounded-xl border border-emerald-400/25 bg-emerald-500/[0.12] px-3 text-sm text-white hover:bg-emerald-500/[0.16] disabled:cursor-not-allowed disabled:opacity-60";
+
+  const dangerBtnClass =
+    "h-9 rounded-xl border border-rose-400/25 bg-rose-500/[0.10] px-3 text-sm text-white hover:bg-rose-500/[0.14] disabled:cursor-not-allowed disabled:opacity-60";
+
+  const saveBtnClass = cn(
+    actionBtnBase,
+    isDirty ? "border-sky-400/25 bg-sky-500/[0.12] hover:bg-sky-500/[0.16]" : "",
+    edited && !isDirty ? "border-sky-400/20 bg-sky-500/[0.10]" : ""
+  );
+
   return (
-    <div
-      style={{
-        marginBottom: "1.15rem",
-        borderRadius: 12,
-        padding: "0.95rem 1rem",
-        ...statusStyle,
-      }}
-    >
+    <Card className={cn("mb-4 border p-3 sm:p-4", tone.card)}>
       {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "1rem" }}>
-        <div style={{ fontWeight: 800, color: "#eee" }}>
-          {homeName} <span style={{ opacity: 0.7, fontWeight: 600 }}>vs</span> {awayName}
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 truncate text-sm font-semibold text-white sm:text-base">
+          {homeName} <span className="font-semibold text-white/70">vs</span> {awayName}
         </div>
-        <div style={{ opacity: 0.8, fontSize: "0.9em" }}>{uiStatusLabelFromBackend(match.status)}</div>
+
+        <div className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs", tone.badge)}>
+          <span className={cn("h-2 w-2 rounded-full", tone.dot)} />
+          {uiStatusLabelFromBackend(match.status)}
+        </div>
       </div>
 
-      {/* Quick result row */}
-      <div style={{ display: "flex", gap: "0.8rem", alignItems: "center", flexWrap: "wrap", marginTop: "0.65rem" }}>
-        <input
-          type="number"
-          min={0}
-          value={scoreToInputValue(draft.home_score ?? 0)}
-          disabled={!canEditResult || tn}
-          onChange={(e) => setDraft((d) => ({ ...d, home_score: inputValueToScore(e.target.value) }))}
-          style={{ width: 72, textAlign: "center", padding: "0.35rem" }}
-        />
-        <span style={{ fontWeight: 900 }}>:</span>
-        <input
-          type="number"
-          min={0}
-          value={scoreToInputValue(draft.away_score ?? 0)}
-          disabled={!canEditResult || tn}
-          onChange={(e) => setDraft((d) => ({ ...d, away_score: inputValueToScore(e.target.value) }))}
-          style={{ width: 72, textAlign: "center", padding: "0.35rem" }}
-        />
+      {/* Quick result + actions */}
+      <div className="mt-3 flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={0}
+            value={scoreToInputValue(draft.home_score ?? 0)}
+            disabled={!canEditResult || tn}
+            onChange={(e) => setDraft((d) => ({ ...d, home_score: inputValueToScore(e.target.value) }))}
+            className={scoreInputClass}
+          />
+          <span className="px-0.5 text-lg font-extrabold text-white/80">:</span>
+          <input
+            type="number"
+            min={0}
+            value={scoreToInputValue(draft.away_score ?? 0)}
+            disabled={!canEditResult || tn}
+            onChange={(e) => setDraft((d) => ({ ...d, away_score: inputValueToScore(e.target.value) }))}
+            className={scoreInputClass}
+          />
+        </div>
 
-        <button
-          type="button"
-          onClick={() => setOpenLive((v) => !v)}
-          style={{
-            padding: "0.45rem 0.75rem",
-            borderRadius: 8,
-            border: "1px solid rgba(46, 204, 113, 0.45)",
-            background: "rgba(46, 204, 113, 0.14)",
-            color: "#fff",
-            cursor: "pointer",
-          }}
-        >
-          {openLive ? "Ukryj LIVE (zegar + incydenty)" : "Pokaż LIVE (zegar + incydenty)"}
-        </button>
-
-        <button
-          type="button"
-          onClick={onDynamicStatusButton}
-          disabled={busy}
-          style={{
-            padding: "0.45rem 0.75rem",
-            borderRadius: 8,
-            border: "1px solid rgba(255,255,255,0.18)",
-            background: "rgba(255,255,255,0.06)",
-            color: "#fff",
-            cursor: "pointer",
-          }}
-        >
-          {dynamicLabel}
-        </button>
-
-        {match.status !== "SCHEDULED" ? (
-
-        <button
-          type="button"
-          onClick={onSetScheduledClick}
-          disabled={busy || !canAttemptSetScheduled}
-          title={
-            canAttemptSetScheduled
-              ? "Ustawia status meczu na „Zaplanowany” oraz resetuje zegar. Działa tylko, gdy wynik jest 0:0 oraz nie ma żadnych incydentów."
-              : "Dostępne tylko przy wyniku 0:0 (bez dogrywki/karnych/setów). Dodatkowo mecz musi nie mieć żadnych incydentów."
-          }
-          style={{
-            padding: "0.45rem 0.75rem",
-            borderRadius: 8,
-            border: "1px solid rgba(255,255,255,0.18)",
-            background: "rgba(255,255,255,0.06)",
-            color: "#fff",
-            cursor: "pointer",
-          }}
-        >
-          Ustaw jako zaplanowany
-        </button>
-        ) : null}
-
-
-        <button
-          type="button"
-          onClick={onSaveClick}
-          disabled={busy || !isDirty || lockByFinished}
-          style={{
-            padding: "0.45rem 0.75rem",
-            borderRadius: 8,
-            border: "1px solid rgba(255,255,255,0.18)",
-            background: edited ? "rgba(52, 152, 219, 0.18)" : "rgba(255,255,255,0.06)",
-            color: "#fff",
-            cursor: "pointer",
-          }}
-        >
-          {match.status === "FINISHED" ? (editFinished ? "Zapisz zmiany" : "Zapisz wynik") : "Zapisz wynik"}
-        </button>
-
-        {match.status === "FINISHED" && !editFinished ? (
-          <button
-            type="button"
-            onClick={() => setEditFinished(true)}
-            disabled={busy}
-            style={{
-              padding: "0.45rem 0.75rem",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.18)",
-              background: "rgba(255,255,255,0.06)",
-              color: "#fff",
-              cursor: "pointer",
-            }}
-          >
-            Wprowadź zmiany
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={() => setOpenLive((v) => !v)} className={liveBtnClass}>
+            {openLive ? "Ukryj LIVE (zegar + incydenty)" : "Pokaż LIVE (zegar + incydenty)"}
           </button>
-        ) : null}
 
-        {match.status === "FINISHED" && editFinished ? (
-          <button
-            type="button"
-            onClick={() => setEditFinished(false)}
-            disabled={busy}
-            style={{
-              padding: "0.45rem 0.75rem",
-              borderRadius: 8,
-              border: "1px solid rgba(231,76,60,0.35)",
-              background: "rgba(231,76,60,0.12)",
-              color: "#fff",
-              cursor: "pointer",
-            }}
-          >
-            Anuluj edycję
+          <button type="button" onClick={onDynamicStatusButton} disabled={busy} className={actionBtnBase}>
+            {dynamicLabel}
           </button>
-        ) : null}
+
+          {match.status !== "SCHEDULED" ? (
+            <button
+              type="button"
+              onClick={onSetScheduledClick}
+              disabled={busy || !canAttemptSetScheduled}
+              title={
+                canAttemptSetScheduled
+                  ? 'Ustawia status meczu na "Zaplanowany" oraz resetuje zegar. Działa tylko, gdy wynik jest 0:0 oraz nie ma żadnych incydentów.'
+                  : "Dostępne tylko przy wyniku 0:0 (bez dogrywki/karnych/setów). Dodatkowo mecz musi nie mieć żadnych incydentów."
+              }
+              className={actionBtnBase}
+            >
+              Ustaw jako zaplanowany
+            </button>
+          ) : null}
+
+          <button type="button" onClick={onSaveClick} disabled={busy || !isDirty || lockByFinished} className={saveBtnClass}>
+            {match.status === "FINISHED" ? (editFinished ? "Zapisz zmiany" : "Zapisz wynik") : "Zapisz wynik"}
+          </button>
+
+          {match.status === "FINISHED" && !editFinished ? (
+            <button type="button" onClick={() => setEditFinished(true)} disabled={busy} className={actionBtnBase}>
+              Wprowadź zmiany
+            </button>
+          ) : null}
+
+          {match.status === "FINISHED" && editFinished ? (
+            <button type="button" onClick={() => setEditFinished(false)} disabled={busy} className={dangerBtnClass}>
+              Anuluj edycję
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {/* Extra time / penalties (poza tenisem) */}
-      {!tn && (
-        <div style={{ marginTop: "0.75rem", display: "flex", gap: "1rem", alignItems: "center", flexWrap: "wrap" }}>
-          <label style={{ display: "flex", gap: "0.5rem", alignItems: "center", opacity: 0.9 }}>
+      {!tn ? (
+        <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-slate-200">
+          <label className="inline-flex items-center gap-2">
             <input
               type="checkbox"
               checked={!!draft.went_to_extra_time}
@@ -677,34 +659,35 @@ export default function MatchRow(props: Props) {
                   away_extra_time_score: e.target.checked ? (d.away_extra_time_score ?? 0) : null,
                 }))
               }
+              className="h-4 w-4 rounded border-white/20 bg-white/[0.06]"
             />
             Dogrywka
           </label>
 
-          {draft.went_to_extra_time && (
-            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-              <span style={{ opacity: 0.75, fontSize: "0.9em" }}>Wynik dogrywki:</span>
+          {draft.went_to_extra_time ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-slate-400">Wynik dogrywki:</span>
               <input
                 type="number"
                 min={0}
                 value={scoreToInputValue(draft.home_extra_time_score ?? 0)}
                 disabled={!canEditResult}
                 onChange={(e) => setDraft((d) => ({ ...d, home_extra_time_score: inputValueToScore(e.target.value) }))}
-                style={{ width: 70, textAlign: "center", padding: "0.35rem" }}
+                className={miniScoreInputClass}
               />
-              <span style={{ fontWeight: "bold" }}>:</span>
+              <span className="px-0.5 text-sm font-extrabold text-white/70">:</span>
               <input
                 type="number"
                 min={0}
                 value={scoreToInputValue(draft.away_extra_time_score ?? 0)}
                 disabled={!canEditResult}
                 onChange={(e) => setDraft((d) => ({ ...d, away_extra_time_score: inputValueToScore(e.target.value) }))}
-                style={{ width: 70, textAlign: "center", padding: "0.35rem" }}
+                className={miniScoreInputClass}
               />
             </div>
-          )}
+          ) : null}
 
-          <label style={{ display: "flex", gap: "0.5rem", alignItems: "center", opacity: 0.9 }}>
+          <label className={cn("inline-flex items-center gap-2", hb ? "opacity-60" : "")}>
             <input
               type="checkbox"
               checked={!!draft.decided_by_penalties}
@@ -717,46 +700,47 @@ export default function MatchRow(props: Props) {
                   away_penalty_score: e.target.checked ? (d.away_penalty_score ?? 0) : null,
                 }))
               }
+              className="h-4 w-4 rounded border-white/20 bg-white/[0.06]"
             />
             Rozstrzygnięcie w rzutach karnych
           </label>
 
-          {draft.decided_by_penalties && (
-            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-              <span style={{ opacity: 0.75, fontSize: "0.9em" }}>Karne:</span>
+          {draft.decided_by_penalties ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-slate-400">Karne:</span>
               <input
                 type="number"
                 min={0}
                 value={scoreToInputValue(draft.home_penalty_score ?? 0)}
                 disabled={!canEditResult}
                 onChange={(e) => setDraft((d) => ({ ...d, home_penalty_score: inputValueToScore(e.target.value) }))}
-                style={{ width: 70, textAlign: "center", padding: "0.35rem" }}
+                className={miniScoreInputClass}
               />
-              <span style={{ fontWeight: "bold" }}>:</span>
+              <span className="px-0.5 text-sm font-extrabold text-white/70">:</span>
               <input
                 type="number"
                 min={0}
                 value={scoreToInputValue(draft.away_penalty_score ?? 0)}
                 disabled={!canEditResult}
                 onChange={(e) => setDraft((d) => ({ ...d, away_penalty_score: inputValueToScore(e.target.value) }))}
-                style={{ width: 70, textAlign: "center", padding: "0.35rem" }}
+                className={miniScoreInputClass}
               />
             </div>
-          )}
+          ) : null}
         </div>
-      )}
+      ) : null}
 
       {/* Tenis: prosta edycja setów w gemach */}
-      {tn && (
-        <div style={{ marginTop: "0.9rem" }}>
-          <div style={{ opacity: 0.85, fontSize: "0.9em" }}>
+      {tn ? (
+        <div className="mt-3">
+          <div className="text-xs text-slate-400">
             Tenis: wpisz sety w gemach (np. 6:4, 7:6). Tie-break (liczba punktów) podaj tylko dla setu 7:6.
           </div>
 
-          <div style={{ marginTop: "0.65rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+          <div className="mt-2 flex flex-col gap-2">
             {(Array.isArray(draft.tennis_sets) ? draft.tennis_sets : []).map((s, idx) => (
-              <div key={idx} style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
-                <span style={{ width: 46, opacity: 0.75 }}>Set {idx + 1}</span>
+              <div key={idx} className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] p-2">
+                <span className="w-[56px] text-xs font-semibold text-slate-300">Set {idx + 1}</span>
 
                 <input
                   type="number"
@@ -772,9 +756,9 @@ export default function MatchRow(props: Props) {
                       return { ...d, tennis_sets: sets };
                     });
                   }}
-                  style={{ width: 70, textAlign: "center", padding: "0.35rem" }}
+                  className={miniScoreInputClass}
                 />
-                <span style={{ fontWeight: 900 }}>:</span>
+                <span className="px-0.5 text-sm font-extrabold text-white/70">:</span>
                 <input
                   type="number"
                   min={0}
@@ -789,10 +773,10 @@ export default function MatchRow(props: Props) {
                       return { ...d, tennis_sets: sets };
                     });
                   }}
-                  style={{ width: 70, textAlign: "center", padding: "0.35rem" }}
+                  className={miniScoreInputClass}
                 />
 
-                <span style={{ opacity: 0.6, marginLeft: 8 }}>TB:</span>
+                <span className="ml-1 text-xs text-slate-400">TB</span>
                 <input
                   type="number"
                   min={0}
@@ -808,9 +792,9 @@ export default function MatchRow(props: Props) {
                       return { ...d, tennis_sets: sets };
                     });
                   }}
-                  style={{ width: 60, textAlign: "center", padding: "0.35rem" }}
+                  className={cn(miniScoreInputClass, "w-[54px]")}
                 />
-                <span style={{ fontWeight: 900 }}>:</span>
+                <span className="px-0.5 text-sm font-extrabold text-white/70">:</span>
                 <input
                   type="number"
                   min={0}
@@ -826,7 +810,7 @@ export default function MatchRow(props: Props) {
                       return { ...d, tennis_sets: sets };
                     });
                   }}
-                  style={{ width: 60, textAlign: "center", padding: "0.35rem" }}
+                  className={cn(miniScoreInputClass, "w-[54px]")}
                 />
 
                 <button
@@ -839,15 +823,7 @@ export default function MatchRow(props: Props) {
                       return { ...d, tennis_sets: sets };
                     });
                   }}
-                  style={{
-                    marginLeft: 8,
-                    padding: "0.25rem 0.55rem",
-                    borderRadius: 8,
-                    border: "1px solid rgba(231,76,60,0.35)",
-                    background: "rgba(231,76,60,0.12)",
-                    color: "#fff",
-                    cursor: "pointer",
-                  }}
+                  className={cn(dangerBtnClass, "h-8 px-2 text-xs")}
                 >
                   Usuń set
                 </button>
@@ -865,25 +841,18 @@ export default function MatchRow(props: Props) {
                     return { ...d, tennis_sets: sets };
                   });
                 }}
-                style={{
-                  padding: "0.35rem 0.65rem",
-                  borderRadius: 8,
-                  border: "1px solid rgba(255,255,255,0.18)",
-                  background: "rgba(255,255,255,0.06)",
-                  color: "#fff",
-                  cursor: "pointer",
-                }}
+                className={cn(actionBtnBase, "h-8 px-2 text-xs")}
               >
                 Dodaj set
               </button>
             </div>
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* LIVE */}
-      {openLive && (
-        <div style={{ marginTop: "0.85rem", paddingTop: "0.85rem", borderTop: "1px solid rgba(255,255,255,0.10)" }}>
+      {openLive ? (
+        <div className="mt-3 border-t border-white/10 pt-3">
           <MatchLivePanel
             tournamentId={tournamentId}
             discipline={tournament.discipline}
@@ -905,7 +874,7 @@ export default function MatchRow(props: Props) {
               awayTeamName: awayName,
             }}
             onEnterExtraTime={() => {
-              // natychmiast pokaż dogrywkę w karcie (bez odświeżania strony)
+              // Natychmiast pokaż dogrywkę w karcie (bez odświeżania strony).
               setDraft((d) => ({
                 ...d,
                 went_to_extra_time: true,
@@ -917,7 +886,7 @@ export default function MatchRow(props: Props) {
             onAfterRecompute={doReload}
           />
         </div>
-      )}
+      ) : null}
 
       {/* SCORE SYNC confirm */}
       <ConfirmScoreSyncModal
@@ -934,7 +903,6 @@ export default function MatchRow(props: Props) {
         onConfirm={() => {
           const st = confirmScoreSync;
           if (!st) return;
-          // jeśli konflikt pojawił się przy finiszu, włącz FINISH
           const op: ConfirmScoreSyncOp = st.op;
           forceSync(op, st.deleteCount, st.deleteIds);
         }}
@@ -956,6 +924,14 @@ export default function MatchRow(props: Props) {
           setConfirmIncidentDelete(null);
         }}
       />
-    </div>
+    </Card>
   );
 }
+
+/*
+Co zmieniono:
+1) Zastąpiono inline styles kompaktowymi klasami Tailwind, bez zmiany logiki.
+2) Zmniejszono wysokości i padding (wynik, przyciski, sekcje dogrywka/karne) - mniej "krowy" w liście.
+3) Dodano spójny badge statusu i delikatne tło zależne od statusu.
+4) Uporządkowano responsywność (kolumny na mobile, jedna linia na większych ekranach).
+*/

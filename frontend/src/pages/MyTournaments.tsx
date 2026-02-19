@@ -1,30 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
-import {
-  Trophy,
-  Search,
-  RefreshCw,
-  Share2,
-  LayoutDashboard,
-  Eye,
-  EyeOff,
-  Archive,
-  RotateCcw,
-  Clipboard,
-  Link as LinkIcon,
-  KeyRound,
-  UserPlus,
-  AlertTriangle,
-  CheckCircle2,
-  Info,
-} from "lucide-react";
-
 import { apiFetch, apiGet } from "../api";
-import { Card } from "../ui/Card";
-import { Button } from "../ui/Button";
-import { Input } from "../ui/Input";
-import { cn } from "../lib/cn";
 
 type Tournament = {
   id: number;
@@ -35,11 +11,15 @@ type Tournament = {
   status?: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
   is_published?: boolean;
 
+  // Public view code (opcjonalny)
   access_code?: string | null;
+
   is_archived?: boolean;
 
+  // Panel management mode – tylko te dwa
   entry_mode?: "MANAGER" | "ORGANIZER_ONLY";
 
+  // Toggle dołączania (join link + kod)
   join_enabled?: boolean;
   registration_code?: string | null;
 
@@ -81,21 +61,14 @@ function statusLabel(v?: Tournament["status"]) {
 }
 
 function entryModeLabel(v?: Tournament["entry_mode"]) {
-  const m = v ?? "MANAGER";
+  const m = v ?? "MANAGER"; // kompatybilność wsteczna
   if (m === "MANAGER") return "Organizator + asystenci";
   if (m === "ORGANIZER_ONLY") return "Tylko organizator";
   return "—";
 }
 
-function roleLabel(v: Tournament["my_role"]) {
-  if (v === "ORGANIZER") return "Organizator";
-  if (v === "ASSISTANT") return "Asystent";
-  if (v === "PARTICIPANT") return "Zawodnik";
-  return "—";
-}
-
 function normalizePL(s: string) {
-  return (s || "")
+  return s
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
@@ -122,99 +95,25 @@ async function copyToClipboard(text: string) {
   }
 }
 
+/**
+ * Docelowo: nie blokujemy wejścia do panelu asystentom.
+ * Ograniczenia są granularne i realizowane przez disabled/ukrycie akcji w stronach.
+ */
 function canUsePanel(t: Tournament) {
   return t.my_role === "ORGANIZER" || t.my_role === "ASSISTANT";
 }
 
+/**
+ * Informacyjna notka (nie blokada).
+ * W ORGANIZER_ONLY asystent ma nadal dostęp do panelu, ale część akcji będzie tylko do podglądu.
+ */
 function panelNote(t: Tournament) {
   if (t.my_role !== "ASSISTANT") return null;
   const mode = t.entry_mode ?? "MANAGER";
   if (mode === "ORGANIZER_ONLY") {
-    return "Tryb: tylko organizator. Masz podgląd w panelu, elementy edycji mogą być ograniczone.";
+    return "Tryb: tylko organizator. Masz podgląd w panelu; elementy edycji mogą być ograniczone.";
   }
   return null;
-}
-
-function Badge({
-  children,
-  className,
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.06] px-2.5 py-1 text-xs font-semibold text-slate-200",
-        className
-      )}
-    >
-      {children}
-    </span>
-  );
-}
-
-function StatusBadge({ status }: { status?: Tournament["status"] }) {
-  const cls =
-    status === "RUNNING"
-      ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
-      : status === "FINISHED"
-      ? "border-white/10 bg-white/[0.04] text-slate-200"
-      : status === "CONFIGURED"
-      ? "border-indigo-400/20 bg-indigo-400/10 text-indigo-100"
-      : status === "DRAFT"
-      ? "border-amber-400/20 bg-amber-400/10 text-amber-100"
-      : "border-white/10 bg-white/[0.04] text-slate-200";
-
-  return <Badge className={cls}>{statusLabel(status)}</Badge>;
-}
-
-function RoleBadge({ role }: { role: Tournament["my_role"] }) {
-  const cls =
-    role === "ORGANIZER"
-      ? "border-indigo-400/20 bg-indigo-400/10 text-indigo-100"
-      : role === "ASSISTANT"
-      ? "border-violet-400/20 bg-violet-400/10 text-violet-100"
-      : role === "PARTICIPANT"
-      ? "border-sky-400/20 bg-sky-400/10 text-sky-100"
-      : "border-white/10 bg-white/[0.04] text-slate-200";
-
-  return <Badge className={cls}>{roleLabel(role)}</Badge>;
-}
-
-function SectionHeader({
-  title,
-  count,
-  visible,
-  onToggle,
-}: {
-  title: string;
-  count: number;
-  visible: boolean;
-  onToggle: (v: boolean) => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <div className="flex items-center gap-3">
-        <div className="text-lg font-semibold text-white">{title}</div>
-        <Badge className="border-white/10 bg-white/[0.04] text-slate-200">
-          {count}
-        </Badge>
-      </div>
-
-      <button
-        type="button"
-        onClick={() => onToggle(!visible)}
-        className={cn(
-          "rounded-full px-3 py-2 text-sm font-semibold transition",
-          "border border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.07]",
-          visible && "bg-white/10 border-white/15"
-        )}
-      >
-        {visible ? "Ukryj sekcję" : "Pokaż sekcję"}
-      </button>
-    </div>
-  );
 }
 
 export default function MyTournaments() {
@@ -225,8 +124,7 @@ export default function MyTournaments() {
   const [query, setQuery] = useState("");
   const [shareOpenId, setShareOpenId] = useState<number | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
-
-  const [toast, setToast] = useState<{ type: "ok" | "err" | "info"; text: string } | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
   const [visibleSections, setVisibleSections] = useState({
     draft: true,
@@ -240,10 +138,8 @@ export default function MyTournaments() {
     setError(null);
 
     apiGet<Tournament[]>("/api/tournaments/my/")
-      .then((data) => {
-        setItems(Array.isArray(data) ? data : []);
-      })
-      .catch((e) => setError(e?.message ?? "Błąd pobierania turniejów."))
+      .then(setItems)
+      .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   };
 
@@ -251,8 +147,8 @@ export default function MyTournaments() {
     load();
   }, []);
 
-  const setToastSafe = (type: "ok" | "err" | "info", text: string) => {
-    setToast({ type, text });
+  const setToastSafe = (msg: string) => {
+    setToast(msg);
     window.setTimeout(() => setToast(null), 2200);
   };
 
@@ -270,7 +166,9 @@ export default function MyTournaments() {
         const arch = normalizePL(t.is_archived ? "archiwum" : "");
         const mode = normalizePL(entryModeLabel(t.entry_mode));
         const role = normalizePL(t.my_role ?? "");
-        const join = normalizePL(t.join_enabled ? "dolaczanie wlaczone join" : "dolaczanie wylaczone");
+        const join = normalizePL(
+          t.join_enabled ? "dolaczanie wlaczone join" : "dolaczanie wylaczone"
+        );
 
         let score = 0;
 
@@ -312,18 +210,11 @@ export default function MyTournaments() {
     return { draft, ready, published, archived };
   }, [filtered]);
 
-  // Jak lista się przeładuje, a otwarty share nie istnieje – zamknij
-  useEffect(() => {
-    if (shareOpenId == null) return;
-    const exists = items.some((x) => x.id === shareOpenId);
-    if (!exists) setShareOpenId(null);
-  }, [items, shareOpenId]);
-
   const togglePublish = async (t: Tournament) => {
     if (t.my_role !== "ORGANIZER") return;
 
     if ((t.status ?? "DRAFT") === "DRAFT") {
-      setToastSafe("info", "Najpierw skonfiguruj turniej i wygeneruj rozgrywki.");
+      setToastSafe("Najpierw skonfiguruj turniej i wygeneruj rozgrywki.");
       return;
     }
 
@@ -340,10 +231,9 @@ export default function MyTournaments() {
       if (!res.ok) throw new Error("Nie udało się zmienić publikacji turnieju.");
 
       load();
-      setToastSafe("ok", !t.is_published ? "Turniej opublikowany." : "Turniej ukryty.");
+      setToastSafe(!t.is_published ? "Turniej opublikowany." : "Turniej ukryty.");
     } catch (e: any) {
       setError(e?.message ?? "Błąd publikacji turnieju.");
-      setToastSafe("err", "Błąd publikacji.");
     } finally {
       setBusyId(null);
     }
@@ -362,481 +252,410 @@ export default function MyTournaments() {
         body: JSON.stringify({ is_archived: !t.is_archived }),
       });
 
-      if (!res.ok) throw new Error("Nie udało się zmienić archiwizacji.");
+      if (!res.ok) {
+        setToastSafe("Błąd archiwizacji.");
+        return;
+      }
 
       load();
-      setToastSafe("ok", !t.is_archived ? "Przeniesiono do archiwum." : "Przywrócono z archiwum.");
-    } catch (e: any) {
-      setToastSafe("err", e?.message ?? "Błąd komunikacji z serwerem.");
+      setToastSafe(!t.is_archived ? "Przeniesiono do archiwum." : "Przywrócono z archiwum.");
+    } catch {
+      setToastSafe("Błąd komunikacji z serwerem.");
     } finally {
       setBusyId(null);
     }
   };
 
-  const SharePanel = ({ t }: { t: Tournament }) => {
-    const baseLink = `${window.location.origin}/tournaments/${t.id}`;
-    const joinLink = `${baseLink}?join=1`;
-
-    const viewLinkWithCode =
-      t.access_code && t.access_code.trim()
-        ? `${baseLink}?code=${encodeURIComponent(t.access_code)}`
-        : baseLink;
-
-    const copyBtn = (text: string, okMsg: string, errMsg: string) => (
-      <Button
-        type="button"
-        variant="ghost"
-        className="px-3 py-2 rounded-xl"
-        leftIcon={<Clipboard className="h-4 w-4" />}
-        onClick={async () => {
-          const ok = await copyToClipboard(text);
-          setToastSafe(ok ? "ok" : "err", ok ? okMsg : errMsg);
-        }}
-      >
-        Kopiuj
-      </Button>
-    );
+  const renderSection = (title: string, list: Tournament[]) => {
+    if (list.length === 0) return null;
 
     return (
-      <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-        {!t.is_published && (
-          <div className="mb-3 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
-            Uwaga: turniej jest nieopublikowany. Podgląd dla widzów będzie sensowny dopiero po publikacji.
-          </div>
-        )}
+      <section style={{ marginTop: "1.5rem" }}>
+        <h2 style={{ marginBottom: "0.75rem" }}>{title}</h2>
 
-        <div className="grid gap-3">
-          {/* Link */}
-          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold text-white">
-              <LinkIcon className="h-4 w-4 text-white/90" />
-              Link do turnieju
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <code className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-slate-200 break-all">
-                {baseLink}
-              </code>
-              {copyBtn(baseLink, "Skopiowano link.", "Nie udało się skopiować.")}
-            </div>
-          </div>
+        <div style={{ display: "grid", gap: "0.75rem" }}>
+          {list.map((t) => {
+            const panelEnabled = canUsePanel(t);
+            const isOrganizer = t.my_role === "ORGANIZER";
+            const isDraft = (t.status ?? "DRAFT") === "DRAFT";
+            const isShareOpen = shareOpenId === t.id;
 
-          {/* Kod dostępu */}
-          {t.access_code && t.access_code.trim() && (
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                  <KeyRound className="h-4 w-4 text-white/90" />
-                  Kod dostępu
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <code className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-slate-200">
-                    {t.access_code}
-                  </code>
-                  {copyBtn(t.access_code, "Skopiowano kod.", "Nie udało się skopiować.")}
-                </div>
-              </div>
+            const baseLink = `${window.location.origin}/tournaments/${t.id}`;
 
-              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                  <LinkIcon className="h-4 w-4 text-white/90" />
-                  Link z kodem
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <code className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-slate-200 break-all">
-                    {viewLinkWithCode}
-                  </code>
-                  {copyBtn(viewLinkWithCode, "Skopiowano link z kodem.", "Nie udało się skopiować.")}
-                </div>
-              </div>
-            </div>
-          )}
+            // Link do dołączenia (kod przekazujesz osobno)
+            const joinLink = `${baseLink}?join=1`;
 
-          {/* Dołączanie */}
-          {t.my_role === "ORGANIZER" && t.join_enabled && (
-            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-              <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                <UserPlus className="h-4 w-4 text-white/90" />
-                Dołączanie uczestników (konto + kod)
-              </div>
+            // Link do podglądu publicznego z kodem dostępu (jeśli access_code istnieje)
+            const viewLinkWithCode =
+              t.access_code && t.access_code.trim()
+                ? `${baseLink}?code=${encodeURIComponent(t.access_code)}`
+                : baseLink;
 
-              <div className="mt-3 grid gap-3 md:grid-cols-2">
-                <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                  <div className="text-sm font-semibold text-white">Link do dołączenia</div>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <code className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-slate-200 break-all">
-                      {joinLink}
-                    </code>
-                    {copyBtn(joinLink, "Skopiowano link do dołączenia.", "Nie udało się skopiować.")}
+            const note = panelNote(t);
+
+            return (
+              <div
+                key={t.id}
+                style={{
+                  border: "1px solid #333",
+                  borderRadius: 10,
+                  padding: "1rem",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: "1rem",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div style={{ minWidth: 280 }}>
+                    <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: "1.05rem", fontWeight: 700 }}>{t.name}</span>
+                      <span style={{ opacity: 0.85 }}>{disciplineLabel(t.discipline)}</span>
+                    </div>
+
+                    <div style={{ marginTop: 6, display: "flex", gap: 10, flexWrap: "wrap", opacity: 0.9 }}>
+                      <span>Format: {formatLabel(t.tournament_format)}</span>
+                      {typeof t.participants_count === "number" && <span>Uczestnicy: {t.participants_count}</span>}
+                      <span>Status: {statusLabel(t.status)}</span>
+                      {!t.is_archived && <span>Widoczność: {t.is_published ? "Opublikowany" : "Nieopublikowany"}</span>}
+                      {t.is_archived && <span>Stan: Archiwum</span>}
+                      <span>Tryb panelu: {entryModeLabel(t.entry_mode)}</span>
+                      <span>Dołączanie: {t.join_enabled ? "Włączone" : "Wyłączone"}</span>
+                    </div>
+
+                    <div style={{ marginTop: 6, opacity: 0.85 }}>Rola: {t.my_role ?? "—"}</div>
+
+                    {note && <div style={{ marginTop: 8, opacity: 0.9 }}>{note}</div>}
                   </div>
-                </div>
 
-                <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                  <div className="text-sm font-semibold text-white">Kod dołączania</div>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <code className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-slate-200">
-                      {t.registration_code ?? "—"}
-                    </code>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    {(t.my_role === "ORGANIZER" || t.my_role === "ASSISTANT") && (
+                      <Link
+                        to={`/tournaments/${t.id}/detail`}
+                        style={{
+                          border: "1px solid #444",
+                          padding: "0.45rem 0.75rem",
+                          borderRadius: 8,
+                          textDecoration: "none",
+                          display: "inline-block",
+                          backgroundColor: panelEnabled ? "#2c3e50" : "transparent",
+                          color: panelEnabled ? "white" : "inherit",
+                          opacity: panelEnabled ? 1 : 0.85,
+                        }}
+                        title={"Panel zarządzania (uprawnienia do edycji zależą od roli i ustawień organizatora)."}
+                      >
+                        Panel
+                      </Link>
+                    )}
 
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      className="px-3 py-2 rounded-xl"
-                      leftIcon={<Clipboard className="h-4 w-4" />}
-                      disabled={!t.registration_code}
-                      onClick={async () => {
-                        const ok = await copyToClipboard(t.registration_code ?? "");
-                        setToastSafe(ok ? "ok" : "err", ok ? "Skopiowano kod dołączania." : "Nie udało się skopiować.");
+                    <Link
+                      to={`/tournaments/${t.id}`}
+                      style={{
+                        border: "1px solid #444",
+                        padding: "0.45rem 0.75rem",
+                        borderRadius: 8,
+                        textDecoration: "none",
+                        display: "inline-block",
                       }}
                     >
-                      Kopiuj
-                    </Button>
+                      Turniej
+                    </Link>
+
+                    {!t.is_archived && (
+                      <button
+                        onClick={() => setShareOpenId(isShareOpen ? null : t.id)}
+                        style={{
+                          border: "1px solid #444",
+                          padding: "0.45rem 0.75rem",
+                          borderRadius: 8,
+                          background: "transparent",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Udostępnij
+                      </button>
+                    )}
+
+                    {isOrganizer && !t.is_archived && (
+                      <button
+                        onClick={() => togglePublish(t)}
+                        disabled={busyId === t.id}
+                        title={isDraft ? "Publikacja jest dostępna po wygenerowaniu rozgrywek." : ""}
+                        style={{
+                          border: "1px solid #444",
+                          padding: "0.45rem 0.75rem",
+                          borderRadius: 8,
+                          background: "transparent",
+                          cursor: busyId === t.id ? "not-allowed" : "pointer",
+                          opacity: busyId === t.id ? 0.7 : 1,
+                        }}
+                      >
+                        {t.is_published ? "Ukryj" : "Publikuj"}
+                      </button>
+                    )}
+
+                    {isOrganizer && (
+                      <button
+                        onClick={() => toggleArchive(t)}
+                        disabled={busyId === t.id}
+                        style={{
+                          border: "1px solid #444",
+                          padding: "0.45rem 0.75rem",
+                          borderRadius: 8,
+                          background: "transparent",
+                          cursor: busyId === t.id ? "not-allowed" : "pointer",
+                          opacity: busyId === t.id ? 0.7 : 1,
+                        }}
+                      >
+                        {t.is_archived ? "Przywróć" : "Archiwizuj"}
+                      </button>
+                    )}
                   </div>
                 </div>
-              </div>
 
-              <div className="mt-3 text-xs text-slate-300">
-                Uczestnik zakłada konto i wchodzi przez link do dołączenia, a następnie podaje kod.
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
+                {isShareOpen && !t.is_archived && (
+                  <div
+                    style={{
+                      marginTop: "0.9rem",
+                      paddingTop: "0.9rem",
+                      borderTop: "1px solid #333",
+                      display: "grid",
+                      gap: 10,
+                    }}
+                  >
+                    {!t.is_published && (
+                      <div style={{ opacity: 0.9 }}>
+                        Uwaga: turniej jest nieopublikowany — dostęp dla widzów będzie możliwy dopiero po publikacji.
+                      </div>
+                    )}
 
-  const TournamentCard = ({ t }: { t: Tournament }) => {
-    const isOrganizer = t.my_role === "ORGANIZER";
-    const isDraft = (t.status ?? "DRAFT") === "DRAFT";
-    const isShareOpen = shareOpenId === t.id;
-
-    const note = panelNote(t);
-
-    return (
-      <motion.div whileHover={{ y: -2 }} transition={{ duration: 0.15 }}>
-        <Card className="p-5 h-full">
-          <div className="flex h-full flex-col">
-            {/* Top */}
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                  <div className="text-lg font-semibold text-white truncate">
-                    {t.name}
-                  </div>
-                  <div className="text-sm text-slate-300">
-                    {disciplineLabel(t.discipline)}
-                  </div>
-                </div>
-
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <RoleBadge role={t.my_role} />
-                  <StatusBadge status={t.status} />
-                  <Badge className="border-white/10 bg-white/[0.04] text-slate-200">
-                    {formatLabel(t.tournament_format)}
-                  </Badge>
-
-                  {!t.is_archived && (
-                    <Badge className="border-white/10 bg-white/[0.04] text-slate-200">
-                      {t.is_published ? "Opublikowany" : "Nieopublikowany"}
-                    </Badge>
-                  )}
-
-                  {t.join_enabled && (
-                    <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">
-                      Dołączanie włączone
-                    </Badge>
-                  )}
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-3">
-                  <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
-                    <div className="text-[11px] text-slate-400">Uczestnicy</div>
-                    <div className="mt-0.5 text-sm font-semibold text-white">
-                      {typeof t.participants_count === "number" ? t.participants_count : "—"}
+                    <div style={{ display: "grid", gap: 6 }}>
+                      <div style={{ opacity: 0.9, fontWeight: 600 }}>Link do turnieju</div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                        <code style={{ padding: "0.35rem 0.5rem", border: "1px solid #333", borderRadius: 8 }}>
+                          {baseLink}
+                        </code>
+                        <button
+                          onClick={async () => {
+                            const ok = await copyToClipboard(baseLink);
+                            setToastSafe(ok ? "Skopiowano link." : "Nie udało się skopiować.");
+                          }}
+                          style={{
+                            border: "1px solid #444",
+                            padding: "0.35rem 0.6rem",
+                            borderRadius: 8,
+                            background: "transparent",
+                            cursor: "pointer",
+                          }}
+                        >
+                          Kopiuj
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
-                    <div className="text-[11px] text-slate-400">Tryb panelu</div>
-                    <div className="mt-0.5 text-sm font-semibold text-white">
-                      {entryModeLabel(t.entry_mode)}
-                    </div>
-                  </div>
-                </div>
 
-                {note && (
-                  <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-slate-300">
-                    <div className="flex items-start gap-2">
-                      <Info className="h-4 w-4 mt-0.5 text-slate-200/80" />
-                      <div>{note}</div>
-                    </div>
+                    {t.access_code && t.access_code.trim() && (
+                      <>
+                        <div style={{ display: "grid", gap: 6 }}>
+                          <div style={{ opacity: 0.9, fontWeight: 600 }}>Kod dostępu (podgląd)</div>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                            <code style={{ padding: "0.35rem 0.5rem", border: "1px solid #333", borderRadius: 8 }}>
+                              {t.access_code}
+                            </code>
+                            <button
+                              onClick={async () => {
+                                const ok = await copyToClipboard(t.access_code ?? "");
+                                setToastSafe(ok ? "Skopiowano kod dostępu." : "Nie udało się skopiować.");
+                              }}
+                              style={{
+                                border: "1px solid #444",
+                                padding: "0.35rem 0.6rem",
+                                borderRadius: 8,
+                                background: "transparent",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Kopiuj
+                            </button>
+                          </div>
+                        </div>
+
+                        <div style={{ display: "grid", gap: 6 }}>
+                          <div style={{ opacity: 0.9, fontWeight: 600 }}>Link z kodem (podgląd)</div>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                            <code style={{ padding: "0.35rem 0.5rem", border: "1px solid #333", borderRadius: 8 }}>
+                              {viewLinkWithCode}
+                            </code>
+                            <button
+                              onClick={async () => {
+                                const ok = await copyToClipboard(viewLinkWithCode);
+                                setToastSafe(ok ? "Skopiowano link z kodem." : "Nie udało się skopiować.");
+                              }}
+                              style={{
+                                border: "1px solid #444",
+                                padding: "0.35rem 0.6rem",
+                                borderRadius: 8,
+                                background: "transparent",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Kopiuj
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    {isOrganizer && t.join_enabled && (
+                      <div
+                        style={{
+                          display: "grid",
+                          gap: 10,
+                          marginTop: 10,
+                          borderTop: "1px solid #444",
+                          paddingTop: 10,
+                        }}
+                      >
+                        <div style={{ opacity: 0.9, fontWeight: 700 }}>Dołączanie uczestników (konto + kod)</div>
+
+                        <div style={{ display: "grid", gap: 6 }}>
+                          <div style={{ opacity: 0.9, fontWeight: 600 }}>Link do dołączenia</div>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                            <code style={{ padding: "0.35rem 0.5rem", border: "1px solid #333", borderRadius: 8 }}>
+                              {joinLink}
+                            </code>
+                            <button
+                              onClick={async () => {
+                                const ok = await copyToClipboard(joinLink);
+                                setToastSafe(ok ? "Skopiowano link do dołączenia." : "Nie udało się skopiować.");
+                              }}
+                              style={{
+                                border: "1px solid #444",
+                                padding: "0.35rem 0.6rem",
+                                borderRadius: 8,
+                                background: "transparent",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Kopiuj
+                            </button>
+                          </div>
+                        </div>
+
+                        <div style={{ display: "grid", gap: 6 }}>
+                          <div style={{ opacity: 0.9, fontWeight: 600 }}>Kod dołączania</div>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                            <code style={{ padding: "0.35rem 0.5rem", border: "1px solid #333", borderRadius: 8 }}>
+                              {t.registration_code ?? "—"}
+                            </code>
+                            <button
+                              disabled={!t.registration_code}
+                              onClick={async () => {
+                                const ok = await copyToClipboard(t.registration_code ?? "");
+                                setToastSafe(ok ? "Skopiowano kod dołączania." : "Nie udało się skopiować.");
+                              }}
+                              style={{
+                                border: "1px solid #444",
+                                padding: "0.35rem 0.6rem",
+                                borderRadius: 8,
+                                background: "transparent",
+                                cursor: "pointer",
+                                opacity: t.registration_code ? 1 : 0.6,
+                              }}
+                            >
+                              Kopiuj
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
-
-              <div className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
-                <Trophy className="h-5 w-5 text-indigo-200" />
-              </div>
-            </div>
-
-            {/* Actions */}
-            <div className="mt-5 flex flex-wrap gap-2">
-              {(t.my_role === "ORGANIZER" || t.my_role === "ASSISTANT") && (
-                <Link to={`/tournaments/${t.id}/detail`}>
-                  <Button
-                    variant="secondary"
-                    leftIcon={<LayoutDashboard className="h-4 w-4" />}
-                    className="rounded-xl"
-                    title="Panel zarządzania (uprawnienia zależą od roli i ustawień organizatora)."
-                  >
-                    Panel
-                  </Button>
-                </Link>
-              )}
-
-              <Link to={`/tournaments/${t.id}`}>
-                <Button variant="ghost" leftIcon={<Eye className="h-4 w-4" />}>
-                  Turniej
-                </Button>
-              </Link>
-
-              {!t.is_archived && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  leftIcon={<Share2 className="h-4 w-4" />}
-                  onClick={() => setShareOpenId(isShareOpen ? null : t.id)}
-                >
-                  Udostępnij
-                </Button>
-              )}
-
-              {isOrganizer && !t.is_archived && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  leftIcon={t.is_published ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  disabled={busyId === t.id}
-                  onClick={() => togglePublish(t)}
-                  title={isDraft ? "Publikacja dostępna po wygenerowaniu rozgrywek." : undefined}
-                  className={cn(isDraft && "opacity-70")}
-                >
-                  {t.is_published ? "Ukryj" : "Publikuj"}
-                </Button>
-              )}
-
-              {isOrganizer && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  leftIcon={
-                    t.is_archived ? <RotateCcw className="h-4 w-4" /> : <Archive className="h-4 w-4" />
-                  }
-                  disabled={busyId === t.id}
-                  onClick={() => toggleArchive(t)}
-                >
-                  {t.is_archived ? "Przywróć" : "Archiwizuj"}
-                </Button>
-              )}
-            </div>
-
-            {/* Share */}
-            <AnimatePresence initial={false}>
-              {isShareOpen && !t.is_archived && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ duration: 0.2 }}
-                  className="overflow-hidden"
-                >
-                  <SharePanel t={t} />
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        </Card>
-      </motion.div>
-    );
-  };
-
-  const renderSection = (title: string, list: Tournament[], key: keyof typeof visibleSections) => {
-    if (list.length === 0) return null;
-
-    const visible = visibleSections[key];
-
-    return (
-      <section className="space-y-4">
-        <SectionHeader
-          title={title}
-          count={list.length}
-          visible={visible}
-          onToggle={(v) => setVisibleSections((s) => ({ ...s, [key]: v }))}
-        />
-
-        <AnimatePresence initial={false}>
-          {visible && (
-            <motion.div
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 6 }}
-              transition={{ duration: 0.2 }}
-              className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
-            >
-              {list.map((t, idx) => (
-                <motion.div
-                  key={t.id}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.25, delay: Math.min(idx * 0.03, 0.18) }}
-                >
-                  <TournamentCard t={t} />
-                </motion.div>
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
+            );
+          })}
+        </div>
       </section>
     );
   };
 
+  if (loading) return <p>Ładowanie…</p>;
+  if (error) return <p style={{ color: "crimson" }}>{error}</p>;
+
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-3 py-1 text-xs font-semibold text-slate-200">
-            <Trophy className="h-4 w-4 text-indigo-300" />
-            Strefa użytkownika
-          </div>
+    <div style={{ padding: "2rem", maxWidth: 1000 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <h1 style={{ margin: 0 }}>Moje turnieje</h1>
 
-          <h1 className="mt-3 text-2xl sm:text-3xl font-semibold text-white">
-            Moje turnieje
-          </h1>
-
-          <div className="mt-2 text-sm text-slate-300">
-            Zarządzaj turniejami i udostępniaj je widzom oraz uczestnikom.
-          </div>
-        </div>
-
-        <Link to="/tournaments/new">
-          <Button variant="primary">Utwórz turniej</Button>
+        <Link
+          to="/tournaments/new"
+          style={{
+            border: "1px solid #444",
+            padding: "0.5rem 0.85rem",
+            borderRadius: 10,
+            textDecoration: "none",
+            display: "inline-block",
+          }}
+        >
+          Utwórz turniej
         </Link>
       </div>
 
-      {/* Controls */}
-      <Card className="p-4 sm:p-5">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="flex-1">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input
-                className="pl-10"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Szukaj: nazwa, dyscyplina (PL), status, publikacja, archiwum, join…"
-              />
-            </div>
-          </div>
+      <div style={{ marginTop: "1rem", display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Szukaj: nazwa, dyscyplina (PL), status…"
+          style={{ width: "min(520px, 100%)" }}
+        />
 
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="secondary"
-              leftIcon={<RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />}
-              onClick={load}
-              disabled={loading}
-            >
-              Odśwież
-            </Button>
-          </div>
-        </div>
+        <button
+          onClick={load}
+          style={{
+            border: "1px solid #444",
+            padding: "0.45rem 0.75rem",
+            borderRadius: 8,
+            background: "transparent",
+            cursor: "pointer",
+          }}
+        >
+          Odśwież
+        </button>
+      </div>
 
-        {!!error && (
-          <div className="mt-4 rounded-2xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-            {error}
-          </div>
-        )}
-      </Card>
+      <div style={{ marginTop: "1rem", display: "flex", gap: 16, flexWrap: "wrap" }}>
+        {[
+          ["draft", "Szkice"],
+          ["ready", "Gotowe"],
+          ["published", "Opublikowane"],
+          ["archived", "Archiwum"],
+        ].map(([key, label]) => (
+          <label key={key} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type="checkbox"
+              checked={visibleSections[key as keyof typeof visibleSections]}
+              onChange={(e) =>
+                setVisibleSections((v) => ({
+                  ...v,
+                  [key]: e.target.checked,
+                }))
+              }
+            />
+            {label}
+          </label>
+        ))}
+      </div>
 
-      {/* Loading skeleton */}
-      {loading && (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <Card key={i} className="p-5">
-              <div className="h-4 w-2/3 rounded bg-white/10" />
-              <div className="mt-3 h-3 w-1/2 rounded bg-white/10" />
-              <div className="mt-4 flex gap-2">
-                <div className="h-6 w-20 rounded-full bg-white/10" />
-                <div className="h-6 w-24 rounded-full bg-white/10" />
-              </div>
-              <div className="mt-5 h-9 w-full rounded-xl bg-white/10" />
-            </Card>
-          ))}
-        </div>
-      )}
+      {items.length === 0 && <p style={{ marginTop: "1rem" }}>Brak turniejów.</p>}
 
-      {/* Empty */}
-      {!loading && items.length === 0 && !error && (
-        <Card className="p-6">
-          <div className="flex items-start gap-3">
-            <div className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
-              <AlertTriangle className="h-5 w-5 text-white/90" />
-            </div>
-            <div className="flex-1">
-              <div className="text-base font-semibold text-white">Brak turniejów</div>
-              <div className="mt-1 text-sm text-slate-300">
-                Utwórz pierwszy turniej lub dołącz do istniejącego przez link i kod.
-              </div>
-              <div className="mt-4">
-                <Link to="/tournaments/new">
-                  <Button variant="secondary">Utwórz turniej</Button>
-                </Link>
-              </div>
-            </div>
-          </div>
-        </Card>
-      )}
+      {visibleSections.draft && renderSection("Szkice", grouped.draft)}
+      {visibleSections.ready && renderSection("Gotowe do publikacji", grouped.ready)}
+      {visibleSections.published && renderSection("Opublikowane", grouped.published)}
+      {visibleSections.archived && renderSection("Archiwum", grouped.archived)}
 
-      {/* Sections */}
-      {!loading && items.length > 0 && (
-        <div className="space-y-10">
-          {renderSection("Szkice", grouped.draft, "draft")}
-          {renderSection("Gotowe do publikacji", grouped.ready, "ready")}
-          {renderSection("Opublikowane", grouped.published, "published")}
-          {renderSection("Archiwum", grouped.archived, "archived")}
-        </div>
-      )}
-
-      {/* Toast */}
-      <AnimatePresence>
-        {toast && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 10 }}
-            transition={{ duration: 0.2 }}
-            className="fixed bottom-5 right-5 z-50"
-          >
-            <div
-              className={cn(
-                "rounded-2xl border px-4 py-3 text-sm shadow-lg backdrop-blur",
-                toast.type === "ok" && "border-emerald-400/20 bg-emerald-400/10 text-emerald-100",
-                toast.type === "err" && "border-red-500/25 bg-red-500/10 text-red-200",
-                toast.type === "info" && "border-white/10 bg-white/[0.06] text-slate-200"
-              )}
-            >
-              <div className="flex items-start gap-2">
-                {toast.type === "ok" ? (
-                  <CheckCircle2 className="h-4 w-4 mt-0.5" />
-                ) : toast.type === "err" ? (
-                  <AlertTriangle className="h-4 w-4 mt-0.5" />
-                ) : (
-                  <Info className="h-4 w-4 mt-0.5" />
-                )}
-                <div>{toast.text}</div>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {toast && <div style={{ marginTop: "1rem", opacity: 0.9 }}>{toast}</div>}
     </div>
   );
 }
