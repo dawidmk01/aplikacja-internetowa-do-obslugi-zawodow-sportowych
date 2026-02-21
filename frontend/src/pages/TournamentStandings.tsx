@@ -1,7 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
+import { motion } from "framer-motion";
+import { Brackets, LayoutGrid, Table2, Trophy } from "lucide-react";
+
 import { apiGet, apiFetch } from "../api";
+import { cn } from "../lib/cn";
 import { displayGroupName, isByeMatch } from "../flow/stagePresentation";
+
+import { Card } from "../ui/Card";
+import { InlineAlert } from "../ui/InlineAlert";
 
 /* =========================
    TYPY
@@ -10,9 +17,9 @@ import { displayGroupName, isByeMatch } from "../flow/stagePresentation";
 type Tournament = {
   id: number;
   name: string;
-  discipline?: string; // np. "tennis"
+  discipline?: string;
   tournament_format: "LEAGUE" | "CUP" | "MIXED";
-  format_config?: Record<string, any>; // <-- DODANE (np. { tennis_points_mode: "PLT" | "NONE" })
+  format_config?: Record<string, any>;
 };
 
 type MatchDto = {
@@ -21,7 +28,6 @@ type MatchDto = {
   stage_id: number;
   stage_order: number;
   round_number: number | null;
-
   group_name?: string | null;
 
   home_team_id: number;
@@ -29,7 +35,6 @@ type MatchDto = {
   home_team_name: string;
   away_team_name: string;
 
-  // dla tenisa: sety (np. 2:1), dla reszty: bramki/punkty
   home_score: number | null;
   away_score: number | null;
 
@@ -47,17 +52,14 @@ type StandingRow = {
   losses: number;
   points: number;
 
-  // legacy / default
   goals_for: number;
   goals_against: number;
   goal_difference: number;
 
-  // uniwersalne (u Ciebie liczone m.in. dla tenisa)
   games_for?: number;
   games_against?: number;
   games_difference?: number;
 
-  // tenis – opcjonalne, jeśli kiedyś backend będzie to zwracał
   sets_for?: number;
   sets_against?: number;
   sets_diff?: number;
@@ -66,9 +68,6 @@ type StandingRow = {
 
 type FormResult = "W" | "D" | "L";
 
-/**
- * Dane z /standings/ -> bracket
- */
 type BracketDuelItem = {
   id: number;
   status: "SCHEDULED" | "IN_PROGRESS" | "FINISHED";
@@ -87,17 +86,14 @@ type BracketDuelItem = {
   score_leg2_home?: number | null;
   score_leg2_away?: number | null;
 
-  // --- dodatkowe dane (opcjonalne) ---
   aggregate_home?: number | null;
   aggregate_away?: number | null;
 
-  // karne
   penalties_leg1_home?: number | null;
   penalties_leg1_away?: number | null;
   penalties_leg2_home?: number | null;
   penalties_leg2_away?: number | null;
 
-  // tenis: sety w gemach (jak Match.tennis_sets)
   tennis_sets_leg1?: any | null;
   tennis_sets_leg2?: any | null;
 };
@@ -121,8 +117,8 @@ type GroupStanding = {
 
 type StandingsMeta = {
   discipline?: string;
-  table_schema?: string; // "TENNIS" | "DEFAULT" ...
-  tennis_points_mode?: string; // "PLT" | "NONE"
+  table_schema?: string;
+  tennis_points_mode?: string;
 };
 
 type StandingsResponse = {
@@ -144,12 +140,7 @@ function normalizeGroupKey(name: string | null | undefined): string {
 
 function last5Form(teamId: number, matches: MatchDto[]): FormResult[] {
   return matches
-    .filter(
-      (m) =>
-        m.status === "FINISHED" &&
-        !isByeMatch(m) &&
-        (m.home_team_id === teamId || m.away_team_id === teamId)
-    )
+    .filter((m) => m.status === "FINISHED" && !isByeMatch(m) && (m.home_team_id === teamId || m.away_team_id === teamId))
     .sort((a, b) => {
       if (a.stage_order !== b.stage_order) return b.stage_order - a.stage_order;
 
@@ -171,13 +162,6 @@ function last5Form(teamId: number, matches: MatchDto[]): FormResult[] {
     });
 }
 
-/**
- * Tenis: tennis_sets = [
- *  {home_games:6, away_games:4},
- *  {home_games:7, away_games:6, home_tiebreak:7, away_tiebreak:5}
- * ]
- * -> "6-4, 7-6(7-5)" (perspektywa HOME vs AWAY)
- */
 function formatTennisSets(tennisSets: any): string | null {
   if (!Array.isArray(tennisSets) || tennisSets.length === 0) return null;
 
@@ -225,7 +209,7 @@ function getTennisPointsMode(tournament: Tournament | null, standings: Standings
 }
 
 /* =========================
-   KOMPONENT GŁÓWNY
+   STRONA
    ========================= */
 
 export default function TournamentStandings() {
@@ -244,193 +228,307 @@ export default function TournamentStandings() {
   useEffect(() => {
     if (!id) return;
 
+    let cancelled = false;
+
     const load = async () => {
       setLoading(true);
+      setError(null);
+
       try {
         const t = await apiGet<Tournament>(`/api/tournaments/${id}/`);
-        setTournament(t);
+        if (!cancelled) setTournament(t);
 
         if (t.tournament_format === "CUP") setTab("BRACKET");
 
         const s = await apiFetch(`/api/tournaments/${id}/standings/`);
-        if (s.ok) setStandings(await s.json());
+        if (s.ok) {
+          const data = await s.json();
+          if (!cancelled) setStandings(data);
+        }
 
         const m = await apiFetch(`/api/tournaments/${id}/matches/`);
         if (m.ok) {
           const raw = await m.json();
           const list = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? raw.results : [];
-          setMatches(list);
+          if (!cancelled) setMatches(list);
         }
       } catch (e: any) {
-        setError(e.message || "Wystąpił błąd");
+        if (!cancelled) setError(e?.message || "Wystąpił błąd");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
     load();
+
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
-  if (loading) return <p style={{ padding: "2rem" }}>Ładowanie…</p>;
-  if (error) return <p style={{ padding: "2rem", color: "crimson" }}>{error}</p>;
+  const derived = useMemo(() => {
+    const tournamentDiscipline = (tournament?.discipline ?? "").toLowerCase();
+    const metaSchema = (standings?.meta?.table_schema ?? "").toUpperCase();
+    const metaDiscipline = (standings?.meta?.discipline ?? "").toLowerCase();
+
+    const discipline = (metaDiscipline || tournamentDiscipline || "").toLowerCase();
+    const isTennis = metaSchema === "TENNIS" || discipline === "tennis";
+
+    const tennisPointsMode = getTennisPointsMode(tournament, standings);
+    const showTennisPoints = isTennis && tennisPointsMode === "PLT";
+
+    const isCup = tournament?.tournament_format === "CUP";
+    const isMixed = tournament?.tournament_format === "MIXED";
+
+    const hasLeagueTable = (standings?.table?.length ?? 0) > 0;
+    const hasGroups = (standings?.groups?.length ?? 0) > 0;
+    const hasTableData = hasLeagueTable || hasGroups;
+    const hasBracketData = (standings?.bracket?.rounds?.length ?? 0) > 0;
+
+    return {
+      discipline,
+      isTennis,
+      showTennisPoints,
+      isCup: !!isCup,
+      isMixed: !!isMixed,
+      hasLeagueTable,
+      hasGroups,
+      hasTableData,
+      hasBracketData,
+    };
+  }, [standings, tournament]);
+
+  if (loading) {
+    return (
+      <div className="w-full pb-24">
+        <Card className="relative overflow-hidden p-6">
+          <div className="pointer-events-none absolute inset-0">
+            <div className="absolute -top-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-indigo-500/10 blur-3xl" />
+            <div className="absolute -bottom-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
+          </div>
+
+          <div className="relative animate-pulse space-y-3">
+            <div className="h-4 w-40 rounded bg-white/10" />
+            <div className="h-8 w-72 rounded bg-white/10" />
+            <div className="h-40 w-full rounded-xl bg-white/5" />
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="w-full pb-24">
+        <InlineAlert variant="error">{error}</InlineAlert>
+      </div>
+    );
+  }
+
   if (!tournament) return null;
 
-  const tournamentDiscipline = (tournament.discipline ?? "").toLowerCase();
-  const metaSchema = (standings?.meta?.table_schema ?? "").toUpperCase();
-  const metaDiscipline = (standings?.meta?.discipline ?? "").toLowerCase();
-
-  const discipline = (metaDiscipline || tournamentDiscipline || "").toLowerCase();
-  const isTennis = metaSchema === "TENNIS" || discipline === "tennis";
-
-  const tennisPointsMode = getTennisPointsMode(tournament, standings);
-  const showTennisPoints = isTennis && tennisPointsMode === "PLT";
-
-  const isCup = tournament.tournament_format === "CUP";
-  const isMixed = tournament.tournament_format === "MIXED";
-
-  const hasLeagueTable = (standings?.table?.length ?? 0) > 0;
-  const hasGroups = (standings?.groups?.length ?? 0) > 0;
-  const hasTableData = hasLeagueTable || hasGroups;
-  const hasBracketData = (standings?.bracket?.rounds?.length ?? 0) > 0;
+  const { discipline, isTennis, showTennisPoints, isCup, isMixed, hasLeagueTable, hasGroups, hasTableData, hasBracketData } = derived;
+  const showTabs = isMixed || (hasTableData && hasBracketData);
 
   return (
-    <div style={{ padding: "2rem", maxWidth: 1400 }}>
-      <h1 style={{ marginBottom: "0.5rem" }}>Wyniki: {tournament.name}</h1>
+    <div className="w-full pb-24">
+      <div className="mb-5">
+        <div className="text-sm text-slate-300">Tabela i drabinka</div>
+        <h1 className="mt-1 text-2xl font-semibold text-white">{tournament.name}</h1>
+      </div>
 
-      {(isMixed || (hasTableData && hasBracketData)) && (
-        <div style={{ display: "flex", gap: "10px", marginBottom: "1.5rem" }}>
-          <button
-            onClick={() => setTab("TABLE")}
-            disabled={tab === "TABLE"}
-            style={{
-              padding: "8px 16px",
-              cursor: tab === "TABLE" ? "default" : "pointer",
-              fontWeight: tab === "TABLE" ? "bold" : "normal",
-              borderBottom: tab === "TABLE" ? "2px solid #3498db" : "2px solid transparent",
-              background: "transparent",
-              color: "#ccc",
-            }}
-          >
+      {showTabs ? (
+        <div className="mb-5 flex flex-wrap gap-2">
+          <SegmentButton icon={<Table2 className="h-4 w-4 text-white/80" />} active={tab === "TABLE"} onClick={() => setTab("TABLE")}>
             Tabela
-          </button>
-          <button
-            onClick={() => setTab("BRACKET")}
-            disabled={tab === "BRACKET"}
-            style={{
-              padding: "8px 16px",
-              cursor: tab === "BRACKET" ? "default" : "pointer",
-              fontWeight: tab === "BRACKET" ? "bold" : "normal",
-              borderBottom: tab === "BRACKET" ? "2px solid #3498db" : "2px solid transparent",
-              background: "transparent",
-              color: "#ccc",
-            }}
-          >
+          </SegmentButton>
+          <SegmentButton icon={<Brackets className="h-4 w-4 text-white/80" />} active={tab === "BRACKET"} onClick={() => setTab("BRACKET")}>
             Drabinka
-          </button>
+          </SegmentButton>
         </div>
-      )}
+      ) : null}
 
-      {tab === "TABLE" && (
-        hasGroups ? (
-          <div>
-            {standings!.groups!.map((g, idx) => {
-              const groupTitle =
-                (g.group_name || "").toLowerCase().startsWith("grupa")
-                  ? g.group_name
-                  : displayGroupName(g.group_name, idx);
+      <motion.div
+        key={tab}
+        initial={{ opacity: 0, y: 10, filter: "blur(2px)" }}
+        animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+        transition={{ duration: 0.25, ease: "easeOut" }}
+      >
+        {tab === "TABLE" ? (
+          hasGroups ? (
+            <div className="space-y-4">
+              {standings!.groups!.map((g, idx) => {
+                const groupTitle =
+                  (g.group_name || "").toLowerCase().startsWith("grupa") ? g.group_name : displayGroupName(g.group_name, idx);
 
-              const groupKey = normalizeGroupKey(g.group_name);
-              const groupMatches = matches.filter(
-                (m) => m.stage_type === "GROUP" && normalizeGroupKey(m.group_name) === groupKey
-              );
+                const groupKey = normalizeGroupKey(g.group_name);
+                const groupMatches = matches.filter((m) => m.stage_type === "GROUP" && normalizeGroupKey(m.group_name) === groupKey);
 
-              return (
-                <div key={g.group_id} style={{ marginBottom: "2.5rem" }}>
-                  <h3
-                    style={{
-                      marginBottom: "0.75rem",
-                      color: "#3498db",
-                      borderLeft: "4px solid #3498db",
-                      paddingLeft: "10px",
-                    }}
-                  >
-                    {groupTitle}
-                  </h3>
-                  <Table
-                    rows={g.table}
-                    matchesForForm={groupMatches}
-                    isTennis={isTennis}
-                    showTennisPoints={showTennisPoints}
-                  />
+                return (
+                  <Card key={g.group_id} className="relative overflow-hidden p-5 sm:p-6">
+                    <div className="pointer-events-none absolute inset-0">
+                      <div className="absolute -top-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-indigo-500/10 blur-3xl" />
+                      <div className="absolute -bottom-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
+                    </div>
+
+                    <div className="relative">
+                      <div className="mb-3">
+                        <div className="text-xs text-slate-400">Faza grupowa</div>
+                        <div className="mt-1 text-lg font-semibold text-slate-100">{groupTitle}</div>
+                      </div>
+
+                      <StandingsTable rows={g.table} matchesForForm={groupMatches} isTennis={isTennis} showTennisPoints={showTennisPoints} />
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+          ) : hasLeagueTable ? (
+            <Card className="relative overflow-hidden p-5 sm:p-6">
+              <div className="pointer-events-none absolute inset-0">
+                <div className="absolute -top-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-indigo-500/10 blur-3xl" />
+                <div className="absolute -bottom-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
+              </div>
+
+              <div className="relative">
+                <div className="mb-3">
+                  <div className="text-xs text-slate-400">Tabela</div>
+                  <div className="mt-1 text-lg font-semibold text-slate-100">Klasyfikacja</div>
                 </div>
-              );
-            })}
-          </div>
-        ) : hasLeagueTable ? (
-          <Table
-            rows={standings!.table!}
-            matchesForForm={matches.filter((m) => m.stage_type === "LEAGUE")}
-            isTennis={isTennis}
-            showTennisPoints={showTennisPoints}
-          />
-        ) : (
-          !isCup && <p>Brak danych tabeli.</p>
-        )
-      )}
 
-      {tab === "BRACKET" && (
-        hasBracketData ? (
-          <div>
-            <div style={{ marginBottom: "20px", display: "flex", justifyContent: "flex-end", gap: "10px" }}>
-              <button
-                onClick={() => setLayoutMode("STANDARD")}
-                style={{
-                  padding: "6px 12px",
-                  backgroundColor: layoutMode === "STANDARD" ? "#3498db" : "#444",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: "4px",
-                  cursor: "pointer",
-                  fontSize: "0.8rem",
-                }}
-              >
-                Standard (Drzewko)
-              </button>
-              <button
-                onClick={() => setLayoutMode("CENTERED")}
-                style={{
-                  padding: "6px 12px",
-                  backgroundColor: layoutMode === "CENTERED" ? "#3498db" : "#444",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: "4px",
-                  cursor: "pointer",
-                  fontSize: "0.8rem",
-                }}
-              >
-                Finał w środku
-              </button>
+                <StandingsTable
+                  rows={standings!.table!}
+                  matchesForForm={matches.filter((m) => m.stage_type === "LEAGUE")}
+                  isTennis={isTennis}
+                  showTennisPoints={showTennisPoints}
+                />
+              </div>
+            </Card>
+          ) : (
+            !isCup && <InlineAlert variant="info">Brak danych tabeli.</InlineAlert>
+          )
+        ) : hasBracketData ? (
+          <Card className="relative overflow-hidden p-5 sm:p-6">
+            <div className="pointer-events-none absolute inset-0">
+              <div className="absolute -top-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-indigo-500/10 blur-3xl" />
+              <div className="absolute -bottom-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
             </div>
 
-            {layoutMode === "STANDARD" ? (
-              <StandardBracketView data={standings!.bracket!} discipline={discipline} />
-            ) : (
-              <CenteredBracketView data={standings!.bracket!} discipline={discipline} />
-            )}
-          </div>
+            <div className="relative">
+              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs text-slate-400">Drabinka</div>
+                  <div className="mt-1 text-lg font-semibold text-slate-100">Faza pucharowa</div>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <SmallToggle active={layoutMode === "STANDARD"} onClick={() => setLayoutMode("STANDARD")} icon={<LayoutGrid className="h-4 w-4 text-white/70" />}>
+                    Standard
+                  </SmallToggle>
+                  <SmallToggle active={layoutMode === "CENTERED"} onClick={() => setLayoutMode("CENTERED")} icon={<Trophy className="h-4 w-4 text-amber-200" />}>
+                    Finał w środku
+                  </SmallToggle>
+                </div>
+              </div>
+
+              {layoutMode === "STANDARD" ? (
+                <StandardBracketView data={standings!.bracket!} discipline={discipline} />
+              ) : (
+                <CenteredBracketView data={standings!.bracket!} discipline={discipline} />
+              )}
+            </div>
+          </Card>
         ) : (
-          <p>Brak danych drabinki lub faza pucharowa jeszcze się nie rozpoczęła.</p>
-        )
-      )}
+          <InlineAlert variant="info">Brak danych drabinki lub faza pucharowa jeszcze się nie rozpoczęła.</InlineAlert>
+        )}
+      </motion.div>
     </div>
   );
 }
 
 /* =========================
-   KOMPONENTY: TABELA
+   UI helpers (lokalne)
    ========================= */
 
-function Table({
+function SegmentButton({
+  active,
+  onClick,
+  icon,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "relative inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-sm font-semibold transition",
+        "border border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10]",
+        "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
+        active && "border-white/15"
+      )}
+    >
+      {active ? (
+        <motion.div
+          layoutId="standings-page-tab-active"
+          className="absolute inset-0 rounded-full bg-white/10"
+          transition={{ type: "spring", bounce: 0.18, duration: 0.55 }}
+        />
+      ) : null}
+
+      <span className="relative z-10">{icon}</span>
+      <span className="relative z-10">{children}</span>
+    </button>
+  );
+}
+
+function SmallToggle({
+  active,
+  onClick,
+  icon,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "relative inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold transition",
+        "border border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10]",
+        "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
+        active && "border-white/15"
+      )}
+    >
+      {active ? (
+        <motion.div
+          layoutId="standings-page-layout-active"
+          className="absolute inset-0 rounded-full bg-white/10"
+          transition={{ type: "spring", bounce: 0.18, duration: 0.55 }}
+        />
+      ) : null}
+
+      <span className="relative z-10 inline-flex items-center gap-2">
+        {icon}
+        {children}
+      </span>
+    </button>
+  );
+}
+
+/* =========================
+   Tabela (premium)
+   ========================= */
+
+function StandingsTable({
   rows,
   matchesForForm,
   isTennis,
@@ -441,202 +539,203 @@ function Table({
   isTennis: boolean;
   showTennisPoints: boolean;
 }) {
-  const minWidth = isTennis ? (showTennisPoints ? "950px" : "900px") : "600px";
+  const minW = isTennis ? (showTennisPoints ? "min-w-[950px]" : "min-w-[900px]") : "min-w-[640px]";
 
   return (
-    <div style={{ overflowX: "auto" }}>
-      <table
-        style={{
-          width: "100%",
-          borderCollapse: "collapse",
-          minWidth,
-          color: "#ddd",
-        }}
-      >
-        <thead>
-          {isTennis ? (
-            <tr style={{ borderBottom: "2px solid #444", textAlign: "left" }}>
-              <th style={{ padding: "10px" }}>#</th>
-              <th style={{ padding: "10px" }}>Zawodnik</th>
-              <th>M</th>
-              <th>Z</th>
-              <th>P</th>
-              <th>Sety +</th>
-              <th>Sety -</th>
-              <th>RS</th>
-              <th>Gemy +</th>
-              <th>Gemy -</th>
-              <th>RG</th>
-              {showTennisPoints && <th>Pkt (PLT)</th>}
-              <th>Forma</th>
-            </tr>
-          ) : (
-            <tr style={{ borderBottom: "2px solid #444", textAlign: "left" }}>
-              <th style={{ padding: "10px" }}>#</th>
-              <th style={{ padding: "10px" }}>Drużyna</th>
-              <th>M</th>
-              <th>Z</th>
-              <th>R</th>
-              <th>P</th>
-              <th>B+</th>
-              <th>B-</th>
-              <th>RB</th>
-              <th>Pkt</th>
-              <th>Forma</th>
-            </tr>
-          )}
-        </thead>
+    <div className={cn("relative rounded-2xl border border-white/10 bg-black/10", "shadow-[0_10px_30px_rgba(0,0,0,0.25)]")}>
+      <div className="max-h-[540px] overflow-auto">
+        <table className={cn("w-full border-separate border-spacing-0", minW)}>
+          <thead>
+            {isTennis ? (
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
+                <ThSticky>#</ThSticky>
+                <ThSticky>Zawodnik</ThSticky>
+                <ThSticky>M</ThSticky>
+                <ThSticky>Z</ThSticky>
+                <ThSticky>P</ThSticky>
+                <ThSticky>Sety +</ThSticky>
+                <ThSticky>Sety -</ThSticky>
+                <ThSticky>RS</ThSticky>
+                <ThSticky>Gemy +</ThSticky>
+                <ThSticky>Gemy -</ThSticky>
+                <ThSticky>RG</ThSticky>
+                {showTennisPoints ? <ThSticky>Pkt (PLT)</ThSticky> : null}
+                <ThSticky className="pr-3">Forma</ThSticky>
+              </tr>
+            ) : (
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
+                <ThSticky>#</ThSticky>
+                <ThSticky>Drużyna</ThSticky>
+                <ThSticky>M</ThSticky>
+                <ThSticky>Z</ThSticky>
+                <ThSticky>R</ThSticky>
+                <ThSticky>P</ThSticky>
+                <ThSticky>B+</ThSticky>
+                <ThSticky>B-</ThSticky>
+                <ThSticky>RB</ThSticky>
+                <ThSticky>Pkt</ThSticky>
+                <ThSticky className="pr-3">Forma</ThSticky>
+              </tr>
+            )}
+          </thead>
 
-        <tbody>
-          {rows.map((r, i) => {
-            const form = last5Form(r.team_id, matchesForForm);
+          <tbody className="text-sm text-slate-100">
+            {rows.map((r, i) => {
+              const form = last5Form(r.team_id, matchesForForm);
 
-            if (isTennis) {
-              // sety: preferuj pola tenisowe, fallback na legacy goals_*
-              const setsFor = safeNum(r.sets_for, safeNum(r.goals_for, 0));
-              const setsAgainst = safeNum(r.sets_against, safeNum(r.goals_against, 0));
-              const setsDiff = safeNum(r.sets_diff, safeNum(r.goal_difference, setsFor - setsAgainst));
+              const rowClass = cn(
+                "border-t border-white/10",
+                i % 2 === 0 ? "bg-white/[0.01]" : "bg-transparent",
+                "hover:bg-white/[0.04] transition"
+              );
 
-              // gemy: preferuj games_* / games_diff, fallback na 0
-              const gamesFor = safeNum(r.games_for, 0);
-              const gamesAgainst = safeNum(r.games_against, 0);
-              const gamesDiff = safeNum(r.games_diff, safeNum(r.games_difference, gamesFor - gamesAgainst));
+              if (isTennis) {
+                const setsFor = safeNum(r.sets_for, safeNum(r.goals_for, 0));
+                const setsAgainst = safeNum(r.sets_against, safeNum(r.goals_against, 0));
+                const setsDiff = safeNum(r.sets_diff, safeNum(r.goal_difference, setsFor - setsAgainst));
+
+                const gamesFor = safeNum(r.games_for, 0);
+                const gamesAgainst = safeNum(r.games_against, 0);
+                const gamesDiff = safeNum(r.games_diff, safeNum(r.games_difference, gamesFor - gamesAgainst));
+
+                return (
+                  <tr key={r.team_id} className={rowClass}>
+                    <td className="py-3 pl-3 pr-3 text-slate-300">{i + 1}</td>
+                    <td className="py-3 pr-3 font-semibold">
+                      <span className="block max-w-[360px] truncate">{r.team_name}</span>
+                    </td>
+                    <td className="py-3 pr-3 text-slate-200">{r.played}</td>
+                    <td className="py-3 pr-3 text-slate-200">{r.wins}</td>
+                    <td className="py-3 pr-3 text-slate-200">{r.losses}</td>
+                    <td className="py-3 pr-3 text-slate-200">{setsFor}</td>
+                    <td className="py-3 pr-3 text-slate-200">{setsAgainst}</td>
+                    <td className="py-3 pr-3 text-slate-200">{setsDiff}</td>
+                    <td className="py-3 pr-3 text-slate-200">{gamesFor}</td>
+                    <td className="py-3 pr-3 text-slate-200">{gamesAgainst}</td>
+                    <td className="py-3 pr-3 text-slate-200">{gamesDiff}</td>
+
+                    {showTennisPoints ? (
+                      <td className="py-3 pr-3">
+                        <span className="font-semibold text-sky-200">{r.points}</span>
+                      </td>
+                    ) : null}
+
+                    <td className="py-3 pr-3">
+                      <FormDots form={form} />
+                    </td>
+                  </tr>
+                );
+              }
 
               return (
-                <tr key={r.team_id} style={{ borderBottom: "1px solid #333" }}>
-                  <td style={{ padding: "10px" }}>{i + 1}</td>
-                  <td style={{ padding: "10px", fontWeight: "bold" }}>{r.team_name}</td>
-                  <td>{r.played}</td>
-                  <td>{r.wins}</td>
-                  <td>{r.losses}</td>
-                  <td>{setsFor}</td>
-                  <td>{setsAgainst}</td>
-                  <td>{setsDiff}</td>
-                  <td>{gamesFor}</td>
-                  <td>{gamesAgainst}</td>
-                  <td>{gamesDiff}</td>
-
-                  {showTennisPoints && (
-                    <td>
-                      <strong style={{ color: "#3498db" }}>{r.points}</strong>
-                    </td>
-                  )}
-
-                  <td>
-                    <div style={{ display: "flex", gap: "3px" }}>
-                      {form.map((f, idx) => (
-                        <span
-                          key={idx}
-                          style={{
-                            width: 16,
-                            height: 16,
-                            borderRadius: "50%",
-                            fontSize: 9,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            fontWeight: "bold",
-                            color: "#fff",
-                            backgroundColor: f === "W" ? "#2ecc71" : f === "D" ? "#95a5a6" : "#e74c3c",
-                          }}
-                        >
-                          {f}
-                        </span>
-                      ))}
-                    </div>
+                <tr key={r.team_id} className={rowClass}>
+                  <td className="py-3 pl-3 pr-3 text-slate-300">{i + 1}</td>
+                  <td className="py-3 pr-3 font-semibold">
+                    <span className="block max-w-[360px] truncate">{r.team_name}</span>
+                  </td>
+                  <td className="py-3 pr-3 text-slate-200">{r.played}</td>
+                  <td className="py-3 pr-3 text-slate-200">{r.wins}</td>
+                  <td className="py-3 pr-3 text-slate-200">{r.draws}</td>
+                  <td className="py-3 pr-3 text-slate-200">{r.losses}</td>
+                  <td className="py-3 pr-3 text-slate-200">{r.goals_for}</td>
+                  <td className="py-3 pr-3 text-slate-200">{r.goals_against}</td>
+                  <td className="py-3 pr-3 text-slate-200">{r.goal_difference}</td>
+                  <td className="py-3 pr-3">
+                    <span className="font-semibold text-sky-200">{r.points}</span>
+                  </td>
+                  <td className="py-3 pr-3">
+                    <FormDots form={form} />
                   </td>
                 </tr>
               );
-            }
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
-            // DEFAULT (piłka/ręczna/kosz itp.)
-            return (
-              <tr key={r.team_id} style={{ borderBottom: "1px solid #333" }}>
-                <td style={{ padding: "10px" }}>{i + 1}</td>
-                <td style={{ padding: "10px", fontWeight: "bold" }}>{r.team_name}</td>
-                <td>{r.played}</td>
-                <td>{r.wins}</td>
-                <td>{r.draws}</td>
-                <td>{r.losses}</td>
-                <td>{r.goals_for}</td>
-                <td>{r.goals_against}</td>
-                <td>{r.goal_difference}</td>
-                <td>
-                  <strong style={{ color: "#3498db" }}>{r.points}</strong>
-                </td>
-                <td>
-                  <div style={{ display: "flex", gap: "3px" }}>
-                    {form.map((f, idx) => (
-                      <span
-                        key={idx}
-                        style={{
-                          width: 16,
-                          height: 16,
-                          borderRadius: "50%",
-                          fontSize: 9,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          fontWeight: "bold",
-                          color: "#fff",
-                          backgroundColor: f === "W" ? "#2ecc71" : f === "D" ? "#95a5a6" : "#e74c3c",
-                        }}
-                      >
-                        {f}
-                      </span>
-                    ))}
-                  </div>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+function ThSticky({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <th
+      className={cn(
+        "sticky top-0 z-10 border-b border-white/10 bg-slate-950/85 backdrop-blur",
+        "py-3 pl-3 pr-3",
+        className
+      )}
+    >
+      {children}
+    </th>
+  );
+}
+
+function FormDots({ form }: { form: FormResult[] }) {
+  return (
+    <div className="flex gap-1.5">
+      {form.map((f, idx) => (
+        <span
+          key={`${f}-${idx}`}
+          className={cn(
+            "inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold text-white",
+            f === "W" && "bg-emerald-500/80",
+            f === "D" && "bg-slate-400/70",
+            f === "L" && "bg-rose-500/80"
+          )}
+        >
+          {f}
+        </span>
+      ))}
     </div>
   );
 }
 
 /* =========================
-   KOMPONENTY: DRABINKA (Widoki)
+   Drabinka (premium)
    ========================= */
+
+function StatusPill({ status }: { status: BracketDuelItem["status"] }) {
+  const label = status === "IN_PROGRESS" ? "Na żywo" : status === "FINISHED" ? "Zakończony" : "Zaplanowany";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] font-semibold",
+        status === "IN_PROGRESS" && "border-emerald-400/30 bg-emerald-500/10 text-emerald-200",
+        status === "FINISHED" && "border-white/10 bg-white/5 text-slate-200",
+        status === "SCHEDULED" && "border-white/10 bg-white/5 text-slate-300"
+      )}
+    >
+      {status === "IN_PROGRESS" ? <span className="h-1.5 w-1.5 rounded-full bg-emerald-300 animate-pulse" /> : null}
+      {label}
+    </span>
+  );
+}
 
 function StandardBracketView({ data, discipline }: { data: BracketData; discipline: string }) {
   const { rounds, third_place } = data;
 
   return (
-    <div style={{ overflowX: "auto", paddingBottom: "20px" }}>
-      <div style={{ display: "flex", flexDirection: "row", gap: "40px" }}>
-        {rounds.map((round) => (
-          <RoundColumn key={round.round_number} label={round.label} items={round.items} discipline={discipline} />
-        ))}
+    <div className="relative">
+      <div className="pointer-events-none absolute inset-y-0 left-0 w-10 bg-gradient-to-r from-slate-950/80 to-transparent" />
+      <div className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-slate-950/80 to-transparent" />
 
-        {third_place && (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              minWidth: "240px",
-              borderLeft: "2px dashed #555",
-              paddingLeft: "30px",
-              justifyContent: "center",
-            }}
-          >
-            <h3
-              style={{
-                textAlign: "center",
-                color: "#e67e22",
-                marginBottom: "20px",
-                fontSize: "0.9rem",
-                textTransform: "uppercase",
-              }}
-            >
-              Mecz o 3. miejsce
-            </h3>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <BracketMatchCard item={third_place} isThirdPlace discipline={discipline} />
+      <div className="overflow-x-auto pb-2">
+        <div className="flex gap-7 snap-x snap-mandatory">
+          {rounds.map((round) => (
+            <div key={round.round_number} className="snap-start">
+              <RoundColumn label={round.label} items={round.items} discipline={discipline} />
             </div>
-          </div>
-        )}
+          ))}
+
+          {third_place ? (
+            <div className="flex min-w-[280px] snap-start flex-col justify-center border-l border-dashed border-white/15 pl-6">
+              <div className="mb-3 text-center text-xs font-semibold uppercase tracking-wide text-amber-200">Mecz o 3. miejsce</div>
+              <div className="flex justify-center">
+                <BracketMatchCard item={third_place} isThirdPlace discipline={discipline} />
+              </div>
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -650,79 +749,60 @@ function CenteredBracketView({ data, discipline }: { data: BracketData; discipli
   const preFinalRounds = rounds.slice(0, rounds.length - 1);
 
   return (
-    <div style={{ overflowX: "auto", paddingBottom: "20px", display: "flex", justifyContent: "center" }}>
-      <div style={{ display: "flex", alignItems: "stretch" }}>
-        <div style={{ display: "flex", gap: "20px" }}>
-          {preFinalRounds.map((round) => {
-            const half = Math.ceil(round.items.length / 2);
-            const leftItems = round.items.slice(0, half);
-            return (
-              <RoundColumn
-                key={`L-${round.round_number}`}
-                label={round.label}
-                items={leftItems}
-                discipline={discipline}
-              />
-            );
-          })}
-        </div>
+    <div className="relative overflow-x-auto pb-2">
+      <div className="pointer-events-none absolute inset-y-0 left-0 w-10 bg-gradient-to-r from-slate-950/80 to-transparent" />
+      <div className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-slate-950/80 to-transparent" />
 
-        <div style={{ margin: "0 40px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              height: "100%",
-            }}
-          >
-            <div style={{ fontSize: "2rem", marginBottom: "10px" }}>🏆</div>
+      <div className="flex justify-center">
+        <div className="flex items-stretch snap-x snap-mandatory">
+          <div className="flex gap-5">
+            {preFinalRounds.map((round) => {
+              const half = Math.ceil(round.items.length / 2);
+              const leftItems = round.items.slice(0, half);
+              return (
+                <div key={`L-${round.round_number}`} className="snap-start">
+                  <RoundColumn label={round.label} items={leftItems} discipline={discipline} />
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mx-10 flex flex-col justify-center">
+            <div className="mb-3 grid place-items-center">
+              <div className="grid h-10 w-10 place-items-center rounded-2xl border border-amber-500/20 bg-amber-500/10">
+                <Trophy className="h-5 w-5 text-amber-200" />
+              </div>
+            </div>
 
             <RoundColumn label={finalRound.label} items={finalRound.items} highlight discipline={discipline} />
 
-            {third_place && (
-              <div style={{ marginTop: "50px", opacity: 0.9, transform: "scale(0.95)" }}>
-                <h4
-                  style={{
-                    textAlign: "center",
-                    margin: "0 0 10px 0",
-                    fontSize: "0.75rem",
-                    color: "#e67e22",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  Mecz o 3. miejsce
-                </h4>
-                <BracketMatchCard item={third_place} isThirdPlace discipline={discipline} />
+            {third_place ? (
+              <div className="mt-8 opacity-90">
+                <div className="mb-2 text-center text-xs font-semibold uppercase tracking-wide text-amber-200">Mecz o 3. miejsce</div>
+                <div className="flex justify-center">
+                  <BracketMatchCard item={third_place} isThirdPlace discipline={discipline} />
+                </div>
               </div>
-            )}
+            ) : null}
           </div>
-        </div>
 
-        <div style={{ display: "flex", gap: "20px", flexDirection: "row-reverse" }}>
-          {preFinalRounds.map((round) => {
-            const half = Math.ceil(round.items.length / 2);
-            const rightItems = round.items.slice(half);
-            if (rightItems.length === 0) return null;
-            return (
-              <RoundColumn
-                key={`R-${round.round_number}`}
-                label={round.label}
-                items={rightItems}
-                discipline={discipline}
-              />
-            );
-          })}
+          <div className="flex flex-row-reverse gap-5">
+            {preFinalRounds.map((round) => {
+              const half = Math.ceil(round.items.length / 2);
+              const rightItems = round.items.slice(half);
+              if (rightItems.length === 0) return null;
+              return (
+                <div key={`R-${round.round_number}`} className="snap-start">
+                  <RoundColumn label={round.label} items={rightItems} discipline={discipline} />
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>
   );
 }
-
-/* =========================
-   KOMPONENTY POMOCNICZE DRABINKI
-   ========================= */
 
 function RoundColumn({
   label,
@@ -736,23 +816,20 @@ function RoundColumn({
   discipline: string;
 }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", minWidth: "240px" }}>
-      <h3
-        style={{
-          textAlign: "center",
-          marginBottom: "20px",
-          fontSize: "0.85rem",
-          color: highlight ? "#f1c40f" : "#aaa",
-          textTransform: "uppercase",
-          letterSpacing: "1px",
-          borderBottom: highlight ? "2px solid #f1c40f" : "1px solid #444",
-          paddingBottom: "5px",
-        }}
+    <div className="flex min-w-[260px] flex-col">
+      <div
+        className={cn(
+          "mb-4 text-center text-xs font-semibold uppercase tracking-wide",
+          "rounded-full border px-3 py-2",
+          highlight
+            ? "border-amber-400/30 bg-amber-500/10 text-amber-200"
+            : "border-white/10 bg-white/[0.04] text-slate-300"
+        )}
       >
         {label}
-      </h3>
+      </div>
 
-      <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-around", flexGrow: 1, gap: "20px" }}>
+      <div className="flex flex-1 flex-col justify-around gap-4">
         {items.map((item) => (
           <BracketMatchCard key={item.id} item={item} discipline={discipline} />
         ))}
@@ -775,15 +852,8 @@ function BracketMatchCard({
   const homeWin = item.winner_id !== null && item.winner_id === item.home_team_id;
   const awayWin = item.winner_id !== null && item.winner_id === item.away_team_id;
 
-  const aggHome =
-    item.is_two_legged
-      ? (item.aggregate_home ?? ((item.score_leg1_home ?? 0) + (item.score_leg2_home ?? 0)))
-      : null;
-
-  const aggAway =
-    item.is_two_legged
-      ? (item.aggregate_away ?? ((item.score_leg1_away ?? 0) + (item.score_leg2_away ?? 0)))
-      : null;
+  const aggHome = item.is_two_legged ? (item.aggregate_home ?? ((item.score_leg1_home ?? 0) + (item.score_leg2_home ?? 0))) : null;
+  const aggAway = item.is_two_legged ? (item.aggregate_away ?? ((item.score_leg1_away ?? 0) + (item.score_leg2_away ?? 0))) : null;
 
   const canShowDetails = item.status !== "SCHEDULED";
 
@@ -796,110 +866,91 @@ function BracketMatchCard({
 
   return (
     <div
-      style={{
-        border: "1px solid #ccc",
-        borderRadius: "6px",
-        padding: "10px",
-        backgroundColor: "#fff",
-        color: "#000",
-        boxShadow: "0 4px 6px rgba(0,0,0,0.3)",
-        fontSize: "0.85rem",
-        position: "relative",
-        minWidth: "220px",
-        borderLeft: isThirdPlace ? "4px solid #e67e22" : "4px solid #3498db",
-      }}
+      className={cn(
+        "rounded-2xl border bg-white/[0.04] p-3 shadow-[0_10px_30px_rgba(0,0,0,0.25)]",
+        "transition hover:bg-white/[0.06]",
+        isThirdPlace ? "border-amber-500/25" : "border-white/10"
+      )}
     >
-      {item.is_two_legged && (
-        <div
-          style={{
-            fontSize: "0.6rem",
-            color: "#888",
-            marginBottom: "6px",
-            textAlign: "center",
-            textTransform: "uppercase",
-            letterSpacing: "0.5px",
-          }}
-        >
-          Dwumecz
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <StatusPill status={item.status} />
+          {item.is_two_legged ? (
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[11px] font-semibold text-slate-200">
+              Dwumecz
+            </span>
+          ) : null}
         </div>
-      )}
+      </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", alignItems: "center" }}>
-        <span style={{ fontWeight: homeWin ? "bold" : "normal", color: "#000", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", maxWidth: "110px" }}>
-          {item.home_team_name || "TBD"}
-        </span>
+      <div className="flex items-center justify-between gap-3">
+        <div className={cn("min-w-0 text-sm", homeWin ? "font-semibold text-slate-100" : "text-slate-200")}>
+          <span className="block truncate">{item.home_team_name || "TBD"}</span>
+        </div>
 
-        <div style={{ display: "flex", gap: "3px" }}>
+        <div className="flex shrink-0 items-center gap-1">
           <ScoreBox score={item.score_leg1_home} isAgg={false} />
-          {item.is_two_legged && <ScoreBox score={item.score_leg2_home} isAgg={false} />}
-          {item.is_two_legged && <ScoreBox score={aggHome} isAgg={true} highlight={homeWin} />}
+          {item.is_two_legged ? <ScoreBox score={item.score_leg2_home} isAgg={false} /> : null}
+          {item.is_two_legged ? <ScoreBox score={aggHome} isAgg highlight={homeWin} /> : null}
         </div>
       </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontWeight: awayWin ? "bold" : "normal", color: "#000", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", maxWidth: "110px" }}>
-          {item.away_team_name || "TBD"}
-        </span>
+      <div className="mt-2 flex items-center justify-between gap-3">
+        <div className={cn("min-w-0 text-sm", awayWin ? "font-semibold text-slate-100" : "text-slate-200")}>
+          <span className="block truncate">{item.away_team_name || "TBD"}</span>
+        </div>
 
-        <div style={{ display: "flex", gap: "3px" }}>
+        <div className="flex shrink-0 items-center gap-1">
           <ScoreBox score={item.score_leg1_away} isAgg={false} />
-          {item.is_two_legged && <ScoreBox score={item.score_leg2_away} isAgg={false} />}
-          {item.is_two_legged && <ScoreBox score={aggAway} isAgg={true} highlight={awayWin} />}
+          {item.is_two_legged ? <ScoreBox score={item.score_leg2_away} isAgg={false} /> : null}
+          {item.is_two_legged ? <ScoreBox score={aggAway} isAgg highlight={awayWin} /> : null}
         </div>
       </div>
 
-      {(tennisLeg1 || tennisLeg2 || pensText) && (
-        <div style={{ marginTop: "8px", fontSize: "0.72rem", color: "#444", lineHeight: 1.25 }}>
-          {tennisLeg1 && !item.is_two_legged && (
+      {tennisLeg1 || tennisLeg2 || pensText ? (
+        <div className="mt-3 space-y-1 text-xs text-slate-300">
+          {tennisLeg1 && !item.is_two_legged ? (
             <div>
-              <strong>Sety (gemy):</strong> {tennisLeg1}
+              <span className="font-semibold text-slate-200">Sety (gemy):</span> {tennisLeg1}
             </div>
-          )}
+          ) : null}
 
-          {item.is_two_legged && (tennisLeg1 || tennisLeg2) && (
+          {item.is_two_legged && (tennisLeg1 || tennisLeg2) ? (
             <div>
-              <strong>Sety (gemy):</strong> {tennisLeg1 ? tennisLeg1 : "-"} {" | "} {tennisLeg2 ? tennisLeg2 : "-"}
+              <span className="font-semibold text-slate-200">Sety (gemy):</span> {tennisLeg1 ? tennisLeg1 : "-"} {" | "} {tennisLeg2 ? tennisLeg2 : "-"}
             </div>
-          )}
+          ) : null}
 
-          {pensText && (
+          {pensText ? (
             <div>
-              <strong>Karne:</strong> {pensText}
+              <span className="font-semibold text-slate-200">Karne:</span> {pensText}
             </div>
-          )}
+          ) : null}
         </div>
-      )}
-
-      {item.status === "FINISHED" && (
-        <div style={{ fontSize: "0.65rem", color: "#666", marginTop: "6px", textAlign: "right", fontStyle: "italic" }}>
-          Zakończony
-        </div>
-      )}
+      ) : null}
     </div>
   );
 }
 
 function ScoreBox({ score, isAgg, highlight }: { score: number | null | undefined; isAgg: boolean; highlight?: boolean }) {
-  const bgColor = isAgg ? (highlight ? "#3498db" : "#bdc3c7") : "#f0f0f0";
-  const textColor = isAgg && highlight ? "#fff" : "#000";
-  const fontWeight = isAgg ? "bold" : "normal";
-
   return (
     <span
-      style={{
-        fontWeight,
-        backgroundColor: bgColor,
-        color: textColor,
-        padding: "2px 0",
-        borderRadius: "3px",
-        width: "22px",
-        display: "inline-block",
-        textAlign: "center",
-        fontSize: "0.8rem",
-        border: isAgg ? "none" : "1px solid #ddd",
-      }}
+      className={cn(
+        "inline-flex h-6 w-7 items-center justify-center rounded-md text-xs font-semibold",
+        !isAgg && "border border-white/10 bg-white/5 text-slate-100",
+        isAgg && !highlight && "border border-white/10 bg-white/10 text-slate-100",
+        isAgg && highlight && "border border-sky-400/30 bg-sky-500/20 text-sky-100"
+      )}
+      title={isAgg ? "Agregat" : "Wynik"}
     >
       {score ?? "-"}
     </span>
   );
 }
+
+/*
+Co zmieniono:
+- Dodano "premium" UI: animowane przełączniki, sticky nagłówki tabel i scroll w obrębie karty.
+- Drabinka ma snap scroll, fade na krawędziach i statusy (LIVE) na kartach.
+- Logika biznesowa pozostała identyczna: pobieranie danych, TENNIS/PLT, grupy, agregaty, karne, sety.
+*/

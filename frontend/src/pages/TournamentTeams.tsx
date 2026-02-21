@@ -1,11 +1,18 @@
-// frontend/src/pages/TournamentTeams.tsx
+// src/pages/TournamentTeams.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
+
+import { ChevronDown, ChevronUp } from "lucide-react";
+
 import { apiFetch } from "../api";
 
-import { Card } from "../ui/Card";
 import { Button } from "../ui/Button";
+import { Card } from "../ui/Card";
 import { Input } from "../ui/Input";
+import { toast } from "../ui/Toast";
+
+import { useAutosave } from "../hooks/useAutosave";
+import { AutosaveIndicator } from "../components/AutosaveIndicator";
 
 type Team = { id: number; name: string; players_count?: number };
 
@@ -98,29 +105,12 @@ function getRoleAndPerms(t: TournamentDTO | null): { role: MyRole; perms: MyPerm
   return { role, perms };
 }
 
-type ToastKind = "success" | "error" | "info";
-function useToast() {
-  const [toast, setToast] = useState<{ kind: ToastKind; text: string } | null>(null);
-  const tRef = useRef<number | null>(null);
-
-  const show = (kind: ToastKind, text: string) => {
-    setToast({ kind, text });
-    if (tRef.current) window.clearTimeout(tRef.current);
-    tRef.current = window.setTimeout(() => setToast(null), 2200);
-  };
-
-  const clear = () => {
-    if (tRef.current) window.clearTimeout(tRef.current);
-    setToast(null);
-  };
-
-  return { toast, show, clear };
+function clonePlayers(rows: PlayerRow[]): PlayerRow[] {
+  return rows.map((r) => ({ id: r.id, display_name: r.display_name, jersey_number: r.jersey_number ?? null }));
 }
 
 export default function TournamentTeams() {
   const { id } = useParams<{ id: string }>();
-
-  const { toast, show: showToast, clear: clearToast } = useToast();
 
   const [tournament, setTournament] = useState<TournamentDTO | null>(null);
   const tournamentRef = useRef<TournamentDTO | null>(null);
@@ -138,7 +128,6 @@ export default function TournamentTeams() {
   const [rosterOpen, setRosterOpen] = useState(true);
   const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
   const [playersLoading, setPlayersLoading] = useState(false);
-  const [playersBusy, setPlayersBusy] = useState(false);
   const [players, setPlayers] = useState<PlayerRow[]>([{ display_name: "", jersey_number: null }]);
   const [playersDirty, setPlayersDirty] = useState(false);
 
@@ -146,6 +135,41 @@ export default function TournamentTeams() {
   const [participantMode, setParticipantMode] = useState(false);
 
   const inFlightRef = useRef(false);
+
+  // ===== podgląd składu w kartach drużyn =====
+  const [expandedTeams, setExpandedTeams] = useState<Record<number, boolean>>({});
+  const [teamPlayersPreview, setTeamPlayersPreview] = useState<Record<number, TeamPlayersResponse | null>>({});
+  const [teamPlayersPreviewLoading, setTeamPlayersPreviewLoading] = useState<Record<number, boolean>>({});
+
+  const canEditRosterAsManagerRef = useRef<boolean>(false);
+
+  // ===== undo (Cofnij) per drużyna =====
+  const undoStacksRef = useRef<Record<number, PlayerRow[][]>>({});
+
+  const getActiveTeamId = (): number => {
+    return selectedTeamId ?? 0;
+  };
+
+  const pushUndoSnapshot = (teamId: number, snapshot: PlayerRow[]) => {
+    if (!teamId) return;
+    const stacks = undoStacksRef.current;
+    const stack = stacks[teamId] ?? [];
+    stack.push(clonePlayers(snapshot));
+    if (stack.length > 30) stack.shift();
+    stacks[teamId] = stack;
+  };
+
+  const popUndoSnapshot = (teamId: number): PlayerRow[] | null => {
+    const stack = undoStacksRef.current[teamId] ?? [];
+    const snap = stack.pop() ?? null;
+    undoStacksRef.current[teamId] = stack;
+    return snap;
+  };
+
+  const clearUndoStack = (teamId: number) => {
+    if (!teamId) return;
+    undoStacksRef.current[teamId] = [];
+  };
 
   const loadTournament = async (): Promise<TournamentDTO> => {
     const res = await apiFetch(`/api/tournaments/${id}/`);
@@ -182,6 +206,83 @@ export default function TournamentTeams() {
     setTeams(data.teams);
     return data;
   };
+
+  // ===== autosave: nazwy drużyn =====
+  const teamNameAutosave = useAutosave<{ name: string }>({
+    onSave: async (teamId, data) => {
+      const name = normName(data.name);
+      if (!name) throw new Error("Nazwa nie może być pusta.");
+
+      const res = await apiFetch(`/api/tournaments/${id}/teams/${teamId}/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        toastOnError: false,
+        body: JSON.stringify({ name }),
+      });
+
+      if (!res.ok) {
+        const json = await res.json().catch(() => null);
+        throw new Error(json?.detail || "Nie udało się zapisać nazwy.");
+      }
+
+      setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, name } : t)));
+    },
+  });
+
+  // ===== autosave: skład (na całej stronie) =====
+  const rosterAutosave = useAutosave<{ teamId: number; players: PlayerRow[] }>({
+    onSave: async (_key, payload) => {
+      const teamId = payload.teamId;
+
+      const { role, perms } = getRoleAndPerms(tournamentRef.current);
+      if (role === "ASSISTANT" && !Boolean(perms?.roster_edit)) {
+        throw new Error("Brak uprawnień do edycji składów (roster_edit = false).");
+      }
+
+      const endpoint = canEditRosterAsManagerRef.current
+        ? `/api/tournaments/${id}/teams/${teamId}/players/`
+        : `/api/tournaments/${id}/my-team/players/`;
+
+      const payloadPlayers = (payload.players || [])
+        .map((r) => ({
+          id: r.id,
+          display_name: normName(r.display_name),
+          jersey_number: r.jersey_number ?? null,
+        }))
+        .filter((r) => r.display_name.length > 0);
+
+      const res = await apiFetch(endpoint, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        toastOnError: false,
+        body: JSON.stringify({ players: payloadPlayers }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || "Nie udało się zapisać składu.");
+      }
+
+      const data: TeamPlayersResponse = await res.json();
+
+      setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, players_count: data.count } : t)));
+
+      setTeamPlayersPreview((prev) => ({
+        ...prev,
+        [teamId]: data,
+      }));
+
+      const nextRows =
+        (data?.results || []).map((p) => ({
+          id: p.id,
+          display_name: p.display_name ?? "",
+          jersey_number: p.jersey_number ?? null,
+        })) || [{ display_name: "", jersey_number: null }];
+
+      setPlayers(nextRows);
+      setPlayersDirty(false);
+    },
+  });
 
   // ===== kolejka (name-change requests) =====
   const canViewOrApproveQueue = (): boolean => {
@@ -220,7 +321,7 @@ export default function TournamentTeams() {
     if (!id) return;
 
     if (!canViewOrApproveQueue()) {
-      showToast("error", "Brak uprawnień do obsługi kolejki zmian nazw.");
+      toast.error("Brak uprawnień do obsługi kolejki zmian nazw.");
       return;
     }
 
@@ -236,9 +337,8 @@ export default function TournamentTeams() {
 
       await loadPendingQueue();
       await loadTeams().catch(() => null);
-      showToast("success", "Prośba zaakceptowana.");
     } catch (e: any) {
-      showToast("error", e?.message || "Błąd akceptacji prośby.");
+      toast.error(e?.message || "Błąd akceptacji prośby.");
     } finally {
       setQueueBusy(false);
     }
@@ -248,7 +348,7 @@ export default function TournamentTeams() {
     if (!id) return;
 
     if (!canViewOrApproveQueue()) {
-      showToast("error", "Brak uprawnień do obsługi kolejki zmian nazw.");
+      toast.error("Brak uprawnień do obsługi kolejki zmian nazw.");
       return;
     }
 
@@ -263,9 +363,8 @@ export default function TournamentTeams() {
       }
 
       await loadPendingQueue();
-      showToast("success", "Prośba odrzucona.");
     } catch (e: any) {
-      showToast("error", e?.message || "Błąd odrzucenia prośby.");
+      toast.error(e?.message || "Błąd odrzucenia prośby.");
     } finally {
       setQueueBusy(false);
     }
@@ -277,21 +376,17 @@ export default function TournamentTeams() {
 
   const isOrganizer = myRole === "ORGANIZER";
   const isAssistant = myRole === "ASSISTANT";
-  const isParticipant = !isOrganizer && !isAssistant;
 
   const canEditTeams = isOrganizer || (isAssistant && Boolean(myPerms?.teams_edit));
   const canEditRosterAsManager = isOrganizer || (isAssistant && Boolean(myPerms?.roster_edit));
   const canManageQueue = isOrganizer || (isAssistant && Boolean(myPerms?.name_change_approve));
 
+  useEffect(() => {
+    canEditRosterAsManagerRef.current = Boolean(canEditRosterAsManager);
+  }, [canEditRosterAsManager]);
+
   const matchesStarted = Boolean(tournament?.matches_started);
   const canChangeTeamsCount = isOrganizer || (isAssistant && Boolean(myPerms?.tournament_edit) && !matchesStarted);
-
-  const formatLabel =
-    tournament?.tournament_format === "LEAGUE"
-      ? "Liga"
-      : tournament?.tournament_format === "CUP"
-        ? "Puchar"
-        : "Grupy + puchar";
 
   // ===== roster helpers =====
   const ensureRosterStateForEmpty = (rows: PlayerRow[]): PlayerRow[] => {
@@ -326,7 +421,7 @@ export default function TournamentTeams() {
     const t = tournamentRef.current;
     const { role, perms } = getRoleAndPerms(t);
     if (role === "ASSISTANT" && !Boolean(perms?.roster_edit)) {
-      showToast("error", "Brak uprawnień do edycji składów (roster_edit = false).");
+      toast.error("Brak uprawnień do edycji składów (roster_edit = false).");
       return;
     }
 
@@ -341,74 +436,30 @@ export default function TournamentTeams() {
       }
       const data: TeamPlayersResponse = await res.json();
 
-      setPlayers(mapApiPlayersToRows(data));
+      const nextRows = mapApiPlayersToRows(data);
+
+      setPlayers(nextRows);
       setPlayersDirty(false);
+
+      const effectiveTeamId = data.team_id ?? teamId ?? 0;
+      clearUndoStack(effectiveTeamId);
 
       if (mode === "PARTICIPANT") {
         setParticipantMode(true);
         setSelectedTeamId(data.team_id ?? null);
       } else {
         setParticipantMode(false);
+        setSelectedTeamId(effectiveTeamId || null);
       }
+
+      rosterAutosave.clearDraft("roster");
     } catch (e: any) {
       setPlayers([{ display_name: "", jersey_number: null }]);
       setPlayersDirty(false);
-      showToast("error", e?.message || "Błąd pobierania składu.");
+      toast.error(e?.message || "Błąd pobierania składu.");
     } finally {
       setPlayersLoading(false);
     }
-  };
-
-  const saveTeamPlayers = async (teamId: number) => {
-    if (!id) return;
-
-    const t = tournamentRef.current;
-    const { role, perms } = getRoleAndPerms(t);
-    if (role === "ASSISTANT" && !Boolean(perms?.roster_edit)) {
-      showToast("error", "Brak uprawnień do edycji składów (roster_edit = false).");
-      return;
-    }
-
-    setPlayersBusy(true);
-    try {
-      const { endpoint } = getRosterEndpoint(teamId);
-
-      const payloadPlayers = players
-        .map((r) => ({
-          id: r.id,
-          display_name: normName(r.display_name),
-          jersey_number: r.jersey_number ?? null,
-        }))
-        .filter((r) => r.display_name.length > 0);
-
-      const res = await apiFetch(endpoint, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ players: payloadPlayers }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.detail || "Nie udało się zapisać składu.");
-      }
-
-      const data: TeamPlayersResponse = await res.json();
-      setPlayers(mapApiPlayersToRows(data));
-      setPlayersDirty(false);
-
-      await loadTeams().catch(() => null);
-      showToast("success", "Skład zapisany.");
-    } catch (e: any) {
-      showToast("error", e?.message || "Błąd zapisu składu.");
-    } finally {
-      setPlayersBusy(false);
-    }
-  };
-
-  const revertTeamPlayers = async () => {
-    if (!selectedTeamId) return;
-    await loadTeamPlayers(selectedTeamId);
-    showToast("info", "Przywrócono dane z serwera.");
   };
 
   // ===== init =====
@@ -419,7 +470,6 @@ export default function TournamentTeams() {
 
     const init = async () => {
       try {
-        clearToast();
         setLoading(true);
 
         const t = await loadTournament();
@@ -446,7 +496,7 @@ export default function TournamentTeams() {
           }
         }
       } catch (e: any) {
-        if (mounted) showToast("error", e?.message || "Błąd ładowania danych.");
+        toast.error(e?.message || "Błąd ładowania danych.");
       } finally {
         if (mounted) {
           setBusy(false);
@@ -469,10 +519,10 @@ export default function TournamentTeams() {
   const confirmChangeCount = (): boolean => {
     if (!canChangeTeamsCount) {
       if (isAssistant) {
-        if (!myPerms?.tournament_edit) showToast("error", "Brak uprawnień: asystent nie ma tournament_edit.");
-        else if (matchesStarted) showToast("error", "Asystent nie może zmieniać liczby uczestników po starcie.");
+        if (!myPerms?.tournament_edit) toast.error("Brak uprawnień: asystent nie ma tournament_edit.");
+        else if (matchesStarted) toast.error("Asystent nie może zmieniać liczby uczestników po starcie.");
       } else {
-        showToast("error", "Brak uprawnień.");
+        toast.error("Brak uprawnień.");
       }
       return false;
     }
@@ -513,7 +563,6 @@ export default function TournamentTeams() {
       setBusy(true);
 
       const resp = await setupTeams(next);
-      showToast("success", resp.detail || "Zmieniono liczbę uczestników.");
 
       if (canManageQueue) await loadPendingQueue();
 
@@ -522,179 +571,184 @@ export default function TournamentTeams() {
 
       if (hasRosterFeature(resp.tournament) && allowManagerRoster) {
         const ids = new Set(resp.teams.map((t) => t.id));
-        const nextSelected =
-          selectedTeamId && ids.has(selectedTeamId) ? selectedTeamId : resp.teams?.[0]?.id ?? null;
+        const nextSelected = selectedTeamId && ids.has(selectedTeamId) ? selectedTeamId : resp.teams?.[0]?.id ?? null;
         setSelectedTeamId(nextSelected);
         if (nextSelected) await loadTeamPlayers(nextSelected);
       }
     } catch (e: any) {
-      showToast("error", e?.message || "Nie udało się zmienić liczby uczestników.");
+      toast.error(e?.message || "Nie udało się zmienić liczby uczestników.");
     } finally {
       setBusy(false);
       inFlightRef.current = false;
     }
   };
 
-  // ===== team name edit =====
-  const updateTeamName = async (teamId: number, name: string) => {
-    if (!canEditTeams) throw new Error("Brak uprawnień do edycji nazw (teams_edit = false).");
+  function participantsRosterBlocked(): boolean {
+    const t = tournamentRef.current;
+    const { role, perms } = getRoleAndPerms(t);
+    return role === "ASSISTANT" && !Boolean(perms?.roster_edit);
+  }
 
-    const res = await apiFetch(`/api/tournaments/${id}/teams/${teamId}/`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
+  // ===== autosave: helper dla edytora składu =====
+  const scheduleRosterAutosave = (nextPlayers: PlayerRow[]) => {
+    if (!hasRosterFeature(tournamentRef.current)) return;
+    if (participantsRosterBlocked()) return;
 
-    if (!res.ok) {
-      const data = await res.json().catch(() => null);
-      throw new Error(data?.detail || "Nie udało się zapisać nazwy.");
-    }
+    const teamId = getActiveTeamId();
+    if (!teamId) return;
+
+    rosterAutosave.update("roster", { teamId, players: nextPlayers });
   };
 
-  // ===== UI helpers =====
   const addPlayerRow = () => {
     setPlayersDirty(true);
-    setPlayers((prev) => [...prev, { display_name: "", jersey_number: null }]);
+    setPlayers((prev) => {
+      const teamId = getActiveTeamId();
+      if (teamId) pushUndoSnapshot(teamId, prev);
+
+      const next = [...prev, { display_name: "", jersey_number: null }];
+      scheduleRosterAutosave(next);
+      return next;
+    });
   };
 
   const removePlayerRow = (idx: number) => {
     setPlayersDirty(true);
     setPlayers((prev) => {
+      const teamId = getActiveTeamId();
+      if (teamId) pushUndoSnapshot(teamId, prev);
+
       const next = prev.filter((_, i) => i !== idx);
-      return next.length === 0 ? [{ display_name: "", jersey_number: null }] : next;
+      const safe = next.length === 0 ? [{ display_name: "", jersey_number: null }] : next;
+      scheduleRosterAutosave(safe);
+      return safe;
     });
   };
 
   const updatePlayerField = (idx: number, patch: Partial<PlayerRow>) => {
     setPlayersDirty(true);
-    setPlayers((prev) => prev.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
+    setPlayers((prev) => {
+      const teamId = getActiveTeamId();
+      if (teamId) pushUndoSnapshot(teamId, prev);
+
+      const next = prev.map((p, i) => (i === idx ? { ...p, ...patch } : p));
+      scheduleRosterAutosave(next);
+      return next;
+    });
   };
 
-  if (loading) return <div className="px-4 py-8 text-slate-200/80">Ładowanie…</div>;
+  const undoLastRosterChange = () => {
+    const teamId = getActiveTeamId();
+    if (!teamId) return;
+
+    const snap = popUndoSnapshot(teamId);
+    if (!snap) return;
+
+    setPlayersDirty(true);
+    setPlayers(snap);
+    scheduleRosterAutosave(snap);
+  };
+
+  // ===== podgląd składu w karcie (lazy) =====
+  const loadTeamPreview = async (teamId: number) => {
+    if (!id) return;
+
+    setTeamPlayersPreviewLoading((p) => ({ ...p, [teamId]: true }));
+    try {
+      const res = await apiFetch(`/api/tournaments/${id}/teams/${teamId}/players/`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || "Nie udało się pobrać składu.");
+      }
+      const data: TeamPlayersResponse = await res.json();
+      setTeamPlayersPreview((p) => ({ ...p, [teamId]: data }));
+      setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, players_count: data.count } : t)));
+    } catch (e: any) {
+      toast.error(e?.message || "Błąd pobierania składu.");
+      setTeamPlayersPreview((p) => ({ ...p, [teamId]: null }));
+    } finally {
+      setTeamPlayersPreviewLoading((p) => ({ ...p, [teamId]: false }));
+    }
+  };
+
+  const toggleTeamExpand = async (teamId: number) => {
+    const next = !Boolean(expandedTeams[teamId]);
+    setExpandedTeams((p) => ({ ...p, [teamId]: next }));
+
+    if (next && !teamPlayersPreview[teamId] && !teamPlayersPreviewLoading[teamId]) {
+      await loadTeamPreview(teamId);
+    }
+  };
+
+  const collapseBtnBase =
+    "inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-slate-200 hover:bg-white/[0.07] transition disabled:opacity-60 disabled:hover:bg-white/[0.04]";
+
+  if (loading) return <div className="px-4 py-8 text-slate-200/80">Ładowanie...</div>;
   if (!tournament) return <div className="px-4 py-8 text-rose-300">Brak danych turnieju.</div>;
 
   const titleLabel = tournament?.competition_type === "INDIVIDUAL" ? "Zawodnicy" : "Drużyny";
+  const canUndoNow = !playersLoading && (undoStacksRef.current[getActiveTeamId()]?.length ?? 0) > 0;
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
-      {/* TOAST */}
-      {toast && (
-        <div
-          className={[
-            "fixed bottom-6 right-6 z-[60] w-[min(420px,calc(100vw-2rem))]",
-            "rounded-2xl border border-white/10 bg-slate-950/90 backdrop-blur",
-            "px-4 py-3 shadow-[0_20px_80px_rgba(0,0,0,0.55)]",
-          ].join(" ")}
-          role="status"
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div className="text-sm text-slate-100">
-              <span
-                className={[
-                  "mr-2 inline-block h-2 w-2 rounded-full align-middle",
-                  toast.kind === "success"
-                    ? "bg-emerald-400"
-                    : toast.kind === "error"
-                      ? "bg-rose-400"
-                      : "bg-sky-400",
-                ].join(" ")}
-              />
-              {toast.text}
-            </div>
-            <button
-              type="button"
-              onClick={clearToast}
-              className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-100 hover:bg-white/10"
-              aria-label="Zamknij"
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-      )}
-
+    <div className="w-full py-6">
       {/* HEADER */}
-      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Uczestnicy</h1>
-          <div className="mt-1 text-sm text-slate-200/70">
-            Turniej: <span className="text-slate-100">{tournament.name}</span> • Format:{" "}
-            <span className="text-slate-100">{formatLabel}</span> • Status:{" "}
-            <span className="text-slate-100">{tournament.status}</span>
+      <div className="mb-4 flex flex-col gap-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-white">Uczestnicy</h1>
+            <div className="mt-1 text-sm text-slate-300">Zarządzanie uczestnikami - liczba, nazwy i składy.</div>
           </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            disabled={busy}
-            onClick={async () => {
-              try {
-                setBusy(true);
-                await loadTournament();
-                await loadTeams();
-                if (canManageQueue) await loadPendingQueue();
-                showToast("success", "Odświeżono dane.");
-              } catch {
-                showToast("error", "Nie udało się odświeżyć danych.");
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            Odśwież
-          </Button>
         </div>
       </div>
 
-      {/* WARNINGS */}
-      {isAssistant && !myPerms && (
-        <Card className="mb-4 p-4">
-          <div className="text-sm text-amber-200/90">
-            Uwaga: backend nie zwrócił <code className="text-amber-100">my_permissions</code>. UI traktuje uprawnienia
-            asystenta jako wyłączone.
-          </div>
-        </Card>
-      )}
+      {/* INFO/WARN */}
+      <div className="space-y-3">
+        {isAssistant && !myPerms && (
+          <Card className="p-4">
+            <div className="text-sm text-amber-200/90">
+              Uwaga: backend nie zwrócił <code className="text-amber-100">my_permissions</code>. UI traktuje uprawnienia
+              asystenta jako wyłączone.
+            </div>
+          </Card>
+        )}
 
-      {isAssistant && matchesStarted && (
-        <Card className="mb-4 p-4">
-          <div className="text-sm text-rose-200/90">
-            Turniej już się rozpoczął — zmiana liczby uczestników jest zablokowana dla asystenta.
-          </div>
-        </Card>
-      )}
+        {isAssistant && matchesStarted && (
+          <Card className="p-4">
+            <div className="text-sm text-rose-200/90">
+              Turniej już się rozpoczął - zmiana liczby uczestników jest zablokowana dla asystenta.
+            </div>
+          </Card>
+        )}
 
-      {isOrganizer && matchesStarted && (
-        <Card className="mb-4 p-4">
-          <div className="text-sm text-amber-200/90">
-            Turniej jest rozpoczęty. Zmiana liczby uczestników spowoduje pełny reset (mecze, wyniki, harmonogram).
-          </div>
-        </Card>
-      )}
+        {isOrganizer && matchesStarted && (
+          <Card className="p-4">
+            <div className="text-sm text-amber-200/90">
+              Turniej jest rozpoczęty. Zmiana liczby uczestników spowoduje pełny reset (mecze, wyniki, harmonogram).
+            </div>
+          </Card>
+        )}
 
-      {!matchesStarted && tournament.status !== "DRAFT" && (
-        <Card className="mb-4 p-4">
-          <div className="text-sm text-slate-200/80">
-            Zmiana nazw jest bezpieczna. Zmiana liczby uczestników (+/−) spowoduje reset rozgrywek.
-          </div>
-        </Card>
-      )}
+        {!matchesStarted && tournament.status !== "DRAFT" && (
+          <Card className="p-4">
+            <div className="text-sm text-slate-200/80">
+              Zmiana nazw jest bezpieczna. Zmiana liczby uczestników (+/-) spowoduje reset rozgrywek.
+            </div>
+          </Card>
+        )}
+      </div>
 
       {/* TOP: COUNT + QUEUE */}
-      <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
+      <div className="mt-4 grid gap-4 lg:grid-cols-[360px_1fr]">
         <Card className="p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-sm font-semibold text-slate-100">Liczba uczestników</div>
-              <div className="mt-1 text-xs text-slate-200/60">
-                Zmiana może wymagać resetu (zależnie od statusu).
-              </div>
+              <div className="mt-1 text-xs text-slate-300">Zmiana może wymagać resetu (zależnie od statusu).</div>
             </div>
 
             <div className="flex items-center gap-2">
               <Button variant="secondary" disabled={busy || !canChangeTeamsCount} onClick={() => changeTeamsCount(-1)}>
-                −
+                -
               </Button>
               <div className="min-w-[2.5rem] text-center text-lg font-semibold text-slate-100">{currentCount}</div>
               <Button variant="secondary" disabled={busy || !canChangeTeamsCount} onClick={() => changeTeamsCount(1)}>
@@ -704,7 +758,7 @@ export default function TournamentTeams() {
           </div>
 
           {isAssistant && !canChangeTeamsCount && (
-            <div className="mt-3 text-xs text-slate-200/60">
+            <div className="mt-3 text-xs text-slate-300">
               Wymaga <code className="text-slate-100">tournament_edit</code> i braku startu.
             </div>
           )}
@@ -715,55 +769,37 @@ export default function TournamentTeams() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-slate-100">Kolejka próśb o zmianę nazwy</div>
-                <div className="mt-1 text-xs text-slate-200/60">
+                <div className="mt-1 text-xs text-slate-300">
                   Oczekuje: <span className="text-slate-100">{pendingRequests.length}</span>
+                  {queueLoading ? <span className="ml-2 text-slate-400">Ładowanie...</span> : null}
                 </div>
               </div>
-
-              <Button
-                variant="secondary"
-                disabled={queueLoading || queueBusy}
-                onClick={() => loadPendingQueue().catch(() => void 0)}
-              >
-                {queueLoading ? "Ładowanie…" : "Odśwież"}
-              </Button>
             </div>
 
             <div className="mt-3 grid gap-2">
               {pendingRequests.length === 0 && !queueLoading ? (
-                <div className="text-sm text-slate-200/60 italic">Brak oczekujących próśb.</div>
+                <div className="text-sm text-slate-300 italic">Brak oczekujących próśb.</div>
               ) : (
                 pendingRequests.map((r) => (
-                  <div
-                    key={r.id}
-                    className="rounded-xl border border-white/10 bg-white/[0.04] p-3"
-                  >
+                  <div key={r.id} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="text-sm font-semibold text-slate-100">Team #{r.team_id}</div>
-                        <div className="mt-1 text-xs text-slate-200/70 break-words">
+                        <div className="mt-1 text-xs text-slate-300 break-words">
                           <div>
-                            <span className="text-slate-200/50">Było:</span> {r.old_name}
+                            <span className="text-slate-400">Było:</span> {r.old_name}
                           </div>
                           <div>
-                            <span className="text-slate-200/50">Chce:</span> {r.requested_name}
+                            <span className="text-slate-400">Chce:</span> {r.requested_name}
                           </div>
                         </div>
                       </div>
 
                       <div className="flex shrink-0 items-center gap-2">
-                        <Button
-                          variant="secondary"
-                          disabled={queueBusy}
-                          onClick={() => approveRequest(r.id)}
-                        >
+                        <Button variant="secondary" disabled={queueBusy} onClick={() => approveRequest(r.id)}>
                           Akceptuj
                         </Button>
-                        <Button
-                          variant="danger"
-                          disabled={queueBusy}
-                          onClick={() => rejectRequest(r.id)}
-                        >
+                        <Button variant="danger" disabled={queueBusy} onClick={() => rejectRequest(r.id)}>
                           Odrzuć
                         </Button>
                       </div>
@@ -775,9 +811,7 @@ export default function TournamentTeams() {
           </Card>
         ) : (
           <Card className="p-4">
-            <div className="text-sm text-slate-200/70">
-              Kolejka zmian nazw jest niedostępna (brak uprawnień).
-            </div>
+            <div className="text-sm text-slate-300">Kolejka zmian nazw jest niedostępna (brak uprawnień).</div>
           </Card>
         )}
       </div>
@@ -786,44 +820,44 @@ export default function TournamentTeams() {
       {hasRosterFeature(tournament) && (
         <Card className="mt-4 p-4">
           <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-slate-100">Składy (zawodnicy)</div>
-              <div className="mt-1 text-xs text-slate-200/60">
-                {participantMode ? "Tryb uczestnika" : "Tryb organizatora/asystenta"}
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <div className="text-sm font-semibold text-slate-100">Składy (zawodnicy)</div>
+                <AutosaveIndicator status={rosterAutosave.statuses["roster"] ?? "idle"} error={rosterAutosave.errors["roster"]} />
               </div>
+
+              {participantMode ? <div className="mt-1 text-xs text-slate-300">Tryb uczestnika</div> : null}
             </div>
-            <Button variant="secondary" onClick={() => setRosterOpen((v) => !v)}>
+
+            <button type="button" onClick={() => setRosterOpen((v) => !v)} className={collapseBtnBase}>
+              {rosterOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
               {rosterOpen ? "Zwiń" : "Rozwiń"}
-            </Button>
+            </button>
           </div>
 
           {rosterOpen && (
             <div className="mt-4">
               {isAssistant && !canEditRosterAsManager ? (
-                <div className="text-sm text-slate-200/70">
+                <div className="text-sm text-slate-300">
                   Brak uprawnień do składów (wymagane: <code className="text-slate-100">roster_edit</code>).
                 </div>
               ) : (
                 <div className="flex flex-wrap items-center gap-2">
                   {canEditRosterAsManager ? (
                     <>
-                      <div className="text-sm text-slate-200/80">Drużyna:</div>
+                      <div className="text-sm text-slate-300">Drużyna:</div>
                       <select
-                        className="rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10"
+                        className="rounded-2xl border border-white/10 bg-white/[0.06] px-3 py-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10"
                         value={selectedTeamId ?? ""}
                         onChange={async (e) => {
                           const nextId = Number(e.target.value || 0);
                           if (!nextId) return;
-                          if (playersDirty) {
-                            const ok = window.confirm(
-                              "Masz niezapisane zmiany w składzie. Przełączyć drużynę i porzucić zmiany?"
-                            );
-                            if (!ok) return;
-                          }
+
                           setSelectedTeamId(nextId);
+                          clearUndoStack(nextId);
                           await loadTeamPlayers(nextId);
                         }}
-                        disabled={playersBusy || playersLoading}
+                        disabled={playersLoading}
                       >
                         {teams.map((t) => (
                           <option key={t.id} value={t.id}>
@@ -832,61 +866,24 @@ export default function TournamentTeams() {
                         ))}
                       </select>
 
-                      <Button
-                        variant="secondary"
-                        disabled={!selectedTeamId || playersBusy || playersLoading}
-                        onClick={() => selectedTeamId && loadTeamPlayers(selectedTeamId)}
-                      >
-                        Odśwież
-                      </Button>
-
-                      <Button
-                        variant="primary"
-                        disabled={!selectedTeamId || playersBusy || playersLoading || !playersDirty}
-                        onClick={() => selectedTeamId && saveTeamPlayers(selectedTeamId)}
-                      >
-                        Zapisz
-                      </Button>
-
-                      <Button
-                        variant="ghost"
-                        disabled={!selectedTeamId || playersBusy || playersLoading || !playersDirty}
-                        onClick={() => revertTeamPlayers()}
-                      >
+                      <Button variant="ghost" disabled={!canUndoNow} onClick={undoLastRosterChange}>
                         Cofnij
                       </Button>
 
-                      <div className="ml-auto text-xs text-slate-200/60">
-                        {playersLoading ? "Ładowanie…" : playersDirty ? "Niezapisane zmiany" : " "}
+                      <div className="ml-auto text-xs text-slate-400">
+                        {playersLoading ? "Ładowanie..." : playersDirty ? "Niezapisane zmiany" : " "}
                       </div>
                     </>
                   ) : (
                     <>
-                      <div className="text-sm text-slate-200/80">Twoja drużyna</div>
-                      <Button
-                        variant="secondary"
-                        disabled={playersBusy || playersLoading}
-                        onClick={() => loadTeamPlayers(selectedTeamId ?? 0)}
-                      >
-                        Odśwież
-                      </Button>
-                      <Button
-                        variant="primary"
-                        disabled={playersBusy || playersLoading || !selectedTeamId || !playersDirty}
-                        onClick={() => (selectedTeamId ? saveTeamPlayers(selectedTeamId) : null)}
-                      >
-                        Zapisz
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        disabled={playersBusy || playersLoading || !selectedTeamId || !playersDirty}
-                        onClick={() => revertTeamPlayers()}
-                      >
+                      <div className="text-sm text-slate-300">Twoja drużyna</div>
+
+                      <Button variant="ghost" disabled={!canUndoNow} onClick={undoLastRosterChange}>
                         Cofnij
                       </Button>
 
-                      <div className="ml-auto text-xs text-slate-200/60">
-                        {playersLoading ? "Ładowanie…" : playersDirty ? "Niezapisane zmiany" : " "}
+                      <div className="ml-auto text-xs text-slate-400">
+                        {playersLoading ? "Ładowanie..." : playersDirty ? "Niezapisane zmiany" : " "}
                       </div>
                     </>
                   )}
@@ -899,19 +896,19 @@ export default function TournamentTeams() {
                   {players.map((p, idx) => (
                     <div
                       key={p.id ?? `new-${idx}`}
-                      className="grid items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] p-3 md:grid-cols-[1fr_220px_44px]"
+                      className="grid items-center gap-2 rounded-2xl border border-white/10 bg-transparent p-3 md:grid-cols-[1fr_240px_44px]"
                     >
                       <Input
                         value={p.display_name}
-                        disabled={playersBusy || playersLoading}
-                        placeholder={`Zawodnik ${idx + 1} — imię i nazwisko`}
+                        disabled={playersLoading}
+                        placeholder={`Zawodnik ${idx + 1} - imię i nazwisko`}
                         onChange={(e) => updatePlayerField(idx, { display_name: e.target.value })}
                       />
 
                       <Input
                         value={p.jersey_number ?? ""}
-                        disabled={playersBusy || playersLoading}
-                        placeholder="Nr (opcjonalnie)"
+                        disabled={playersLoading}
+                        placeholder="Nr (numer z koszulki)"
                         onChange={(e) => {
                           const raw = e.target.value;
                           if (raw === "") {
@@ -924,26 +921,21 @@ export default function TournamentTeams() {
                         }}
                       />
 
-                      <Button
-                        variant="danger"
-                        disabled={playersBusy || playersLoading}
-                        onClick={() => removePlayerRow(idx)}
-                        title="Usuń wiersz"
-                      >
-                        −
+                      <Button variant="danger" disabled={playersLoading} onClick={() => removePlayerRow(idx)} title="Usuń wiersz">
+                        -
                       </Button>
                     </div>
                   ))}
 
                   <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <Button variant="secondary" disabled={playersBusy || playersLoading} onClick={addPlayerRow}>
+                    <Button variant="secondary" disabled={playersLoading} onClick={addPlayerRow}>
                       + Dodaj zawodnika
                     </Button>
 
-                    <div className="text-xs text-slate-200/60">
+                    <div className="text-xs text-slate-400">
                       {participantMode
                         ? "Uwaga: zapis może być zablokowany, jeśli organizator wyłączył edycję składu przez właściciela drużyny."
-                        : "Skład zapisujesz osobno dla każdej drużyny."}
+                        : "Skład zapisuje się automatycznie dla wybranej drużyny."}
                     </div>
                   </div>
                 </div>
@@ -954,12 +946,13 @@ export default function TournamentTeams() {
       )}
 
       {/* TEAMS LIST */}
-      <Card className="mt-4 p-4">
+      <div className="mt-4">
         <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
           <div>
             <div className="text-sm font-semibold text-slate-100">{titleLabel}</div>
+            <div className="mt-1 text-xs text-slate-300">Szybka edycja nazw i podgląd składu w kartach.</div>
             {!canEditTeams && (isOrganizer || isAssistant) && (
-              <div className="mt-1 text-xs text-slate-200/60">
+              <div className="mt-1 text-xs text-slate-400">
                 Edycja nazw zablokowana (wymagane: <code className="text-slate-100">teams_edit</code>).
               </div>
             )}
@@ -967,63 +960,101 @@ export default function TournamentTeams() {
         </div>
 
         {teams.length === 0 && !busy ? (
-          <div className="text-sm text-slate-200/60 italic">
-            Brak aktywnych uczestników — ustaw liczbę miejsc (+), aby utworzyć listę.
-          </div>
+          <div className="text-sm text-slate-300 italic">Brak aktywnych uczestników - ustaw liczbę miejsc (+), aby utworzyć listę.</div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {teams.map((team) => (
-              <div key={team.id} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-                <Input
-                  value={team.name}
-                  disabled={busy || !canEditTeams}
-                  onChange={(e) =>
-                    setTeams((prev) => prev.map((t) => (t.id === team.id ? { ...t, name: e.target.value } : t)))
-                  }
-                  onBlur={async (e) => {
-                    if (!canEditTeams) return;
-                    try {
-                      await updateTeamName(team.id, e.target.value);
-                      if (canManageQueue) await loadPendingQueue();
-                      showToast("success", "Nazwa zapisana.");
-                    } catch (err: any) {
-                      showToast("error", err?.message || "Nie udało się zapisać nazwy.");
-                      await loadTeams().catch(() => null);
-                    }
-                  }}
-                />
+            {teams.map((team) => {
+              const expanded = Boolean(expandedTeams[team.id]);
+              const preview = teamPlayersPreview[team.id] ?? null;
+              const previewLoading = Boolean(teamPlayersPreviewLoading[team.id]);
 
-                {typeof team.players_count === "number" && hasRosterFeature(tournament) && (
-                  <div className="mt-2 text-xs text-slate-200/60">Skład: {team.players_count}</div>
-                )}
+              const draft = teamNameAutosave.drafts[team.id]?.name ?? team.name;
+              const saveStatus = teamNameAutosave.statuses[team.id] ?? "idle";
+              const error = teamNameAutosave.errors[team.id];
 
-                {canEditRosterAsManager && hasRosterFeature(tournament) && (
-                  <div className="mt-3">
-                    <Button
-                      variant="secondary"
-                      disabled={playersBusy || playersLoading}
-                      onClick={async () => {
-                        if (playersDirty) {
-                          const ok = window.confirm(
-                            "Masz niezapisane zmiany w składzie. Przełączyć drużynę i porzucić zmiany?"
-                          );
-                          if (!ok) return;
-                        }
-                        setSelectedTeamId(team.id);
-                        setRosterOpen(true);
-                        await loadTeamPlayers(team.id);
-                        window.scrollTo({ top: 0, behavior: "smooth" });
-                      }}
-                    >
-                      Edytuj skład
-                    </Button>
+              const playersCount =
+                typeof team.players_count === "number"
+                  ? team.players_count
+                  : typeof preview?.count === "number"
+                    ? preview.count
+                    : 0;
+
+              return (
+                <Card key={team.id} className="p-3">
+                  <div className="flex items-center gap-3">
+                    <div className="min-w-0 flex-1">
+                      <Input
+                        value={draft}
+                        disabled={busy || !canEditTeams}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setTeams((prev) => prev.map((t) => (t.id === team.id ? { ...t, name: v } : t)));
+                          teamNameAutosave.update(team.id, { name: v });
+                        }}
+                        onBlur={() => {
+                          if (!canEditTeams) return;
+                          const v = normName((teamNameAutosave.drafts[team.id]?.name ?? team.name) || "");
+                          teamNameAutosave.forceSave(team.id, { name: v }).catch((err: any) => {
+                            toast.error(err?.message || "Nie udało się zapisać nazwy.");
+                          });
+                        }}
+                      />
+                    </div>
+
+                    {hasRosterFeature(tournament) ? (
+                      <div className="shrink-0 whitespace-nowrap text-xs text-slate-400">Skład: {playersCount}</div>
+                    ) : null}
+
+                    <div className="shrink-0">
+                      <AutosaveIndicator status={saveStatus} error={error} />
+                    </div>
+
+                    {hasRosterFeature(tournament) ? (
+                      <button
+                        type="button"
+                        onClick={() => toggleTeamExpand(team.id).catch(() => void 0)}
+                        className={collapseBtnBase}
+                        disabled={previewLoading}
+                      >
+                        {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                        {expanded ? "Zwiń" : "Rozwiń"}
+                      </button>
+                    ) : null}
                   </div>
-                )}
-              </div>
-            ))}
+
+                  {hasRosterFeature(tournament) && expanded ? (
+                    <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+                      {previewLoading ? (
+                        <div className="text-sm text-slate-300">Ładowanie...</div>
+                      ) : preview && Array.isArray(preview.results) && preview.results.length > 0 ? (
+                        <div className="divide-y divide-white/10">
+                          {preview.results.map((p) => (
+                            <div key={p.id} className="grid grid-cols-4 items-center gap-3 py-1.5 text-sm">
+                              <div className="col-span-3 min-w-0 truncate text-white">{p.display_name}</div>
+                              <div className="col-span-1 text-right text-white">
+                                {typeof p.jersey_number === "number" ? String(p.jersey_number) : ""}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-sm text-slate-300 italic">Brak zawodników w składzie.</div>
+                      )}
+                    </div>
+                  ) : null}
+                </Card>
+              );
+            })}
           </div>
         )}
-      </Card>
+      </div>
+
+      {/* Co zmieniono:
+         1) Usunięto przycisk "Odśwież" w kolejce zmian nazw.
+         2) Usunięto tekst "Tryb organizatora/asystenta" (zostaje tylko "Tryb uczestnika", gdy dotyczy).
+         3) Usunięto zdanie obok "Cofnij" - sam przycisk robi undo ostatniej zmiany dla wybranej drużyny.
+         4) Podgląd składu w kartach jako zgrabna lista (3/4 nazwa + 1/4 numer), numer biały i bez "#".
+      */}
     </div>
   );
 }

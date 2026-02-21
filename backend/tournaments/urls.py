@@ -66,6 +66,14 @@ from .views import (
     MatchClockStopView,
     MatchClockSetPeriodView,
     MatchClockSetAddedSecondsView,
+
+    # =========================
+    # NEW: commentary + phrase dictionary
+    # =========================
+    MatchCommentaryListCreateView,
+    MatchCommentaryDetailView,
+    TournamentCommentaryPhraseListCreateView,
+    TournamentCommentaryPhraseDetailView,
 )
 
 urlpatterns = [
@@ -154,4 +162,13 @@ urlpatterns = [
     path("matches/<int:match_id>/clock/stop/", MatchClockStopView.as_view()),
     path("matches/<int:match_id>/clock/period/", MatchClockSetPeriodView.as_view()),
     path("matches/<int:match_id>/clock/added/", MatchClockSetAddedSecondsView.as_view()),
+
+    # =========================================================
+    # NEW: KOMENTARZE MECZOWE (relacja live) + SŁOWNIK FRAZ
+    # =========================================================
+    path("matches/<int:match_id>/commentary/", MatchCommentaryListCreateView.as_view()),
+    path("commentary/<int:commentary_id>/", MatchCommentaryDetailView.as_view()),
+
+    path("tournaments/<int:pk>/commentary-phrases/", TournamentCommentaryPhraseListCreateView.as_view()),
+    path("commentary-phrases/<int:phrase_id>/", TournamentCommentaryPhraseDetailView.as_view()),
 ]

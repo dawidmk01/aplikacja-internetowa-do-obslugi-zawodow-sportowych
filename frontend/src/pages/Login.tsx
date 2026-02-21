@@ -1,24 +1,26 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { LogIn, UserPlus, User, Mail, Lock, Eye, EyeOff, Loader2 } from "lucide-react";
+import { Eye, EyeOff, Loader2, Lock, LogIn, Mail, User, UserPlus } from "lucide-react";
 
-import { Card } from "../ui/Card";
-import { Button } from "../ui/Button";
-import { cn } from "../lib/cn";
-import { toast } from "../ui/Toast";
 import { apiFetch, setAccess, setRefresh } from "../api";
+import { cn } from "../lib/cn";
+
+import { Button } from "../ui/Button";
+import { Card } from "../ui/Card";
+import { InlineAlert } from "../ui/InlineAlert";
+import { toast } from "../ui/Toast";
 
 type Props = {
   onLogin?: () => Promise<void>;
 };
 
+/** Pobiera pierwszy komunikat błędu z typowych odpowiedzi DRF. */
 function pickFirstError(data: any): string | null {
   if (!data) return null;
   if (typeof data === "string") return data;
   if (typeof data?.detail === "string") return data.detail;
 
-  // typowe błędy DRF: { field: ["msg"] }
   for (const k of ["username", "email", "password", "non_field_errors"]) {
     const v = (data as any)[k];
     if (Array.isArray(v) && v.length) return String(v[0]);
@@ -50,7 +52,7 @@ export default function Login({ onLogin }: Props) {
   useEffect(() => {
     setMode(urlMode === "register" ? "register" : "login");
     setError(null);
-    // success zostawiamy (np. po udanej rejestracji i przejściu na login)
+    // Komunikat sukcesu po rejestracji pozostaje widoczny po przejściu do logowania.
   }, [urlMode]);
 
   const nextQs = useMemo(() => {
@@ -65,6 +67,7 @@ export default function Login({ onLogin }: Props) {
     navigate(nextQs ? `/login?mode=register&${nextQs}` : "/login?mode=register");
   };
 
+  /** Normalizuje wybrane komunikaty backendu do spójnej treści UI. */
   const translateLoginError = (msg?: string) => {
     if (!msg) return "Błąd logowania.";
     if (msg.includes("No active account")) return "Nieprawidłowy login lub hasło.";
@@ -83,23 +86,19 @@ export default function Login({ onLogin }: Props) {
         const res = await apiFetch(`/api/auth/login/`, {
           method: "POST",
           body: JSON.stringify({ username, password }),
-          // Logowanie ma własny inline alert -> nie dublujemy toastów z apiFetch
+          // Komunikaty HTTP są prezentowane w formularzu (InlineAlert).
           toastOnError: false,
         });
 
         const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {
-          const msg = translateLoginError(pickFirstError(data) || data?.detail);
-          setError(msg);
+          setError(translateLoginError(pickFirstError(data) || data?.detail));
           return;
         }
 
-        // zapis tokenów w jednym standardzie
         if (data?.access) setAccess(data.access);
         if (data?.refresh) setRefresh(data.refresh);
-
-        toast.success("Zalogowano.", { durationMs: 1600 });
 
         await onLogin?.();
 
@@ -118,21 +117,16 @@ export default function Login({ onLogin }: Props) {
         const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {
-          const msg =
-            pickFirstError(data) || "Błąd rejestracji. Sprawdź dane i spróbuj ponownie.";
-          setError(msg);
+          setError(pickFirstError(data) || "Błąd rejestracji. Sprawdź dane i spróbuj ponownie.");
           return;
         }
 
         setPassword("");
         setSuccess("Konto utworzone. Możesz się teraz zalogować.");
-        toast.success("Konto utworzone. Zaloguj się.", { durationMs: 2200 });
-
         goLogin();
       }
     } catch {
-      // network / CORS / inne wyjątki
-      setError("Błąd połączenia z serwerem.");
+      // Błąd sieciowy jest prezentowany globalnie jako toast.
       toast.error("Brak połączenia z serwerem. Spróbuj ponownie.", { title: "Sieć" });
     } finally {
       setLoading(false);
@@ -147,12 +141,8 @@ export default function Login({ onLogin }: Props) {
         transition={{ duration: 0.25, ease: "easeOut" }}
       >
         <Card className="p-6 sm:p-7">
-          {/* Header */}
           <div className="flex items-start justify-between gap-4">
             <div>
-              <div className="text-sm text-slate-300">
-                {mode === "login" ? "Panel użytkownika" : "Nowe konto"}
-              </div>
               <h1 className="mt-1 text-2xl font-semibold text-white">
                 {mode === "login" ? "Logowanie" : "Rejestracja"}
               </h1>
@@ -172,7 +162,6 @@ export default function Login({ onLogin }: Props) {
             </div>
           </div>
 
-          {/* Tabs */}
           <div className="mt-5 grid grid-cols-2 gap-2 rounded-2xl border border-white/10 bg-white/[0.04] p-1">
             <button
               type="button"
@@ -200,25 +189,14 @@ export default function Login({ onLogin }: Props) {
             </button>
           </div>
 
-          {/* Alerts (inline zostają) */}
           {(error || success) && (
             <div className="mt-4 space-y-2">
-              {error && (
-                <div className="rounded-2xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                  {error}
-                </div>
-              )}
-              {success && (
-                <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-100">
-                  {success}
-                </div>
-              )}
+              {error && <InlineAlert variant="error">{error}</InlineAlert>}
+              {success && <InlineAlert variant="success">{success}</InlineAlert>}
             </div>
           )}
 
-          {/* Form */}
           <form onSubmit={submit} className="mt-5 space-y-4">
-            {/* Username */}
             <div>
               <label className="text-sm font-medium text-slate-200">Login</label>
               <div className="mt-2 relative">
@@ -232,13 +210,12 @@ export default function Login({ onLogin }: Props) {
                   value={username}
                   required
                   autoComplete="username"
-                  placeholder="np. Dawid"
+                  placeholder="np. nazwa_użytkownika"
                   onChange={(e) => setUsername(e.target.value)}
                 />
               </div>
             </div>
 
-            {/* Email only for register */}
             {mode === "register" && (
               <div>
                 <label className="text-sm font-medium text-slate-200">Email</label>
@@ -254,14 +231,13 @@ export default function Login({ onLogin }: Props) {
                     value={email}
                     required
                     autoComplete="email"
-                    placeholder="np. dawid@mail.com"
+                    placeholder="np. user@example.com"
                     onChange={(e) => setEmail(e.target.value)}
                   />
                 </div>
               </div>
             )}
 
-            {/* Password */}
             <div>
               <label className="text-sm font-medium text-slate-200">Hasło</label>
               <div className="mt-2 relative">
@@ -276,7 +252,7 @@ export default function Login({ onLogin }: Props) {
                   value={password}
                   required
                   autoComplete={mode === "login" ? "current-password" : "new-password"}
-                  placeholder="Twoje hasło"
+                  placeholder="••••••••"
                   onChange={(e) => setPassword(e.target.value)}
                 />
                 <button
@@ -290,7 +266,6 @@ export default function Login({ onLogin }: Props) {
               </div>
             </div>
 
-            {/* Submit */}
             <div className="pt-2">
               <Button
                 variant={mode === "login" ? "secondary" : "primary"}
@@ -317,7 +292,6 @@ export default function Login({ onLogin }: Props) {
             </div>
           </form>
 
-          {/* Links */}
           <div className="mt-5 flex items-center justify-between gap-3">
             {mode === "login" ? (
               <Link to="/forgot-password" className="text-sm text-slate-300 hover:text-white transition">
@@ -350,11 +324,6 @@ export default function Login({ onLogin }: Props) {
             ) : (
               <span className="text-sm text-slate-400">Po rejestracji wrócisz do logowania.</span>
             )}
-          </div>
-
-          {/* Small note */}
-          <div className="mt-6 text-xs text-slate-400">
-            Wskazówka: jeśli organizator włączył dołączanie do turnieju, po zalogowaniu możesz wejść kodem i zgłosić udział.
           </div>
         </Card>
       </motion.div>

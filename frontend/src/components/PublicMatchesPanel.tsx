@@ -1,5 +1,7 @@
 // frontend/src/components/PublicMatchesPanel.tsx
+import type { ReactNode } from "react";
 import { useMemo } from "react";
+
 import {
   buildStagesForView,
   displayGroupName,
@@ -7,6 +9,8 @@ import {
   groupMatchesByRound,
   stageHeaderTitle,
 } from "../flow/stagePresentation";
+
+import PublicMatchRow from "./PublicMatchRow";
 
 export type MatchPublicDTO = {
   id: number;
@@ -37,61 +41,31 @@ export type IncidentPublicDTO = {
   period?: string | null;
   time_source?: string | null;
   minute: number | null;
-  minute_raw?: number | null;
+  minute_raw?: number | string | null;
   player_id?: number | null;
   player_name?: string | null;
+
+  player_in_id?: number | null;
+  player_in_name?: string | null;
+  player_out_id?: number | null;
+  player_out_name?: string | null;
+
   meta?: Record<string, any>;
   created_at?: string | null;
+  created_by?: number | null;
 };
 
-function incidentMinute(i: IncidentPublicDTO): number | null {
-  const mr = (i as any).minute_raw;
-  if (typeof mr === "number" && Number.isFinite(mr)) return mr;
-  if (typeof i.minute === "number" && Number.isFinite(i.minute)) return i.minute;
-  return null;
-}
-
-function kindPl(kind: string, fallback?: string): string {
-  const k = (kind || "").toUpperCase();
-  if (k === "GOAL") return "Gol";
-  if (k === "OWN_GOAL") return "Gol samobójczy";
-  if (k === "YELLOW_CARD") return "Żółta kartka";
-  if (k === "RED_CARD") return "Czerwona kartka";
-  if (k === "PENALTY_GOAL") return "Gol z karnego";
-  if (k === "PENALTY_MISSED") return "Niewykorzystany karny";
-  if (k === "POINT") return "Punkt";
-  if (k === "SET_POINT") return "Punkt (set)";
-  return fallback || kind || "Incydent";
-}
-
-function formatIncidentLine(i: IncidentPublicDTO): string {
-  const min = incidentMinute(i);
-  const minTxt = typeof min === "number" ? `${min}'` : "";
-  const label = kindPl(i.kind, i.kind_display);
-  const player = (i.player_name || "").trim();
-  if (player) return `${minTxt} ${label} — ${player}`.trim();
-  return `${minTxt} ${label}`.trim();
-}
-
-function statusPl(s?: MatchPublicDTO["status"]): string {
-  switch (s) {
-    case "IN_PROGRESS":
-      return "W trakcie";
-    case "FINISHED":
-      return "Zakończony";
-    case "SCHEDULED":
-      return "Zaplanowany";
-    default:
-      return "";
-  }
-}
-
-function whenText(m: MatchPublicDTO): string | null {
-  const d = (m.scheduled_date ?? "").trim();
-  const t = (m.scheduled_time ?? "").trim();
-  const s = [d, t].filter(Boolean).join(" ");
-  return s || null;
-}
+export type CommentaryEntryPublicDTO = {
+  id: number;
+  match_id: number;
+  period?: string | null;
+  time_source?: string | null;
+  minute: number | null;
+  minute_raw?: number | string | null;
+  text: string;
+  created_at?: string | null;
+  created_by?: number | null;
+};
 
 /**
  * Stabilne sortowanie:
@@ -156,13 +130,11 @@ function pickUpcomingMatches(list: MatchPublicDTO[], limit = UPCOMING_LIMIT): Ma
     .slice(0, limit);
 }
 
-function statusBadgeClasses(s?: MatchPublicDTO["status"]): string {
-  if (s === "IN_PROGRESS") return "border-emerald-400/30 bg-emerald-500/10 text-emerald-200";
-  if (s === "FINISHED") return "border-slate-200/15 bg-white/5 text-slate-200";
-  return "border-white/10 bg-white/5 text-slate-300";
+export function getUpcomingMatchesPreview(matches: MatchPublicDTO[], limit = UPCOMING_LIMIT): MatchPublicDTO[] {
+  return pickUpcomingMatches(matches, limit);
 }
 
-function ListBox({ children }: { children: React.ReactNode }) {
+function ListBox({ children }: { children: ReactNode }) {
   return <div className="rounded-xl border border-white/10 bg-black/10">{children}</div>;
 }
 
@@ -173,6 +145,9 @@ export default function PublicMatchesPanel({
   incidentsByMatch,
   incidentsBusy,
   incidentsError,
+  commentaryByMatch,
+  commentaryBusy,
+  commentaryError,
   onMatchClick,
 }: {
   matches: MatchPublicDTO[];
@@ -181,6 +156,9 @@ export default function PublicMatchesPanel({
   incidentsByMatch?: Record<number, IncidentPublicDTO[]>;
   incidentsBusy?: boolean;
   incidentsError?: string | null;
+  commentaryByMatch?: Record<number, CommentaryEntryPublicDTO[]>;
+  commentaryBusy?: boolean;
+  commentaryError?: string | null;
   onMatchClick?: (m: MatchPublicDTO, sectionId: string) => void;
 }) {
   const liveMatches = useMemo(() => matches.filter((m) => m.status === "IN_PROGRESS"), [matches]);
@@ -195,14 +173,10 @@ export default function PublicMatchesPanel({
         const ta = toSortTs(a);
         const tb = toSortTs(b);
 
-        // Jeśli obie daty są poprawne -> sortuj po dacie malejąco (najnowsze pierwsze)
         if (ta !== Number.POSITIVE_INFINITY && tb !== Number.POSITIVE_INFINITY) return tb - ta;
-
-        // Jeśli tylko jedna ma datę -> ta z datą ma być wyżej
         if (ta !== Number.POSITIVE_INFINITY && tb === Number.POSITIVE_INFINITY) return -1;
         if (ta === Number.POSITIVE_INFINITY && tb !== Number.POSITIVE_INFINITY) return 1;
 
-        // Fallback: po id malejąco
         return b.id - a.id;
       })
       .slice(0, 8);
@@ -210,119 +184,32 @@ export default function PublicMatchesPanel({
 
   const stages = useMemo(() => buildStagesForView(matches, { showBye: false }), [matches]);
 
-  const renderRow = (sectionId: string, m: MatchPublicDTO, idx: number) => {
-    const when = whenText(m);
-    const where = (m.location ?? "").trim();
-
-    const hasScore = typeof m.home_score === "number" && typeof m.away_score === "number";
-    const score = hasScore ? `${m.home_score} : ${m.away_score}` : "";
-
-    const isClickable = Boolean(onMatchClick) && (m.status === "IN_PROGRESS" || m.status === "FINISHED");
-    const isSelected =
-      selectedMatchId != null &&
-      selectedSection != null &&
-      m.id === selectedMatchId &&
-      selectedSection === sectionId;
-
-    const incidents = (incidentsByMatch?.[m.id] ?? []) as IncidentPublicDTO[];
-
-    return (
-      <div
-        key={m.id}
-        role={isClickable ? "button" : undefined}
-        tabIndex={isClickable ? 0 : undefined}
-        onClick={isClickable ? () => onMatchClick?.(m, sectionId) : undefined}
-        onKeyDown={
-          isClickable
-            ? (e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onMatchClick?.(m, sectionId);
-                }
-              }
-            : undefined
-        }
-        className={[
-          "px-4 py-3",
-          idx > 0 ? "border-t border-white/10" : "",
-          isClickable ? "cursor-pointer hover:bg-white/[0.04] focus:outline-none focus:ring-2 focus:ring-white/20" : "",
-          isSelected ? "bg-white/[0.04]" : "",
-        ].join(" ")}
-      >
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-[240px]">
-            <div className="text-sm font-semibold text-slate-100">
-              {m.home_team_name} <span className="font-normal text-slate-400">vs</span> {m.away_team_name}
-            </div>
-
-            {(when || where) && (
-              <div className="mt-1 text-sm text-slate-300">
-                {when ? <span>{when}</span> : null}
-                {when && where ? <span className="mx-2 text-slate-500">•</span> : null}
-                {where ? <span>{where}</span> : null}
-              </div>
-            )}
-          </div>
-
-          <div className="min-w-[170px] text-right">
-            <div className="flex items-center justify-end gap-2">
-              {score ? (
-                <div className="text-sm font-semibold text-slate-100">{score}</div>
-              ) : (
-                <div className="h-5 w-10 opacity-40" />
-              )}
-
-              <span className={`rounded-full border px-2 py-1 text-xs ${statusBadgeClasses(m.status)}`}>
-                {statusPl(m.status)}
-              </span>
-
-              {isSelected && isClickable ? (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onMatchClick?.(m, sectionId);
-                  }}
-                  aria-label="Zwiń szczegóły"
-                  title="Zwiń"
-                  className="ml-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-100 hover:bg-white/10"
-                >
-                  —
-                </button>
-              ) : null}
-            </div>
-          </div>
-        </div>
-
-        {isSelected && isClickable ? (
-          <div className="mt-3 border-t border-white/10 pt-3">
-            {incidentsError ? (
-              <div className="mb-2 text-sm text-rose-300">{incidentsError}</div>
-            ) : null}
-
-            {incidentsBusy && incidents.length === 0 ? (
-              <div className="text-sm text-slate-300">Ładowanie incydentów…</div>
-            ) : incidents.length === 0 ? (
-              <div className="text-sm text-slate-300">Brak incydentów.</div>
-            ) : (
-              <div className="space-y-1">
-                {incidents.map((i) => (
-                  <div key={i.id} className="text-sm text-slate-200">
-                    {formatIncidentLine(i)}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ) : null}
-      </div>
-    );
-  };
+  const renderRows = (sectionId: string, list: MatchPublicDTO[]) => (
+    <ListBox>
+      {list.map((m, idx) => (
+        <PublicMatchRow
+          key={m.id}
+          sectionId={sectionId}
+          match={m}
+          index={idx}
+          selectedMatchId={selectedMatchId}
+          selectedSection={selectedSection}
+          incidentsByMatch={incidentsByMatch}
+          incidentsBusy={incidentsBusy}
+          incidentsError={incidentsError}
+          commentaryByMatch={commentaryByMatch}
+          commentaryBusy={commentaryBusy}
+          commentaryError={commentaryError}
+          onMatchClick={onMatchClick}
+        />
+      ))}
+    </ListBox>
+  );
 
   return (
     <div className="space-y-6">
       {/* NA ŻYWO */}
-      <section className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
+      <section id="public-matches-live" className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-lg font-semibold text-slate-100">Na żywo</h2>
           <div className="text-xs text-slate-400">{liveMatches.length ? `${liveMatches.length} mecz(e)` : ""}</div>
@@ -331,12 +218,12 @@ export default function PublicMatchesPanel({
         {liveMatches.length === 0 ? (
           <div className="text-sm text-slate-300">Aktualnie nie ma meczów w trakcie.</div>
         ) : (
-          <ListBox>{liveMatches.map((m, idx) => renderRow("live", m, idx))}</ListBox>
+          renderRows("live", liveMatches)
         )}
       </section>
 
       {/* NAJBLIŻSZE */}
-      <section className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
+      <section id="public-matches-upcoming" className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-lg font-semibold text-slate-100">Najbliższe mecze</h2>
           <div className="text-xs text-slate-400">{upcomingMatches.length ? `${upcomingMatches.length} mecz(e)` : ""}</div>
@@ -345,12 +232,12 @@ export default function PublicMatchesPanel({
         {upcomingMatches.length === 0 ? (
           <div className="text-sm text-slate-300">Brak zaplanowanych meczów.</div>
         ) : (
-          <ListBox>{upcomingMatches.map((m, idx) => renderRow("upcoming", m, idx))}</ListBox>
+          renderRows("upcoming", upcomingMatches)
         )}
       </section>
 
       {/* OSTATNIE WYNIKI */}
-      <section className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
+      <section id="public-matches-recent" className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-lg font-semibold text-slate-100">Ostatnie wyniki</h2>
           <div className="text-xs text-slate-400">{recentResults.length ? `${recentResults.length} mecz(e)` : ""}</div>
@@ -359,12 +246,12 @@ export default function PublicMatchesPanel({
         {recentResults.length === 0 ? (
           <div className="text-sm text-slate-300">Brak zakończonych meczów.</div>
         ) : (
-          <ListBox>{recentResults.map((m, idx) => renderRow("recent", m, idx))}</ListBox>
+          renderRows("recent", recentResults)
         )}
       </section>
 
       {/* PEŁNY TERMINARZ */}
-      <section className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
+      <section id="public-matches-schedule" className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
         <div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="text-lg font-semibold text-slate-100">Pełny terminarz</h2>
           <div className="text-xs text-slate-400">{stages.length ? `${stages.length} etap(y)` : ""}</div>
@@ -375,54 +262,79 @@ export default function PublicMatchesPanel({
         ) : (
           <div className="space-y-5">
             {stages.map((s) => {
-              const header = stageHeaderTitle(s.stageType, s.stageOrder, s.allMatches);
+              const stageMatches = s.matches;
+
+              if (s.view_type === "GROUP") {
+                const groups = groupMatchesByGroup(stageMatches);
+                const groupNames = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+
+                return (
+                  <section
+                    key={`stage-${s.stage_id}`}
+                    className="rounded-2xl border border-white/10 bg-black/10 p-4 sm:p-5"
+                  >
+                    <div className="mb-3 text-sm font-semibold text-slate-100">{stageHeaderTitle(s)}</div>
+
+                    <div className="space-y-4">
+                      {groupNames.map((gName) => {
+                        const gMatches = groups[gName] ?? [];
+                        const title = displayGroupName(gName);
+
+                        return (
+                          <div key={gName}>
+                            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                              {title}
+                            </div>
+                            {renderRows("schedule", gMatches)}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                );
+              }
+
+              if (s.view_type === "ROUND") {
+                const byRound = groupMatchesByRound(stageMatches);
+                const rounds = Object.keys(byRound)
+                  .map((x) => Number(x))
+                  .filter((n) => Number.isFinite(n))
+                  .sort((a, b) => a - b);
+
+                return (
+                  <section
+                    key={`stage-${s.stage_id}`}
+                    className="rounded-2xl border border-white/10 bg-black/10 p-4 sm:p-5"
+                  >
+                    <div className="mb-3 text-sm font-semibold text-slate-100">{stageHeaderTitle(s)}</div>
+
+                    <div className="space-y-4">
+                      {rounds.map((round) => {
+                        const roundMatches = byRound[String(round)] ?? [];
+                        return (
+                          <div key={String(round)}>
+                            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                              Kolejka {round}
+                            </div>
+                            {renderRows("schedule", roundMatches)}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                );
+              }
 
               return (
-                <section key={s.stageId} className="rounded-xl border border-white/10 bg-black/10 p-4">
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                    <h3 className="text-sm font-semibold text-slate-100">{header}</h3>
-                    <div className="text-xs text-slate-400">
-                      {s.stageType === "GROUP" ? "Faza grupowa" : s.stageType === "LEAGUE" ? "Liga" : "Puchar"}
-                    </div>
+                <section
+                  key={`stage-${s.stage_id}`}
+                  className="rounded-2xl border border-white/10 bg-black/10 p-4 sm:p-5"
+                >
+                  <div className="mb-3 text-sm font-semibold text-slate-100">
+                    {stageHeaderTitle(s)}
                   </div>
 
-                  {s.stageType === "GROUP" ? (
-                    <div className="space-y-4">
-                      {groupMatchesByGroup(s.matches).map(([groupName, groupMatches], gidx) => (
-                        <div key={String(groupName ?? gidx)} className="rounded-xl border border-white/10 bg-black/10 p-4">
-                          <div className="mb-3 text-sm font-semibold text-slate-200">
-                            {displayGroupName(groupName, gidx)}
-                          </div>
-
-                          <div className="space-y-4">
-                            {groupMatchesByRound(groupMatches).map(([round, roundMatches]) => (
-                              <div key={String(round)}>
-                                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-                                  Kolejka {round}
-                                </div>
-                                <ListBox>
-                                  {roundMatches.map((m, idx) => renderRow("schedule", m, idx))}
-                                </ListBox>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : s.stageType === "LEAGUE" ? (
-                    <div className="space-y-4">
-                      {groupMatchesByRound(s.matches).map(([round, roundMatches]) => (
-                        <div key={String(round)}>
-                          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-                            Kolejka {round}
-                          </div>
-                          <ListBox>{roundMatches.map((m, idx) => renderRow("schedule", m, idx))}</ListBox>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <ListBox>{s.matches.map((m, idx) => renderRow("schedule", m, idx))}</ListBox>
-                  )}
+                  {renderRows("schedule", stageMatches)}
                 </section>
               );
             })}
@@ -432,3 +344,8 @@ export default function PublicMatchesPanel({
     </div>
   );
 }
+
+// Co zmieniono:
+// 1) Wyciągnięto renderowanie pojedynczej karty meczu do komponentu PublicMatchRow.
+// 2) Uproszczono PublicMatchesPanel do odpowiedzialności: grupowanie i sekcje (live/upcoming/recent/schedule).
+// 3) Zachowano API komponentu i dotychczasową logikę selekcji oraz prezentacji incydentów. Zachowano API komponentu i dotychczasową logikę selekcji oraz prezentacji incydentów.

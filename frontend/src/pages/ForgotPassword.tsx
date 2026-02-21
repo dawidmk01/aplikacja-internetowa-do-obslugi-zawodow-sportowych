@@ -1,12 +1,15 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Mail, ArrowRight, Loader2, ShieldCheck } from "lucide-react";
+import { ArrowRight, Loader2, Mail, ShieldCheck } from "lucide-react";
 
 import { apiFetch } from "../api";
-import { Card } from "../ui/Card";
-import { Button } from "../ui/Button";
 import { cn } from "../lib/cn";
+
+import { Button } from "../ui/Button";
+import { Card } from "../ui/Card";
+import { InlineAlert } from "../ui/InlineAlert";
+import { toast } from "../ui/Toast";
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState("");
@@ -15,6 +18,8 @@ export default function ForgotPassword() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const SAFE_MSG = "Jeśli konto istnieje, na podany adres e-mail wysłano link do resetu hasła.";
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -22,23 +27,19 @@ export default function ForgotPassword() {
     setMessage(null);
 
     try {
-      const res = await apiFetch("/api/auth/password-reset/", {
+      await apiFetch("/api/auth/password-reset/", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email }),
+        // Komunikaty HTTP są prezentowane w formularzu (InlineAlert).
+        toastOnError: false,
       });
 
-      if (!res.ok) {
-        throw new Error("Nie udało się wysłać żądania resetu hasła.");
-      }
-
-      // zawsze ten sam komunikat (bezpieczne)
-      setMessage(
-        "Jeśli konto istnieje, na podany adres e-mail wysłano link do resetu hasła."
-      );
+      setMessage(SAFE_MSG);
       setEmail("");
-    } catch (e: any) {
-      setError(e?.message || "Błąd połączenia z serwerem.");
+    } catch {
+      // Błąd sieciowy jest prezentowany globalnie jako toast.
+      toast.error("Brak połączenia z serwerem. Spróbuj ponownie.", { title: "Sieć" });
+      setError("Nie udało się wysłać żądania. Spróbuj ponownie.");
     } finally {
       setLoading(false);
     }
@@ -52,16 +53,11 @@ export default function ForgotPassword() {
         transition={{ duration: 0.25, ease: "easeOut" }}
       >
         <Card className="p-6 sm:p-7">
-          {/* Header */}
           <div className="flex items-start justify-between gap-4">
             <div>
-              <div className="text-sm text-slate-300">Bezpieczny reset</div>
-              <h1 className="mt-1 text-2xl font-semibold text-white">
-                Reset hasła
-              </h1>
+              <h1 className="mt-1 text-2xl font-semibold text-white">Reset hasła</h1>
               <p className="mt-2 text-sm text-slate-300 leading-relaxed">
-                Podaj adres e-mail powiązany z kontem. Jeśli konto istnieje,
-                wyślemy wiadomość z linkiem do ustawienia nowego hasła.
+                Podaj adres e-mail powiązany z kontem. Jeśli konto istnieje, zostanie wysłana wiadomość z linkiem do ustawienia nowego hasła.
               </p>
             </div>
 
@@ -70,28 +66,16 @@ export default function ForgotPassword() {
             </div>
           </div>
 
-          {/* Alerts */}
           {(message || error) && (
             <div className="mt-4 space-y-2">
-              {message && (
-                <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-100">
-                  {message}
-                </div>
-              )}
-              {error && (
-                <div className="rounded-2xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                  {error}
-                </div>
-              )}
+              {message && <InlineAlert variant="success">{message}</InlineAlert>}
+              {error && <InlineAlert variant="error">{error}</InlineAlert>}
             </div>
           )}
 
-          {/* Form */}
           <form onSubmit={submit} className="mt-5 space-y-4">
             <div>
-              <label className="text-sm font-medium text-slate-200">
-                E-mail
-              </label>
+              <label className="text-sm font-medium text-slate-200">E-mail</label>
               <div className="mt-2 relative">
                 <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
@@ -104,17 +88,13 @@ export default function ForgotPassword() {
                   value={email}
                   required
                   autoComplete="email"
-                  placeholder="np. dawid@mail.com"
+                  placeholder="np. user@example.com"
                   onChange={(e) => setEmail(e.target.value)}
                 />
               </div>
             </div>
 
-            <Button
-              variant="secondary"
-              className="w-full justify-center"
-              disabled={loading}
-            >
+            <Button variant="secondary" className="w-full justify-center" disabled={loading}>
               {loading ? (
                 <span className="inline-flex items-center gap-2">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -129,7 +109,6 @@ export default function ForgotPassword() {
             </Button>
           </form>
 
-          {/* Footer links */}
           <div className="mt-5 flex flex-wrap items-center justify-between gap-3 text-sm">
             <Link
               to="/login"
@@ -144,11 +123,6 @@ export default function ForgotPassword() {
             >
               Załóż konto
             </Link>
-          </div>
-
-          <div className="mt-6 text-xs text-slate-400">
-            Dla bezpieczeństwa zawsze pokazujemy ten sam komunikat, niezależnie od
-            tego czy konto istnieje.
           </div>
         </Card>
       </motion.div>

@@ -998,3 +998,143 @@ class MatchIncident(models.Model):
     def __str__(self) -> str:
         return f"{self.match_id}:{self.team_id} {self.kind} @{self.minute or '-'}"
 
+
+# ============================================================
+# KOMENTARZE MECZOWE (RELACJA LIVE) + SŁOWNIK FRAZ
+# ============================================================
+
+class MatchCommentaryEntry(models.Model):
+    """
+    Tekstowy wpis relacji live dla meczu.
+
+    Encja stanowi uzupełnienie incydentów - pozwala rejestrować komentarze opisowe
+    (np. przebieg akcji), z czasem wyliczonym z zegara meczu lub podanym ręcznie.
+    """
+
+    class TimeSource(models.TextChoices):
+        CLOCK = "CLOCK", "Zegar meczu"
+        MANUAL = "MANUAL", "Wprowadzony ręcznie"
+
+    match = models.ForeignKey(
+        Match,
+        on_delete=models.CASCADE,
+        related_name="commentary_entries",
+    )
+
+    period = models.CharField(
+        max_length=8,
+        choices=Match.ClockPeriod.choices,
+        default=Match.ClockPeriod.NONE,
+        db_index=True,
+        help_text="Okres gry w momencie dodania komentarza (np. połowa, dogrywka).",
+    )
+
+    time_source = models.CharField(
+        max_length=8,
+        choices=TimeSource.choices,
+        default=TimeSource.CLOCK,
+        help_text="Źródło czasu komentarza, istotne przy korektach oraz analizie osi czasu.",
+    )
+
+    minute = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Minuta komentarza w osi czasu meczu (może być pusta w dyscyplinach bez zegara).",
+    )
+
+    minute_raw = models.CharField(
+        max_length=12,
+        null=True,
+        blank=True,
+        help_text="Oryginalny zapis minuty (np. '90+3'), do wiernej prezentacji.",
+    )
+
+    text = models.TextField()
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_match_commentary_entries",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [
+            models.Index(fields=["match", "created_at"], name="idx_comm_match_time"),
+            models.Index(fields=["match", "minute"], name="idx_comm_match_minute"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.match_id} @{self.minute or '-'}: {self.text[:30]}"
+
+
+class TournamentCommentaryPhrase(models.Model):
+    """
+    Konfigurowalny słownik fraz dla panelu relacji live.
+
+    Frazy są trzymane per turniej, aby umożliwić dopasowanie do dyscypliny,
+    stylu relacji oraz nazewnictwa drużyn w danym wydarzeniu.
+    """
+
+    class Kind(models.TextChoices):
+        TOKEN = "TOKEN", "Słowo"
+        TEMPLATE = "TEMPLATE", "Zwrot"
+
+    tournament = models.ForeignKey(
+        Tournament,
+        on_delete=models.CASCADE,
+        related_name="commentary_phrases",
+    )
+
+    kind = models.CharField(
+        max_length=16,
+        choices=Kind.choices,
+        default=Kind.TOKEN,
+        db_index=True,
+    )
+
+    category = models.CharField(
+        max_length=40,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Opcjonalna kategoria UI (np. akcje, oceny, gotowce).",
+    )
+
+    text = models.CharField(max_length=280)
+
+    order = models.PositiveIntegerField(
+        default=0,
+        help_text="Kolejność prezentacji w UI w ramach (kind, category).",
+    )
+
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="Flaga logicznej aktywności, pozwalająca zachować historię zmian słownika.",
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_commentary_phrases",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["kind", "category", "order", "id"]
+        indexes = [
+            models.Index(fields=["tournament", "kind", "is_active"], name="idx_phrase_t_kind_on"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tournament_id}:{self.kind} {self.text[:40]}"

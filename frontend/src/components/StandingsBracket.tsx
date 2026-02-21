@@ -1,6 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Brackets, Maximize2, Minimize2, Minus, Plus, Scan, Table2 } from "lucide-react";
+
 import { apiFetch } from "../api";
+import { cn } from "../lib/cn";
 import { displayGroupName, isByeMatch } from "../flow/stagePresentation";
+
+import { Button } from "../ui/Button";
+import { Card } from "../ui/Card";
+import { InlineAlert } from "../ui/InlineAlert";
 
 /* =========================
    HELPERY AUTH
@@ -13,7 +21,6 @@ function hasAccessToken(): boolean {
       const v = localStorage.getItem(k);
       if (v && v.trim()) return true;
     }
-    // heurystyka: cokolwiek z "access" i nie "refresh"
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
       if (!k) continue;
@@ -34,9 +41,9 @@ function hasAccessToken(): boolean {
 export type Tournament = {
   id: number;
   name: string;
-  discipline?: string; // np. "tennis"
+  discipline?: string;
   tournament_format: "LEAGUE" | "CUP" | "MIXED";
-  format_config?: Record<string, any>; // np. { tennis_points_mode: "PLT" | "NONE" }
+  format_config?: Record<string, any>;
 };
 
 export type MatchDto = {
@@ -135,8 +142,8 @@ export type GroupStanding = {
 
 export type StandingsMeta = {
   discipline?: string;
-  table_schema?: string; // "TENNIS" | "DEFAULT" ...
-  tennis_points_mode?: string; // "PLT" | "NONE"
+  table_schema?: string;
+  tennis_points_mode?: string;
 };
 
 export type StandingsResponse = {
@@ -153,7 +160,6 @@ export type StandingsResponse = {
 type StandingsBracketProps = {
   tournamentId: number;
   accessCode?: string;
-  /** Na publicznej stronie zwykle masz już tytuł turnieju wyżej */
   showHeader?: boolean;
 };
 
@@ -161,11 +167,7 @@ type StandingsBracketProps = {
    KOMPONENT (fetch + render)
    ========================= */
 
-export default function StandingsBracket({
-  tournamentId,
-  accessCode,
-  showHeader = true,
-}: StandingsBracketProps) {
+export default function StandingsBracket({ tournamentId, accessCode, showHeader = true }: StandingsBracketProps) {
   const [tournament, setTournament] = useState<Tournament | null>(null);
   const [matches, setMatches] = useState<MatchDto[]>([]);
   const [standings, setStandings] = useState<StandingsResponse | null>(null);
@@ -186,7 +188,6 @@ export default function StandingsBracket({
       setError(null);
 
       try {
-        // 1) Turniej (u Ciebie publiczny, 200 bez logowania)
         const tRes = await apiFetch(url(`/api/tournaments/${tournamentId}/`));
         if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
         const tData = await tRes.json();
@@ -200,33 +201,26 @@ export default function StandingsBracket({
         };
         setTournament(t);
 
-        // 2) Standings — najpierw prywatny, potem publiczny fallback
         let sData: StandingsResponse | null = null;
-
         const sRes = await apiFetch(url(`/api/tournaments/${tournamentId}/standings/`));
         if (sRes.ok) {
           sData = await sRes.json();
         } else {
-          // fallback publiczny
           const spRes = await apiFetch(url(`/api/tournaments/${tournamentId}/public/standings/`));
           if (spRes.ok) sData = await spRes.json();
           else sData = null;
         }
         setStandings(sData);
 
-        // 3) Mecze — inteligentny wybór endpointu
         const authed = hasAccessToken();
-        // jeśli dostaliśmy accessCode z TournamentPublic LUB brak tokena -> to jest widok publiczny
         const isPublicContext = !!accessCode || !authed;
 
-        // Pomocnicza funkcja do mapowania publicznych danych na MatchDto
         const fetchAndMapPublicMatches = async () => {
           const mpRes = await apiFetch(url(`/api/tournaments/${tournamentId}/public/matches/`));
           if (!mpRes.ok) throw new Error("Nie udało się pobrać meczów publicznych.");
           const raw = await mpRes.json();
           const list = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? raw.results : [];
 
-          // map public dto -> MatchDto (fallbacki)
           return list.map((m: any) => ({
             id: Number(m.id),
             stage_type: (m.stage_type ?? "LEAGUE") as MatchDto["stage_type"],
@@ -246,17 +240,11 @@ export default function StandingsBracket({
         };
 
         if (isPublicContext) {
-          // 1) W kontekście publicznym: nie dotykamy /matches/ (żadnych 401 w konsoli)
-          const publicMatches = await fetchAndMapPublicMatches();
-          setMatches(publicMatches);
+          setMatches(await fetchAndMapPublicMatches());
         } else {
-          // 2) W kontekście zalogowanym: próbujemy /matches/ (manager)
           const mRes = await apiFetch(url(`/api/tournaments/${tournamentId}/matches/`));
-
-          // jeśli token wygasł / brak uprawnień i poleci 401/403, robimy fallback na public
           if (mRes.status === 401 || mRes.status === 403) {
-            const publicMatches = await fetchAndMapPublicMatches();
-            setMatches(publicMatches);
+            setMatches(await fetchAndMapPublicMatches());
           } else {
             if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
             const raw = await mRes.json();
@@ -274,17 +262,12 @@ export default function StandingsBracket({
     load();
   }, [tournamentId, qs, accessCode]);
 
-  if (loading) return <p style={{ padding: "1rem" }}>Ładowanie…</p>;
-  if (error) return <p style={{ padding: "1rem", color: "crimson" }}>{error}</p>;
+  if (loading) return <div className="text-sm text-slate-300">Ładowanie...</div>;
+  if (error) return <InlineAlert variant="error">{error}</InlineAlert>;
   if (!tournament) return null;
 
   return (
-    <TournamentStandingsView
-      tournament={tournament}
-      matches={matches}
-      standings={standings}
-      showHeader={showHeader}
-    />
+    <TournamentStandingsView tournament={tournament} matches={matches} standings={standings} showHeader={showHeader} />
   );
 }
 
@@ -327,35 +310,6 @@ function last5Form(teamId: number, matches: MatchDto[]): FormResult[] {
     });
 }
 
-function formatTennisSets(tennisSets: any): string | null {
-  if (!Array.isArray(tennisSets) || tennisSets.length === 0) return null;
-
-  const parts: string[] = [];
-  for (const s of tennisSets) {
-    if (!s || typeof s !== "object") continue;
-
-    const hg = Number(s.home_games);
-    const ag = Number(s.away_games);
-    if (!Number.isFinite(hg) || !Number.isFinite(ag)) continue;
-
-    const ht = s.home_tiebreak;
-    const at = s.away_tiebreak;
-
-    if (Number.isFinite(Number(ht)) && Number.isFinite(Number(at))) {
-      parts.push(`${hg}-${ag}(${Number(ht)}-${Number(at)})`);
-    } else {
-      parts.push(`${hg}-${ag}`);
-    }
-  }
-
-  return parts.length ? parts.join(", ") : null;
-}
-
-function formatPenalties(ph: number | null | undefined, pa: number | null | undefined): string | null {
-  if (ph == null || pa == null) return null;
-  return `k. ${ph}:${pa}`;
-}
-
 function safeNum(v: any, fallback = 0): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -371,6 +325,10 @@ function getTennisPointsMode(tournament: Tournament | null, standings: Standings
   if (sMode === "NONE") return "NONE";
 
   return "NONE";
+}
+
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
 }
 
 /* =========================
@@ -389,7 +347,7 @@ function TournamentStandingsView({
   showHeader: boolean;
 }) {
   const [tab, setTab] = useState<"TABLE" | "BRACKET">("TABLE");
-  const [layoutMode, setLayoutMode] = useState<"STANDARD" | "CENTERED">("STANDARD");
+  const [bracketMode, setBracketMode] = useState<"PYRAMID" | "CENTERED">("PYRAMID");
 
   useEffect(() => {
     if (tournament?.tournament_format === "CUP") setTab("BRACKET");
@@ -427,153 +385,143 @@ function TournamentStandingsView({
     };
   }, [tournament, standings]);
 
-  const {
-    discipline,
-    isTennis,
-    showTennisPoints,
-    isCup,
-    isMixed,
-    hasLeagueTable,
-    hasGroups,
-    hasTableData,
-    hasBracketData,
-  } = derived;
+  const { discipline, isTennis, showTennisPoints, isCup, isMixed, hasLeagueTable, hasGroups, hasTableData, hasBracketData } =
+    derived;
+
+  const showTabs = isMixed || (hasTableData && hasBracketData);
 
   return (
-    <div style={{ padding: showHeader ? "2rem" : "0", maxWidth: 1400 }}>
-      {showHeader && <h1 style={{ marginBottom: "0.5rem" }}>Wyniki: {tournament.name}</h1>}
+    <div className={cn(showHeader ? "px-4 py-4 sm:px-0" : "p-0")}>
+      {showHeader ? (
+        <div className="mb-4">
+          <div className="text-sm text-slate-300">Wyniki</div>
+          <h2 className="mt-1 text-2xl font-semibold text-white">{tournament.name}</h2>
+        </div>
+      ) : null}
 
-      {(isMixed || (hasTableData && hasBracketData)) && (
-        <div style={{ display: "flex", gap: "10px", marginBottom: "1.5rem" }}>
+      {showTabs ? (
+        <div className="mb-5 flex flex-wrap gap-2">
           <button
+            type="button"
             onClick={() => setTab("TABLE")}
-            disabled={tab === "TABLE"}
-            style={{
-              padding: "8px 16px",
-              cursor: tab === "TABLE" ? "default" : "pointer",
-              fontWeight: tab === "TABLE" ? "bold" : "normal",
-              borderBottom: tab === "TABLE" ? "2px solid #3498db" : "2px solid transparent",
-              background: "transparent",
-              color: "#ccc",
-            }}
+            className={cn(
+              "relative inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-sm font-semibold transition",
+              "border border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10]",
+              "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
+              tab === "TABLE" && "border-white/15"
+            )}
           >
-            Tabela
+            <span className="relative z-10 inline-flex items-center gap-2">
+              <Table2 className="h-4 w-4 text-white/80" />
+              Tabela
+            </span>
           </button>
 
           <button
+            type="button"
             onClick={() => setTab("BRACKET")}
-            disabled={tab === "BRACKET"}
-            style={{
-              padding: "8px 16px",
-              cursor: tab === "BRACKET" ? "default" : "pointer",
-              fontWeight: tab === "BRACKET" ? "bold" : "normal",
-              borderBottom: tab === "BRACKET" ? "2px solid #3498db" : "2px solid transparent",
-              background: "transparent",
-              color: "#ccc",
-            }}
+            className={cn(
+              "relative inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-sm font-semibold transition",
+              "border border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10]",
+              "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
+              tab === "BRACKET" && "border-white/15"
+            )}
           >
-            Drabinka
+            <span className="relative z-10 inline-flex items-center gap-2">
+              <Brackets className="h-4 w-4 text-white/80" />
+              Drabinka
+            </span>
           </button>
         </div>
-      )}
+      ) : null}
 
-      {tab === "TABLE" && (
-        <>
-          {hasGroups ? (
-            <div>
-              {standings!.groups!.map((g, idx) => {
-                const groupTitle =
-                  (g.group_name || "").toLowerCase().startsWith("grupa")
-                    ? g.group_name
-                    : displayGroupName(g.group_name, idx);
+      {tab === "TABLE" ? (
+        hasGroups ? (
+          <div className="space-y-4">
+            {standings!.groups!.map((g, idx) => {
+              const groupTitle =
+                (g.group_name || "").toLowerCase().startsWith("grupa") ? g.group_name : displayGroupName(g.group_name, idx);
 
-                const groupKey = normalizeGroupKey(g.group_name);
-                const groupMatches = matches.filter(
-                  (m) => m.stage_type === "GROUP" && normalizeGroupKey(m.group_name) === groupKey
-                );
+              const groupKey = normalizeGroupKey(g.group_name);
+              const groupMatches = matches.filter(
+                (m) => m.stage_type === "GROUP" && normalizeGroupKey(m.group_name) === groupKey
+              );
 
-                return (
-                  <div key={g.group_id} style={{ marginBottom: "2.5rem" }}>
-                    <h3
-                      style={{
-                        marginBottom: "0.75rem",
-                        color: "#3498db",
-                        borderLeft: "4px solid #3498db",
-                        paddingLeft: "10px",
-                      }}
-                    >
-                      {groupTitle}
-                    </h3>
-
-                    <Table
-                      rows={g.table}
-                      matchesForForm={groupMatches}
-                      isTennis={isTennis}
-                      showTennisPoints={showTennisPoints}
-                    />
+              return (
+                <Card key={g.group_id} className="p-5 sm:p-6">
+                  <div className="mb-3">
+                    <div className="text-xs text-slate-400">Faza grupowa</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-100">{groupTitle}</div>
                   </div>
-                );
-              })}
+
+                  <StandingsTable
+                    rows={g.table}
+                    matchesForForm={groupMatches}
+                    isTennis={isTennis}
+                    showTennisPoints={showTennisPoints}
+                  />
+                </Card>
+              );
+            })}
+          </div>
+        ) : hasLeagueTable ? (
+          <Card className="p-5 sm:p-6">
+            <div className="mb-3">
+              <div className="text-xs text-slate-400">Tabela</div>
+              <div className="mt-1 text-lg font-semibold text-slate-100">Klasyfikacja</div>
             </div>
-          ) : hasLeagueTable ? (
-            <Table
+
+            <StandingsTable
               rows={standings!.table!}
               matchesForForm={matches.filter((m) => m.stage_type === "LEAGUE")}
               isTennis={isTennis}
               showTennisPoints={showTennisPoints}
             />
-          ) : (
-            !isCup && <p>Brak danych tabeli.</p>
-          )}
-        </>
-      )}
-
-      {tab === "BRACKET" && (
-        <>
-          {hasBracketData ? (
+          </Card>
+        ) : (
+          !isCup && <InlineAlert variant="info">Brak danych tabeli.</InlineAlert>
+        )
+      ) : hasBracketData ? (
+        <Card className="p-5 sm:p-6">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div style={{ marginBottom: "20px", display: "flex", justifyContent: "flex-end", gap: "10px" }}>
-                <button
-                  onClick={() => setLayoutMode("STANDARD")}
-                  style={{
-                    padding: "6px 12px",
-                    backgroundColor: layoutMode === "STANDARD" ? "#3498db" : "#444",
-                    color: "#fff",
-                    border: "none",
-                    borderRadius: "4px",
-                    cursor: "pointer",
-                    fontSize: "0.8rem",
-                  }}
-                >
-                  Standard (Drzewko)
-                </button>
-
-                <button
-                  onClick={() => setLayoutMode("CENTERED")}
-                  style={{
-                    padding: "6px 12px",
-                    backgroundColor: layoutMode === "CENTERED" ? "#3498db" : "#444",
-                    color: "#fff",
-                    border: "none",
-                    borderRadius: "4px",
-                    cursor: "pointer",
-                    fontSize: "0.8rem",
-                  }}
-                >
-                  Finał w środku
-                </button>
-              </div>
-
-              {layoutMode === "STANDARD" ? (
-                <StandardBracketView data={standings!.bracket!} discipline={discipline} />
-              ) : (
-                <CenteredBracketView data={standings!.bracket!} discipline={discipline} />
-              )}
+              <div className="text-xs text-slate-400">Drabinka</div>
+              <div className="mt-1 text-lg font-semibold text-slate-100">Faza pucharowa</div>
             </div>
-          ) : (
-            <p>Brak danych drabinki lub faza pucharowa jeszcze się nie rozpoczęła.</p>
-          )}
-        </>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setBracketMode("PYRAMID")}
+                className={cn(
+                  "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
+                  "border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10]",
+                  "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
+                  bracketMode === "PYRAMID" && "border-white/15 bg-white/10"
+                )}
+              >
+                Piramida
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setBracketMode("CENTERED")}
+                className={cn(
+                  "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
+                  "border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10]",
+                  "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
+                  bracketMode === "CENTERED" && "border-white/15 bg-white/10"
+                )}
+              >
+                Finał w środku
+              </button>
+            </div>
+          </div>
+
+          <BracketPremium data={standings!.bracket!} discipline={discipline} mode={bracketMode} />
+        </Card>
+      ) : (
+        <InlineAlert variant="info">Brak danych drabinki lub faza pucharowa jeszcze się nie rozpoczęła.</InlineAlert>
       )}
     </div>
   );
@@ -583,7 +531,7 @@ function TournamentStandingsView({
    TABELA
    ========================= */
 
-function Table({
+function StandingsTable({
   rows,
   matchesForForm,
   isTennis,
@@ -594,54 +542,46 @@ function Table({
   isTennis: boolean;
   showTennisPoints: boolean;
 }) {
-  const minWidth = isTennis ? (showTennisPoints ? "950px" : "900px") : "600px";
-
-  const formDot = (f: FormResult) => {
-    const bg =
-      f === "W" ? "#2ecc71" :
-      f === "D" ? "#95a5a6" :
-      "#e74c3c";
-    return { backgroundColor: bg };
-  };
+  const minW = isTennis ? (showTennisPoints ? "min-w-[950px]" : "min-w-[900px]") : "min-w-[600px]";
 
   return (
-    <div style={{ overflowX: "auto" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", minWidth, color: "#ddd" }}>
+    <div className="overflow-x-auto">
+      <table className={cn("w-full border-separate border-spacing-0", minW)}>
         <thead>
           {isTennis ? (
-            <tr style={{ borderBottom: "2px solid #444", textAlign: "left" }}>
-              <th style={{ padding: "10px" }}>#</th>
-              <th style={{ padding: "10px" }}>Zawodnik</th>
-              <th>M</th>
-              <th>Z</th>
-              <th>P</th>
-              <th>Sety +</th>
-              <th>Sety -</th>
-              <th>RS</th>
-              <th>Gemy +</th>
-              <th>Gemy -</th>
-              <th>RG</th>
-              {showTennisPoints && <th>Pkt (PLT)</th>}
-              <th>Forma</th>
+            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
+              <th className="py-3 pl-2 pr-3">#</th>
+              <th className="py-3 pr-3">Zawodnik</th>
+              <th className="py-3 pr-3">M</th>
+              <th className="py-3 pr-3">Z</th>
+              <th className="py-3 pr-3">P</th>
+              <th className="py-3 pr-3">Sety +</th>
+              <th className="py-3 pr-3">Sety -</th>
+              <th className="py-3 pr-3">RS</th>
+              <th className="py-3 pr-3">Gemy +</th>
+              <th className="py-3 pr-3">Gemy -</th>
+              <th className="py-3 pr-3">RG</th>
+              {showTennisPoints ? <th className="py-3 pr-3">Pkt (PLT)</th> : null}
+              <th className="py-3 pr-2">Forma</th>
             </tr>
           ) : (
-            <tr style={{ borderBottom: "2px solid #444", textAlign: "left" }}>
-              <th style={{ padding: "10px" }}>#</th>
-              <th style={{ padding: "10px" }}>Drużyna</th>
-              <th>M</th>
-              <th>Z</th>
-              <th>R</th>
-              <th>P</th>
-              <th>B+</th>
-              <th>B-</th>
-              <th>RB</th>
-              <th>Pkt</th>
-              <th>Forma</th>
+            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
+              <th className="py-3 pl-2 pr-3">#</th>
+              <th className="py-3 pr-3">Drużyna</th>
+              <th className="py-3 pr-3">M</th>
+              <th className="py-3 pr-3">Z</th>
+              <th className="py-3 pr-3">R</th>
+              <th className="py-3 pr-3">P</th>
+              <th className="py-3 pr-3">B+</th>
+              <th className="py-3 pr-3">B-</th>
+              <th className="py-3 pr-3">RB</th>
+              <th className="py-3 pr-3">Pkt</th>
+              <th className="py-3 pr-2">Forma</th>
             </tr>
           )}
         </thead>
 
-        <tbody>
+        <tbody className="text-sm text-slate-100">
           {rows.map((r, i) => {
             const form = last5Form(r.team_id, matchesForForm);
 
@@ -655,88 +595,48 @@ function Table({
               const gamesDiff = safeNum(r.games_diff, safeNum(r.games_difference, gamesFor - gamesAgainst));
 
               return (
-                <tr key={r.team_id} style={{ borderBottom: "1px solid #333" }}>
-                  <td style={{ padding: "10px" }}>{i + 1}</td>
-                  <td style={{ padding: "10px", fontWeight: "bold" }}>{r.team_name}</td>
-                  <td>{r.played}</td>
-                  <td>{r.wins}</td>
-                  <td>{r.losses}</td>
-                  <td>{setsFor}</td>
-                  <td>{setsAgainst}</td>
-                  <td>{setsDiff}</td>
-                  <td>{gamesFor}</td>
-                  <td>{gamesAgainst}</td>
-                  <td>{gamesDiff}</td>
+                <tr key={r.team_id} className="border-t border-white/10 hover:bg-white/[0.04]">
+                  <td className="py-3 pl-2 pr-3 text-slate-300">{i + 1}</td>
+                  <td className="py-3 pr-3 font-semibold">{r.team_name}</td>
+                  <td className="py-3 pr-3 text-slate-200">{r.played}</td>
+                  <td className="py-3 pr-3 text-slate-200">{r.wins}</td>
+                  <td className="py-3 pr-3 text-slate-200">{r.losses}</td>
+                  <td className="py-3 pr-3 text-slate-200">{setsFor}</td>
+                  <td className="py-3 pr-3 text-slate-200">{setsAgainst}</td>
+                  <td className="py-3 pr-3 text-slate-200">{setsDiff}</td>
+                  <td className="py-3 pr-3 text-slate-200">{gamesFor}</td>
+                  <td className="py-3 pr-3 text-slate-200">{gamesAgainst}</td>
+                  <td className="py-3 pr-3 text-slate-200">{gamesDiff}</td>
 
-                  {showTennisPoints && (
-                    <td>
-                      <strong style={{ color: "#3498db" }}>{r.points}</strong>
+                  {showTennisPoints ? (
+                    <td className="py-3 pr-3">
+                      <span className="font-semibold text-sky-200">{r.points}</span>
                     </td>
-                  )}
+                  ) : null}
 
-                  <td>
-                    <div style={{ display: "flex", gap: "3px" }}>
-                      {form.map((f, idx) => (
-                        <span
-                          key={idx}
-                          style={{
-                            width: 16,
-                            height: 16,
-                            borderRadius: "50%",
-                            fontSize: 9,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            fontWeight: "bold",
-                            color: "#fff",
-                            ...formDot(f),
-                          }}
-                        >
-                          {f}
-                        </span>
-                      ))}
-                    </div>
+                  <td className="py-3 pr-2">
+                    <FormDots form={form} />
                   </td>
                 </tr>
               );
             }
 
             return (
-              <tr key={r.team_id} style={{ borderBottom: "1px solid #333" }}>
-                <td style={{ padding: "10px" }}>{i + 1}</td>
-                <td style={{ padding: "10px", fontWeight: "bold" }}>{r.team_name}</td>
-                <td>{r.played}</td>
-                <td>{r.wins}</td>
-                <td>{r.draws}</td>
-                <td>{r.losses}</td>
-                <td>{r.goals_for}</td>
-                <td>{r.goals_against}</td>
-                <td>{r.goal_difference}</td>
-                <td>
-                  <strong style={{ color: "#3498db" }}>{r.points}</strong>
+              <tr key={r.team_id} className="border-t border-white/10 hover:bg-white/[0.04]">
+                <td className="py-3 pl-2 pr-3 text-slate-300">{i + 1}</td>
+                <td className="py-3 pr-3 font-semibold">{r.team_name}</td>
+                <td className="py-3 pr-3 text-slate-200">{r.played}</td>
+                <td className="py-3 pr-3 text-slate-200">{r.wins}</td>
+                <td className="py-3 pr-3 text-slate-200">{r.draws}</td>
+                <td className="py-3 pr-3 text-slate-200">{r.losses}</td>
+                <td className="py-3 pr-3 text-slate-200">{r.goals_for}</td>
+                <td className="py-3 pr-3 text-slate-200">{r.goals_against}</td>
+                <td className="py-3 pr-3 text-slate-200">{r.goal_difference}</td>
+                <td className="py-3 pr-3">
+                  <span className="font-semibold text-sky-200">{r.points}</span>
                 </td>
-                <td>
-                  <div style={{ display: "flex", gap: "3px" }}>
-                    {form.map((f, idx) => (
-                      <span
-                        key={idx}
-                        style={{
-                          width: 16,
-                          height: 16,
-                          borderRadius: "50%",
-                          fontSize: 9,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          fontWeight: "bold",
-                          color: "#fff",
-                          ...formDot(f),
-                        }}
-                      >
-                        {f}
-                      </span>
-                    ))}
-                  </div>
+                <td className="py-3 pr-2">
+                  <FormDots form={form} />
                 </td>
               </tr>
             );
@@ -747,172 +647,678 @@ function Table({
   );
 }
 
-/* =========================
-   DRABINKA (Widoki)
-   ========================= */
-
-function StandardBracketView({ data, discipline }: { data: BracketData; discipline: string }) {
-  const { rounds, third_place } = data;
-
+function FormDots({ form }: { form: FormResult[] }) {
   return (
-    <div style={{ overflowX: "auto", paddingBottom: "20px" }}>
-      <div style={{ display: "flex", flexDirection: "row", gap: "40px" }}>
-        {rounds.map((round) => (
-          <RoundColumn
-            key={round.round_number}
-            label={round.label}
-            items={round.items}
-            discipline={discipline}
-          />
-        ))}
-
-        {third_place && (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              minWidth: "240px",
-              borderLeft: "2px dashed #555",
-              paddingLeft: "30px",
-              justifyContent: "center",
-            }}
-          >
-            <h3
-              style={{
-                textAlign: "center",
-                color: "#e67e22",
-                marginBottom: "20px",
-                fontSize: "0.9rem",
-                textTransform: "uppercase",
-              }}
-            >
-              Mecz o 3. miejsce
-            </h3>
-
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <BracketMatchCard item={third_place} isThirdPlace discipline={discipline} />
-            </div>
-          </div>
-        )}
-      </div>
+    <div className="flex gap-1.5">
+      {form.map((f, idx) => (
+        <span
+          key={`${f}-${idx}`}
+          className={cn(
+            "inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold text-white",
+            f === "W" && "bg-emerald-500/80",
+            f === "D" && "bg-slate-400/70",
+            f === "L" && "bg-rose-500/80"
+          )}
+          title={f === "W" ? "Wygrana" : f === "D" ? "Remis" : "Porażka"}
+        >
+          {f}
+        </span>
+      ))}
     </div>
   );
 }
 
-function CenteredBracketView({ data, discipline }: { data: BracketData; discipline: string }) {
-  const { rounds, third_place } = data;
+/* =========================
+   DRABINKA PREMIUM: układ + linie + drag
+   ========================= */
+
+type BracketMode = "PYRAMID" | "CENTERED";
+
+type BracketDims = {
+  cardW: number;
+  cardH: number;
+  colGap: number;
+  rowUnit: number;
+  halfUnit: number;
+};
+
+function getDefaultDims(): BracketDims {
+  // Parametry dobrane pod czytelność i “fit to width” na desktop
+  const cardW = 240;
+  const cardH = 80;
+  const colGap = 64;
+  const rowUnit = 108; // odstęp między meczami w rundzie 1
+  const halfUnit = Math.round(rowUnit / 2);
+  return { cardW, cardH, colGap, rowUnit, halfUnit };
+}
+
+function buildPyramidLayout(rounds: BracketRound[], dims: BracketDims) {
+  const nRounds = rounds.length;
+  const n0 = rounds[0]?.items?.length ?? 0;
+
+  const contentW = nRounds > 0 ? nRounds * dims.cardW + (nRounds - 1) * dims.colGap : 0;
+  const contentH = n0 > 0 ? (n0 - 1) * dims.rowUnit + dims.cardH : 0;
+
+  const pos = rounds.map((r, ri) =>
+    r.items.map((_, mi) => {
+      // piramida bokiem: w kolejnych rundach mecze są “pomiędzy” parami
+      const base = Math.pow(2, ri);
+      const step = Math.pow(2, ri + 1);
+      const slot = step * mi + (base - 1); // 0,2,4... / 1,5,9... / 3,11...
+      const y = slot * dims.halfUnit;
+      const x = ri * (dims.cardW + dims.colGap);
+      return { x, y };
+    })
+  );
+
+  const paths: string[] = [];
+  for (let ri = 0; ri < rounds.length - 1; ri++) {
+    const fromRound = rounds[ri];
+    const toRound = rounds[ri + 1];
+
+    for (let mi = 0; mi < fromRound.items.length; mi++) {
+      const ti = Math.floor(mi / 2);
+      if (!toRound.items[ti]) continue;
+
+      const a = pos[ri][mi];
+      const b = pos[ri + 1][ti];
+
+      const x1 = a.x + dims.cardW;
+      const y1 = a.y + dims.cardH / 2;
+
+      const x2 = b.x;
+      const y2 = b.y + dims.cardH / 2;
+
+      const mid = x1 + (x2 - x1) / 2;
+
+      paths.push(`M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`);
+    }
+  }
+
+  return { contentW, contentH, pos, paths };
+}
+
+function buildCenteredLayout(data: BracketData, dims: BracketDims) {
+  const rounds = data.rounds;
   if (rounds.length === 0) return null;
 
   const finalRound = rounds[rounds.length - 1];
-  const preFinalRounds = rounds.slice(0, rounds.length - 1);
+  const pre = rounds.slice(0, rounds.length - 1);
+
+  const splitIdx0 = Math.ceil((pre[0]?.items?.length ?? 0) / 2);
+
+  const leftRounds: BracketRound[] = pre.map((r) => ({
+    ...r,
+    items: r.items.slice(0, Math.ceil(r.items.length / 2)),
+  }));
+
+  const rightRounds: BracketRound[] = pre.map((r) => ({
+    ...r,
+    items: r.items.slice(Math.ceil(r.items.length / 2)),
+  }));
+
+  const leftN0 = leftRounds[0]?.items?.length ?? 0;
+  const rightN0 = rightRounds[0]?.items?.length ?? 0;
+
+  const preCols = pre.length; // bez finału
+  const centerGap = 96;
+
+  const leftW = preCols * dims.cardW + Math.max(0, preCols - 1) * dims.colGap;
+  const finalW = dims.cardW;
+  const rightW = preCols * dims.cardW + Math.max(0, preCols - 1) * dims.colGap;
+
+  const contentW = leftW + centerGap + finalW + centerGap + rightW;
+
+  const maxN0 = Math.max(leftN0 * 2, rightN0 * 2, splitIdx0 * 2);
+  const effectiveN0 = Math.max(maxN0 / 2, 1);
+  const contentH = (effectiveN0 - 1) * dims.rowUnit + dims.cardH;
+
+  const leftBaseX = 0;
+  const finalX = leftW + centerGap;
+  const rightBaseX = finalX + finalW + centerGap;
+
+  const leftPos = leftRounds.map((r, ri) =>
+    r.items.map((_, mi) => {
+      const base = Math.pow(2, ri);
+      const step = Math.pow(2, ri + 1);
+      const slot = step * mi + (base - 1);
+      const y = slot * dims.halfUnit;
+      const x = leftBaseX + ri * (dims.cardW + dims.colGap);
+      return { x, y };
+    })
+  );
+
+  const rightXForRound = (ri: number) => {
+    // round 0 ma być najdalej na prawo, więc round rośnie w lewo
+    const offset = (preCols - 1 - ri) * (dims.cardW + dims.colGap);
+    return rightBaseX + offset;
+  };
+
+  const rightPos = rightRounds.map((r, ri) =>
+    r.items.map((_, mi) => {
+      const base = Math.pow(2, ri);
+      const step = Math.pow(2, ri + 1);
+      const slot = step * mi + (base - 1);
+      const y = slot * dims.halfUnit;
+      const x = rightXForRound(ri);
+      return { x, y };
+    })
+  );
+
+  const finalPos = finalRound.items.map((_, mi) => {
+    const y = (contentH - dims.cardH) / 2;
+    const x = finalX;
+    return { x, y, mi };
+  });
+
+  const paths: string[] = [];
+
+  // Lewa strona: standardowo w prawo
+  for (let ri = 0; ri < leftRounds.length - 1; ri++) {
+    for (let mi = 0; mi < leftRounds[ri].items.length; mi++) {
+      const ti = Math.floor(mi / 2);
+      if (!leftRounds[ri + 1].items[ti]) continue;
+
+      const a = leftPos[ri][mi];
+      const b = leftPos[ri + 1][ti];
+
+      const x1 = a.x + dims.cardW;
+      const y1 = a.y + dims.cardH / 2;
+      const x2 = b.x;
+      const y2 = b.y + dims.cardH / 2;
+      const mid = x1 + (x2 - x1) / 2;
+
+      paths.push(`M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`);
+    }
+  }
+
+  // Prawa strona: w lewo (do centrum)
+  for (let ri = 0; ri < rightRounds.length - 1; ri++) {
+    for (let mi = 0; mi < rightRounds[ri].items.length; mi++) {
+      const ti = Math.floor(mi / 2);
+      if (!rightRounds[ri + 1].items[ti]) continue;
+
+      const a = rightPos[ri][mi];
+      const b = rightPos[ri + 1][ti];
+
+      const x1 = a.x; // lewa krawędź (w stronę centrum)
+      const y1 = a.y + dims.cardH / 2;
+      const x2 = b.x + dims.cardW; // prawa krawędź targetu (też w stronę centrum)
+      const y2 = b.y + dims.cardH / 2;
+      const mid = x2 + (x1 - x2) / 2;
+
+      paths.push(`M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`);
+    }
+  }
+
+  // Połączenia do finału
+  const leftLast = leftRounds[leftRounds.length - 1];
+  const rightLast = rightRounds[rightRounds.length - 1];
+
+  if (finalPos[0]) {
+    // lewy półfinał -> finał (wejście z lewej)
+    if (leftLast?.items?.[0] && leftPos[leftPos.length - 1]?.[0]) {
+      const a = leftPos[leftPos.length - 1][0];
+      const x1 = a.x + dims.cardW;
+      const y1 = a.y + dims.cardH / 2;
+
+      const x2 = finalPos[0].x;
+      const y2 = finalPos[0].y + dims.cardH / 2;
+      const mid = x1 + (x2 - x1) / 2;
+
+      paths.push(`M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`);
+    }
+
+    // prawy półfinał -> finał (wejście z prawej)
+    if (rightLast?.items?.[0] && rightPos[rightPos.length - 1]?.[0]) {
+      const a = rightPos[rightPos.length - 1][0];
+      const x1 = a.x; // lewa krawędź półfinału (w stronę finału)
+      const y1 = a.y + dims.cardH / 2;
+
+      const x2 = finalPos[0].x + dims.cardW; // prawa krawędź finału
+      const y2 = finalPos[0].y + dims.cardH / 2;
+      const mid = x2 + (x1 - x2) / 2;
+
+      paths.push(`M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`);
+    }
+  }
+
+  return {
+    contentW,
+    contentH,
+    leftRounds,
+    rightRounds,
+    finalRound,
+    leftPos,
+    rightPos,
+    finalPos,
+    paths,
+  };
+}
+
+function BracketPremium({ data, discipline, mode }: { data: BracketData; discipline: string; mode: BracketMode }) {
+  const dims = useMemo(() => getDefaultDims(), []);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+
+  const [zoom, setZoom] = useState(1);
+  const [fitZoom, setFitZoom] = useState(1);
+
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [dragging, setDragging] = useState(false);
+
+  const pyramid = useMemo(() => buildPyramidLayout(data.rounds, dims), [data.rounds, dims]);
+  const centered = useMemo(() => buildCenteredLayout(data, dims), [data, dims, mode]);
+
+  const contentW = mode === "PYRAMID" ? pyramid.contentW : centered?.contentW ?? pyramid.contentW;
+  const contentH = mode === "PYRAMID" ? pyramid.contentH : centered?.contentH ?? pyramid.contentH;
+
+  // ===== Fit to width =====
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el) return;
+
+    const compute = () => {
+      const w = el.clientWidth;
+      const padding = 12;
+      const available = Math.max(260, w - padding * 2);
+      const fit = contentW > 0 ? clamp(available / contentW, 0.5, 1) : 1;
+
+      setFitZoom(fit);
+
+      // Jeżeli user nie zmieniał ręcznie, trzymamy “fit”
+      setZoom((prev) => {
+        const isNearPrevFit = Math.abs(prev - fit) < 0.02;
+        return isNearPrevFit ? fit : prev;
+      });
+    };
+
+    compute();
+
+    const ro = new ResizeObserver(() => compute());
+    ro.observe(el);
+
+    return () => ro.disconnect();
+  }, [contentW]);
+
+  // ===== Fullscreen =====
+  useEffect(() => {
+    const onChange = () => {
+      const fs = !!document.fullscreenElement;
+      setIsFullscreen(fs);
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  const requestFs = async () => {
+    const el = hostRef.current;
+    if (!el) return;
+    try {
+      await el.requestFullscreen();
+    } catch {
+      // ignore
+    }
+  };
+
+  const exitFs = async () => {
+    try {
+      await document.exitFullscreen();
+    } catch {
+      // ignore
+    }
+  };
+
+  const pannable = isFullscreen || zoom > fitZoom + 0.02;
+
+  // ===== Drag-to-pan =====
+  useEffect(() => {
+    const vp = viewportRef.current;
+    if (!vp) return;
+
+    const state = {
+      active: false,
+      sx: 0,
+      sy: 0,
+      sl: 0,
+      st: 0,
+      pid: -1,
+    };
+
+    const isInteractive = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      if (!el) return false;
+      return !!el.closest("button, a, input, textarea, select");
+    };
+
+    const onDown = (e: PointerEvent) => {
+      if (!pannable) return;
+      if (e.button !== 0) return;
+      if (isInteractive(e.target)) return;
+
+      state.active = true;
+      state.pid = e.pointerId;
+      state.sx = e.clientX;
+      state.sy = e.clientY;
+      state.sl = vp.scrollLeft;
+      state.st = vp.scrollTop;
+
+      vp.setPointerCapture(e.pointerId);
+      setDragging(true);
+    };
+
+    const onMove = (e: PointerEvent) => {
+      if (!state.active) return;
+      const dx = e.clientX - state.sx;
+      const dy = e.clientY - state.sy;
+      vp.scrollLeft = state.sl - dx;
+      vp.scrollTop = state.st - dy;
+    };
+
+    const onUp = (e: PointerEvent) => {
+      if (!state.active) return;
+      if (state.pid === e.pointerId) {
+        state.active = false;
+        state.pid = -1;
+        setDragging(false);
+      }
+    };
+
+    vp.addEventListener("pointerdown", onDown);
+    vp.addEventListener("pointermove", onMove);
+    vp.addEventListener("pointerup", onUp);
+    vp.addEventListener("pointercancel", onUp);
+
+    return () => {
+      vp.removeEventListener("pointerdown", onDown);
+      vp.removeEventListener("pointermove", onMove);
+      vp.removeEventListener("pointerup", onUp);
+      vp.removeEventListener("pointercancel", onUp);
+    };
+  }, [pannable]);
+
+  const handleZoom = (delta: number) => {
+    setZoom((z) => clamp(Math.round((z + delta) * 100) / 100, 0.5, 1.6));
+  };
+
+  const handleFit = () => setZoom(fitZoom);
+
+  const wrapStyle: CSSProperties = {
+    width: contentW,
+    height: contentH,
+    transform: `scale(${zoom})`,
+    transformOrigin: "top left",
+  };
+
+  const svgStyle: CSSProperties = {
+    width: contentW,
+    height: contentH,
+  };
+
+  const lineStroke = "rgba(255,255,255,0.22)";
+
+  const paths =
+    mode === "PYRAMID" ? pyramid.paths : centered?.paths ?? pyramid.paths;
 
   return (
-    <div style={{ overflowX: "auto", paddingBottom: "20px", display: "flex", justifyContent: "center" }}>
-      <div style={{ display: "flex", alignItems: "stretch" }}>
-        <div style={{ display: "flex", gap: "20px" }}>
-          {preFinalRounds.map((round) => {
-            const half = Math.ceil(round.items.length / 2);
-            const leftItems = round.items.slice(0, half);
-
-            return (
-              <RoundColumn
-                key={`L-${round.round_number}`}
-                label={round.label}
-                items={leftItems}
-                discipline={discipline}
-              />
-            );
-          })}
+    <div
+      ref={hostRef}
+      className={cn(
+        "relative rounded-2xl border border-white/10 bg-white/[0.03] p-4 sm:p-5",
+        isFullscreen && "h-[100svh] w-full rounded-none border-0 p-0"
+      )}
+    >
+      {/* ===== Toolbar ===== */}
+      <div
+        className={cn(
+          "mb-3 flex flex-wrap items-center justify-between gap-2",
+          isFullscreen && "px-4 pt-4"
+        )}
+      >
+        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+          <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5">
+            <Brackets className="h-3.5 w-3.5 text-white/70" />
+            Linie łączą rundy
+          </span>
+          <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5">
+            Drag: przeciągnij aby przesunąć
+          </span>
         </div>
 
-        <div style={{ margin: "0 40px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%" }}>
-            <div style={{ fontSize: "2rem", marginBottom: "10px" }}>🏆</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" onClick={() => handleZoom(-0.08)} className="h-9 px-3">
+            <Minus className="h-4 w-4" />
+          </Button>
+          <Button variant="secondary" onClick={() => handleZoom(+0.08)} className="h-9 px-3">
+            <Plus className="h-4 w-4" />
+          </Button>
 
-            <RoundColumn
-              label={finalRound.label}
-              items={finalRound.items}
-              highlight
-              discipline={discipline}
-            />
+          <Button variant="secondary" onClick={handleFit} className="h-9 px-3">
+            <Scan className="h-4 w-4" />
+          </Button>
 
-            {third_place && (
-              <div style={{ marginTop: "50px", opacity: 0.9, transform: "scale(0.95)" }}>
-                <h4 style={{ textAlign: "center", margin: "0 0 10px 0", fontSize: "0.75rem", color: "#e67e22", textTransform: "uppercase" }}>
-                  Mecz o 3. miejsce
-                </h4>
-                <BracketMatchCard item={third_place} isThirdPlace discipline={discipline} />
-              </div>
-            )}
+          {!isFullscreen ? (
+            <Button variant="secondary" onClick={requestFs} className="h-9 px-3">
+              <Maximize2 className="h-4 w-4" />
+            </Button>
+          ) : (
+            <Button variant="secondary" onClick={exitFs} className="h-9 px-3">
+              <Minimize2 className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* ===== Viewport ===== */}
+      <div
+        ref={viewportRef}
+        className={cn(
+          "relative w-full rounded-2xl border border-white/10 bg-black/10",
+          pannable ? "overflow-auto" : "overflow-hidden",
+          pannable && "select-none",
+          pannable && (dragging ? "cursor-grabbing" : "cursor-grab"),
+          isFullscreen ? "h-[calc(100svh-84px)]" : "h-[520px] sm:h-[560px]"
+        )}
+      >
+        <div className="relative">
+          <div className="absolute inset-0 pointer-events-none">
+            <div className="absolute -top-24 left-1/2 h-44 w-[34rem] -translate-x-1/2 rounded-full bg-indigo-500/12 blur-3xl" />
+            <div className="absolute -bottom-28 left-1/2 h-44 w-[34rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
+          </div>
+
+          <div className="relative p-4">
+            <div className="relative" style={wrapStyle}>
+              {/* ===== Linie połączeń ===== */}
+              <svg
+                className="absolute left-0 top-0 pointer-events-none"
+                style={svgStyle}
+                viewBox={`0 0 ${contentW} ${contentH}`}
+              >
+                {paths.map((d, idx) => (
+                  <path
+                    key={idx}
+                    d={d}
+                    fill="none"
+                    stroke={lineStroke}
+                    strokeWidth={2}
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                  />
+                ))}
+              </svg>
+
+              {/* ===== Karty meczów ===== */}
+              {mode === "PYRAMID" ? (
+                <BracketCardsAbsolute
+                  rounds={data.rounds}
+                  pos={pyramid.pos}
+                  dims={dims}
+                  discipline={discipline}
+                  thirdPlace={data.third_place}
+                />
+              ) : centered ? (
+                <CenteredCardsAbsolute
+                  centered={centered}
+                  dims={dims}
+                  discipline={discipline}
+                  thirdPlace={data.third_place}
+                />
+              ) : null}
+            </div>
           </div>
         </div>
-
-        <div style={{ display: "flex", gap: "20px", flexDirection: "row-reverse" }}>
-          {preFinalRounds.map((round) => {
-            const half = Math.ceil(round.items.length / 2);
-            const rightItems = round.items.slice(half);
-            if (rightItems.length === 0) return null;
-
-            return (
-              <RoundColumn
-                key={`R-${round.round_number}`}
-                label={round.label}
-                items={rightItems}
-                discipline={discipline}
-              />
-            );
-          })}
-        </div>
       </div>
     </div>
   );
 }
 
-function RoundColumn({
-  label,
-  items,
-  highlight = false,
+function BracketCardsAbsolute({
+  rounds,
+  pos,
+  dims,
   discipline,
+  thirdPlace,
 }: {
-  label: string;
-  items: BracketDuelItem[];
-  highlight?: boolean;
+  rounds: BracketRound[];
+  pos: { x: number; y: number }[][];
+  dims: BracketDims;
   discipline: string;
+  thirdPlace: BracketDuelItem | null;
 }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", minWidth: "240px" }}>
-      <h3
-        style={{
-          textAlign: "center",
-          marginBottom: "20px",
-          fontSize: "0.85rem",
-          color: highlight ? "#f1c40f" : "#aaa",
-          textTransform: "uppercase",
-          letterSpacing: "1px",
-          borderBottom: highlight ? "2px solid #f1c40f" : "1px solid #444",
-          paddingBottom: "5px",
-        }}
-      >
-        {label}
-      </h3>
+    <>
+      {rounds.map((r, ri) =>
+        r.items.map((item, mi) => {
+          const p = pos[ri]?.[mi];
+          if (!p) return null;
 
-      <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-around", flexGrow: 1, gap: "20px" }}>
-        {items.map((item) => (
-          <BracketMatchCard key={item.id} item={item} discipline={discipline} />
-        ))}
-      </div>
-    </div>
+          const style: CSSProperties = {
+            position: "absolute",
+            left: p.x,
+            top: p.y,
+            width: dims.cardW,
+            height: dims.cardH,
+          };
+
+          return <BracketMatchCard key={item.id} style={style} item={item} discipline={discipline} />;
+        })
+      )}
+
+      {thirdPlace && rounds.length > 0 ? (
+        <div
+          style={{
+            position: "absolute",
+            left: (rounds.length - 1) * (dims.cardW + dims.colGap),
+            top: Math.max(0, (pos[0]?.length ?? 0) * dims.rowUnit),
+            width: dims.cardW,
+            height: dims.cardH,
+          }}
+        >
+          <div className="mb-1 text-center text-[11px] font-semibold uppercase tracking-wide text-amber-200">
+            3. miejsce
+          </div>
+          <BracketMatchCard item={thirdPlace} discipline={discipline} />
+        </div>
+      ) : null}
+    </>
   );
 }
+
+function CenteredCardsAbsolute({
+  centered,
+  dims,
+  discipline,
+  thirdPlace,
+}: {
+  centered: NonNullable<ReturnType<typeof buildCenteredLayout>>;
+  dims: BracketDims;
+  discipline: string;
+  thirdPlace: BracketDuelItem | null;
+}) {
+  const { leftRounds, rightRounds, finalRound, leftPos, rightPos, finalPos } = centered;
+
+  return (
+    <>
+      {leftRounds.map((r, ri) =>
+        r.items.map((item, mi) => {
+          const p = leftPos[ri]?.[mi];
+          if (!p) return null;
+
+          return (
+            <BracketMatchCard
+              key={`L-${item.id}`}
+              style={{ position: "absolute", left: p.x, top: p.y, width: dims.cardW, height: dims.cardH }}
+              item={item}
+              discipline={discipline}
+            />
+          );
+        })
+      )}
+
+      {rightRounds.map((r, ri) =>
+        r.items.map((item, mi) => {
+          const p = rightPos[ri]?.[mi];
+          if (!p) return null;
+
+          return (
+            <BracketMatchCard
+              key={`R-${item.id}`}
+              style={{ position: "absolute", left: p.x, top: p.y, width: dims.cardW, height: dims.cardH }}
+              item={item}
+              discipline={discipline}
+            />
+          );
+        })
+      )}
+
+      {finalRound.items.map((item, idx) => {
+        const p = finalPos[idx];
+        if (!p) return null;
+
+        return (
+          <BracketMatchCard
+            key={`F-${item.id}`}
+            style={{ position: "absolute", left: p.x, top: p.y, width: dims.cardW, height: dims.cardH }}
+            item={item}
+            discipline={discipline}
+            highlight
+          />
+        );
+      })}
+
+      {thirdPlace ? (
+        <div
+          style={{
+            position: "absolute",
+            left: finalPos[0]?.x ?? 0,
+            top: (finalPos[0]?.y ?? 0) + dims.cardH + 70,
+            width: dims.cardW,
+          }}
+        >
+          <div className="mb-1 text-center text-[11px] font-semibold uppercase tracking-wide text-amber-200">
+            3. miejsce
+          </div>
+          <BracketMatchCard item={thirdPlace} discipline={discipline} />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/* =========================
+   KARTA MECZU (bez statusu)
+   ========================= */
 
 function BracketMatchCard({
   item,
-  isThirdPlace,
   discipline,
+  style,
+  highlight,
 }: {
   item: BracketDuelItem;
-  isThirdPlace?: boolean;
   discipline: string;
+  style?: CSSProperties;
+  highlight?: boolean;
 }) {
   const isTennis = (discipline ?? "").toLowerCase() === "tennis";
 
@@ -927,120 +1333,77 @@ function BracketMatchCard({
     ? (item.aggregate_away ?? ((item.score_leg1_away ?? 0) + (item.score_leg2_away ?? 0)))
     : null;
 
-  const canShowDetails = item.status !== "SCHEDULED";
+  const showLeg2 = item.is_two_legged;
 
-  const tennisLeg1 = isTennis && canShowDetails ? formatTennisSets(item.tennis_sets_leg1) : null;
-  const tennisLeg2 = isTennis && canShowDetails ? formatTennisSets(item.tennis_sets_leg2) : null;
-
-  const pensLeg2 = !isTennis ? formatPenalties(item.penalties_leg2_home ?? null, item.penalties_leg2_away ?? null) : null;
-  const pensLeg1 = !isTennis ? formatPenalties(item.penalties_leg1_home ?? null, item.penalties_leg1_away ?? null) : null;
-  const pensText = pensLeg2 || pensLeg1;
-
+  // Zgodnie z wymaganiem: brak statusu. Pokazujemy tylko wynik.
   return (
     <div
-      style={{
-        border: "1px solid #ccc",
-        borderRadius: "6px",
-        padding: "10px",
-        backgroundColor: "#fff",
-        color: "#000",
-        boxShadow: "0 4px 6px rgba(0,0,0,0.3)",
-        fontSize: "0.85rem",
-        position: "relative",
-        minWidth: "220px",
-        borderLeft: isThirdPlace ? "4px solid #e67e22" : "4px solid #3498db",
-      }}
+      style={style}
+      className={cn(
+        "rounded-2xl border bg-white/[0.04] p-3",
+        "shadow-[0_12px_34px_rgba(0,0,0,0.28)]",
+        highlight ? "border-amber-400/25" : "border-white/10"
+      )}
     >
-      {item.is_two_legged && (
-        <div style={{ fontSize: "0.6rem", color: "#888", marginBottom: "6px", textAlign: "center", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+      {item.is_two_legged ? (
+        <div className="mb-1 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-400">
           Dwumecz
         </div>
-      )}
+      ) : null}
 
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", alignItems: "center" }}>
-        <span style={{ fontWeight: homeWin ? "bold" : "normal", color: "#000", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", maxWidth: "110px" }}>
-          {item.home_team_name || "TBD"}
-        </span>
+      <div className="flex items-center justify-between gap-3">
+        <div className={cn("min-w-0 text-sm", homeWin ? "font-semibold text-slate-100" : "text-slate-200")}>
+          <span className="block truncate">{item.home_team_name || "TBD"}</span>
+        </div>
 
-        <div style={{ display: "flex", gap: "3px" }}>
-          <ScoreBox score={item.score_leg1_home} isAgg={false} />
-          {item.is_two_legged && <ScoreBox score={item.score_leg2_home} isAgg={false} />}
-          {item.is_two_legged && <ScoreBox score={aggHome} isAgg={true} highlight={homeWin} />}
+        <div className="flex shrink-0 items-center gap-1">
+          <ScoreBox score={item.score_leg1_home} variant="leg" />
+          {showLeg2 ? <ScoreBox score={item.score_leg2_home} variant="leg" /> : null}
+          {showLeg2 ? <ScoreBox score={aggHome} variant={homeWin ? "aggWin" : "agg"} /> : null}
         </div>
       </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontWeight: awayWin ? "bold" : "normal", color: "#000", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", maxWidth: "110px" }}>
-          {item.away_team_name || "TBD"}
-        </span>
+      <div className="mt-2 flex items-center justify-between gap-3">
+        <div className={cn("min-w-0 text-sm", awayWin ? "font-semibold text-slate-100" : "text-slate-200")}>
+          <span className="block truncate">{item.away_team_name || "TBD"}</span>
+        </div>
 
-        <div style={{ display: "flex", gap: "3px" }}>
-          <ScoreBox score={item.score_leg1_away} isAgg={false} />
-          {item.is_two_legged && <ScoreBox score={item.score_leg2_away} isAgg={false} />}
-          {item.is_two_legged && <ScoreBox score={aggAway} isAgg={true} highlight={awayWin} />}
+        <div className="flex shrink-0 items-center gap-1">
+          <ScoreBox score={item.score_leg1_away} variant="leg" />
+          {showLeg2 ? <ScoreBox score={item.score_leg2_away} variant="leg" /> : null}
+          {showLeg2 ? <ScoreBox score={aggAway} variant={awayWin ? "aggWin" : "agg"} /> : null}
         </div>
       </div>
 
-      {(tennisLeg1 || tennisLeg2 || pensText) && (
-        <div style={{ marginTop: "8px", fontSize: "0.72rem", color: "#444", lineHeight: 1.25 }}>
-          {tennisLeg1 && !item.is_two_legged && (
-            <div>
-              <strong>Sety (gemy):</strong> {tennisLeg1}
-            </div>
-          )}
-
-          {item.is_two_legged && (tennisLeg1 || tennisLeg2) && (
-            <div>
-              <strong>Sety (gemy):</strong> {tennisLeg1 ? tennisLeg1 : "-"} {" | "} {tennisLeg2 ? tennisLeg2 : "-"}
-            </div>
-          )}
-
-          {pensText && (
-            <div>
-              <strong>Karne:</strong> {pensText}
-            </div>
-          )}
-        </div>
-      )}
-
-      {item.status === "FINISHED" && (
-        <div style={{ fontSize: "0.65rem", color: "#666", marginTop: "6px", textAlign: "right", fontStyle: "italic" }}>
-          Zakończony
+      {!isTennis ? null : (
+        <div className="mt-2 text-[11px] text-slate-400">
+          Tenis: sety w gemach są dostępne w szczegółach meczu.
         </div>
       )}
     </div>
   );
 }
 
-function ScoreBox({
-  score,
-  isAgg,
-  highlight,
-}: {
-  score: number | null | undefined;
-  isAgg: boolean;
-  highlight?: boolean;
-}) {
-  const bgColor = isAgg ? (highlight ? "#3498db" : "#bdc3c7") : "#f0f0f0";
-  const textColor = isAgg && highlight ? "#fff" : "#000";
-  const fontWeight = isAgg ? "bold" : "normal";
-
+function ScoreBox({ score, variant }: { score: number | null | undefined; variant: "leg" | "agg" | "aggWin" }) {
   return (
     <span
-      style={{
-        fontWeight,
-        backgroundColor: bgColor,
-        color: textColor,
-        padding: "2px 0",
-        borderRadius: "3px",
-        width: "22px",
-        display: "inline-block",
-        textAlign: "center",
-        fontSize: "0.8rem",
-        border: isAgg ? "none" : "1px solid #ddd",
-      }}
+      className={cn(
+        "inline-flex h-6 w-8 items-center justify-center rounded-md text-xs font-semibold",
+        variant === "leg" && "border border-white/10 bg-white/5 text-slate-100",
+        variant === "agg" && "border border-white/10 bg-white/10 text-slate-100",
+        variant === "aggWin" && "border border-sky-400/30 bg-sky-500/20 text-sky-100"
+      )}
+      title={variant === "leg" ? "Wynik" : "Agregat"}
     >
       {score ?? "-"}
     </span>
   );
 }
+
+/*
+Co zmieniono:
+1) Dodano linie łączące rundy (SVG) - drabinka ma układ piramidy bokiem, a nie schodów.
+2) Dodano drag-to-pan (przeciąganie) dla powiększenia i fullscreen.
+3) Dodano kontrolki: +, -, dopasuj (fit) i fullscreen, bez poziomego slidera na desktop w trybie fit.
+4) Usunięto statusy meczów z drabinki - pozostają drużyny i wyniki (oraz agregat dla dwumeczu).
+*/

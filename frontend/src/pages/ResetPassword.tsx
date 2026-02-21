@@ -1,27 +1,22 @@
-import React, { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import {
-  KeyRound,
-  Lock,
-  Eye,
-  EyeOff,
-  ArrowRight,
-  Loader2,
-  AlertTriangle,
-} from "lucide-react";
+import { AlertTriangle, ArrowRight, Eye, EyeOff, KeyRound, Loader2, Lock } from "lucide-react";
 
 import { apiFetch } from "../api";
-import { Card } from "../ui/Card";
-import { Button } from "../ui/Button";
 import { cn } from "../lib/cn";
 
+import { Button } from "../ui/Button";
+import { Card } from "../ui/Card";
+import { InlineAlert } from "../ui/InlineAlert";
+import { toast } from "../ui/Toast";
+
+/** Pobiera pierwszy komunikat błędu z typowych odpowiedzi DRF. */
 function pickFirstError(data: any): string | null {
   if (!data) return null;
   if (typeof data === "string") return data;
   if (typeof data?.detail === "string") return data.detail;
 
-  // typowe błędy DRF: { field: ["msg"] }
   for (const k of ["token", "new_password", "password", "detail", "non_field_errors"]) {
     const v = data?.[k];
     if (typeof v === "string" && v) return v;
@@ -73,35 +68,31 @@ export default function ResetPassword() {
     try {
       const res = await apiFetch("/api/auth/password-reset/confirm/", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token,
-          new_password: password,
-        }),
+        body: JSON.stringify({ token, new_password: password }),
+        // Komunikaty HTTP są prezentowane w formularzu (InlineAlert).
+        toastOnError: false,
       });
 
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        throw new Error(
-          pickFirstError(data) || "Nie udało się zmienić hasła."
-        );
+        setError(pickFirstError(data) || "Nie udało się zmienić hasła.");
+        return;
       }
 
       setSuccess("Hasło zostało zmienione. Możesz się zalogować.");
       setPassword("");
       setConfirmPassword("");
 
-      // krótka chwila na komunikat i przerzut na login
-      setTimeout(() => navigate("/login"), 800);
-    } catch (e: any) {
-      setError(e?.message || "Błąd połączenia z serwerem.");
+      window.setTimeout(() => navigate("/login"), 800);
+    } catch {
+      // Błąd sieciowy jest prezentowany globalnie jako toast.
+      toast.error("Brak połączenia z serwerem. Spróbuj ponownie.", { title: "Sieć" });
     } finally {
       setLoading(false);
     }
   };
 
-  // Widok bez tokenu – elegancko
   if (!token) {
     return (
       <div className="mx-auto max-w-md py-8 sm:py-10">
@@ -113,13 +104,9 @@ export default function ResetPassword() {
           <Card className="p-6 sm:p-7">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <div className="text-sm text-slate-300">Reset hasła</div>
-                <h1 className="mt-1 text-2xl font-semibold text-white">
-                  Brak tokenu
-                </h1>
+                <h1 className="mt-1 text-2xl font-semibold text-white">Brak tokenu</h1>
                 <p className="mt-2 text-sm text-slate-300 leading-relaxed">
-                  Link do resetu hasła jest nieprawidłowy albo wygasł. Wygeneruj
-                  nowy link resetu.
+                  Link do resetu hasła jest nieprawidłowy albo wygasł. Wygeneruj nowy link resetu.
                 </p>
               </div>
 
@@ -134,6 +121,7 @@ export default function ResetPassword() {
                   Wygeneruj nowy link
                 </Button>
               </Link>
+
               <Link
                 to="/login"
                 className="text-sm text-slate-300 hover:text-white transition underline underline-offset-4 self-center"
@@ -155,16 +143,11 @@ export default function ResetPassword() {
         transition={{ duration: 0.25, ease: "easeOut" }}
       >
         <Card className="p-6 sm:p-7">
-          {/* Header */}
           <div className="flex items-start justify-between gap-4">
             <div>
-              <div className="text-sm text-slate-300">Reset hasła</div>
-              <h1 className="mt-1 text-2xl font-semibold text-white">
-                Ustaw nowe hasło
-              </h1>
+              <h1 className="mt-1 text-2xl font-semibold text-white">Ustaw nowe hasło</h1>
               <p className="mt-2 text-sm text-slate-300 leading-relaxed">
-                Wprowadź nowe hasło i potwierdź je. Po zapisaniu przekierujemy Cię
-                do logowania.
+                Wprowadź nowe hasło i potwierdź je. Po zapisaniu nastąpi przekierowanie do logowania.
               </p>
             </div>
 
@@ -173,28 +156,16 @@ export default function ResetPassword() {
             </div>
           </div>
 
-          {/* Alerts */}
           {(error || success) && (
             <div className="mt-4 space-y-2">
-              {error && (
-                <div className="rounded-2xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                  {error}
-                </div>
-              )}
-              {success && (
-                <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-100">
-                  {success}
-                </div>
-              )}
+              {error && <InlineAlert variant="error">{error}</InlineAlert>}
+              {success && <InlineAlert variant="success">{success}</InlineAlert>}
             </div>
           )}
 
           <form onSubmit={submit} className="mt-5 space-y-4">
-            {/* New password */}
             <div>
-              <label className="text-sm font-medium text-slate-200">
-                Nowe hasło
-              </label>
+              <label className="text-sm font-medium text-slate-200">Nowe hasło</label>
               <div className="mt-2 relative">
                 <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
@@ -224,11 +195,8 @@ export default function ResetPassword() {
               </div>
             </div>
 
-            {/* Confirm password */}
             <div>
-              <label className="text-sm font-medium text-slate-200">
-                Powtórz hasło
-              </label>
+              <label className="text-sm font-medium text-slate-200">Powtórz hasło</label>
               <div className="mt-2 relative">
                 <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
@@ -241,7 +209,7 @@ export default function ResetPassword() {
                   value={confirmPassword}
                   required
                   autoComplete="new-password"
-                  placeholder="powtórz hasło"
+                  placeholder="powtórz nowe hasło"
                   onChange={(e) => setConfirmPassword(e.target.value)}
                 />
                 <button
@@ -255,11 +223,7 @@ export default function ResetPassword() {
               </div>
             </div>
 
-            <Button
-              variant="secondary"
-              className="w-full justify-center"
-              disabled={loading}
-            >
+            <Button variant="secondary" className="w-full justify-center" disabled={loading}>
               {loading ? (
                 <span className="inline-flex items-center gap-2">
                   <Loader2 className="h-4 w-4 animate-spin" />

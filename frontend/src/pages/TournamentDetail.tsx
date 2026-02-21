@@ -831,7 +831,7 @@ export default function TournamentDetail() {
 
   if (needsCode) {
     return (
-      <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6 lg:px-8">
+      <div className="w-full py-8">
         <Card className="p-6">
           <div className="text-lg font-extrabold text-slate-100">Dostęp do turnieju</div>
           <div className="mt-2 text-sm text-slate-300/90">Ten turniej wymaga kodu dostępu.</div>
@@ -1499,7 +1499,7 @@ export default function TournamentDetail() {
     <>
       <Toast open={toastOpen} kind={toastKind} text={toastText} onClose={() => setToastOpen(false)} />
 
-      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+      <div className="w-full py-6">
         {/* Header */}
         <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
           <div>

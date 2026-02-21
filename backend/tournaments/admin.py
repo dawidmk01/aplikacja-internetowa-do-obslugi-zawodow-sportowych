@@ -1,15 +1,18 @@
 from django.contrib import admin
 
 from .models import (
-    Tournament,
-    Team,
     Match,
+    MatchCommentaryEntry,
+    Team,
+    Tournament,
+    TournamentCommentaryPhrase,
 )
 
 
 # ============================================================
 # INLINE: DRUŻYNY TURNIEJU
 # ============================================================
+
 
 class TeamInline(admin.TabularInline):
     model = Team
@@ -21,6 +24,7 @@ class TeamInline(admin.TabularInline):
 # ============================================================
 # INLINE: MECZE TURNIEJU
 # ============================================================
+
 
 class MatchInline(admin.TabularInline):
     model = Match
@@ -61,6 +65,7 @@ class MatchInline(admin.TabularInline):
 # TURNIEJ
 # ============================================================
 
+
 @admin.register(Tournament)
 class TournamentAdmin(admin.ModelAdmin):
     list_display = (
@@ -86,3 +91,90 @@ class TournamentAdmin(admin.ModelAdmin):
         TeamInline,
         MatchInline,
     ]
+
+
+# ============================================================
+# LIVE: KOMENTARZE MECZOWE
+# ============================================================
+
+
+@admin.register(MatchCommentaryEntry)
+class MatchCommentaryEntryAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "match",
+        "minute",
+        "minute_raw",
+        "period",
+        "time_source",
+        "created_by",
+        "created_at",
+    )
+
+    list_filter = (
+        "period",
+        "time_source",
+        "created_at",
+    )
+
+    search_fields = (
+        "text",
+        "match__home_team__name",
+        "match__away_team__name",
+        "match__tournament__name",
+    )
+
+    raw_id_fields = (
+        "match",
+        "created_by",
+    )
+
+    ordering = (
+        "-created_at",
+        "-id",
+    )
+
+
+# ============================================================
+# LIVE: SŁOWNIK FRAZ
+# ============================================================
+
+
+@admin.register(TournamentCommentaryPhrase)
+class TournamentCommentaryPhraseAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "tournament",
+        "kind",
+        "category",
+        "text",
+        "order",
+        "is_active",
+        "created_by",
+        "updated_at",
+    )
+
+    list_filter = (
+        "kind",
+        "category",
+        "is_active",
+        "updated_at",
+    )
+
+    search_fields = (
+        "text",
+        "tournament__name",
+    )
+
+    raw_id_fields = (
+        "tournament",
+        "created_by",
+    )
+
+    ordering = (
+        "tournament",
+        "kind",
+        "category",
+        "order",
+        "id",
+    )

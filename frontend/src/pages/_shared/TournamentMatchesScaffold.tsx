@@ -2,7 +2,16 @@
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 
-import { Check, ChevronDown, ChevronUp, Eraser, Filter, Search } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Eraser,
+  Filter,
+  LayoutGrid,
+  LayoutList,
+  Search,
+} from "lucide-react";
 
 import { cn } from "../../lib/cn";
 
@@ -16,6 +25,8 @@ export type BaseLayoutMode = "rounds" | "groups";
 export type SecondaryPriority = "none" | "status" | "term";
 
 export type StageType = "LEAGUE" | "KNOCKOUT" | "GROUP" | "THIRD_PLACE";
+
+export type ViewMode = "list" | "grid";
 
 export type MatchLikeBase = {
   id: number;
@@ -87,6 +98,10 @@ type MatchesFilterPanelProps = {
   onToggleShowBye: (next: boolean) => void;
 
   showLayoutSection: boolean;
+
+  // Widok listy/siatki
+  viewMode: ViewMode;
+  onViewModeChange: (next: ViewMode) => void;
 };
 
 export type TournamentMatchesScaffoldProps<TMatch extends MatchLikeBase> = {
@@ -347,6 +362,32 @@ function collapseKey(parts: Array<string | number | null | undefined>): string {
   return parts.map((p) => (p === null || p === undefined ? "na" : String(p))).join(":");
 }
 
+function MatchesListOrGrid({
+  mode,
+  children,
+  className,
+}: {
+  mode: ViewMode;
+  children: ReactNode;
+  className?: string;
+}) {
+  if (mode === "grid") {
+    return (
+      <div
+        className={cn(
+          "grid gap-4",
+          "lg:grid-cols-2 2xl:grid-cols-3",
+          className
+        )}
+      >
+        {children}
+      </div>
+    );
+  }
+
+  return <div className={cn("space-y-4", className)}>{children}</div>;
+}
+
 function MatchesFilterPanel({
   totalMatchesCount,
   statusCounts,
@@ -359,6 +400,8 @@ function MatchesFilterPanel({
   showBye,
   onToggleShowBye,
   showLayoutSection,
+  viewMode,
+  onViewModeChange,
 }: MatchesFilterPanelProps) {
   const roundsSorted = useMemo(() => sortOptionsStable(roundOptions ?? []), [roundOptions]);
   const groupsSorted = useMemo(() => sortOptionsStable(groupOptions ?? []), [groupOptions]);
@@ -393,6 +436,24 @@ function MatchesFilterPanel({
     onChange(next);
   };
 
+  const viewChip = (mode: ViewMode, label: string, icon: ReactNode) => {
+    const active = viewMode === mode;
+    return (
+      <button
+        type="button"
+        onClick={() => onViewModeChange(mode)}
+        className={cn(
+          "inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-xs transition",
+          "border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.07]",
+          active && "border-white/20 bg-white/[0.10]"
+        )}
+      >
+        {icon}
+        {label}
+      </button>
+    );
+  };
+
   return (
     <Card className="relative overflow-hidden p-4 sm:p-5">
       <div className="pointer-events-none absolute inset-0">
@@ -414,7 +475,10 @@ function MatchesFilterPanel({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {viewChip("list", "Lista", <LayoutList className="h-4 w-4" />)}
+            {viewChip("grid", "Siatka", <LayoutGrid className="h-4 w-4" />)}
+
             <button
               type="button"
               onClick={clearAll}
@@ -732,7 +796,7 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
   }, [storageKeyPrefix, storageScope, tournamentId]);
 
   const filtersKey = `${storageBase}.filters.v1`;
-  const uiKey = `${storageBase}.ui.v1`;
+  const uiKey = `${storageBase}.ui.v2`; // v2 bo dodajemy viewMode
 
   const defaultFilters: MatchFiltersState = useMemo(
     () => ({
@@ -781,10 +845,14 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
       showBye?: boolean;
       collapsed?: Record<string, boolean>;
       statusCollapsed?: Record<MatchStatusBucket, boolean>;
+      viewMode?: ViewMode;
     }>(uiKey, {});
+
+    const viewMode: ViewMode = parsed.viewMode === "list" || parsed.viewMode === "grid" ? parsed.viewMode : "grid";
 
     return {
       showBye: Boolean(parsed.showBye),
+      viewMode,
       collapsed: parsed.collapsed && typeof parsed.collapsed === "object" ? parsed.collapsed : ({} as Record<string, boolean>),
       statusCollapsed:
         parsed.statusCollapsed && typeof parsed.statusCollapsed === "object"
@@ -820,7 +888,6 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
   const matchesLike = useMemo(() => (Array.isArray(matches) ? matches : ([] as TMatch[])), [matches]);
 
   const allStages = useMemo(() => buildStagesForView(matchesLike), [matchesLike]);
-
   const regularStages = useMemo(() => buildStagesForView(matchesLike.filter((m) => !isByeMatch(m))), [matchesLike]);
 
   const byeMatchesAll = useMemo(() => matchesLike.filter((m) => isByeMatch(m)), [matchesLike]);
@@ -1029,7 +1096,9 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
             <span className="font-semibold">{m.home_team_name}</span>
             <span className="mx-2 text-slate-500">vs</span>
             <span className="font-semibold">{m.away_team_name}</span>
-            <span className="ml-2 rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-xs text-slate-200">BYE</span>
+            <span className="ml-2 rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-xs text-slate-200">
+              BYE
+            </span>
           </div>
           <div className="text-xs text-slate-400">Mecz techniczny</div>
         </div>
@@ -1039,7 +1108,7 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
 
   if (loading) {
     return (
-      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+      <div className="w-full px-4 py-6 sm:px-6 lg:px-8 xl:px-10 2xl:px-12">
         <Card className="p-6 text-slate-200">Ładowanie...</Card>
       </div>
     );
@@ -1047,7 +1116,7 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
 
   if (!matchesLike.length) {
     return (
-      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+      <div className="w-full px-4 py-6 sm:px-6 lg:px-8 xl:px-10 2xl:px-12">
         <div className="mb-6">
           <h1 className="text-2xl font-semibold tracking-tight text-white">{title}</h1>
           {description ? <p className="mt-1 text-sm text-slate-400">{description}</p> : null}
@@ -1063,7 +1132,7 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+    <div className="w-full px-4 py-6 sm:px-6 lg:px-8 xl:px-10 2xl:px-12">
       <div className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight text-white">{title}</h1>
         {description ? <p className="mt-1 text-sm text-slate-400">{description}</p> : null}
@@ -1071,165 +1140,183 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
 
       {headerSlot}
 
-      <div className="mb-6">
-        <MatchesFilterPanel
-          totalMatchesCount={matchesLike.length}
-          statusCounts={statusCounts}
-          stages={stageFilterOptions}
-          roundOptions={roundOptions}
-          groupOptions={groupOptions}
-          value={filters}
-          onChange={setFilters}
-          showByeAvailable={showByeAvailable}
-          showBye={ui.showBye}
-          onToggleShowBye={(next) => setUi((p) => ({ ...p, showBye: next }))}
-          showLayoutSection={isMixedTournament}
-        />
-      </div>
+      {/* Layout 2-kolumnowy na desktop */}
+      <div className="mt-6 grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
+        <div className="xl:sticky xl:top-[calc(var(--app-navbar-h,84px)+12px)] xl:self-start">
+          <MatchesFilterPanel
+            totalMatchesCount={matchesLike.length}
+            statusCounts={statusCounts}
+            stages={stageFilterOptions}
+            roundOptions={roundOptions}
+            groupOptions={groupOptions}
+            value={filters}
+            onChange={setFilters}
+            showByeAvailable={showByeAvailable}
+            showBye={ui.showBye}
+            onToggleShowBye={(next) => setUi((p) => ({ ...p, showBye: next }))}
+            showLayoutSection={isMixedTournament}
+            viewMode={ui.viewMode}
+            onViewModeChange={(next) => setUi((p) => ({ ...p, viewMode: next }))}
+          />
+        </div>
 
-      <div className="space-y-10">
-        {showByeAvailable && ui.showBye && filteredByeMatches.length > 0 ? (
-          <section className="space-y-4">
-            <div className="flex items-center gap-2">
-              <div className="h-2 w-2 rounded-full bg-white/60" />
-              <div className="text-base font-semibold text-white">Mecze techniczne (BYE)</div>
-            </div>
+        <div className="min-w-0">
+          <div className="space-y-10">
+            {showByeAvailable && ui.showBye && filteredByeMatches.length > 0 ? (
+              <section className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-white/60" />
+                  <div className="text-base font-semibold text-white">Mecze techniczne (BYE)</div>
+                </div>
 
-            <div className="space-y-4">
-              {filteredByeMatches.map((m) => {
-                const bucket = bucketForStatus(m.status);
-                return renderByeMatch ? renderByeMatch(m, bucket) : renderByeDefault(m);
-              })}
-            </div>
-          </section>
-        ) : null}
-
-        {blocks.map((block) => {
-          if (!block.list.length) return null;
-
-          const bucket = block.bucket;
-          const isAllCollapsed = bucket ? ui.statusCollapsed[bucket] : false;
-
-          return (
-            <section key={block.key} className="space-y-6">
-              {bucket ? (
-                <StatusHeaderCard
-                  bucket={bucket}
-                  stages={block.list}
-                  collapsed={Boolean(ui.statusCollapsed[bucket])}
-                  onToggleCollapsed={() => toggleStatusCollapsed(bucket)}
-                />
-              ) : null}
-
-              {isAllCollapsed ? null : (
-                <>
-                  {block.list.map((s) => {
-                    const title = stageTitleFn(s.stageType, s.allMatches);
-                    const collapseKeyBase = ["stage", s.stageId];
-
-                    return (
-                      <div key={s.stageId} className="space-y-4">
-                        <div className="flex items-center justify-between">
-                          <div className="text-base font-semibold text-white">{title}</div>
-                        </div>
-
-                        {s.stageType === "GROUP" ? (
-                          filters.baseLayout === "groups" ? (
-                            groupMatchesByGroup(s.matches).map(([rawGroup, gMatches], idx) => {
-                              const groupKey = String(rawGroup ?? "").trim() || "-";
-                              const groupLabel = groupLabelByStage.get(s.stageId)?.get(groupKey) ?? displayGroupNameByIndex(idx);
-                              const gKey = collapseKey([...collapseKeyBase, "g", groupKey]);
-
-                              return (
-                                <div key={groupKey} className="space-y-3">
-                                  <div className="flex items-center justify-between">
-                                    <div className="text-base text-white">{groupLabel}</div>
-                                    {collapseBtn(gKey, `Zwiń ${groupLabel}`, `Rozwiń ${groupLabel}`)}
-                                  </div>
-
-                                  {!ui.collapsed[gKey] ? (
-                                    <div className="space-y-6">
-                                      {groupMatchesByRound(gMatches).map(([r, rm]) => (
-                                        <div key={r} className="space-y-3">
-                                          <div className="text-base text-white">Kolejka {r}</div>
-                                          <div className="space-y-4">{applySecondaryPriority(rm, filters.secondaryPriority).map((m) => renderMatch(m))}</div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              );
-                            })
-                          ) : (
-                            <div className="space-y-8">
-                              {groupMatchesByRound(s.matches).map(([r, rm]) => {
-                                const rKey = collapseKey([...collapseKeyBase, "r", r]);
-                                const groupedInRound = groupMatchesByGroup(rm);
-
-                                return (
-                                  <div key={r} className="space-y-3">
-                                    <div className="flex items-center justify-between">
-                                      <div className="text-base text-white">Kolejka {r}</div>
-                                      {collapseBtn(rKey, `Zwiń kolejkę ${r}`, `Rozwiń kolejkę ${r}`)}
-                                    </div>
-
-                                    {!ui.collapsed[rKey] ? (
-                                      <div className="space-y-6">
-                                        {groupedInRound.map(([rawGroup, gm], idx) => {
-                                          const groupKey = String(rawGroup ?? "").trim() || "-";
-                                          const groupLabel = groupLabelByStage.get(s.stageId)?.get(groupKey) ?? displayGroupNameByIndex(idx);
-
-                                          return (
-                                            <div key={groupKey} className="space-y-2">
-                                              <div className="text-xs font-semibold text-slate-400">{groupLabel}</div>
-                                              <div className="space-y-4">{applySecondaryPriority(gm, filters.secondaryPriority).map((m) => renderMatch(m))}</div>
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
-                                    ) : null}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )
-                        ) : s.stageType === "LEAGUE" ? (
-                          <div className="space-y-6">
-                            {groupMatchesByRound(s.matches).map(([r, rm]) => {
-                              const rKey = collapseKey([...collapseKeyBase, "r", r]);
-                              return (
-                                <div key={r} className="space-y-3">
-                                  <div className="flex items-center justify-between">
-                                    <div className="text-base text-white">Kolejka {r}</div>
-                                    {collapseBtn(rKey, `Zwiń kolejkę ${r}`, `Rozwiń kolejkę ${r}`)}
-                                  </div>
-                                  {!ui.collapsed[rKey] ? (
-                                    <div className="space-y-4">{applySecondaryPriority(rm, filters.secondaryPriority).map((m) => renderMatch(m))}</div>
-                                  ) : null}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <div className="space-y-4">{applySecondaryPriority(s.matches, filters.secondaryPriority).map((m) => renderMatch(m))}</div>
-                        )}
-                      </div>
-                    );
+                <MatchesListOrGrid mode={ui.viewMode}>
+                  {filteredByeMatches.map((m) => {
+                    const bucket = bucketForStatus(m.status);
+                    return renderByeMatch ? renderByeMatch(m, bucket) : renderByeDefault(m);
                   })}
-                </>
-              )}
-            </section>
-          );
-        })}
-      </div>
+                </MatchesListOrGrid>
+              </section>
+            ) : null}
 
-      {/* Co zmieniono:
-         1) Ujednolicono szkielet widoku meczów (filtry + sekcje + zwijanie) dla Harmonogramu i Wyników.
-         2) Dodano neutralny priorytet "Brak" oraz kontrolę konfliktu: Podział na statusy blokuje priorytet Status.
-         3) Dodano karty nagłówków statusów z akcją "Zwiń wszystko / Rozwiń wszystko".
-         4) Ograniczono zwijanie w fazie grupowej: w układzie Grupami zwijasz tylko grupy, a w układzie Kolejkami tylko kolejki.
-         5) Dodano bezpieczną persystencję filtrów i zwinięć w localStorage per widok.
-      */}
+            {blocks.map((block) => {
+              if (!block.list.length) return null;
+
+              const bucket = block.bucket;
+              const isAllCollapsed = bucket ? ui.statusCollapsed[bucket] : false;
+
+              return (
+                <section key={block.key} className="space-y-6">
+                  {bucket ? (
+                    <StatusHeaderCard
+                      bucket={bucket}
+                      stages={block.list}
+                      collapsed={Boolean(ui.statusCollapsed[bucket])}
+                      onToggleCollapsed={() => toggleStatusCollapsed(bucket)}
+                    />
+                  ) : null}
+
+                  {isAllCollapsed ? null : (
+                    <>
+                      {block.list.map((s) => {
+                        const stageHeader = stageTitleFn(s.stageType, s.allMatches);
+                        const collapseKeyBase = ["stage", s.stageId];
+
+                        return (
+                          <div key={s.stageId} className="space-y-4">
+                            <div className="flex items-center justify-between">
+                              <div className="text-base font-semibold text-white">{stageHeader}</div>
+                            </div>
+
+                            {s.stageType === "GROUP" ? (
+                              filters.baseLayout === "groups" ? (
+                                groupMatchesByGroup(s.matches).map(([rawGroup, gMatches], idx) => {
+                                  const groupKey = String(rawGroup ?? "").trim() || "-";
+                                  const groupLabel = groupLabelByStage.get(s.stageId)?.get(groupKey) ?? displayGroupNameByIndex(idx);
+                                  const gKey = collapseKey([...collapseKeyBase, "g", groupKey]);
+
+                                  return (
+                                    <div key={groupKey} className="space-y-3">
+                                      <div className="flex items-center justify-between">
+                                        <div className="text-base text-white">{groupLabel}</div>
+                                        {collapseBtn(gKey, `Zwiń ${groupLabel}`, `Rozwiń ${groupLabel}`)}
+                                      </div>
+
+                                      {!ui.collapsed[gKey] ? (
+                                        <div className="space-y-6">
+                                          {groupMatchesByRound(gMatches).map(([r, rm]) => (
+                                            <div key={r} className="space-y-3">
+                                              <div className="text-base text-white">Kolejka {r}</div>
+
+                                              <MatchesListOrGrid mode={ui.viewMode}>
+                                                {applySecondaryPriority(rm, filters.secondaryPriority).map((m) => (
+                                                  <div key={m.id}>{renderMatch(m)}</div>
+                                                ))}
+                                              </MatchesListOrGrid>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  );
+                                })
+                              ) : (
+                                <div className="space-y-8">
+                                  {groupMatchesByRound(s.matches).map(([r, rm]) => {
+                                    const rKey = collapseKey([...collapseKeyBase, "r", r]);
+                                    const groupedInRound = groupMatchesByGroup(rm);
+
+                                    return (
+                                      <div key={r} className="space-y-3">
+                                        <div className="flex items-center justify-between">
+                                          <div className="text-base text-white">Kolejka {r}</div>
+                                          {collapseBtn(rKey, `Zwiń kolejkę ${r}`, `Rozwiń kolejkę ${r}`)}
+                                        </div>
+
+                                        {!ui.collapsed[rKey] ? (
+                                          <div className="space-y-6">
+                                            {groupedInRound.map(([rawGroup, gm], idx) => {
+                                              const groupKey = String(rawGroup ?? "").trim() || "-";
+                                              const groupLabel = groupLabelByStage.get(s.stageId)?.get(groupKey) ?? displayGroupNameByIndex(idx);
+
+                                              return (
+                                                <div key={groupKey} className="space-y-2">
+                                                  <div className="text-xs font-semibold text-slate-400">{groupLabel}</div>
+
+                                                  <MatchesListOrGrid mode={ui.viewMode}>
+                                                    {applySecondaryPriority(gm, filters.secondaryPriority).map((m) => (
+                                                      <div key={m.id}>{renderMatch(m)}</div>
+                                                    ))}
+                                                  </MatchesListOrGrid>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )
+                            ) : s.stageType === "LEAGUE" ? (
+                              <div className="space-y-6">
+                                {groupMatchesByRound(s.matches).map(([r, rm]) => {
+                                  const rKey = collapseKey([...collapseKeyBase, "r", r]);
+                                  return (
+                                    <div key={r} className="space-y-3">
+                                      <div className="flex items-center justify-between">
+                                        <div className="text-base text-white">Kolejka {r}</div>
+                                        {collapseBtn(rKey, `Zwiń kolejkę ${r}`, `Rozwiń kolejkę ${r}`)}
+                                      </div>
+
+                                      {!ui.collapsed[rKey] ? (
+                                        <MatchesListOrGrid mode={ui.viewMode}>
+                                          {applySecondaryPriority(rm, filters.secondaryPriority).map((m) => (
+                                            <div key={m.id}>{renderMatch(m)}</div>
+                                          ))}
+                                        </MatchesListOrGrid>
+                                      ) : null}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <MatchesListOrGrid mode={ui.viewMode}>
+                                {applySecondaryPriority(s.matches, filters.secondaryPriority).map((m) => (
+                                  <div key={m.id}>{renderMatch(m)}</div>
+                                ))}
+                              </MatchesListOrGrid>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </>
+                  )}
+                </section>
+              );
+            })}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

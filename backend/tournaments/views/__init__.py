@@ -78,6 +78,16 @@ from .match_clock import (
     MatchClockSetAddedSecondsView,
 )
 
+# =========================
+# NEW: match commentary + phrase dictionary
+# =========================
+from .commentary import (
+    MatchCommentaryListCreateView,
+    MatchCommentaryDetailView,
+    TournamentCommentaryPhraseListCreateView,
+    TournamentCommentaryPhraseDetailView,
+)
+
 __all__ = [
     # tournaments
     "TournamentListView",
@@ -125,7 +135,6 @@ __all__ = [
     "ContinueMatchView",
     "SetScheduledMatchView",
 
-
     # stages
     "AdvanceFromGroupsView",
 
@@ -145,4 +154,12 @@ __all__ = [
     "MatchClockStopView",
     "MatchClockSetPeriodView",
     "MatchClockSetAddedSecondsView",
+
+    # NEW: commentary
+    "MatchCommentaryListCreateView",
+    "MatchCommentaryDetailView",
+
+    # NEW: phrase dictionary
+    "TournamentCommentaryPhraseListCreateView",
+    "TournamentCommentaryPhraseDetailView",
 ]

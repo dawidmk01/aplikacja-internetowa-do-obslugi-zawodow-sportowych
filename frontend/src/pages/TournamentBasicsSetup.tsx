@@ -1,7 +1,6 @@
-// frontend/src/pages/TournamentBasicsSetup.tsx
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
   BadgeCheck,
@@ -9,17 +8,21 @@ import {
   Cog,
   Info,
   Layers3,
+  Text,
   Users,
 } from "lucide-react";
 
 import { apiFetch } from "../api";
+import { cn } from "../lib/cn";
 import { useTournamentFlowGuard } from "../flow/TournamentFlowGuardContext";
 import TournamentFlowNav from "../components/TournamentFlowNav";
 import TournamentStepFooter from "../components/TournamentStepFooter";
 
+import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
+import { InlineAlert } from "../ui/InlineAlert";
 import { Input } from "../ui/Input";
-import { cn } from "../lib/cn";
+import { toast } from "../ui/Toast";
 
 /* ====== typy ====== */
 type Discipline =
@@ -45,6 +48,7 @@ type TennisPointsMode = "NONE" | "PLT";
 type TournamentDTO = {
   id: number;
   name: string;
+  description?: string | null;
   discipline: Discipline;
   tournament_format: TournamentFormat;
   format_config: Record<string, any>;
@@ -55,7 +59,7 @@ type TournamentDTO = {
 
 type TeamDTO = { id: number; name: string };
 
-/* --- Stałe opcje --- */
+/* ====== stałe ====== */
 const HB_POINTS_OPTIONS: { value: HandballPointsMode; label: string }[] = [
   { value: "2_1_0", label: "2-1-0 (W-R-P)" },
   { value: "3_1_0", label: "3-1-0 (W-R-P)" },
@@ -80,7 +84,7 @@ const TENNIS_POINTS_MODE_OPTIONS: {
   {
     value: "PLT",
     label: "Punktacja PLT (np. 10/8/4/2/0)",
-    hint: "Jeśli Twoja liga używa punktów – backend liczy i zwraca Pkt.",
+    hint: "Jeśli Twoja liga używa punktów - backend liczy i zwraca Pkt.",
   },
 ];
 
@@ -141,6 +145,26 @@ function isPowerOfTwo(n: number) {
   return (n & (n - 1)) === 0;
 }
 
+function pickFirstError(payload: any): string | null {
+  if (!payload) return null;
+  if (typeof payload === "string") return payload;
+  if (typeof payload?.detail === "string") return payload.detail;
+
+  const tryKeys = ["non_field_errors", "name", "description", "discipline", "tournament_format"];
+  for (const k of tryKeys) {
+    const v = payload?.[k];
+    if (typeof v === "string") return v;
+    if (Array.isArray(v) && typeof v[0] === "string") return v[0];
+  }
+
+  const anyKey = Object.keys(payload || {})[0];
+  const anyVal = anyKey ? payload?.[anyKey] : null;
+  if (typeof anyVal === "string") return anyVal;
+  if (Array.isArray(anyVal) && typeof anyVal[0] === "string") return anyVal[0];
+
+  return null;
+}
+
 /* ===== UI helpers ===== */
 
 function Select({
@@ -160,96 +184,84 @@ function Select({
       onChange={(e) => onChange(e.target.value)}
       disabled={disabled}
       className={cn(
-        "select-dark w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-sm text-slate-100",
+        "select-dark w-full rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-100",
         "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10 focus-visible:border-white/20",
         "disabled:opacity-60 disabled:pointer-events-none"
       )}
-      style={{ colorScheme: "dark" }} // <--- pomaga na natywnych selectach
+      style={{ colorScheme: "dark" }}
     >
       {children}
     </select>
   );
 }
 
-function Badge({
-  children,
-  tone = "default",
+function StatRow({
+  label,
+  value,
 }: {
-  children: React.ReactNode;
-  tone?: "default" | "info" | "warn" | "ok";
+  label: string;
+  value: React.ReactNode;
 }) {
-  const cls =
-    tone === "warn"
-      ? "border-amber-400/20 bg-amber-400/10 text-amber-100"
-      : tone === "ok"
-      ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
-      : tone === "info"
-      ? "border-indigo-400/20 bg-indigo-400/10 text-indigo-100"
-      : "border-white/10 bg-white/[0.06] text-slate-200";
-
   return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-semibold",
-        cls
-      )}
-    >
-      {children}
-    </span>
+    <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
+      <div className="text-xs font-semibold text-slate-300">{label}</div>
+      <div className="text-sm font-semibold text-white">{value}</div>
+    </div>
   );
 }
 
-function OptionCard({
+function ToggleRow({
+  checked,
+  disabled,
   title,
   desc,
-  icon,
-  active,
-  disabled,
-  onClick,
+  onChange,
 }: {
+  checked: boolean;
+  disabled?: boolean;
   title: string;
   desc: string;
-  icon: React.ReactNode;
-  active: boolean;
-  disabled?: boolean;
-  onClick: () => void;
+  onChange: (next: boolean) => void;
 }) {
   return (
-    <motion.button
+    <button
       type="button"
-      onClick={onClick}
       disabled={disabled}
-      whileHover={!disabled ? { y: -2 } : undefined}
-      whileTap={!disabled ? { scale: 0.99 } : undefined}
+      onClick={() => onChange(!checked)}
       className={cn(
-        "text-left w-full h-full",
-        "rounded-2xl border p-4 transition",
+        "w-full rounded-2xl border px-4 py-3 text-left transition",
         "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
-        disabled && "opacity-60 pointer-events-none",
-        active
-          ? "border-white/20 bg-white/[0.10] shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
-          : "border-white/10 bg-white/[0.06] hover:bg-white/[0.08]"
+        "disabled:opacity-60 disabled:pointer-events-none",
+        checked
+          ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+          : "border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.06]"
       )}
     >
-      <div className="flex items-start gap-3">
-        <div
-          className={cn(
-            "grid h-10 w-10 place-items-center rounded-xl border border-white/10",
-            active
-              ? "bg-gradient-to-br from-indigo-500/25 to-purple-600/25"
-              : "bg-white/[0.06]"
-          )}
-        >
-          {icon}
-        </div>
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-white">{title}</div>
-          <div className="mt-1 text-sm text-slate-300 leading-relaxed">
-            {desc}
+          <div className="text-sm font-semibold">
+            {title}: {checked ? "Włączony" : "Wyłączony"}
           </div>
+          <div className="mt-1 text-sm text-slate-300">{desc}</div>
         </div>
+        <span
+          className={cn(
+            "mt-0.5 inline-flex h-6 w-11 items-center rounded-full border p-0.5 transition",
+            checked
+              ? "border-emerald-400/30 bg-emerald-400/20"
+              : "border-white/10 bg-white/[0.06]"
+          )}
+          aria-hidden
+        >
+          <span
+            className={cn(
+              "block h-5 w-5 rounded-full transition",
+              checked ? "translate-x-5 bg-white" : "translate-x-0 bg-white/80"
+            )}
+          />
+        </span>
       </div>
-    </motion.button>
+    </button>
   );
 }
 
@@ -265,7 +277,37 @@ export default function TournamentBasicsSetup() {
 
   const [loading, setLoading] = useState(!isCreateMode);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  const [inlineError, setInlineError] = useState<string | null>(null);
+
+    const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmTitle, setConfirmTitle] = useState<string>("Potwierdzenie");
+  const [confirmMessage, setConfirmMessage] = useState<string>("");
+  const [confirmConfirmLabel, setConfirmConfirmLabel] = useState<string>("Kontynuuj");
+  const [confirmCancelLabel, setConfirmCancelLabel] = useState<string>("Anuluj");
+  const confirmResolverRef = useRef<((value: boolean) => void) | null>(null);
+
+  const askConfirm = useCallback(
+    (opts: { title?: string; message: string; confirmLabel?: string; cancelLabel?: string }) => {
+      setConfirmTitle(opts.title ?? "Potwierdzenie");
+      setConfirmMessage(opts.message);
+      setConfirmConfirmLabel(opts.confirmLabel ?? "Kontynuuj");
+      setConfirmCancelLabel(opts.cancelLabel ?? "Anuluj");
+      setConfirmOpen(true);
+      return new Promise<boolean>((resolve) => {
+        confirmResolverRef.current = resolve;
+      });
+    },
+    []
+  );
+
+  const resolveConfirm = useCallback((value: boolean) => {
+    setConfirmOpen(false);
+    const r = confirmResolverRef.current;
+    confirmResolverRef.current = null;
+    if (r) r(value);
+  }, []);
+
 
   /* rola + perms */
   const [myRole, setMyRole] = useState<"ORGANIZER" | "ASSISTANT" | null>(null);
@@ -275,14 +317,18 @@ export default function TournamentBasicsSetup() {
     myRole === "ORGANIZER" || Boolean(myPerms?.tournament_edit);
   const isAssistantReadOnly = !isCreateMode && !canEditTournament;
 
-  /* ====== KROK 1 ====== */
+  /* ====== podstawowe informacje ====== */
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+
+  const [initialName, setInitialName] = useState("");
+  const [initialDescription, setInitialDescription] = useState("");
+
+  /* ====== struktura rozgrywek (parametry ogólne) ====== */
   const [discipline, setDiscipline] = useState<Discipline>("football");
   const [initialDiscipline, setInitialDiscipline] =
     useState<Discipline>("football");
-  const [initialName, setInitialName] = useState("");
 
-  /* ====== KROK 2 ====== */
   const [format, setFormat] = useState<TournamentFormat>("LEAGUE");
   const [participants, setParticipants] = useState(8);
   const initialParticipantsRef = useRef<number>(8);
@@ -296,8 +342,7 @@ export default function TournamentBasicsSetup() {
   /* Handball */
   const [hbTableDrawMode, setHbTableDrawMode] =
     useState<HandballTableDrawMode>("ALLOW_DRAW");
-  const [hbPointsMode, setHbPointsMode] =
-    useState<HandballPointsMode>("2_1_0");
+  const [hbPointsMode, setHbPointsMode] = useState<HandballPointsMode>("2_1_0");
   const [hbKnockoutTiebreak, setHbKnockoutTiebreak] =
     useState<HandballKnockoutTiebreak>("OVERTIME_PENALTIES");
 
@@ -315,11 +360,11 @@ export default function TournamentBasicsSetup() {
   const isHandball = discipline === "handball";
   const isTennis = discipline === "tennis";
 
-  /* ====== Flash Error ====== */
+  /* ====== Flash error z nawigacji ====== */
   useEffect(() => {
     const flash = (location.state as any)?.flashError as string | undefined;
     if (flash) {
-      setError(flash);
+      setInlineError(flash);
       navigate(location.pathname, { replace: true, state: {} });
     }
   }, [location.state, navigate, location.pathname]);
@@ -380,16 +425,23 @@ export default function TournamentBasicsSetup() {
 
     const load = async () => {
       setLoading(true);
-      setError(null);
+      setInlineError(null);
       try {
         const [tRes, teamsRes] = await Promise.all([
-          apiFetch(`/api/tournaments/${id}/`),
-          apiFetch(`/api/tournaments/${id}/teams/`),
+          apiFetch(`/api/tournaments/${id}/`, { toastOnError: false } as any),
+          apiFetch(`/api/tournaments/${id}/teams/`, { toastOnError: false } as any),
         ]);
 
-        if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
-        if (!teamsRes.ok)
-          throw new Error("Nie udało się pobrać listy uczestników.");
+        if (!tRes.ok) {
+          const data = await tRes.json().catch(() => ({}));
+          setInlineError(pickFirstError(data) || "Nie udało się pobrać danych turnieju.");
+          return;
+        }
+        if (!teamsRes.ok) {
+          const data = await teamsRes.json().catch(() => ({}));
+          setInlineError(pickFirstError(data) || "Nie udało się pobrać listy uczestników.");
+          return;
+        }
 
         const t: TournamentDTO = await tRes.json();
         const teams: TeamDTO[] = await teamsRes.json();
@@ -397,10 +449,16 @@ export default function TournamentBasicsSetup() {
         setMyRole(t.my_role ?? null);
         setMyPerms(t.my_permissions ?? {});
 
-        setName(t.name);
-        setInitialName(t.name);
+        setName(t.name || "");
+        setInitialName(t.name || "");
+
+        const desc = (t.description ?? "") as string;
+        setDescription(desc);
+        setInitialDescription(desc);
+
         setDiscipline(t.discipline);
         setInitialDiscipline(t.discipline);
+
         setFormat(t.tournament_format);
 
         const currentCount = Math.max(2, teams.length);
@@ -435,12 +493,12 @@ export default function TournamentBasicsSetup() {
         setHbPointsMode(cfg.handball_points_mode ?? "2_1_0");
 
         setTennisBestOf(cfg.tennis_best_of === 5 ? 5 : 3);
-        const tpm = (cfg.tennis_points_mode ?? "NONE")
-          .toString()
-          .toUpperCase();
+        const tpm = (cfg.tennis_points_mode ?? "NONE").toString().toUpperCase();
         setTennisPointsMode(tpm === "PLT" ? "PLT" : "NONE");
-      } catch (e: any) {
-        setError(e.message || "Błąd ładowania.");
+      } catch {
+        toast.error("Brak połączenia z serwerem. Spróbuj ponownie.", {
+          title: "Sieć",
+        });
       } finally {
         setLoading(false);
       }
@@ -455,13 +513,7 @@ export default function TournamentBasicsSetup() {
 
     if (format === "LEAGUE") {
       const matches = ((p * (p - 1)) / 2) * leagueMatches;
-      return {
-        total: matches,
-        groupTotal: 0,
-        koTotal: 0,
-        groups: 0,
-        advancing: 0,
-      };
+      return { total: matches, groupTotal: matches, koTotal: 0, groups: 0, advancing: 0 };
     }
 
     if (format === "CUP") {
@@ -470,16 +522,9 @@ export default function TournamentBasicsSetup() {
       const thirdCount = thirdPlace ? thirdPlaceMatches : 0;
       const koTotal = roundsMatches + finalCount + thirdCount;
 
-      return {
-        total: koTotal,
-        groupTotal: 0,
-        koTotal,
-        groups: 0,
-        advancing: 0,
-      };
+      return { total: koTotal, groupTotal: 0, koTotal, groups: 0, advancing: 0 };
     }
 
-    // MIXED
     const safeGroups = clampInt(groupsCount, 1, Math.max(1, Math.floor(p / 2)));
     const sizes = splitIntoGroups(p, safeGroups);
     const groupTotal = sizes.reduce(
@@ -499,13 +544,7 @@ export default function TournamentBasicsSetup() {
     const thirdCount = thirdPlace ? thirdPlaceMatches : 0;
     const koTotal = koRoundsMatches + finalCount + thirdCount;
 
-    return {
-      total: groupTotal + koTotal,
-      groupTotal,
-      koTotal,
-      groups: sizes.length,
-      advancing,
-    };
+    return { total: groupTotal + koTotal, groupTotal, koTotal, groups: sizes.length, advancing };
   }, [
     format,
     participants,
@@ -520,16 +559,10 @@ export default function TournamentBasicsSetup() {
   ]);
 
   /* ====== Helpers ====== */
-  const confirmDisciplineChange = () => {
-    return window.confirm(
-      "Zmiana dyscypliny spowoduje usunięcie wprowadzonych wyników oraz danych pochodnych.\n\nCzy na pewno chcesz kontynuować?"
-    );
-  };
 
   const validateLocalBeforeSave = (): string | null => {
     const trimmedName = name.trim();
-    if (!trimmedName)
-      return "Wpisz nazwę turnieju — bez tego nie da się przejść dalej.";
+    if (!trimmedName) return "Wpisz nazwę turnieju - bez tego nie da się przejść dalej.";
 
     const p = clampInt(participants, 2, 10_000);
 
@@ -540,7 +573,7 @@ export default function TournamentBasicsSetup() {
       const minSize = sizes.length ? Math.min(...sizes) : 2;
 
       if (minSize < 2)
-        return "W MIXED każda grupa musi mieć co najmniej 2 zespoły (zmniejsz liczbę grup).";
+        return "W grupach + puchar każda grupa musi mieć co najmniej 2 uczestników (zmniejsz liczbę grup).";
 
       const adv = clampInt(advanceFromGroup, 1, minSize);
       if (adv !== advanceFromGroup) {
@@ -549,13 +582,14 @@ export default function TournamentBasicsSetup() {
 
       const advancing = g * adv;
       if (advancing >= 2 && !isPowerOfTwo(advancing)) {
-        return `Uwaga: awansujących jest ${advancing}. To nie jest potęga 2, więc w drabince mogą pojawić się wolne losy (BYE).`;
+        const msg = `Uwaga: awansujących jest ${advancing}. To nie jest potęga 2, więc w drabince mogą pojawić się wolne losy (BYE).`;
+        return msg;
       }
     }
 
     if (isTennis) {
       if (cupMatches !== 1 || finalMatches !== 1 || thirdPlaceMatches !== 1) {
-        return "Tenis: KO nie wspiera dwumeczów — ustaw rundy/finał/3. miejsce na 1 mecz.";
+        return "Tenis: KO nie wspiera dwumeczów - ustaw rundy/finał/3. miejsce na 1 mecz.";
       }
     }
 
@@ -606,7 +640,6 @@ export default function TournamentBasicsSetup() {
       delete finalConfig.teams_per_group;
       delete finalConfig.group_matches;
       delete finalConfig.handball_knockout_tiebreak;
-      // tenis points mode i handball table settings zostają (tabela)
     }
 
     if (format === "CUP") {
@@ -617,7 +650,7 @@ export default function TournamentBasicsSetup() {
       delete finalConfig.advance_from_group;
       delete finalConfig.handball_table_draw_mode;
       delete finalConfig.handball_points_mode;
-      delete finalConfig.tennis_points_mode; // tylko liga/grupy
+      delete finalConfig.tennis_points_mode;
     }
 
     if (format === "MIXED") {
@@ -631,19 +664,19 @@ export default function TournamentBasicsSetup() {
   const saveAll = useCallback(async (): Promise<{ tournamentId: number }> => {
     if (isAssistantReadOnly) {
       const msg = "Tryb podglądu: brak uprawnień do zmiany konfiguracji.";
-      setError(msg);
+      setInlineError(msg);
       throw new Error(msg);
     }
 
     const localMsg = validateLocalBeforeSave();
     if (localMsg) {
       if (localMsg.startsWith("Uwaga:")) {
-        if (!window.confirm(`${localMsg}\n\nKontynuować zapis?`)) {
-          setError("Anulowano zapis konfiguracji.");
+        if (!(await askConfirm({ title: "Zapis konfiguracji", message: `${localMsg}\n\nKontynuować zapis?`, confirmLabel: "Zapisz", cancelLabel: "Anuluj" }))) {
+          setInlineError("Anulowano zapis konfiguracji.");
           throw new Error("Anulowano zapis konfiguracji.");
         }
       } else {
-        setError(localMsg);
+        setInlineError(localMsg);
         throw new Error(localMsg);
       }
     }
@@ -651,12 +684,13 @@ export default function TournamentBasicsSetup() {
     if (!isCreateMode && !dirty) return { tournamentId: Number(id) };
 
     setSaving(true);
-    setError(null);
+    setInlineError(null);
 
     let createdId: number | null = null;
 
     try {
       const trimmedName = name.trim();
+      const trimmedDesc = description.trim();
       let tournamentId = Number(id);
 
       // 1) create / basic updates
@@ -664,12 +698,19 @@ export default function TournamentBasicsSetup() {
         const createRes = await apiFetch("/api/tournaments/", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: trimmedName, discipline }),
-        });
+          body: JSON.stringify({
+            name: trimmedName,
+            description: trimmedDesc ? trimmedDesc : null,
+            discipline,
+          }),
+          toastOnError: false,
+        } as any);
 
         if (!createRes.ok) {
           const data = await createRes.json().catch(() => ({}));
-          throw new Error(data?.detail || "Nie udało się utworzyć turnieju.");
+          const msg = pickFirstError(data) || "Nie udało się utworzyć turnieju.";
+          setInlineError(msg);
+          throw new Error(msg);
         }
 
         const created = await createRes.json();
@@ -677,11 +718,12 @@ export default function TournamentBasicsSetup() {
         tournamentId = created.id;
 
         setInitialName(trimmedName);
+        setInitialDescription(trimmedDesc);
         setInitialDiscipline(discipline);
       } else {
-        // discipline change = endpoint (jak w oryginale)
+        // discipline change = osobny endpoint
         if (discipline !== initialDiscipline) {
-          if (!confirmDisciplineChange()) {
+          if (!(await askConfirm({ title: "Zmiana dyscypliny", message: "Zmiana dyscypliny spowoduje usunięcie wprowadzonych wyników oraz danych pochodnych.\n\nCzy na pewno chcesz kontynuować?", confirmLabel: "Zmień", cancelLabel: "Anuluj" }))) {
             setDiscipline(initialDiscipline);
           } else {
             const res = await apiFetch(
@@ -690,21 +732,40 @@ export default function TournamentBasicsSetup() {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ discipline }),
-              }
+                toastOnError: false,
+              } as any
             );
-            if (!res.ok) throw new Error("Nie udało się zmienić dyscypliny.");
+            if (!res.ok) {
+              const data = await res.json().catch(() => ({}));
+              const msg = pickFirstError(data) || "Nie udało się zmienić dyscypliny.";
+              setInlineError(msg);
+              throw new Error(msg);
+            }
             setInitialDiscipline(discipline);
           }
         }
 
-        if (trimmedName !== initialName) {
+        const patch: Record<string, any> = {};
+        if (trimmedName !== initialName) patch.name = trimmedName;
+        if (trimmedDesc !== initialDescription) patch.description = trimmedDesc ? trimmedDesc : null;
+
+        if (Object.keys(patch).length) {
           const res = await apiFetch(`/api/tournaments/${tournamentId}/`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: trimmedName }),
-          });
-          if (!res.ok) throw new Error("Nie udało się zapisać nazwy.");
+            body: JSON.stringify(patch),
+            toastOnError: false,
+          } as any);
+
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            const msg = pickFirstError(data) || "Nie udało się zapisać danych turnieju.";
+            setInlineError(msg);
+            throw new Error(msg);
+          }
+
           setInitialName(trimmedName);
+          setInitialDescription(trimmedDesc);
         }
       }
 
@@ -717,17 +778,21 @@ export default function TournamentBasicsSetup() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ tournament_format: format, format_config }),
-        }
+          toastOnError: false,
+        } as any
       );
-      if (!dry.ok) throw new Error("Błąd walidacji konfiguracji.");
+      if (!dry.ok) {
+        const data = await dry.json().catch(() => ({}));
+        const msg = pickFirstError(data) || "Błąd walidacji konfiguracji.";
+        setInlineError(msg);
+        throw new Error(msg);
+      }
 
       const dryData = await dry.json().catch(() => ({}));
       const resetNeeded = Boolean((dryData as any)?.reset_needed);
 
       if (!isCreateMode && resetNeeded) {
-        if (
-          !window.confirm("Zmiana konfiguracji usunie istniejące mecze. Kontynuować?")
-        ) {
+        if (!(await askConfirm({ title: "Zmiana konfiguracji", message: "Zmiana konfiguracji usunie istniejące mecze. Kontynuować?", confirmLabel: "Kontynuuj", cancelLabel: "Anuluj" }))) {
           throw new Error("Anulowano zapis konfiguracji.");
         }
       }
@@ -737,24 +802,26 @@ export default function TournamentBasicsSetup() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tournament_format: format, format_config }),
-      });
-      if (!res.ok) throw new Error("Błąd zapisu konfiguracji.");
+        toastOnError: false,
+      } as any);
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const msg = pickFirstError(data) || "Błąd zapisu konfiguracji.";
+        setInlineError(msg);
+        throw new Error(msg);
+      }
 
       // 4) participants placeholders
       const safeParticipants = clampInt(participants, 2, 10_000);
       const participantsChanged = safeParticipants !== initialParticipantsRef.current;
 
       if (!isCreateMode && participantsChanged && !resetNeeded) {
-        if (
-          !window.confirm(
-            "Zmiana liczby uczestników spowoduje reset rozgrywek. Kontynuować?"
-          )
-        ) {
+        if (!(await askConfirm({ title: "Zmiana uczestników", message: "Zmiana liczby uczestników spowoduje reset rozgrywek. Kontynuować?", confirmLabel: "Kontynuuj", cancelLabel: "Anuluj" }))) {
           throw new Error("Anulowano zmianę liczby uczestników.");
         }
       }
 
-      // kompatybilność: część backendów używa teams_count, część participants_count
       const teamsRes = await apiFetch(
         `/api/tournaments/${tournamentId}/teams/setup/`,
         {
@@ -764,14 +831,28 @@ export default function TournamentBasicsSetup() {
             teams_count: safeParticipants,
             participants_count: safeParticipants,
           }),
-        }
+          toastOnError: false,
+        } as any
       );
-      if (!teamsRes.ok)
-        throw new Error("Nie udało się ustawić liczby uczestników.");
+
+      if (!teamsRes.ok) {
+        const data = await teamsRes.json().catch(() => ({}));
+        const msg = pickFirstError(data) || "Nie udało się ustawić liczby uczestników.";
+        setInlineError(msg);
+        throw new Error(msg);
+      }
 
       initialParticipantsRef.current = safeParticipants;
 
       createdIdRef.current = String(tournamentId);
+
+      if (isCreateMode) {
+        // Po utworzeniu turnieju URL musi zawierać ID, aby działała nawigacja kroków.
+        navigate(`/tournaments/${tournamentId}/detail/setup`, { replace: true });
+      } else {
+        toast.success("Zapisano konfigurację.", { title: "Turniej" });
+      }
+
       return { tournamentId };
     } catch (e: any) {
       const msg = e?.message || "Nie udało się zapisać.";
@@ -792,9 +873,11 @@ export default function TournamentBasicsSetup() {
     dirty,
     id,
     name,
+    description,
     discipline,
     initialDiscipline,
     initialName,
+    initialDescription,
     format,
     participants,
     leagueMatches,
@@ -819,7 +902,8 @@ export default function TournamentBasicsSetup() {
       const { tournamentId } = await saveAll();
       navigate(`/tournaments/${tournamentId}/detail`, { replace: true });
     } catch (e: any) {
-      setError(e?.message || "Nie udało się zapisać.");
+      const msg = e?.message || "Nie udało się zapisać.";
+      setInlineError(msg);
     }
   }, [saveAll, navigate]);
 
@@ -837,13 +921,13 @@ export default function TournamentBasicsSetup() {
 
   /* ====== UI flags ====== */
   const disableForm = loading || saving || isAssistantReadOnly;
+  const isTournamentCreated = !isCreateMode || Boolean(createdIdRef.current);
   const showLeagueOrGroupConfig = format === "LEAGUE" || format === "MIXED";
   const showKnockoutConfig = format === "CUP" || format === "MIXED";
 
-  /* ===== Render ===== */
   if (loading) {
     return (
-      <div className="max-w-6xl">
+      <div className="w-full py-8">
         <Card className="p-6">
           <div className="text-sm text-slate-300">Ładowanie...</div>
         </Card>
@@ -852,8 +936,7 @@ export default function TournamentBasicsSetup() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Fix: białe dropdowny w select (menu opcji) */}
+    <div className="w-full py-8 space-y-6">
       <style>{`
         .select-dark { color-scheme: dark; }
         .select-dark option,
@@ -864,124 +947,186 @@ export default function TournamentBasicsSetup() {
       `}</style>
 
       {isCreateMode && (
-        <div className="mb-2">
+        <div className="-mt-2">
           <TournamentFlowNav />
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
-              {isCreateMode ? "Utwórz turniej" : "Ustawienia turnieju"}
-            </h1>
-
-            {isAssistantReadOnly ? (
-              <Badge tone="warn">
-                <AlertTriangle className="h-3.5 w-3.5" />
-                Podgląd (asystent)
-              </Badge>
-            ) : (
-              <Badge tone="info">
-                <Info className="h-3.5 w-3.5" />
-                Konfiguracja
-              </Badge>
-            )}
-
-            {!isCreateMode && (
-              <Badge tone="default">
-                <BadgeCheck className="h-3.5 w-3.5 opacity-80" />
-                ID: {id}
-              </Badge>
-            )}
-          </div>
-
-          <div className="mt-2 text-sm text-slate-300 leading-relaxed">
-            {isCreateMode
-              ? "Ustal podstawy i konfigurację rozgrywek. W kolejnym kroku uzupełnisz uczestników."
-              : "Zmień parametry rozgrywek. Uwaga: część zmian może wymagać resetu."}
-          </div>
+      {/* Header (bez chipów: konfiguracja/id/format/uczestnicy) */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
+            {isCreateMode ? "Utwórz turniej" : "Ustawienia turnieju"}
+          </h1>
+          {isAssistantReadOnly && (
+            <span className="inline-flex items-center gap-2 rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs font-semibold text-amber-100">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Podgląd (asystent)
+            </span>
+          )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge tone="default">
-            <Layers3 className="h-3.5 w-3.5 opacity-80" />
-            {formatLabel(format)}
-          </Badge>
-          <Badge tone="default">
-            <Users className="h-3.5 w-3.5 opacity-80" />
-            {participants} uczestników
-          </Badge>
+        <div className="text-sm text-slate-300 leading-relaxed">
+          {isCreateMode
+            ? "Ustal podstawy i strukturę rozgrywek. W kolejnym kroku uzupełnisz uczestników."
+            : "Zmień parametry rozgrywek. Uwaga: część zmian może wymagać resetu."}
         </div>
       </div>
 
-      {/* Error */}
+      {/* InlineAlert */}
       <AnimatePresence>
-        {error && (
+        {inlineError && (
           <motion.div
             initial={{ opacity: 0, y: -6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
           >
-            <Card className="p-4 border border-rose-400/20 bg-rose-400/5">
-              <div className="flex items-start gap-3">
-                <div className="mt-0.5 grid h-9 w-9 place-items-center rounded-xl border border-rose-400/20 bg-rose-400/10">
-                  <AlertTriangle className="h-5 w-5 text-rose-200" />
-                </div>
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-white">
-                    Nie udało się zapisać
-                  </div>
-                  <div className="mt-1 text-sm text-slate-200">{error}</div>
-                </div>
-              </div>
-            </Card>
+            <InlineAlert
+              tone="danger"
+              title="Nie udało się zapisać"
+              description={inlineError}
+              icon={<AlertTriangle className="h-5 w-5" />}
+              onClose={() => setInlineError(null)}
+            />
           </motion.div>
         )}
       </AnimatePresence>
 
-      <div className="grid gap-6 lg:grid-cols-[1.6fr_1fr]">
+      <div className="grid gap-6 lg:grid-cols-[1.6fr_1fr] items-start">
         {/* LEFT */}
         <div className="space-y-6">
-          {/* Basics */}
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.2, ease: "easeOut" }}
-          >
-            <Card className="p-6">
-              <div className="flex items-center gap-2">
-                <div className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
-                  <Cog className="h-5 w-5 text-white/90" />
+          {/* Podstawowe informacje: tylko nazwa + opis */}
+          {/* ZMIANA: flex-col i min-h, aby zrównać wysokość z prawą kartą */}
+          <Card className="flex flex-col p-6 min-h-[26rem]">
+            <div className="flex items-center gap-3">
+              <div className="grid h-10 w-10 place-items-center rounded-2xl border border-white/10 bg-white/[0.04]">
+                <Cog className="h-5 w-5 text-white/90" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-base font-semibold text-white">
+                  Podstawowe informacje
+                  </div>
+
+                <div className="text-sm text-slate-300">
+                  Nazwa i opis widoczne w podglądzie turnieju.
                 </div>
-                <div>
+              </div>
+            </div>
+
+            {/* ZMIANA: flex flex-col flex-1, aby wypełnić wysokość */}
+            <div className="mt-5 flex flex-col flex-1 gap-4">
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-slate-300">
+                  Nazwa turnieju
+                </div>
+                <Input
+                  value={name}
+                  disabled={disableForm}
+                  onChange={(e) => {
+                    setName(e.target.value);
+                    markDirty();
+                    if (inlineError) setInlineError(null);
+                  }}
+                  placeholder="Wymagane - np. Liga miejska 2026"
+                />
+              </div>
+
+              {/* ZMIANA: Kontener opisu rozciąga się (flex-1) */}
+              <div className="flex flex-col flex-1 space-y-2">
+                <div className="text-xs font-semibold text-slate-300">
+                  Opis turnieju
+                </div>
+                {/* ZMIANA: relative flex-1, textarea ma h-full */}
+                <div className="relative flex-1">
+                  <textarea
+                    value={description}
+                    disabled={disableForm}
+                    onChange={(e) => {
+                      setDescription(e.target.value);
+                      markDirty();
+                      if (inlineError) setInlineError(null);
+                    }}
+                    placeholder="Krótki opis dla uczestników, np. zasady, lokalizacja, terminy."
+                    className={cn(
+                      "h-full min-h-[110px] w-full resize-y rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-100",
+                      "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10 focus-visible:border-white/20",
+                      "disabled:opacity-60 disabled:pointer-events-none"
+                    )}
+                  />
+                </div>
+                <div className="text-xs text-slate-400">
+                  Opcjonalnie. Jeśli nie podasz opisu, w podglądzie zostanie pominięty.
+                </div>
+              </div>
+                {isCreateMode && (
+                  <div className="pt-4">
+                    <Button
+                      onClick={async () => {
+                      try {
+                        setInlineError(null);
+                        await saveAll();
+                      } catch (e: any) {
+                        const msg = e?.message || "Nie udało się utworzyć turnieju.";
+                        setInlineError(msg);
+                      }
+                    }}
+                      disabled={disableForm || isTournamentCreated || !name.trim()}
+                      className="w-full"
+                  >
+                    Utwórz turniej
+                  </Button>
+                  {!isTournamentCreated && (
+                    <div className="mt-2 text-xs text-slate-400">
+                      Po utworzeniu turnieju odblokujesz sekcje struktury i podsumowania.
+                    </div>
+                  )}
+                </div>
+              )}
+
+            </div>
+          </Card>
+
+          {/* Struktura rozgrywek */}
+          <Card className={cn("p-6", !isTournamentCreated && "pointer-events-none opacity-60 blur-[1px]")}>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="grid h-10 w-10 place-items-center rounded-2xl border border-white/10 bg-white/[0.04]">
+                  <Brackets className="h-5 w-5 text-white/90" />
+                </div>
+                <div className="min-w-0">
                   <div className="text-base font-semibold text-white">
-                    Podstawowe informacje
+                    Struktura rozgrywek
                   </div>
                   <div className="text-sm text-slate-300">
-                    Nazwa, dyscyplina i uczestnicy.
+                    Dobierz parametry dyscypliny, formatu i etapów.
                   </div>
                 </div>
               </div>
 
-              <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-300">
-                    Nazwa turnieju
-                  </div>
-                  <Input
-                    value={name}
-                    disabled={disableForm}
-                    onChange={(e) => {
-                      setName(e.target.value);
-                      markDirty();
-                      if (error) setError(null);
-                    }}
-                    placeholder="np. Turniej Miejski 2026"
-                  />
-                </div>
+              <Button
+                onClick={async () => {
+                  try {
+                    setInlineError(null);
+                    await saveAll();
+                  } catch (e: any) {
+                    const msg = e?.message || "Nie udało się zapisać.";
+                    setInlineError(msg);
+                  }
+                }}
+                disabled={disableForm}
+                variant="secondary"
+              >
+                Zapisz
+              </Button>
+            </div>
 
+            {/* Parametry ogólne (tu: dyscyplina, format, uczestnicy) */}
+            <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+              <div className="text-xs font-semibold text-slate-300">
+                Parametry ogólne
+              </div>
+
+              <div className="mt-3 grid gap-4 md:grid-cols-3">
                 <div className="space-y-2">
                   <div className="text-xs font-semibold text-slate-300">
                     Dyscyplina
@@ -1005,6 +1150,28 @@ export default function TournamentBasicsSetup() {
 
                 <div className="space-y-2">
                   <div className="text-xs font-semibold text-slate-300">
+                    Format turnieju
+                  </div>
+                  <Select
+                    value={format}
+                    disabled={disableForm}
+                    onChange={(v) => {
+                      setFormat(v as TournamentFormat);
+                      markDirty();
+                      if (v !== "CUP") setThirdPlace(false);
+                    }}
+                  >
+                    <option value="LEAGUE">Liga</option>
+                    <option value="CUP">Puchar (KO)</option>
+                    <option value="MIXED">Grupy + puchar</option>
+                  </Select>
+                  <div className="text-xs text-slate-400">
+                    Format wpływa na generowanie etapów i meczów.
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-slate-300">
                     Liczba uczestników
                   </div>
                   <Input
@@ -1024,38 +1191,16 @@ export default function TournamentBasicsSetup() {
                     }}
                   />
                   <div className="text-xs text-slate-400">
-                    Tworzy placeholdery drużyn/zawodników - nazwy uzupełnisz w kolejnym kroku.
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-300">
-                    Format turnieju
-                  </div>
-                  <Select
-                    value={format}
-                    disabled={disableForm}
-                    onChange={(v) => {
-                      setFormat(v as TournamentFormat);
-                      markDirty();
-                    }}
-                  >
-                    <option value="LEAGUE">Liga</option>
-                    <option value="CUP">Puchar (KO)</option>
-                    <option value="MIXED">Grupy + puchar</option>
-                  </Select>
-                  <div className="text-xs text-slate-400">
-                    Format wpływa na strukturę etapów i generowanie meczów.
+                    Placeholdery drużyn/zawodników zostaną utworzone automatycznie.
                   </div>
                 </div>
               </div>
 
-              {/* Tennis extra (best-of) */}
               {isTennis && (
-                <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                  <div className="space-y-2">
+                <div className="mt-4 grid gap-4 md:grid-cols-3">
+                  <div className="md:col-span-1 space-y-2">
                     <div className="text-xs font-semibold text-slate-300">
-                      Tenis – format meczu
+                      Tenis - format meczu
                     </div>
                     <Select
                       value={tennisBestOf}
@@ -1072,86 +1217,37 @@ export default function TournamentBasicsSetup() {
                       ))}
                     </Select>
                     <div className="text-xs text-slate-400">
-                      Wyniki będziesz wpisywać jako <b>gemy w setach</b> w ekranie wyników / Live.
+                      Dotyczy tylko tenisa.
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-slate-300">
-                    Tenis: KO nie obsługuje dwumeczu – rundy/finał/3 miejsce zawsze jako pojedyncze mecze.
+                  <div className="md:col-span-2 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-slate-300">
+                    Tenis: KO nie obsługuje dwumeczu - rundy/finał/3. miejsce zawsze jako pojedyncze mecze.
                   </div>
                 </div>
               )}
-            </Card>
-          </motion.div>
-
-          {/* Struktura rozgrywek (karty) */}
-          <Card className="p-6">
-            <div className="flex items-center gap-2">
-              <div className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
-                <Brackets className="h-5 w-5 text-white/90" />
-              </div>
-              <div>
-                <div className="text-base font-semibold text-white">
-                  Struktura rozgrywek
-                </div>
-                <div className="text-sm text-slate-300">
-                  Dobierz parametry ligi / grup / KO.
-                </div>
-              </div>
             </div>
 
-            <div className="mt-5 grid gap-4 md:grid-cols-3">
-              <OptionCard
-                title="Liga"
-                desc="Tabela i mecze każdy z każdym (1 lub 2 mecze w parze)."
-                icon={<Layers3 className="h-5 w-5 text-indigo-200" />}
-                active={format === "LEAGUE"}
-                disabled={disableForm}
-                onClick={() => {
-                  setFormat("LEAGUE");
-                  markDirty();
-                }}
-              />
-              <OptionCard
-                title="Puchar (KO)"
-                desc="Drabinka pucharowa. Opcja 1 mecz lub dwumecz (poza tenisem)."
-                icon={<Brackets className="h-5 w-5 text-indigo-200" />}
-                active={format === "CUP"}
-                disabled={disableForm}
-                onClick={() => {
-                  setFormat("CUP");
-                  markDirty();
-                }}
-              />
-              <OptionCard
-                title="Grupy + puchar"
-                desc="Faza grupowa (tabela) + awans do drabinki KO."
-                icon={<Users className="h-5 w-5 text-indigo-200" />}
-                active={format === "MIXED"}
-                disabled={disableForm}
-                onClick={() => {
-                  setFormat("MIXED");
-                  markDirty();
-                }}
-              />
-            </div>
-
-            <AnimatePresence mode="popLayout">
+            <div className="mt-6 space-y-4">
+              {/* Liga / grupy */}
               {showLeagueOrGroupConfig && (
                 <motion.div
                   key="leagueOrMixed"
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 8 }}
-                  className="mt-6 space-y-4"
+                  className="space-y-4"
                 >
-                  {/* Tennis points mode (only league/mixed) */}
                   {isTennis && (
                     <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                      <div className="text-sm font-semibold text-white">
-                        Tenis – tabela
+                      <div className="flex items-center gap-2">
+                        <Text className="h-4 w-4 text-white/80" />
+                        <div className="text-sm font-semibold text-white">
+                          Tenis - tabela
+                        </div>
                       </div>
-                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+
+                      <div className="mt-3 grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
                           <div className="text-xs font-semibold text-slate-300">
                             System klasyfikacji
@@ -1178,20 +1274,23 @@ export default function TournamentBasicsSetup() {
                             }
                           </div>
                         </div>
+
                         <div className="text-sm text-slate-300 leading-relaxed">
                           {tennisPointsMode === "PLT"
                             ? "Tabela pokaże kolumnę Pkt (liczone wg ustawień w backendzie)."
-                            : "Tabela będzie bez punktów – o kolejności decydują: zwycięstwa, RS, RG i H2H (gdy etap zakończony)."}
+                            : "Tabela będzie bez punktów - o kolejności decydują: zwycięstwa, RS, RG i H2H (gdy etap zakończony)."}
                         </div>
                       </div>
                     </div>
                   )}
 
-                  {/* Handball table settings (league/mixed) */}
                   {isHandball && (
                     <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                      <div className="text-sm font-semibold text-white">
-                        Piłka ręczna – tabela
+                      <div className="flex items-center gap-2">
+                        <Info className="h-4 w-4 text-white/80" />
+                        <div className="text-sm font-semibold text-white">
+                          Piłka ręczna - tabela
+                        </div>
                       </div>
 
                       <div className="mt-3 grid gap-4 sm:grid-cols-2">
@@ -1221,18 +1320,16 @@ export default function TournamentBasicsSetup() {
                           </div>
                           <Select
                             value={hbTableDrawMode}
-                            disabled={
-                              disableForm || hbPointsMode === "3_2_1_0"
-                            }
+                            disabled={disableForm || hbPointsMode === "3_2_1_0"}
                             onChange={(v) => {
                               setHbTableDrawMode(v as HandballTableDrawMode);
                               markDirty();
                             }}
                           >
                             <option value="ALLOW_DRAW">Remis dopuszczalny</option>
-                            <option value="PENALTIES">Remis → karne</option>
+                            <option value="PENALTIES">Remis - karne</option>
                             <option value="OVERTIME_PENALTIES">
-                              Remis → dogrywka + karne
+                              Remis - dogrywka + karne
                             </option>
                           </Select>
                           {hbPointsMode === "3_2_1_0" && (
@@ -1245,7 +1342,6 @@ export default function TournamentBasicsSetup() {
                     </div>
                   )}
 
-                  {/* LEAGUE */}
                   {format === "LEAGUE" && (
                     <div className="grid gap-4 sm:grid-cols-2">
                       <div className="space-y-2">
@@ -1271,7 +1367,6 @@ export default function TournamentBasicsSetup() {
                     </div>
                   )}
 
-                  {/* MIXED */}
                   {format === "MIXED" && (
                     <div className="grid gap-4 sm:grid-cols-2">
                       <div className="space-y-2">
@@ -1297,8 +1392,7 @@ export default function TournamentBasicsSetup() {
                         />
                         {groupSizes.length > 0 && (
                           <div className="text-xs text-slate-400">
-                            Rozmiary grup: {groupSizes.join(", ")} (min:{" "}
-                            {minGroupSize})
+                            Rozmiary grup: {groupSizes.join(", ")} (min: {minGroupSize})
                           </div>
                         )}
                       </div>
@@ -1340,7 +1434,7 @@ export default function TournamentBasicsSetup() {
                         </Select>
                         {minGroupSize < 2 && (
                           <div className="text-xs text-amber-200">
-                            Najmniejsza grupa ma mniej niż 2 uczestników – zmniejsz liczbę grup.
+                            Najmniejsza grupa ma mniej niż 2 uczestników - zmniejsz liczbę grup.
                           </div>
                         )}
                       </div>
@@ -1349,19 +1443,19 @@ export default function TournamentBasicsSetup() {
                 </motion.div>
               )}
 
+              {/* KO */}
               {showKnockoutConfig && (
                 <motion.div
                   key="knockout"
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 8 }}
-                  className="mt-6 space-y-4"
+                  className="space-y-4"
                 >
-                  {/* Handball KO tiebreak */}
                   {isHandball && (
                     <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
                       <div className="text-sm font-semibold text-white">
-                        Piłka ręczna – KO (dogrywka/karne)
+                        Piłka ręczna - KO (dogrywka/karne)
                       </div>
                       <div className="mt-3 grid gap-3 sm:grid-cols-2">
                         <div className="space-y-2">
@@ -1372,9 +1466,7 @@ export default function TournamentBasicsSetup() {
                             value={hbKnockoutTiebreak}
                             disabled={disableForm}
                             onChange={(v) => {
-                              setHbKnockoutTiebreak(
-                                v as HandballKnockoutTiebreak
-                              );
+                              setHbKnockoutTiebreak(v as HandballKnockoutTiebreak);
                               markDirty();
                             }}
                           >
@@ -1437,34 +1529,22 @@ export default function TournamentBasicsSetup() {
                     </div>
 
                     <div className="sm:col-span-2">
-                      <button
-                        type="button"
+                      <ToggleRow
+                        checked={thirdPlace}
                         disabled={disableForm}
-                        onClick={() => {
-                          setThirdPlace((v) => !v);
+                        title="Mecz o 3. miejsce"
+                        desc="Dodaje mecz o 3 miejsce (jeśli format to wspiera)."
+                        onChange={(next) => {
+                          setThirdPlace(next);
                           markDirty();
                         }}
-                        className={cn(
-                          "w-full rounded-2xl border px-4 py-3 text-left transition",
-                          "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
-                          thirdPlace
-                            ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
-                            : "border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.08]"
-                        )}
-                      >
-                        <div className="text-sm font-semibold">
-                          {thirdPlace ? "Mecz o 3. miejsce: Włączony" : "Mecz o 3. miejsce: Wyłączony"}
-                        </div>
-                        <div className="mt-1 text-sm text-slate-300">
-                          Dodaje mecz o 3 miejsce (jeśli format to wspiera).
-                        </div>
-                      </button>
+                      />
                     </div>
 
                     {thirdPlace && (
                       <div className="space-y-2 sm:col-span-2">
                         <div className="text-xs font-semibold text-slate-300">
-                          Mecz o 3. miejsce
+                          Mecz o 3. miejsce - liczba spotkań
                         </div>
                         <Select
                           value={thirdPlaceMatches}
@@ -1487,10 +1567,9 @@ export default function TournamentBasicsSetup() {
                   </div>
                 </motion.div>
               )}
-            </AnimatePresence>
+            </div>
           </Card>
 
-          {/* create mode footer */}
           {isCreateMode && (
             <div className="pt-2">
               <TournamentStepFooter
@@ -1504,110 +1583,114 @@ export default function TournamentBasicsSetup() {
           )}
         </div>
 
-        {/* RIGHT: summary */}
-        <div className="space-y-6">
-          <Card className="p-6 sticky top-[92px]">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-base font-semibold text-white">
-                  Podsumowanie
-                </div>
-                <div className="mt-1 text-sm text-slate-300">
-                  Szacunkowa struktura (orientacyjnie).
-                </div>
-              </div>
-              <Badge tone="info">
-                <Info className="h-3.5 w-3.5" />
-                {disciplineLabel(discipline)}
-              </Badge>
+        {/* RIGHT: podsumowanie (zawsze widoczne, kompaktowe) */}
+        <div className="lg:sticky lg:top-[92px]">
+          {/* ZMIANA: dodano relative, overflow-hidden i gradient w tle */}
+          <Card className={cn("relative overflow-hidden p-6 min-h-[26rem]", !isTournamentCreated && "pointer-events-none opacity-60 blur-[1px]")}>
+            {/* TŁO GRADIENTOWE (skopiowane z Home) */}
+            <div className="pointer-events-none absolute inset-0">
+              <div className="absolute -top-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-indigo-500/15 blur-3xl" />
+              <div className="absolute -bottom-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
             </div>
 
-            <div className="mt-4 grid gap-2">
-              <div className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
-                <div className="text-xs font-semibold text-slate-300">Format</div>
-                <div className="text-sm font-semibold text-white">
-                  {formatLabel(format)}
+            {/* Wrapper relative, aby treść była nad tłem */}
+            <div className="relative">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-base font-semibold text-white">
+                    Podsumowanie
+                  </div>
+                  <div className="mt-1 text-sm text-slate-300">
+                    Szacunkowa struktura (orientacyjnie).
+                  </div>
                 </div>
+
+                <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-slate-200">
+                  <BadgeCheck className="h-3.5 w-3.5 opacity-80" />
+                  {disciplineLabel(discipline)}
+                </span>
               </div>
 
-              {format === "MIXED" && (
-                <>
-                  <div className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
-                    <div className="text-xs font-semibold text-slate-300">
-                      Liczba grup
-                    </div>
-                    <div className="text-sm font-semibold text-white">
-                      {preview.groups}
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
-                    <div className="text-xs font-semibold text-slate-300">
-                      Awansujących do KO
-                    </div>
-                    <div className="text-sm font-semibold text-white">
-                      {preview.advancing}
-                    </div>
-                  </div>
-                </>
-              )}
+              <div className="mt-4 grid gap-2">
+                <StatRow label="Format" value={formatLabel(format)} />
+                <StatRow label="Uczestnicy" value={participants} />
 
-              {format !== "CUP" && (
-                <div className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
-                  <div className="text-xs font-semibold text-slate-300">
-                    Mecze fazy tabeli
-                  </div>
-                  <div className="text-sm font-semibold text-white">
-                    {preview.groupTotal}
-                  </div>
-                </div>
-              )}
+                {format === "MIXED" && (
+                  <>
+                    <StatRow label="Liczba grup" value={preview.groups} />
+                    <StatRow label="Awansujących do KO" value={preview.advancing} />
+                  </>
+                )}
 
-              {format !== "LEAGUE" && (
-                <div className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
-                  <div className="text-xs font-semibold text-slate-300">
-                    Mecze fazy KO
-                  </div>
-                  <div className="text-sm font-semibold text-white">
-                    {preview.koTotal}
-                  </div>
-                </div>
-              )}
+                {format !== "CUP" && (
+                  <StatRow label="Mecze fazy tabeli" value={preview.groupTotal} />
+                )}
 
-              <div className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
-                <div className="text-xs font-semibold text-slate-300">
-                  Szac. łączna liczba meczów
-                </div>
-                <div className="text-sm font-semibold text-white">
-                  {preview.total}
-                </div>
+                {format !== "LEAGUE" && (
+                  <StatRow label="Mecze fazy KO" value={preview.koTotal} />
+                )}
+
+                <StatRow label="Szac. łączna liczba meczów" value={preview.total} />
               </div>
-            </div>
 
-            <div className="mt-4 text-xs text-slate-400">
-              Tip: Zmiana formatu / grup / awansu może wymagać resetu rozgrywek.
+              <div className="mt-4 text-xs text-slate-400">
+                Tip: zmiana formatu, grup lub awansu może wymagać resetu rozgrywek.
+              </div>
+
+              {isAssistantReadOnly && (
+                <div className="mt-4">
+                  <InlineAlert
+                    tone="warning"
+                    title="Tryb podglądu"
+                    description='Jako asystent nie możesz zmieniać konfiguracji bez uprawnienia "tournament_edit".'
+                    icon={<AlertTriangle className="h-5 w-5" />}
+                  />
+                </div>
+              )}
             </div>
           </Card>
-
-          {isAssistantReadOnly && (
-            <Card className="p-4 border border-amber-400/20 bg-amber-400/5">
-              <div className="flex items-start gap-3">
-                <div className="mt-0.5 grid h-9 w-9 place-items-center rounded-xl border border-amber-400/20 bg-amber-400/10">
-                  <AlertTriangle className="h-5 w-5 text-amber-100" />
-                </div>
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-white">
-                    Tryb podglądu
-                  </div>
-                  <div className="mt-1 text-sm text-slate-200">
-                    Jako asystent nie możesz zmieniać konfiguracji bez uprawnienia
-                    <b> „tournament_edit”</b>.
-                  </div>
-                </div>
-              </div>
-            </Card>
-          )}
         </div>
       </div>
+
+
+      <AnimatePresence>
+        {confirmOpen && (
+          <motion.div
+            key="confirm-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            onClick={() => resolveConfirm(false)}
+          >
+            <div className="absolute inset-0 bg-black/60" />
+
+            <motion.div
+              key="confirm-modal"
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.18 }}
+              className="relative w-full max-w-md"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Card className="p-5">
+                <div className="space-y-2">
+                  <div className="text-base font-semibold text-slate-100">{confirmTitle}</div>
+                  <div className="whitespace-pre-wrap text-sm text-slate-300">{confirmMessage}</div>
+                </div>
+
+                <div className="mt-5 flex items-center justify-end gap-2">
+                  <Button variant="secondary" onClick={() => resolveConfirm(false)}>
+                    {confirmCancelLabel}
+                  </Button>
+                  <Button onClick={() => resolveConfirm(true)}>{confirmConfirmLabel}</Button>
+                </div>
+              </Card>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

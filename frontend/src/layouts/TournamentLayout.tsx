@@ -1,11 +1,16 @@
 import { useEffect, useState } from "react";
-import { Link, Outlet, useParams, useLocation } from "react-router-dom";
-import TournamentFlowNav from "../components/TournamentFlowNav";
-import { TournamentFlowGuardProvider } from "../flow/TournamentFlowGuardContext";
-import TournamentStepFooter from "../components/TournamentStepFooter";
+import { Link, Outlet, useLocation, useParams } from "react-router-dom";
+
 import { apiGet } from "../api";
-import { Card } from "../ui/Card";
+
+import TournamentFlowNav from "../components/TournamentFlowNav";
+import TournamentStepFooter from "../components/TournamentStepFooter";
+import { TournamentFlowGuardProvider } from "../flow/TournamentFlowGuardContext";
+
 import { Button } from "../ui/Button";
+import { Card } from "../ui/Card";
+
+// ===== Typy lokalne =====
 
 type TournamentLite = {
   id: number;
@@ -14,7 +19,6 @@ type TournamentLite = {
 };
 
 function canOpenPanel(t: TournamentLite) {
-  // Asystent ma dostęp do panelu (podgląd), a blokady są per-akcja.
   return t.my_role === "ORGANIZER" || t.my_role === "ASSISTANT";
 }
 
@@ -49,17 +53,19 @@ export default function TournamentLayout() {
       .finally(() => setLoading(false));
   }, [id]);
 
+  // Brak ID = brak panelu (route /tournaments/new obsługiwany osobno)
   if (!id) return null;
 
   // ===== Stany: ładowanie / błąd / brak roli =====
+
   if (loading) {
     return (
       <TournamentFlowGuardProvider>
-        <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
+        <div className="w-full py-8">
           <Card className="p-5 sm:p-6">
             <div className="flex items-center gap-3">
-              <div className="h-2 w-2 rounded-full bg-slate-300 animate-pulse" />
-              <div className="text-sm text-slate-600">Ładowanie panelu…</div>
+              <div className="h-2 w-2 rounded-full bg-white/40 animate-pulse" />
+              <div className="text-sm text-slate-300">Ładowanie panelu...</div>
             </div>
           </Card>
         </div>
@@ -72,12 +78,12 @@ export default function TournamentLayout() {
 
     return (
       <TournamentFlowGuardProvider>
-        <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
+        <div className="w-full py-8">
           <Card className="p-5 sm:p-6">
-            <div className="text-base font-semibold text-slate-900">
+            <div className="text-base font-semibold text-white">
               Nie można otworzyć panelu
             </div>
-            <div className="mt-2 text-sm text-slate-600">{err}</div>
+            <div className="mt-2 text-sm text-slate-300">{err}</div>
 
             <div className="mt-5 flex flex-wrap gap-2">
               <Link to={`/tournaments/${id}`}>
@@ -103,20 +109,20 @@ export default function TournamentLayout() {
   if (tournament && !canOpenPanel(tournament)) {
     return (
       <TournamentFlowGuardProvider>
-        <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
+        <div className="w-full py-8">
           <Card className="p-5 sm:p-6">
-            <div className="text-base font-semibold text-slate-900">
+            <div className="text-base font-semibold text-white">
               Brak dostępu do panelu
             </div>
 
-            <div className="mt-2 text-sm text-slate-600">
+            <div className="mt-2 text-sm text-slate-300">
               Turniej:{" "}
-              <span className="font-semibold text-slate-900">
+              <span className="font-semibold text-white">
                 {tournament.name ?? `#${tournament.id}`}
               </span>
             </div>
 
-            <div className="mt-2 text-sm text-slate-600">
+            <div className="mt-2 text-sm text-slate-300">
               Ta część jest dostępna tylko dla organizatora i asystentów.
             </div>
 
@@ -138,14 +144,16 @@ export default function TournamentLayout() {
   // ===== Stan: panel dostępny =====
   return (
     <TournamentFlowGuardProvider>
-      <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
+      <div className="w-full py-6">
         <div className="mb-4">
           <TournamentFlowNav />
         </div>
 
-        <Card className="p-5 sm:p-6">
-          <Outlet />
-        </Card>
+        {/*
+          Outlet nie jest opakowywany w dodatkową Card.
+          Strony panelu same budują układ i tła, a Layout nie może zmieniać stylu widoku.
+        */}
+        <Outlet />
 
         <div className="mt-6">
           <TournamentStepFooter />
@@ -154,3 +162,4 @@ export default function TournamentLayout() {
     </TournamentFlowGuardProvider>
   );
 }
+

@@ -1,4 +1,10 @@
-export type FlowStepKey = "setup" | "detail" | "teams" | "schedule" | "results";
+export type FlowStepKey =
+  | "setup"
+  | "detail"
+  | "teams"
+  | "schedule"
+  | "results"
+  | "public_preview";
 
 export type FlowStep = {
   key: FlowStepKey;
@@ -15,6 +21,17 @@ function cleanPath(pathname: string): string {
   // usuń query i końcowe slashe
   const p = pathname.split("?")[0];
   return p.replace(/\/+$/, "");
+}
+
+function isPublicTournamentPath(pathname: string): boolean {
+  const x = cleanPath(pathname);
+
+  if (x === "/tournaments/new") return false;
+  if (x.includes("/detail")) return false;
+
+  // /tournaments/:id
+  // /tournaments/:id/standings
+  return /^\/tournaments\/[^/]+(\/standings)?$/.test(x);
 }
 
 /* =========================
@@ -55,6 +72,12 @@ export const FLOW_STEPS: FlowStep[] = [
     label: "Wyniki",
     path: (id) => `/tournaments/${id}/detail/results`,
     match: (p) => cleanPath(p).endsWith("/detail/results"),
+  },
+  {
+    key: "public_preview",
+    label: "Podgląd widza",
+    path: (id) => `/tournaments/${id}`,
+    match: (p) => isPublicTournamentPath(p),
   },
 ];
 

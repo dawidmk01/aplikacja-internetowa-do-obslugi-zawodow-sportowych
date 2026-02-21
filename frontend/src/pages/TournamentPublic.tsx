@@ -1,10 +1,23 @@
 // frontend/src/pages/TournamentPublic.tsx
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { motion } from "framer-motion";
+import { BarChart3, Calendar, KeyRound, MapPin, QrCode, Swords, UserCheck, Users } from "lucide-react";
+
 import { apiFetch } from "../api";
+import { cn } from "../lib/cn";
+
+import { Button } from "../ui/Button";
+import { Card } from "../ui/Card";
+import { InlineAlert } from "../ui/InlineAlert";
+import { Input } from "../ui/Input";
+
+import PublicMatchesBar from "../components/PublicMatchesBar";
 import PublicMatchesPanel from "../components/PublicMatchesPanel";
-import type { MatchPublicDTO } from "../components/PublicMatchesPanel";
+import type { CommentaryEntryPublicDTO, IncidentPublicDTO, MatchPublicDTO } from "../components/PublicMatchesPanel";
 import StandingsBracket from "../components/StandingsBracket";
+import TournamentFlowNav from "../components/TournamentFlowNav";
 
 type EntryMode = "MANAGER" | "ORGANIZER_ONLY";
 
@@ -26,7 +39,7 @@ type TournamentPublicDTO = {
 
   participants_public_preview_enabled?: boolean;
 
-  // Polityka zmiany nazwy (różne warianty nazwy pola – frontend wykrywa)
+  // Polityka zmiany nazwy (różne warianty nazwy pola - frontend wykrywa)
   participants_self_rename_enabled?: boolean;
   participants_self_rename_requires_approval?: boolean;
   participants_self_rename_approval_required?: boolean;
@@ -100,7 +113,11 @@ function looksLikeJoinDisabledMessage(msg: string) {
 function looksLikeRenameRequiresApprovalMessage(msg: string) {
   const t = (msg ?? "").toLowerCase();
   const approval =
-    t.includes("akcept") || t.includes("zatwier") || t.includes("approval") || t.includes("request") || t.includes("prośb");
+    t.includes("akcept") ||
+    t.includes("zatwier") ||
+    t.includes("approval") ||
+    t.includes("request") ||
+    t.includes("prośb");
   const rename = t.includes("zmian") && (t.includes("nazw") || t.includes("name"));
   return approval && rename;
 }
@@ -111,34 +128,190 @@ function extractList(payload: any): any[] {
   return [];
 }
 
+function formatRoleLabel(role: TournamentPublicDTO["my_role"]): string {
+  switch (role) {
+    case "ORGANIZER":
+      return "Organizator";
+    case "ASSISTANT":
+      return "Asystent";
+    case "PARTICIPANT":
+      return "Uczestnik";
+    default:
+      return "Widz";
+  }
+}
+
+// ==========================
+// UI building blocks
+// ==========================
+
+type RevealProps = {
+  children: ReactNode;
+  delay?: number;
+  className?: string;
+};
+
+function Reveal({ children, delay = 0, className }: RevealProps) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 14, filter: "blur(2px)" }}
+      whileInView={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+      viewport={{ once: true, amount: 0.25 }}
+      transition={{ duration: 0.35, ease: "easeOut", delay }}
+      className={className}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+type HoverLiftProps = {
+  children: ReactNode;
+  className?: string;
+  scale?: number;
+};
+
+function HoverLift({ children, className, scale = 1.01 }: HoverLiftProps) {
+  return (
+    <motion.div
+      whileHover={{ y: -3, scale }}
+      transition={{ type: "spring", stiffness: 260, damping: 18 }}
+      className={className}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+type MiniInfoProps = {
+  icon: ReactNode;
+  label: string;
+  title: string;
+  desc: string;
+};
+
+function MiniInfo({ icon, label, title, desc }: MiniInfoProps) {
+  return (
+    <HoverLift scale={1.015} className="h-full">
+      <div className="h-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+        <div className="flex h-full items-start gap-3">
+          <div className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
+            {icon}
+          </div>
+          <div className="min-w-0 flex h-full flex-col">
+            <div className="text-xs text-slate-400">{label}</div>
+            <div className="mt-1 text-sm font-semibold text-white">{title}</div>
+            <div className="mt-2 min-h-[3.25rem] text-sm text-slate-300 leading-relaxed">{desc}</div>
+          </div>
+        </div>
+      </div>
+    </HoverLift>
+  );
+}
+
+type PillProps = {
+  icon: ReactNode;
+  label: string;
+  value: string;
+};
+
+function Pill({ icon, label, value }: PillProps) {
+  return (
+    <div className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
+      <span className="grid h-8 w-8 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
+        {icon}
+      </span>
+      <div className="min-w-0">
+        <div className="text-[11px] text-slate-400">{label}</div>
+        <div className="truncate text-sm font-semibold text-slate-100">{value}</div>
+      </div>
+    </div>
+  );
+}
+
+type SectionCardProps = {
+  title: string;
+  right?: ReactNode;
+  hint?: string;
+  children: ReactNode;
+  className?: string;
+};
+
+function SectionCard({ title, right, hint, children, className }: SectionCardProps) {
+  return (
+    <Card className={cn("p-5 sm:p-6", className)}>
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-100">{title}</h2>
+          {hint ? <div className="mt-1 text-xs text-slate-400">{hint}</div> : null}
+        </div>
+        {right ? <div className="shrink-0">{right}</div> : null}
+      </div>
+      {children}
+    </Card>
+  );
+}
+
+type ViewTabsProps = {
+  value: ViewTab;
+  onChange: (v: ViewTab) => void;
+  disabled?: boolean;
+};
+
+function ViewTabs({ value, onChange, disabled }: ViewTabsProps) {
+  return (
+    <div className={cn("flex items-center gap-2", disabled && "opacity-60")}>
+      <button
+        type="button"
+        onClick={() => onChange("MATCHES")}
+        disabled={disabled}
+        className={cn(
+          "h-10 rounded-xl border px-4 text-sm font-semibold transition",
+          "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
+          value === "MATCHES"
+            ? "border-white/15 bg-white/10 text-slate-100"
+            : "border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.07]",
+          disabled && "cursor-not-allowed"
+        )}
+      >
+        Mecze
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("STANDINGS")}
+        disabled={disabled}
+        className={cn(
+          "h-10 rounded-xl border px-4 text-sm font-semibold transition",
+          "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
+          value === "STANDINGS"
+            ? "border-white/15 bg-white/10 text-slate-100"
+            : "border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.07]",
+          disabled && "cursor-not-allowed"
+        )}
+      >
+        Tabela / Drabinka
+      </button>
+    </div>
+  );
+}
+
 // ==========================
 // PUBLIC: incydenty + król strzelców
 // ==========================
-
-type IncidentDTO = {
-  id: number;
-  match_id: number;
-  team_id: number | null;
-  kind: string;
-  kind_display?: string;
-  period?: string | null;
-  time_source?: string | null;
-  minute: number | null;
-  minute_raw?: number | null;
-  player_id?: number | null;
-  player_name?: string | null;
-  meta?: Record<string, any>;
-  created_at?: string | null;
-};
 
 type ScorerRow = {
   player_name: string;
   goals: number;
 };
 
-function incidentMinute(i: IncidentDTO): number | null {
+function incidentMinute(i: IncidentPublicDTO): number | null {
   if (typeof i.minute === "number") return i.minute;
-  if (typeof i.minute_raw === "number") return i.minute_raw;
+  const mr = (i as any).minute_raw;
+  if (typeof mr === "number" && Number.isFinite(mr)) return mr;
+  if (typeof mr === "string") {
+    const t = mr.trim();
+    if (t && /^\d+$/.test(t)) return Number(t);
+  }
   return null;
 }
 
@@ -168,6 +341,8 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
   const [tournament, setTournament] = useState<TournamentPublicDTO | null>(null);
   const [matches, setMatches] = useState<MatchPublicDTO[]>([]);
   const [myMatches, setMyMatches] = useState<MatchPublicDTO[]>([]);
+
+  const showManagerNav = tournament?.my_role === "ORGANIZER" || tournament?.my_role === "ASSISTANT";
 
   const [error, setError] = useState<string | null>(null);
   const [needsCode, setNeedsCode] = useState(false);
@@ -221,9 +396,13 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
 
   const [selectedMatchId, setSelectedMatchId] = useState<number | null>(null);
   const [selectedSection, setSelectedSection] = useState<string | null>(null);
-  const [incidentsByMatch, setIncidentsByMatch] = useState<Record<number, IncidentDTO[]>>({});
+  const [incidentsByMatch, setIncidentsByMatch] = useState<Record<number, IncidentPublicDTO[]>>({});
   const [incBusy, setIncBusy] = useState(false);
   const [incError, setIncError] = useState<string | null>(null);
+
+  const [commentaryByMatch, setCommentaryByMatch] = useState<Record<number, CommentaryEntryPublicDTO[]>>({});
+  const [comBusy, setComBusy] = useState(false);
+  const [comError, setComError] = useState<string | null>(null);
 
   const matchesPanelRef = useRef<HTMLDivElement | null>(null);
 
@@ -253,7 +432,7 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
         throw new Error(data?.detail || "Nie udało się pobrać incydentów.");
       }
       const raw = await res.json().catch(() => []);
-      const list = extractList(raw) as IncidentDTO[];
+      const list = extractList(raw) as IncidentPublicDTO[];
 
       // public: prezentujemy chronologicznie (minute ASC)
       list.sort((a, b) => {
@@ -274,6 +453,26 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
     }
   };
 
+  const loadCommentaryForMatch = async (matchId: number) => {
+    if (!matchId) return;
+    setComError(null);
+    setComBusy(true);
+    try {
+      const res = await apiFetch(`/api/matches/${matchId}/commentary/${qs}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || "Nie udało się pobrać komentarzy.");
+      }
+      const raw = await res.json().catch(() => []);
+      const list = extractList(raw) as CommentaryEntryPublicDTO[];
+      setCommentaryByMatch((prev) => ({ ...prev, [matchId]: list }));
+    } catch (e: any) {
+      setComError(e?.message ?? "Błąd pobierania komentarzy.");
+    } finally {
+      setComBusy(false);
+    }
+  };
+
   const onPublicMatchClick = async (m: MatchPublicDTO, sectionId: string) => {
     // public: rozwijamy szczegóły tylko dla meczów w trakcie / zakończonych
     if (m.status !== "IN_PROGRESS" && m.status !== "FINISHED") return;
@@ -283,9 +482,9 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
     setSelectedMatchId(willOpen ? m.id : null);
     setSelectedSection(willOpen ? sectionId : null);
 
-    // bez przycisku „odśwież” – dociągamy automatycznie przy otwarciu
+    // bez przycisku "odśwież" - dociągamy automatycznie przy otwarciu
     if (willOpen) {
-      await loadIncidentsForMatch(m.id);
+      await Promise.all([loadIncidentsForMatch(m.id), loadCommentaryForMatch(m.id)]);
     }
   };
 
@@ -316,11 +515,11 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
             const res = await apiFetch(`/api/matches/${m.id}/incidents/${qs}`);
             if (res.ok) {
               const raw = await res.json().catch(() => []);
-              const list = extractList(raw) as IncidentDTO[];
+              const list = extractList(raw) as IncidentPublicDTO[];
               setIncidentsByMatch((prev) => ({ ...prev, [m.id]: list }));
               return list;
             }
-            return [] as IncidentDTO[];
+            return [] as IncidentPublicDTO[];
           }
           return incidentsByMatch[m.id];
         })
@@ -487,7 +686,11 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
     if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
 
     const raw = await mRes.json().catch(() => []);
-    const list: MatchPublicDTO[] = Array.isArray(raw) ? raw : Array.isArray((raw as any)?.results) ? (raw as any).results : [];
+    const list: MatchPublicDTO[] = Array.isArray(raw)
+      ? raw
+      : Array.isArray((raw as any)?.results)
+        ? (raw as any).results
+        : [];
     setMatches(list);
   };
 
@@ -729,160 +932,239 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
   // - join=1 lub allow_join_by_code=true lub użytkownik już zapisany
   const shouldShowJoinPanel = joinFlag || !!regMe || Boolean(tournament?.allow_join_by_code);
 
-  // „Join wyłączony” pokazujemy tylko, gdy wiemy to na pewno i użytkownik NIE jest zapisany
-  const joinIsDisabledKnown = !regMe && (joinDisabledByServer || (tournament ? tournament.allow_join_by_code === false : false));
+  // "Join wyłączony" pokazujemy tylko, gdy wiemy to na pewno i użytkownik NIE jest zapisany
+  const joinIsDisabledKnown =
+    !regMe && (joinDisabledByServer || (tournament ? tournament.allow_join_by_code === false : false));
+
+  const heroJoinLabel = useMemo(() => {
+    if (joinIsDisabledKnown) return "Wyłączone";
+    if (tournament?.allow_join_by_code) return "Włączone";
+    if (regMe) return "Zapisany";
+    return "Sprawdź";
+  }, [joinIsDisabledKnown, regMe, tournament?.allow_join_by_code]);
 
   // ==========================
-  // UI
+  // View
   // ==========================
-
-  const inputBase =
-    "h-9 rounded-lg border border-white/10 bg-white/5 px-3 text-sm text-slate-100 placeholder:text-slate-400 outline-none focus:border-white/20 focus:bg-white/10";
-
-  const btnPrimary =
-    "h-9 rounded-lg bg-slate-100 px-3 text-sm font-semibold text-slate-900 hover:bg-white disabled:cursor-not-allowed disabled:opacity-70";
-  const btnGhost =
-    "h-9 rounded-lg border border-white/10 bg-white/5 px-3 text-sm text-slate-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-70";
-
-  const pill =
-    "inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200";
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
-      {/* Header */}
-      <div className="mb-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-[260px]">
-            <h1 className="text-2xl font-semibold text-slate-100">{tournament?.name ?? "Turniej"}</h1>
+    <div className="w-full pb-24">
 
+      {view === "MATCHES" && !needsCode ? (
+        <PublicMatchesBar matches={publicMatches} />
+      ) : null}
+
+      {/* ===== HERO ===== */}
+      <section className="grid gap-10 lg:grid-cols-2 lg:items-stretch">
+        <div className="flex h-full flex-col">
+          <Reveal>
+            <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+              {tournament?.name ?? "Turniej"}
+            </h1>
+          </Reveal>
+
+          <Reveal delay={0.05}>
             {tournament?.description ? (
-              <p className="mt-1 max-w-3xl text-sm text-slate-300">{tournament.description}</p>
+              <p className="mt-4 text-base text-slate-300 leading-relaxed">{tournament.description}</p>
             ) : (
-              <p className="mt-1 max-w-3xl text-sm text-slate-400">Strona publiczna turnieju.</p>
+              <p className="mt-4 text-base text-slate-300 leading-relaxed">Publiczny podgląd turnieju.</p>
             )}
+          </Reveal>
 
-            <div className="mt-3 flex flex-wrap gap-3 text-sm text-slate-300">
+          <Reveal delay={0.1}>
+            <div className="mt-6 flex flex-wrap gap-3">
               {dateRange ? (
-                <div className={pill}>
-                  <span className="text-slate-400">Termin</span>
-                  <span className="font-semibold text-slate-100">{dateRange}</span>
-                </div>
+                <Pill icon={<Calendar className="h-4 w-4 text-white/90" />} label="Termin" value={dateRange} />
               ) : null}
 
               {tournament?.location ? (
-                <div className={pill}>
-                  <span className="text-slate-400">Miejsce</span>
-                  <span className="font-semibold text-slate-100">{tournament.location}</span>
-                </div>
+                <Pill icon={<MapPin className="h-4 w-4 text-white/90" />} label="Miejsce" value={tournament.location} />
               ) : null}
+
+              <Pill
+                icon={<UserCheck className="h-4 w-4 text-white/90" />}
+                label="Rola"
+                value={formatRoleLabel(tournament?.my_role ?? null)}
+              />
             </div>
-          </div>
+          </Reveal>
 
-          {/* Tabs */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setView("MATCHES")}
-              className={`h-9 rounded-lg border px-3 text-sm font-semibold ${
-                view === "MATCHES"
-                  ? "border-white/15 bg-white/10 text-slate-100"
-                  : "border-white/10 bg-white/5 text-slate-200 hover:bg-white/10"
-              }`}
-            >
-              Mecze
-            </button>
+          <Reveal delay={0.15} className="mt-auto">
+            <div className="mt-6 grid items-stretch gap-3 sm:grid-cols-3">
+              <MiniInfo
+                icon={<Swords className="h-4 w-4 text-white/90" />}
+                label="Mecze"
+                title={`${publicMatches.length}`}
+                desc="Bez wolnych losów (BYE)."
+              />
+              <MiniInfo
+                icon={<KeyRound className="h-4 w-4 text-white/90" />}
+                label="Dostęp"
+                title={needsCode ? "Wymaga kodu" : "Publiczny"}
+                desc={needsCode ? "Wpisz kod, aby zobaczyć dane." : "Widok bez logowania."}
+              />
+              <MiniInfo
+                icon={<Users className="h-4 w-4 text-white/90" />}
+                label="Dołączanie"
+                title={heroJoinLabel}
+                desc={regMe ? "Możesz zmienić nazwę." : "Wpisz kod i zapisz się."}
+              />
+            </div>
+          </Reveal>
 
-            <button
-              type="button"
-              onClick={() => setView("STANDINGS")}
-              className={`h-9 rounded-lg border px-3 text-sm font-semibold ${
-                view === "STANDINGS"
-                  ? "border-white/15 bg-white/10 text-slate-100"
-                  : "border-white/10 bg-white/5 text-slate-200 hover:bg-white/10"
-              }`}
-            >
-              Tabela / Drabinka
-            </button>
-          </div>
+          {error ? (
+            <Reveal delay={0.2} className="mt-6">
+              <InlineAlert variant="error" title="Błąd">
+                {error}
+              </InlineAlert>
+            </Reveal>
+          ) : null}
         </div>
 
-        {error ? <div className="mt-4 rounded-xl border border-rose-400/20 bg-rose-500/10 p-3 text-sm text-rose-200">{error}</div> : null}
-      </div>
+        <Reveal className="h-full lg:justify-self-end">
+          <HoverLift scale={1.01} className="h-full">
+            <Card className="relative h-full overflow-hidden p-6 sm:p-7">
+              <div className="pointer-events-none absolute inset-0">
+                <div className="absolute -top-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-indigo-500/15 blur-3xl" />
+                <div className="absolute -bottom-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
+              </div>
 
-      {/* Access code panel */}
-      {needsCode && (
-        <section className="mb-6 rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-100">Kod dostępu</h2>
-              <p className="mt-1 text-sm text-slate-300">Ten turniej wymaga kodu. Wpisz kod i odśwież dane.</p>
+              <div className="relative flex h-full flex-col">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm text-slate-300">Widok publiczny</div>
+                    <div className="mt-1 text-lg font-semibold text-white">Mecze i tabela w jednym miejscu</div>
+                  </div>
+                  <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-white/10 bg-white/[0.06]">
+                    <QrCode className="h-5 w-5 text-white/90" />
+                  </div>
+                </div>
+
+                <div className="mt-5">
+                  <div className="text-sm font-semibold text-slate-100">Sekcja</div>
+                  <div className="mt-2">
+                    <ViewTabs value={view} onChange={setView} disabled={needsCode} />
+                  </div>
+                </div>
+
+                {needsCode ? (
+                  <div className="mt-5">
+                    <InlineAlert variant="info" title="Wymagany kod dostępu">
+                      Wpisz kod w panelu poniżej i otwórz dane turnieju.
+                    </InlineAlert>
+                  </div>
+                ) : (
+                  <div className="mt-5 grid gap-3">
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+                      <div className="flex items-start gap-3">
+                        <div className="mt-0.5 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
+                          <BarChart3 className="h-4 w-4 text-white/90" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-white">Incydenty meczu</div>
+                          <div className="mt-1 text-sm text-slate-300 leading-relaxed">
+                            Kliknij mecz w trakcie lub zakończony, aby rozwinąć szczegóły.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {!isLogged ? (
+                      <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+                        <div className="flex items-start gap-3">
+                          <div className="mt-0.5 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
+                            <Users className="h-4 w-4 text-white/90" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold text-white">Dołączanie</div>
+                            <div className="mt-1 text-sm text-slate-300 leading-relaxed">
+                              Aby zapisać się do turnieju, zaloguj się i użyj kodu dołączania.
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+
+                <div className="mt-auto pt-6">
+                  <div className="text-xs text-slate-400">
+                    Jeśli jesteś organizatorem lub asystentem, po zalogowaniu zobaczysz na dole nawigację panelu.
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </HoverLift>
+        </Reveal>
+      </section>
+
+      {/* ===== ACCESS CODE ===== */}
+      {needsCode ? (
+        <div className="mt-6">
+          <SectionCard
+            title="Kod dostępu"
+            hint="Ten turniej wymaga kodu. Wpisz go i odśwież dane."
+            right={
+              <Button variant="secondary" onClick={() => loadTournamentAndMatches().catch((e: any) => setError(e.message))}>
+                Odśwież
+              </Button>
+            }
+          >
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="w-full sm:w-[320px]">
+                <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="Wpisz kod" aria-label="Kod dostępu" />
+              </div>
+              <Button onClick={() => loadTournamentAndMatches().catch((e: any) => setError(e.message))}>Otwórz</Button>
             </div>
-          </div>
+          </SectionCard>
+        </div>
+      ) : null}
 
-          <div className="mt-4 flex flex-wrap gap-2">
-            <input className={`${inputBase} w-[260px]`} value={code} onChange={(e) => setCode(e.target.value)} placeholder="Wpisz kod" />
-            <button
-              type="button"
-              className={btnPrimary}
-              onClick={() => loadTournamentAndMatches().catch((e: any) => setError(e.message))}
-            >
-              Otwórz
-            </button>
-          </div>
-        </section>
-      )}
-
-      {/* JOIN / RENAME panel */}
-      {shouldShowJoinPanel && (
-        <section className="mb-6 rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-100">{regMe ? "Twoje dane w turnieju" : "Dołącz do turnieju"}</h2>
-              <p className="mt-1 text-sm text-slate-300">
-                {regMe
-                  ? "Możesz zmienić nazwę (lub wysłać prośbę, jeśli wymagana jest akceptacja)."
-                  : "Wpisz kod dołączania, sprawdź go i uzupełnij nazwę."}
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-4">
+      {/* ===== JOIN / RENAME ===== */}
+      {shouldShowJoinPanel ? (
+        <div className="mt-6">
+          <SectionCard
+            title={regMe ? "Twoje dane w turnieju" : "Dołącz do turnieju"}
+            hint={
+              regMe
+                ? "Możesz zmienić nazwę (lub wysłać prośbę, jeśli wymagana jest akceptacja)."
+                : "Wpisz kod dołączania, sprawdź go i uzupełnij nazwę."
+            }
+          >
             {!isLogged ? (
               <div className="grid gap-3">
-                <div className="text-sm text-slate-300">Aby dołączyć, musisz się zalogować lub utworzyć konto.</div>
+                <InlineAlert variant="info" title="Wymagane logowanie">
+                  Aby dołączyć do turnieju, musisz się zalogować lub utworzyć konto.
+                </InlineAlert>
+
                 <div className="flex flex-wrap gap-2">
-                  <Link to={`/login?next=${nextParam}`} className="h-9 rounded-lg border border-white/10 bg-white/5 px-3 text-sm font-semibold text-slate-100 hover:bg-white/10">
-                    Zaloguj
+                  <Link to={`/login?next=${nextParam}`}>
+                    <Button variant="secondary">Zaloguj</Button>
                   </Link>
-                  <Link
-                    to={`/login?mode=register&next=${nextParam}`}
-                    className="h-9 rounded-lg border border-white/10 bg-white/5 px-3 text-sm font-semibold text-slate-100 hover:bg-white/10"
-                  >
-                    Zarejestruj konto
+                  <Link to={`/login?mode=register&next=${nextParam}`}>
+                    <Button variant="secondary">Zarejestruj konto</Button>
                   </Link>
                 </div>
               </div>
             ) : joinIsDisabledKnown ? (
-              <div className="rounded-xl border border-white/10 bg-black/10 p-4">
-                <div className="text-sm font-semibold text-slate-100">Dołączanie do turnieju jest wyłączone</div>
-                <div className="mt-1 text-sm text-slate-300">
+              <div className="grid gap-3">
+                <InlineAlert variant="info" title="Dołączanie jest wyłączone">
                   Organizator nie włączył opcji dołączania przez konto i kod dla tego turnieju.
-                </div>
+                </InlineAlert>
 
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button type="button" className={btnGhost} onClick={() => loadTournamentAndMatches().catch(() => null)}>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="secondary" onClick={() => loadTournamentAndMatches().catch(() => null)}>
                     Odśwież
-                  </button>
-                  <button
-                    type="button"
-                    className={btnGhost}
+                  </Button>
+                  <Button
+                    variant="ghost"
                     onClick={() => {
                       const keepAccess = code.trim() ? `?code=${encodeURIComponent(code.trim())}` : "";
                       navigate(location.pathname + keepAccess, { replace: true });
                     }}
                   >
                     Przejdź do podglądu
-                  </button>
+                  </Button>
                 </div>
               </div>
             ) : (
@@ -890,14 +1172,14 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
                 {/* Stan: już zapisany -> zmiana nazwy (lub prośba) */}
                 {regMe ? (
                   <>
-                    <div className="rounded-xl border border-white/10 bg-black/10 p-4">
+                    <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
                       <div className="text-sm text-slate-200">
                         Jesteś zapisany jako: <span className="font-semibold text-slate-100">{regMe.display_name}</span>
                       </div>
                       <div className="mt-1 text-xs text-slate-400">Kod dołączania służy tylko do pierwszego dołączenia.</div>
 
-                      {pendingNameReq?.status === "PENDING" && (
-                        <div className="mt-3 rounded-xl border border-amber-400/20 bg-amber-500/10 p-3 text-sm text-amber-200">
+                      {pendingNameReq?.status === "PENDING" ? (
+                        <div className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-500/10 p-3 text-sm text-amber-200">
                           <div className="font-semibold">Oczekująca prośba o zmianę nazwy</div>
                           <div className="mt-1">
                             {pendingNameReq.old_name ? (
@@ -914,192 +1196,173 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
                             Nie możesz wysłać kolejnej prośby, dopóki organizator nie podejmie decyzji.
                           </div>
                         </div>
-                      )}
+                      ) : null}
 
-                      {nameChangeApprovalRequired && (
+                      {nameChangeApprovalRequired ? (
                         <div className="mt-3 text-sm text-slate-300">
-                          Zmiana nazwy wymaga akceptacji organizatora — zostanie wysłana prośba.
+                          Zmiana nazwy wymaga akceptacji organizatora - zostanie wysłana prośba.
                         </div>
-                      )}
+                      ) : null}
                     </div>
 
                     <div className="flex flex-wrap gap-2">
-                      <input
-                        className={`${inputBase} flex-1 min-w-[260px]`}
-                        value={displayName}
-                        onChange={(e) => setDisplayName(e.target.value)}
-                        placeholder={tournament?.competition_type === "INDIVIDUAL" ? "Imię i nazwisko" : "Nazwa drużyny / imię i nazwisko"}
-                      />
-                      <button
-                        type="button"
-                        className={btnPrimary}
-                        onClick={handleRenameOrRequest}
-                        disabled={regBusy || pendingNameReq?.status === "PENDING"}
-                      >
+                      <div className="min-w-[260px] flex-1">
+                        <Input
+                          value={displayName}
+                          onChange={(e) => setDisplayName(e.target.value)}
+                          placeholder={tournament?.competition_type === "INDIVIDUAL" ? "Imię i nazwisko" : "Nazwa drużyny / imię i nazwisko"}
+                        />
+                      </div>
+                      <Button onClick={handleRenameOrRequest} disabled={regBusy || pendingNameReq?.status === "PENDING"}>
                         {regBusy ? "…" : nameChangeApprovalRequired ? "Wyślij prośbę" : "Zmień nazwę"}
-                      </button>
+                      </Button>
                     </div>
                   </>
                 ) : (
                   <>
                     {/* Stan: nie zapisany -> join przez kod */}
-                    <div className="flex flex-wrap gap-2">
-                      <input
-                        className={`${inputBase} flex-1 min-w-[220px]`}
-                        value={regCode}
-                        onChange={(e) => setRegCode(e.target.value)}
-                        placeholder="Kod dołączania"
-                      />
-                      <button type="button" className={btnGhost} onClick={verifyRegistrationCode} disabled={regBusy}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="min-w-[220px] flex-1">
+                        <Input value={regCode} onChange={(e) => setRegCode(e.target.value)} placeholder="Kod dołączania" />
+                      </div>
+                      <Button variant="secondary" onClick={verifyRegistrationCode} disabled={regBusy}>
                         {regBusy ? "…" : "Sprawdź kod"}
-                      </button>
+                      </Button>
                     </div>
 
-                    {(verified || joinFlag) && (
-                      <div className="flex flex-wrap gap-2">
-                        <input
-                          className={`${inputBase} flex-1 min-w-[220px]`}
-                          value={displayName}
-                          onChange={(e) => setDisplayName(e.target.value)}
-                          placeholder={tournament?.competition_type === "INDIVIDUAL" ? "Imię i nazwisko" : "Nazwa drużyny / imię i nazwisko"}
-                        />
-                        <button type="button" className={btnPrimary} onClick={joinTournament} disabled={regBusy}>
+                    {verified || joinFlag ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="min-w-[220px] flex-1">
+                          <Input
+                            value={displayName}
+                            onChange={(e) => setDisplayName(e.target.value)}
+                            placeholder={tournament?.competition_type === "INDIVIDUAL" ? "Imię i nazwisko" : "Nazwa drużyny / imię i nazwisko"}
+                          />
+                        </div>
+                        <Button onClick={joinTournament} disabled={regBusy}>
                           {regBusy ? "…" : "Dołącz"}
-                        </button>
+                        </Button>
                       </div>
-                    )}
+                    ) : null}
                   </>
                 )}
 
-                {regError ? (
-                  <div className="rounded-xl border border-rose-400/20 bg-rose-500/10 p-3 text-sm text-rose-200">{regError}</div>
-                ) : null}
-                {regInfo ? (
-                  <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 p-3 text-sm text-emerald-200">{regInfo}</div>
-                ) : null}
+                {regError ? <InlineAlert variant="error">{regError}</InlineAlert> : null}
+                {regInfo ? <InlineAlert variant="success">{regInfo}</InlineAlert> : null}
               </div>
             )}
-          </div>
-        </section>
-      )}
+          </SectionCard>
+        </div>
+      ) : null}
 
-      {/* Main content */}
-      {view === "MATCHES" ? (
-        <div className="space-y-6">
-          {/* Moje mecze */}
-          {regMe && tournament?.is_published && (
-            <section className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-lg font-semibold text-slate-100">Moje mecze</h2>
-                <div className="text-xs text-slate-400">Widoczne tylko dla zapisanych uczestników</div>
-              </div>
-
-              {myMatches.length === 0 ? (
-                <div className="text-sm text-slate-300">Brak meczów do wyświetlenia.</div>
-              ) : (
-                <div className="rounded-xl border border-white/10 bg-black/10 p-4">
-                  <div className="divide-y divide-white/10">
-                    {myMatches.map((m) => (
-                      <div key={m.id} className="py-3">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div className="min-w-[260px]">
-                            <div className="text-sm font-semibold text-slate-100">
-                              {m.home_team_name} <span className="font-normal text-slate-400">vs</span> {m.away_team_name}
-                            </div>
-                            <div className="mt-1 text-xs text-slate-400">
-                              {[m.scheduled_date, m.scheduled_time, m.location].filter(Boolean).join(" • ")}
-                            </div>
-                          </div>
-
-                          <div className="min-w-[140px] text-right">
-                            {typeof m.home_score === "number" && typeof m.away_score === "number" ? (
-                              <div className="text-sm font-semibold text-slate-100">
-                                {m.home_score} : {m.away_score}
-                              </div>
-                            ) : (
-                              <div className="text-sm text-slate-600">&nbsp;</div>
-                            )}
-                            <div className="mt-1 text-xs text-slate-400">{m.status ?? ""}</div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </section>
-          )}
-
-          {/* Król strzelców */}
-          {showTopScorers ? (
-            <section className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-lg font-semibold text-slate-100">Król strzelców</h2>
-                  <p className="mt-1 text-sm text-slate-300">
-                    Liczy gole na podstawie incydentów typu <span className="font-semibold text-slate-100">GOAL</span> (zawodnik musi być przypisany).
-                  </p>
-                </div>
-                <button type="button" className={btnGhost} onClick={computeTopScorers} disabled={scorerBusy}>
-                  {scorerBusy ? "Liczenie…" : "Policz / odśwież"}
-                </button>
-              </div>
-
-              {scorerError ? (
-                <div className="mt-4 rounded-xl border border-rose-400/20 bg-rose-500/10 p-3 text-sm text-rose-200">{scorerError}</div>
-              ) : null}
-
-              <div className="mt-4">
-                {scorers.length === 0 ? (
-                  <div className="text-sm text-slate-300">Brak danych do rankingu (albo brak zawodników w incydentach).</div>
+      {/* ===== CONTENT ===== */}
+      <div className="mt-6 space-y-6">
+        {view === "MATCHES" ? (
+          <>
+            {/* Moje mecze */}
+            {regMe && tournament?.is_published ? (
+              <SectionCard title="Moje mecze" hint="Widoczne tylko dla zapisanych uczestników">
+                {myMatches.length === 0 ? (
+                  <div className="text-sm text-slate-300">Brak meczów do wyświetlenia.</div>
                 ) : (
-                  <div className="rounded-xl border border-white/10 bg-black/10 p-4">
+                  <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
                     <div className="divide-y divide-white/10">
-                      {scorers.map((r) => (
-                        <div key={r.player_name} className="flex items-center justify-between gap-3 py-2">
-                          <div className="text-sm font-semibold text-slate-100">{r.player_name}</div>
-                          <div className="text-sm font-semibold text-slate-100">{r.goals}</div>
+                      {myMatches.map((m) => (
+                        <div key={m.id} className="py-3">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="min-w-[260px]">
+                              <div className="text-sm font-semibold text-slate-100">
+                                {m.home_team_name} <span className="font-normal text-slate-400">vs</span> {m.away_team_name}
+                              </div>
+                              <div className="mt-1 text-xs text-slate-400">
+                                {[m.scheduled_date, m.scheduled_time, m.location].filter(Boolean).join(" • ")}
+                              </div>
+                            </div>
+
+                            <div className="min-w-[140px] text-right">
+                              {typeof m.home_score === "number" && typeof m.away_score === "number" ? (
+                                <div className="text-sm font-semibold text-slate-100">
+                                  {m.home_score} : {m.away_score}
+                                </div>
+                              ) : (
+                                <div className="text-sm text-slate-600">&nbsp;</div>
+                              )}
+                              <div className="mt-1 text-xs text-slate-400">{m.status ?? ""}</div>
+                            </div>
+                          </div>
                         </div>
                       ))}
                     </div>
                   </div>
                 )}
+              </SectionCard>
+            ) : null}
+
+            {/* Król strzelców */}
+            {showTopScorers ? (
+              <SectionCard
+                title="Król strzelców"
+                hint="Liczy gole na podstawie incydentów typu GOAL (zawodnik musi być przypisany)."
+                right={
+                  <Button variant="secondary" onClick={computeTopScorers} disabled={scorerBusy}>
+                    {scorerBusy ? "Liczenie…" : "Policz / odśwież"}
+                  </Button>
+                }
+              >
+                {scorerError ? <InlineAlert variant="error">{scorerError}</InlineAlert> : null}
+
+                <div className="mt-4">
+                  {scorers.length === 0 ? (
+                    <div className="text-sm text-slate-300">Brak danych do rankingu (albo brak zawodników w incydentach).</div>
+                  ) : (
+                    <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
+                      <div className="divide-y divide-white/10">
+                        {scorers.map((r) => (
+                          <div key={r.player_name} className="flex items-center justify-between gap-3 py-2">
+                            <div className="text-sm font-semibold text-slate-100">{r.player_name}</div>
+                            <div className="text-sm font-semibold text-slate-100">{r.goals}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </SectionCard>
+            ) : null}
+
+            {/* Mecze */}
+            <SectionCard title="Mecze" hint="Kliknij mecz (w trakcie / zakończony), aby rozwinąć relację live (incydenty i komentarze).">
+              <div ref={matchesPanelRef}>
+                <PublicMatchesPanel
+                  matches={publicMatches}
+                  selectedMatchId={selectedMatchId}
+                  selectedSection={selectedSection}
+                  incidentsByMatch={incidentsByMatch}
+                  incidentsBusy={incBusy}
+                  incidentsError={incError}
+                  commentaryByMatch={commentaryByMatch}
+                  commentaryBusy={comBusy}
+                  commentaryError={comError}
+                  onMatchClick={onPublicMatchClick}
+                />
               </div>
-            </section>
-          ) : null}
+            </SectionCard>
+          </>
+        ) : id ? (
+          <SectionCard title="Tabela / Drabinka" hint="Widok publiczny">
+            <StandingsBracket tournamentId={Number(id)} accessCode={code.trim() || undefined} />
+          </SectionCard>
+        ) : null}
+      </div>
 
-          {/* Matches panel */}
-          <section className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold text-slate-100">Mecze</h2>
-              <div className="text-xs text-slate-400">
-                Kliknij mecz (w trakcie / zakończony), aby rozwinąć incydenty.
-              </div>
-            </div>
-
-            <div ref={matchesPanelRef}>
-              <PublicMatchesPanel
-                matches={publicMatches}
-                selectedMatchId={selectedMatchId}
-                selectedSection={selectedSection}
-                incidentsByMatch={incidentsByMatch}
-                incidentsBusy={incBusy}
-                incidentsError={incError}
-                onMatchClick={onPublicMatchClick}
-              />
-            </div>
-          </section>
-        </div>
-      ) : id ? (
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold text-slate-100">Tabela / Drabinka</h2>
-            <div className="text-xs text-slate-400">Widok publiczny</div>
-          </div>
-
-          <StandingsBracket tournamentId={Number(id)} accessCode={code.trim() || undefined} />
-        </section>
-      ) : null}
+      {showManagerNav ? <TournamentFlowNav side="bottom" /> : null}
     </div>
   );
 }
+
+// Co zmieniono:
+// 1) Przeprojektowano układ strony publicznej w stylu Home (hero, karty, mikro-sekcje z ikonami).
+// 2) Zastąpiono ręczne klasy formularzy komponentami UI: Card, Button, Input, InlineAlert.
+// 3) Podzielono widok na mniejsze bloki (Reveal, SectionCard, ViewTabs, Pill, MiniInfo) w obrębie pliku.
+// 4) Ujednolicono hierarchię nagłówków i spacing, dodano czytelniejsze komunikaty w kartach.
+// 5) U góry strony (także dla organizatora) pokazuje się PublicMatchesBar, a TournamentFlowNav przeniesiono na dół.
