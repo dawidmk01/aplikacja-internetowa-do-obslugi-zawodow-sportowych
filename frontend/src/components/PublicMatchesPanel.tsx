@@ -1,4 +1,3 @@
-// frontend/src/components/PublicMatchesPanel.tsx
 import type { ReactNode } from "react";
 import { useMemo } from "react";
 
@@ -9,6 +8,9 @@ import {
   groupMatchesByRound,
   stageHeaderTitle,
 } from "../flow/stagePresentation";
+import { cn } from "../lib/cn";
+
+import { Card } from "../ui/Card";
 
 import PublicMatchRow from "./PublicMatchRow";
 
@@ -134,8 +136,49 @@ export function getUpcomingMatchesPreview(matches: MatchPublicDTO[], limit = UPC
   return pickUpcomingMatches(matches, limit);
 }
 
-function ListBox({ children }: { children: ReactNode }) {
-  return <div className="rounded-xl border border-white/10 bg-black/10">{children}</div>;
+function pluralizeMatchesPL(n: number): string {
+  const v = Math.abs(n);
+  const mod10 = v % 10;
+  const mod100 = v % 100;
+  if (v === 1) return "mecz";
+  if (mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)) return "mecze";
+  return "meczów";
+}
+
+function SectionCard({
+  id,
+  title,
+  count,
+  children,
+}: {
+  id: string;
+  title: string;
+  count?: number;
+  children: ReactNode;
+}) {
+  const titleId = `${id}-title`;
+  const hasCount = typeof count === "number" && count > 0;
+
+  return (
+    <section id={id} aria-labelledby={titleId}>
+      <Card className="p-5 sm:p-6">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 id={titleId} className="text-lg font-semibold text-slate-100">
+            {title}
+          </h2>
+          <div className="text-xs text-slate-400">
+            {hasCount ? `${count} ${pluralizeMatchesPL(count)}` : ""}
+          </div>
+        </div>
+
+        {children}
+      </Card>
+    </section>
+  );
+}
+
+function RowsCard({ children }: { children: ReactNode }) {
+  return <Card className="overflow-hidden p-0">{children}</Card>;
 }
 
 export default function PublicMatchesPanel({
@@ -161,12 +204,13 @@ export default function PublicMatchesPanel({
   commentaryError?: string | null;
   onMatchClick?: (m: MatchPublicDTO, sectionId: string) => void;
 }) {
-  const liveMatches = useMemo(() => matches.filter((m) => m.status === "IN_PROGRESS"), [matches]);
+  const safeMatches = Array.isArray(matches) ? matches : [];
 
-  const upcomingMatches = useMemo(() => pickUpcomingMatches(matches, UPCOMING_LIMIT), [matches]);
+  const liveMatches = useMemo(() => safeMatches.filter((m) => m.status === "IN_PROGRESS"), [safeMatches]);
+  const upcomingMatches = useMemo(() => pickUpcomingMatches(safeMatches, UPCOMING_LIMIT), [safeMatches]);
 
   const recentResults = useMemo(() => {
-    return matches
+    return safeMatches
       .filter((m) => m.status === "FINISHED")
       .slice()
       .sort((a, b) => {
@@ -180,83 +224,61 @@ export default function PublicMatchesPanel({
         return b.id - a.id;
       })
       .slice(0, 8);
-  }, [matches]);
+  }, [safeMatches]);
 
-  const stages = useMemo(() => buildStagesForView(matches, { showBye: false }), [matches]);
+  const stages = useMemo(() => buildStagesForView(safeMatches, { showBye: false }), [safeMatches]);
 
   const renderRows = (sectionId: string, list: MatchPublicDTO[]) => (
-    <ListBox>
-      {list.map((m, idx) => (
-        <PublicMatchRow
-          key={m.id}
-          sectionId={sectionId}
-          match={m}
-          index={idx}
-          selectedMatchId={selectedMatchId}
-          selectedSection={selectedSection}
-          incidentsByMatch={incidentsByMatch}
-          incidentsBusy={incidentsBusy}
-          incidentsError={incidentsError}
-          commentaryByMatch={commentaryByMatch}
-          commentaryBusy={commentaryBusy}
-          commentaryError={commentaryError}
-          onMatchClick={onMatchClick}
-        />
-      ))}
-    </ListBox>
+    <RowsCard>
+      <div role="list" className={cn("bg-black/10", list.length === 0 ? "p-4" : "")}>
+        {list.map((m, idx) => (
+          <PublicMatchRow
+            key={m.id}
+            sectionId={sectionId}
+            match={m}
+            index={idx}
+            selectedMatchId={selectedMatchId}
+            selectedSection={selectedSection}
+            incidentsByMatch={incidentsByMatch}
+            incidentsBusy={incidentsBusy}
+            incidentsError={incidentsError}
+            commentaryByMatch={commentaryByMatch}
+            commentaryBusy={commentaryBusy}
+            commentaryError={commentaryError}
+            onMatchClick={onMatchClick}
+          />
+        ))}
+      </div>
+    </RowsCard>
   );
 
   return (
     <div className="space-y-6">
-      {/* NA ŻYWO */}
-      <section id="public-matches-live" className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-slate-100">Na żywo</h2>
-          <div className="text-xs text-slate-400">{liveMatches.length ? `${liveMatches.length} mecz(e)` : ""}</div>
-        </div>
-
+      <SectionCard id="public-matches-live" title="Na żywo" count={liveMatches.length}>
         {liveMatches.length === 0 ? (
           <div className="text-sm text-slate-300">Aktualnie nie ma meczów w trakcie.</div>
         ) : (
           renderRows("live", liveMatches)
         )}
-      </section>
+      </SectionCard>
 
-      {/* NAJBLIŻSZE */}
-      <section id="public-matches-upcoming" className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-slate-100">Najbliższe mecze</h2>
-          <div className="text-xs text-slate-400">{upcomingMatches.length ? `${upcomingMatches.length} mecz(e)` : ""}</div>
-        </div>
-
+      <SectionCard id="public-matches-upcoming" title="Najbliższe mecze" count={upcomingMatches.length}>
         {upcomingMatches.length === 0 ? (
           <div className="text-sm text-slate-300">Brak zaplanowanych meczów.</div>
         ) : (
           renderRows("upcoming", upcomingMatches)
         )}
-      </section>
+      </SectionCard>
 
-      {/* OSTATNIE WYNIKI */}
-      <section id="public-matches-recent" className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-slate-100">Ostatnie wyniki</h2>
-          <div className="text-xs text-slate-400">{recentResults.length ? `${recentResults.length} mecz(e)` : ""}</div>
-        </div>
-
+      <SectionCard id="public-matches-recent" title="Ostatnie wyniki" count={recentResults.length}>
         {recentResults.length === 0 ? (
           <div className="text-sm text-slate-300">Brak zakończonych meczów.</div>
         ) : (
           renderRows("recent", recentResults)
         )}
-      </section>
+      </SectionCard>
 
-      {/* PEŁNY TERMINARZ */}
-      <section id="public-matches-schedule" className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-slate-100">Pełny terminarz</h2>
-          <div className="text-xs text-slate-400">{stages.length ? `${stages.length} etap(y)` : ""}</div>
-        </div>
-
+      <SectionCard id="public-matches-schedule" title="Pełny terminarz" count={stages.length}>
         {stages.length === 0 ? (
           <div className="text-sm text-slate-300">Brak meczów do wyświetlenia.</div>
         ) : (
@@ -266,7 +288,7 @@ export default function PublicMatchesPanel({
 
               if (s.view_type === "GROUP") {
                 const groups = groupMatchesByGroup(stageMatches);
-                const groupNames = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+                const groupNames = Object.keys(groups).sort((a, b) => a.localeCompare(b, "pl"));
 
                 return (
                   <section
@@ -330,22 +352,14 @@ export default function PublicMatchesPanel({
                   key={`stage-${s.stage_id}`}
                   className="rounded-2xl border border-white/10 bg-black/10 p-4 sm:p-5"
                 >
-                  <div className="mb-3 text-sm font-semibold text-slate-100">
-                    {stageHeaderTitle(s)}
-                  </div>
-
+                  <div className="mb-3 text-sm font-semibold text-slate-100">{stageHeaderTitle(s)}</div>
                   {renderRows("schedule", stageMatches)}
                 </section>
               );
             })}
           </div>
         )}
-      </section>
+      </SectionCard>
     </div>
   );
 }
-
-// Co zmieniono:
-// 1) Wyciągnięto renderowanie pojedynczej karty meczu do komponentu PublicMatchRow.
-// 2) Uproszczono PublicMatchesPanel do odpowiedzialności: grupowanie i sekcje (live/upcoming/recent/schedule).
-// 3) Zachowano API komponentu i dotychczasową logikę selekcji oraz prezentacji incydentów. Zachowano API komponentu i dotychczasową logikę selekcji oraz prezentacji incydentów.

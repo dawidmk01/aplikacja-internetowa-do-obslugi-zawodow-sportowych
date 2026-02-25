@@ -29,12 +29,8 @@ from .teams import (
     TournamentTeamSetupView,
     TournamentTeamListView,
     TournamentTeamUpdateView,
-
-    # roster (players)
     TournamentTeamPlayersView,
     TournamentMyTeamPlayersView,
-
-    # team name change requests (QUEUE)
     TournamentTeamNameChangeRequestListView,
     TournamentTeamNameChangeRequestCreateView,
     TournamentTeamNameChangeRequestApproveView,
@@ -59,9 +55,6 @@ from .standings import (
     TournamentStandingsView,
 )
 
-# =========================
-# NEW: incidents + match clock
-# =========================
 from .incidents import (
     MatchIncidentListCreateView,
     MatchIncidentDeleteView,
@@ -78,9 +71,6 @@ from .match_clock import (
     MatchClockSetAddedSecondsView,
 )
 
-# =========================
-# NEW: match commentary + phrase dictionary
-# =========================
 from .commentary import (
     MatchCommentaryListCreateView,
     MatchCommentaryDetailView,
@@ -89,7 +79,6 @@ from .commentary import (
 )
 
 __all__ = [
-    # tournaments
     "TournamentListView",
     "TournamentDetailView",
     "TournamentMetaUpdateView",
@@ -98,35 +87,23 @@ __all__ = [
     "UnarchiveTournamentView",
     "ChangeDisciplineView",
     "ChangeSetupView",
-
-    # assistants
     "TournamentAssistantListView",
     "AddAssistantView",
     "RemoveAssistantView",
     "AssistantPermissionsView",
-
-    # registrations
     "TournamentRegistrationVerifyView",
     "TournamentRegistrationJoinView",
     "TournamentRegistrationMeView",
     "TournamentRegistrationMyMatchesView",
-
-    # teams
     "TournamentTeamSetupView",
     "TournamentTeamListView",
     "TournamentTeamUpdateView",
-
-    # roster (players)
     "TournamentTeamPlayersView",
     "TournamentMyTeamPlayersView",
-
-    # team name change requests
     "TournamentTeamNameChangeRequestListView",
     "TournamentTeamNameChangeRequestCreateView",
     "TournamentTeamNameChangeRequestApproveView",
     "TournamentTeamNameChangeRequestRejectView",
-
-    # matches
     "TournamentMatchListView",
     "TournamentPublicMatchListView",
     "MatchScheduleUpdateView",
@@ -134,19 +111,11 @@ __all__ = [
     "FinishMatchView",
     "ContinueMatchView",
     "SetScheduledMatchView",
-
-    # stages
     "AdvanceFromGroupsView",
-
-    # standings
     "TournamentStandingsView",
-
-    # NEW: incidents
     "MatchIncidentListCreateView",
     "MatchIncidentDeleteView",
     "MatchIncidentRecomputeScoreView",
-
-    # NEW: clock
     "MatchClockGetView",
     "MatchClockStartView",
     "MatchClockPauseView",
@@ -154,12 +123,8 @@ __all__ = [
     "MatchClockStopView",
     "MatchClockSetPeriodView",
     "MatchClockSetAddedSecondsView",
-
-    # NEW: commentary
     "MatchCommentaryListCreateView",
     "MatchCommentaryDetailView",
-
-    # NEW: phrase dictionary
     "TournamentCommentaryPhraseListCreateView",
     "TournamentCommentaryPhraseDetailView",
 ]

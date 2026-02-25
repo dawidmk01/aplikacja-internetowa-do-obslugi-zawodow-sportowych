@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Eye } from "lucide-react";
 
 import { apiFetch } from "../api";
 import { cn } from "../lib/cn";
-
 import { FLOW_STEPS, getCurrentStepIndex } from "../flow/flowSteps";
 
 import { StickyBar } from "../ui/StickyBar";
@@ -54,79 +53,68 @@ export default function TournamentFlowNav({ getCreatedId, className, side = "top
 
   const navRef = useRef<HTMLElement | null>(null);
 
-  const canSeeQueue = useMemo(
-    () => myRole === "ORGANIZER" || myRole === "ASSISTANT",
-    [myRole]
-  );
+  const canSeeQueue = useMemo(() => myRole === "ORGANIZER" || myRole === "ASSISTANT", [myRole]);
 
-  useEffect(() => {
-    if (!resolvedId) return;
+  const loadMyRole = useCallback(async () => {
+    if (!resolvedId) {
+      setMyRole(null);
+      return;
+    }
 
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const tRes = await apiFetch(`/api/tournaments/${resolvedId}/`);
-        if (!tRes.ok) {
-          if (!cancelled) setMyRole(null);
-          return;
-        }
-        const t: TournamentDTO = await tRes.json().catch(() => ({} as any));
-        if (!cancelled) setMyRole((t?.my_role as MyRole) ?? null);
-      } catch {
-        if (!cancelled) setMyRole(null);
+    try {
+      const tRes = await apiFetch(`/api/tournaments/${resolvedId}/`);
+      if (!tRes.ok) {
+        setMyRole(null);
+        return;
       }
-    })();
 
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+      const t: TournamentDTO = await tRes.json().catch(() => ({} as any));
+      setMyRole((t?.my_role as MyRole) ?? null);
+    } catch {
+      setMyRole(null);
+    }
   }, [resolvedId]);
 
   useEffect(() => {
-    if (!resolvedId) return;
+    void loadMyRole();
+  }, [loadMyRole]);
 
-    if (!canSeeQueue) {
+  const loadPendingCount = useCallback(async () => {
+    if (!resolvedId || !canSeeQueue) {
       setPendingNameReqCount(0);
       return;
     }
 
-    let cancelled = false;
-
-    const loadPendingCount = async () => {
-      try {
-        const res = await apiFetch(
-          `/api/tournaments/${resolvedId}/teams/name-change-requests/`
-        );
-
-        if (!res.ok) {
-          if (!cancelled) setPendingNameReqCount(0);
-          return;
-        }
-
-        const data = await res.json().catch(() => null);
-        const cnt = extractCount(data);
-        if (!cancelled) setPendingNameReqCount(cnt ?? 0);
-      } catch {
-        if (!cancelled) setPendingNameReqCount(0);
+    try {
+      const res = await apiFetch(`/api/tournaments/${resolvedId}/teams/name-change-requests/`);
+      if (!res.ok) {
+        setPendingNameReqCount(0);
+        return;
       }
-    };
 
-    const onFocus = () => loadPendingCount();
-
-    loadPendingCount();
-    window.addEventListener("focus", onFocus);
-
-    return () => {
-      cancelled = true;
-      window.removeEventListener("focus", onFocus);
-    };
+      const data = await res.json().catch(() => null);
+      const cnt = extractCount(data);
+      setPendingNameReqCount(cnt ?? 0);
+    } catch {
+      setPendingNameReqCount(0);
+    }
   }, [canSeeQueue, resolvedId]);
 
   useEffect(() => {
+    void loadPendingCount();
+
+    const onFocus = () => {
+      void loadPendingCount();
+    };
+
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [loadPendingCount]);
+
+  useEffect(() => {
     if (!isTop) {
-      // FlowNav na dole nie powinien wpływać na offset kolejnych top-barów.
       document.documentElement.style.setProperty("--app-flowbar-h", "0px");
       return () => {
         document.documentElement.style.removeProperty("--app-flowbar-h");
@@ -157,24 +145,27 @@ export default function TournamentFlowNav({ getCreatedId, className, side = "top
     };
   }, [isTop]);
 
-  const handleClick = (stepIndex: number) => () => {
-    if (!resolvedId) return;
+  const handleClick = useCallback(
+    (stepIndex: number) => {
+      if (!resolvedId) return;
 
-    const target = FLOW_STEPS[stepIndex];
-    navigate(target.path(resolvedId), {
-      state: {
-        fromPath: location.pathname,
-        fromLabel: currentLabel,
-      },
-    });
-  };
+      const target = FLOW_STEPS[stepIndex];
+      navigate(target.path(resolvedId), {
+        state: {
+          fromPath: location.pathname,
+          fromLabel: currentLabel,
+        },
+      });
+    },
+    [currentLabel, location.pathname, navigate, resolvedId]
+  );
 
   return (
     <StickyBar
       side={side}
       className={className}
       zIndexClassName={isTop ? "z-40" : "z-50"}
-      maxWidthClassName="max-w-none"
+      maxWidthClassName="max-w-[1400px]"
       topGapPx={12}
       spacerHeightClassName="h-16 sm:h-[72px]"
     >
@@ -191,23 +182,24 @@ export default function TournamentFlowNav({ getCreatedId, className, side = "top
               <button
                 key={step.key}
                 type="button"
-                onClick={handleClick(index)}
+                onClick={() => handleClick(index)}
                 disabled={!resolvedId}
+                aria-current={isActive ? "page" : undefined}
                 className={cn(
                   "relative inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-sm font-semibold transition",
                   "border border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10]",
                   "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
-                  "disabled:opacity-60 disabled:pointer-events-none",
+                  "disabled:pointer-events-none disabled:opacity-60",
                   showPending && "border-amber-500/30"
                 )}
               >
-                {isActive && (
+                {isActive ? (
                   <motion.div
                     layoutId={isTop ? "flow-step-active" : "flow-step-active-bottom"}
                     className="absolute inset-0 rounded-full bg-white/10"
                     transition={{ type: "spring", bounce: 0.18, duration: 0.55 }}
                   />
-                )}
+                ) : null}
 
                 {isPublicPreview ? (
                   <Eye className="relative z-10 h-4 w-4 text-white/80" />
@@ -217,7 +209,7 @@ export default function TournamentFlowNav({ getCreatedId, className, side = "top
 
                 <span className="relative z-10">{step.label}</span>
 
-                {showPending && (
+                {showPending ? (
                   <span
                     className={cn(
                       "relative z-10 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full",
@@ -227,7 +219,7 @@ export default function TournamentFlowNav({ getCreatedId, className, side = "top
                   >
                     {pendingNameReqCount}
                   </span>
-                )}
+                ) : null}
               </button>
             );
           })}
@@ -236,10 +228,3 @@ export default function TournamentFlowNav({ getCreatedId, className, side = "top
     </StickyBar>
   );
 }
-
-/*
-Co zmieniono:
-- Dodano obsługę trybu bottom (przydatne w widoku publicznym dla organizatora).
-- Pomiar wysokości i CSS var --app-flowbar-h działa tylko w trybie top (stackowanie top-barów).
-- Ujednolicono konfigurację StickyBar (spacer i z-index zależnie od trybu).
-*/

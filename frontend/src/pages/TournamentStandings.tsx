@@ -1,18 +1,16 @@
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
+
 import { motion } from "framer-motion";
 import { Brackets, LayoutGrid, Table2, Trophy } from "lucide-react";
 
-import { apiGet, apiFetch } from "../api";
+import { apiFetch, apiGet } from "../api";
 import { cn } from "../lib/cn";
 import { displayGroupName, isByeMatch } from "../flow/stagePresentation";
 
 import { Card } from "../ui/Card";
 import { InlineAlert } from "../ui/InlineAlert";
-
-/* =========================
-   TYPY
-   ========================= */
 
 type Tournament = {
   id: number;
@@ -128,10 +126,6 @@ type StandingsResponse = {
   bracket?: BracketData;
 };
 
-/* =========================
-   HELPERY
-   ========================= */
-
 function normalizeGroupKey(name: string | null | undefined): string {
   const s = (name ?? "").trim().toLowerCase();
   if (!s) return "";
@@ -140,7 +134,12 @@ function normalizeGroupKey(name: string | null | undefined): string {
 
 function last5Form(teamId: number, matches: MatchDto[]): FormResult[] {
   return matches
-    .filter((m) => m.status === "FINISHED" && !isByeMatch(m) && (m.home_team_id === teamId || m.away_team_id === teamId))
+    .filter(
+      (m) =>
+        m.status === "FINISHED" &&
+        !isByeMatch(m) &&
+        (m.home_team_id === teamId || m.away_team_id === teamId)
+    )
     .sort((a, b) => {
       if (a.stage_order !== b.stage_order) return b.stage_order - a.stage_order;
 
@@ -196,7 +195,10 @@ function safeNum(v: any, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function getTennisPointsMode(tournament: Tournament | null, standings: StandingsResponse | null): "PLT" | "NONE" {
+function getTennisPointsMode(
+  tournament: Tournament | null,
+  standings: StandingsResponse | null
+): "PLT" | "NONE" {
   const tMode = (tournament?.format_config?.tennis_points_mode ?? "").toString().toUpperCase();
   if (tMode === "PLT") return "PLT";
   if (tMode === "NONE") return "NONE";
@@ -208,9 +210,13 @@ function getTennisPointsMode(tournament: Tournament | null, standings: Standings
   return "NONE";
 }
 
-/* =========================
-   STRONA
-   ========================= */
+function normalizeMatchList(raw: any): MatchDto[] {
+  if (Array.isArray(raw)) return raw as MatchDto[];
+  if (Array.isArray(raw?.results)) return raw.results as MatchDto[];
+  return [];
+}
+
+// ===== Strona: tabela i drabinka =====
 
 export default function TournamentStandings() {
   const { id } = useParams<{ id: string }>();
@@ -236,21 +242,30 @@ export default function TournamentStandings() {
 
       try {
         const t = await apiGet<Tournament>(`/api/tournaments/${id}/`);
-        if (!cancelled) setTournament(t);
+        if (cancelled) return;
 
+        setTournament(t);
         if (t.tournament_format === "CUP") setTab("BRACKET");
 
-        const s = await apiFetch(`/api/tournaments/${id}/standings/`);
-        if (s.ok) {
-          const data = await s.json();
-          if (!cancelled) setStandings(data);
-        }
+        const [sRes, mRes] = await Promise.all([
+          apiFetch(`/api/tournaments/${id}/standings/`),
+          apiFetch(`/api/tournaments/${id}/matches/`),
+        ]);
 
-        const m = await apiFetch(`/api/tournaments/${id}/matches/`);
-        if (m.ok) {
-          const raw = await m.json();
-          const list = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? raw.results : [];
-          if (!cancelled) setMatches(list);
+        if (!cancelled) {
+          if (sRes.ok) {
+            const data = await sRes.json();
+            setStandings(data);
+          } else {
+            setStandings(null);
+          }
+
+          if (mRes.ok) {
+            const raw = await mRes.json();
+            setMatches(normalizeMatchList(raw));
+          } else {
+            setMatches([]);
+          }
         }
       } catch (e: any) {
         if (!cancelled) setError(e?.message || "Wystąpił błąd");
@@ -259,7 +274,7 @@ export default function TournamentStandings() {
       }
     };
 
-    load();
+    void load();
 
     return () => {
       cancelled = true;
@@ -300,7 +315,7 @@ export default function TournamentStandings() {
 
   if (loading) {
     return (
-      <div className="w-full pb-24">
+      <div className="mx-auto w-full max-w-[1400px] px-4 pb-24">
         <Card className="relative overflow-hidden p-6">
           <div className="pointer-events-none absolute inset-0">
             <div className="absolute -top-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-indigo-500/10 blur-3xl" />
@@ -319,7 +334,7 @@ export default function TournamentStandings() {
 
   if (error) {
     return (
-      <div className="w-full pb-24">
+      <div className="mx-auto w-full max-w-[1400px] px-4 pb-24">
         <InlineAlert variant="error">{error}</InlineAlert>
       </div>
     );
@@ -327,22 +342,46 @@ export default function TournamentStandings() {
 
   if (!tournament) return null;
 
-  const { discipline, isTennis, showTennisPoints, isCup, isMixed, hasLeagueTable, hasGroups, hasTableData, hasBracketData } = derived;
+  const {
+    discipline,
+    isTennis,
+    showTennisPoints,
+    isCup,
+    isMixed,
+    hasLeagueTable,
+    hasGroups,
+    hasTableData,
+    hasBracketData,
+  } = derived;
+
   const showTabs = isMixed || (hasTableData && hasBracketData);
+  const showTableEmpty = !isCup && tab === "TABLE" && !hasGroups && !hasLeagueTable;
 
   return (
-    <div className="w-full pb-24">
+    <div className="mx-auto w-full max-w-[1400px] px-4 pb-24">
       <div className="mb-5">
         <div className="text-sm text-slate-300">Tabela i drabinka</div>
         <h1 className="mt-1 text-2xl font-semibold text-white">{tournament.name}</h1>
       </div>
 
       {showTabs ? (
-        <div className="mb-5 flex flex-wrap gap-2">
-          <SegmentButton icon={<Table2 className="h-4 w-4 text-white/80" />} active={tab === "TABLE"} onClick={() => setTab("TABLE")}>
+        <div className="mb-5 flex flex-wrap gap-2" role="tablist" aria-label="Widok tabeli i drabinki">
+          <SegmentButton
+            id="standings-tab-table"
+            panelId="standings-panel-table"
+            icon={<Table2 className="h-4 w-4 text-white/80" />}
+            active={tab === "TABLE"}
+            onClick={() => setTab("TABLE")}
+          >
             Tabela
           </SegmentButton>
-          <SegmentButton icon={<Brackets className="h-4 w-4 text-white/80" />} active={tab === "BRACKET"} onClick={() => setTab("BRACKET")}>
+          <SegmentButton
+            id="standings-tab-bracket"
+            panelId="standings-panel-bracket"
+            icon={<Brackets className="h-4 w-4 text-white/80" />}
+            active={tab === "BRACKET"}
+            onClick={() => setTab("BRACKET")}
+          >
             Drabinka
           </SegmentButton>
         </div>
@@ -355,35 +394,71 @@ export default function TournamentStandings() {
         transition={{ duration: 0.25, ease: "easeOut" }}
       >
         {tab === "TABLE" ? (
-          hasGroups ? (
-            <div className="space-y-4">
-              {standings!.groups!.map((g, idx) => {
-                const groupTitle =
-                  (g.group_name || "").toLowerCase().startsWith("grupa") ? g.group_name : displayGroupName(g.group_name, idx);
+          <div id="standings-panel-table" role="tabpanel" aria-labelledby="standings-tab-table">
+            {hasGroups ? (
+              <div className="space-y-4">
+                {standings!.groups!.map((g, idx) => {
+                  const groupTitle =
+                    (g.group_name || "").toLowerCase().startsWith("grupa")
+                      ? g.group_name
+                      : displayGroupName(g.group_name, idx);
 
-                const groupKey = normalizeGroupKey(g.group_name);
-                const groupMatches = matches.filter((m) => m.stage_type === "GROUP" && normalizeGroupKey(m.group_name) === groupKey);
+                  const groupKey = normalizeGroupKey(g.group_name);
+                  const groupMatches = matches.filter(
+                    (m) => m.stage_type === "GROUP" && normalizeGroupKey(m.group_name) === groupKey
+                  );
 
-                return (
-                  <Card key={g.group_id} className="relative overflow-hidden p-5 sm:p-6">
-                    <div className="pointer-events-none absolute inset-0">
-                      <div className="absolute -top-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-indigo-500/10 blur-3xl" />
-                      <div className="absolute -bottom-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
-                    </div>
-
-                    <div className="relative">
-                      <div className="mb-3">
-                        <div className="text-xs text-slate-400">Faza grupowa</div>
-                        <div className="mt-1 text-lg font-semibold text-slate-100">{groupTitle}</div>
+                  return (
+                    <Card key={g.group_id} className="relative overflow-hidden p-5 sm:p-6">
+                      <div className="pointer-events-none absolute inset-0">
+                        <div className="absolute -top-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-indigo-500/10 blur-3xl" />
+                        <div className="absolute -bottom-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
                       </div>
 
-                      <StandingsTable rows={g.table} matchesForForm={groupMatches} isTennis={isTennis} showTennisPoints={showTennisPoints} />
-                    </div>
-                  </Card>
-                );
-              })}
-            </div>
-          ) : hasLeagueTable ? (
+                      <div className="relative">
+                        <div className="mb-3">
+                          <div className="text-xs text-slate-400">Faza grupowa</div>
+                          <div className="mt-1 text-lg font-semibold text-slate-100">{groupTitle}</div>
+                        </div>
+
+                        <StandingsTable
+                          rows={g.table}
+                          matchesForForm={groupMatches}
+                          isTennis={isTennis}
+                          showTennisPoints={showTennisPoints}
+                        />
+                      </div>
+                    </Card>
+                  );
+                })}
+              </div>
+            ) : hasLeagueTable ? (
+              <Card className="relative overflow-hidden p-5 sm:p-6">
+                <div className="pointer-events-none absolute inset-0">
+                  <div className="absolute -top-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-indigo-500/10 blur-3xl" />
+                  <div className="absolute -bottom-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
+                </div>
+
+                <div className="relative">
+                  <div className="mb-3">
+                    <div className="text-xs text-slate-400">Tabela</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-100">Klasyfikacja</div>
+                  </div>
+
+                  <StandingsTable
+                    rows={standings!.table!}
+                    matchesForForm={matches.filter((m) => m.stage_type === "LEAGUE")}
+                    isTennis={isTennis}
+                    showTennisPoints={showTennisPoints}
+                  />
+                </div>
+              </Card>
+            ) : showTableEmpty ? (
+              <InlineAlert variant="info">Brak danych tabeli.</InlineAlert>
+            ) : null}
+          </div>
+        ) : hasBracketData ? (
+          <div id="standings-panel-bracket" role="tabpanel" aria-labelledby="standings-tab-bracket">
             <Card className="relative overflow-hidden p-5 sm:p-6">
               <div className="pointer-events-none absolute inset-0">
                 <div className="absolute -top-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-indigo-500/10 blur-3xl" />
@@ -391,79 +466,73 @@ export default function TournamentStandings() {
               </div>
 
               <div className="relative">
-                <div className="mb-3">
-                  <div className="text-xs text-slate-400">Tabela</div>
-                  <div className="mt-1 text-lg font-semibold text-slate-100">Klasyfikacja</div>
+                <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs text-slate-400">Drabinka</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-100">Faza pucharowa</div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2" aria-label="Układ drabinki">
+                    <SmallToggle
+                      active={layoutMode === "STANDARD"}
+                      onClick={() => setLayoutMode("STANDARD")}
+                      icon={<LayoutGrid className="h-4 w-4 text-white/70" />}
+                    >
+                      Standard
+                    </SmallToggle>
+                    <SmallToggle
+                      active={layoutMode === "CENTERED"}
+                      onClick={() => setLayoutMode("CENTERED")}
+                      icon={<Trophy className="h-4 w-4 text-amber-200" />}
+                    >
+                      Finał w środku
+                    </SmallToggle>
+                  </div>
                 </div>
 
-                <StandingsTable
-                  rows={standings!.table!}
-                  matchesForForm={matches.filter((m) => m.stage_type === "LEAGUE")}
-                  isTennis={isTennis}
-                  showTennisPoints={showTennisPoints}
-                />
+                {layoutMode === "STANDARD" ? (
+                  <StandardBracketView data={standings!.bracket!} discipline={discipline} />
+                ) : (
+                  <CenteredBracketView data={standings!.bracket!} discipline={discipline} />
+                )}
               </div>
             </Card>
-          ) : (
-            !isCup && <InlineAlert variant="info">Brak danych tabeli.</InlineAlert>
-          )
-        ) : hasBracketData ? (
-          <Card className="relative overflow-hidden p-5 sm:p-6">
-            <div className="pointer-events-none absolute inset-0">
-              <div className="absolute -top-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-indigo-500/10 blur-3xl" />
-              <div className="absolute -bottom-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
-            </div>
-
-            <div className="relative">
-              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="text-xs text-slate-400">Drabinka</div>
-                  <div className="mt-1 text-lg font-semibold text-slate-100">Faza pucharowa</div>
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                  <SmallToggle active={layoutMode === "STANDARD"} onClick={() => setLayoutMode("STANDARD")} icon={<LayoutGrid className="h-4 w-4 text-white/70" />}>
-                    Standard
-                  </SmallToggle>
-                  <SmallToggle active={layoutMode === "CENTERED"} onClick={() => setLayoutMode("CENTERED")} icon={<Trophy className="h-4 w-4 text-amber-200" />}>
-                    Finał w środku
-                  </SmallToggle>
-                </div>
-              </div>
-
-              {layoutMode === "STANDARD" ? (
-                <StandardBracketView data={standings!.bracket!} discipline={discipline} />
-              ) : (
-                <CenteredBracketView data={standings!.bracket!} discipline={discipline} />
-              )}
-            </div>
-          </Card>
+          </div>
         ) : (
-          <InlineAlert variant="info">Brak danych drabinki lub faza pucharowa jeszcze się nie rozpoczęła.</InlineAlert>
+          <InlineAlert variant="info">
+            Brak danych drabinki lub faza pucharowa jeszcze się nie rozpoczęła.
+          </InlineAlert>
         )}
       </motion.div>
     </div>
   );
 }
 
-/* =========================
-   UI helpers (lokalne)
-   ========================= */
+// ===== UI helpers (lokalne) =====
 
 function SegmentButton({
+  id,
+  panelId,
   active,
   onClick,
   icon,
   children,
 }: {
+  id: string;
+  panelId: string;
   active: boolean;
   onClick: () => void;
-  icon: React.ReactNode;
-  children: React.ReactNode;
+  icon: ReactNode;
+  children: ReactNode;
 }) {
   return (
     <button
+      id={id}
       type="button"
+      role="tab"
+      aria-selected={active}
+      aria-controls={panelId}
+      tabIndex={active ? 0 : -1}
       onClick={onClick}
       className={cn(
         "relative inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-sm font-semibold transition",
@@ -494,12 +563,13 @@ function SmallToggle({
 }: {
   active: boolean;
   onClick: () => void;
-  icon: React.ReactNode;
-  children: React.ReactNode;
+  icon: ReactNode;
+  children: ReactNode;
 }) {
   return (
     <button
       type="button"
+      aria-pressed={active}
       onClick={onClick}
       className={cn(
         "relative inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold transition",
@@ -524,9 +594,7 @@ function SmallToggle({
   );
 }
 
-/* =========================
-   Tabela (premium)
-   ========================= */
+// ===== Tabela =====
 
 function StandingsTable({
   rows,
@@ -539,10 +607,19 @@ function StandingsTable({
   isTennis: boolean;
   showTennisPoints: boolean;
 }) {
-  const minW = isTennis ? (showTennisPoints ? "min-w-[950px]" : "min-w-[900px]") : "min-w-[640px]";
+  const minW = isTennis
+    ? showTennisPoints
+      ? "min-w-[950px]"
+      : "min-w-[900px]"
+    : "min-w-[640px]";
 
   return (
-    <div className={cn("relative rounded-2xl border border-white/10 bg-black/10", "shadow-[0_10px_30px_rgba(0,0,0,0.25)]")}>
+    <div
+      className={cn(
+        "relative rounded-2xl border border-white/10 bg-black/10",
+        "shadow-[0_10px_30px_rgba(0,0,0,0.25)]"
+      )}
+    >
       <div className="max-h-[540px] overflow-auto">
         <table className={cn("w-full border-separate border-spacing-0", minW)}>
           <thead>
@@ -656,9 +733,10 @@ function StandingsTable({
   );
 }
 
-function ThSticky({ children, className }: { children: React.ReactNode; className?: string }) {
+function ThSticky({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <th
+      scope="col"
       className={cn(
         "sticky top-0 z-10 border-b border-white/10 bg-slate-950/85 backdrop-blur",
         "py-3 pl-3 pr-3",
@@ -672,7 +750,7 @@ function ThSticky({ children, className }: { children: React.ReactNode; classNam
 
 function FormDots({ form }: { form: FormResult[] }) {
   return (
-    <div className="flex gap-1.5">
+    <div className="flex gap-1.5" aria-label="Forma (ostatnie 5 meczów)">
       {form.map((f, idx) => (
         <span
           key={`${f}-${idx}`}
@@ -690,9 +768,7 @@ function FormDots({ form }: { form: FormResult[] }) {
   );
 }
 
-/* =========================
-   Drabinka (premium)
-   ========================= */
+// ===== Drabinka =====
 
 function StatusPill({ status }: { status: BracketDuelItem["status"] }) {
   const label = status === "IN_PROGRESS" ? "Na żywo" : status === "FINISHED" ? "Zakończony" : "Zaplanowany";
@@ -705,7 +781,7 @@ function StatusPill({ status }: { status: BracketDuelItem["status"] }) {
         status === "SCHEDULED" && "border-white/10 bg-white/5 text-slate-300"
       )}
     >
-      {status === "IN_PROGRESS" ? <span className="h-1.5 w-1.5 rounded-full bg-emerald-300 animate-pulse" /> : null}
+      {status === "IN_PROGRESS" ? <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-300" /> : null}
       {label}
     </span>
   );
@@ -729,7 +805,9 @@ function StandardBracketView({ data, discipline }: { data: BracketData; discipli
 
           {third_place ? (
             <div className="flex min-w-[280px] snap-start flex-col justify-center border-l border-dashed border-white/15 pl-6">
-              <div className="mb-3 text-center text-xs font-semibold uppercase tracking-wide text-amber-200">Mecz o 3. miejsce</div>
+              <div className="mb-3 text-center text-xs font-semibold uppercase tracking-wide text-amber-200">
+                Mecz o 3. miejsce
+              </div>
               <div className="flex justify-center">
                 <BracketMatchCard item={third_place} isThirdPlace discipline={discipline} />
               </div>
@@ -778,7 +856,9 @@ function CenteredBracketView({ data, discipline }: { data: BracketData; discipli
 
             {third_place ? (
               <div className="mt-8 opacity-90">
-                <div className="mb-2 text-center text-xs font-semibold uppercase tracking-wide text-amber-200">Mecz o 3. miejsce</div>
+                <div className="mb-2 text-center text-xs font-semibold uppercase tracking-wide text-amber-200">
+                  Mecz o 3. miejsce
+                </div>
                 <div className="flex justify-center">
                   <BracketMatchCard item={third_place} isThirdPlace discipline={discipline} />
                 </div>
@@ -819,8 +899,7 @@ function RoundColumn({
     <div className="flex min-w-[260px] flex-col">
       <div
         className={cn(
-          "mb-4 text-center text-xs font-semibold uppercase tracking-wide",
-          "rounded-full border px-3 py-2",
+          "mb-4 rounded-full border px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide",
           highlight
             ? "border-amber-400/30 bg-amber-500/10 text-amber-200"
             : "border-white/10 bg-white/[0.04] text-slate-300"
@@ -852,8 +931,12 @@ function BracketMatchCard({
   const homeWin = item.winner_id !== null && item.winner_id === item.home_team_id;
   const awayWin = item.winner_id !== null && item.winner_id === item.away_team_id;
 
-  const aggHome = item.is_two_legged ? (item.aggregate_home ?? ((item.score_leg1_home ?? 0) + (item.score_leg2_home ?? 0))) : null;
-  const aggAway = item.is_two_legged ? (item.aggregate_away ?? ((item.score_leg1_away ?? 0) + (item.score_leg2_away ?? 0))) : null;
+  const aggHome = item.is_two_legged
+    ? item.aggregate_home ?? (item.score_leg1_home ?? 0) + (item.score_leg2_home ?? 0)
+    : null;
+  const aggAway = item.is_two_legged
+    ? item.aggregate_away ?? (item.score_leg1_away ?? 0) + (item.score_leg2_away ?? 0)
+    : null;
 
   const canShowDetails = item.status !== "SCHEDULED";
 
@@ -917,7 +1000,8 @@ function BracketMatchCard({
 
           {item.is_two_legged && (tennisLeg1 || tennisLeg2) ? (
             <div>
-              <span className="font-semibold text-slate-200">Sety (gemy):</span> {tennisLeg1 ? tennisLeg1 : "-"} {" | "} {tennisLeg2 ? tennisLeg2 : "-"}
+              <span className="font-semibold text-slate-200">Sety (gemy):</span>{" "}
+              {tennisLeg1 ? tennisLeg1 : "-"} {" | "} {tennisLeg2 ? tennisLeg2 : "-"}
             </div>
           ) : null}
 
@@ -932,7 +1016,15 @@ function BracketMatchCard({
   );
 }
 
-function ScoreBox({ score, isAgg, highlight }: { score: number | null | undefined; isAgg: boolean; highlight?: boolean }) {
+function ScoreBox({
+  score,
+  isAgg,
+  highlight,
+}: {
+  score: number | null | undefined;
+  isAgg: boolean;
+  highlight?: boolean;
+}) {
   return (
     <span
       className={cn(
@@ -947,10 +1039,3 @@ function ScoreBox({ score, isAgg, highlight }: { score: number | null | undefine
     </span>
   );
 }
-
-/*
-Co zmieniono:
-- Dodano "premium" UI: animowane przełączniki, sticky nagłówki tabel i scroll w obrębie karty.
-- Drabinka ma snap scroll, fade na krawędziach i statusy (LIVE) na kartach.
-- Logika biznesowa pozostała identyczna: pobieranie danych, TENNIS/PLT, grupy, agregaty, karne, sety.
-*/

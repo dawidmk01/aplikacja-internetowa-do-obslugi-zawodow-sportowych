@@ -1,7 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { apiFetch } from "../../api";
 import { cn } from "../../lib/cn";
+
+import { Button } from "../../ui/Button";
+import { Card } from "../../ui/Card";
+import { InlineAlert } from "../../ui/InlineAlert";
+import { Portal } from "../../ui/Portal";
+import { Select, type SelectOption } from "../../ui/Select";
 
 import {
   BreakMode,
@@ -14,6 +20,10 @@ import {
   periodBaseOffsetSeconds,
   periodLimitSeconds,
   periodOptions,
+  readBreakMode,
+  readBreakStartedAt,
+  writeBreakMode,
+  writeBreakStartedAt,
   type ClockPeriod,
   type MatchClockDTO,
   type MatchStatus,
@@ -35,13 +45,21 @@ export type ClockMeta = {
   timeOverLimit: boolean;
 };
 
-type PendingConfirm = {
-  kind: "FINISH_FORCE";
-  title: string;
-  detail: string;
-  delete_count?: number;
-  delete_ids?: number[];
-};
+type PendingConfirm =
+  | {
+      kind: "FINISH_FORCE";
+      title: string;
+      detail: string;
+      confirmLabel: string;
+      delete_count?: number;
+      delete_ids?: number[];
+    }
+  | {
+      kind: "RESET_CLOCK";
+      title: string;
+      detail: string;
+      confirmLabel: string;
+    };
 
 type Props = {
   matchId: number;
@@ -61,6 +79,7 @@ type Props = {
   onRequestIncidentsReload?: () => void;
 };
 
+/** ClockPanel odpowiada za sterowanie zegarem i publikuje `ClockMeta` jako kontrakt dla reszty widoku live. */
 export function ClockPanel({
   matchId,
   matchStatus,
@@ -77,13 +96,7 @@ export function ClockPanel({
   const [clockTick, setClockTick] = useState(0);
   const [breakTick, setBreakTick] = useState(0);
 
-  const [breakMode, setBreakMode] = useState<BreakModeT>(() => {
-    try {
-      return (localStorage.getItem(`matchBreak:${matchId}:mode`) as BreakModeT) || BreakMode.NONE;
-    } catch {
-      return BreakMode.NONE;
-    }
-  });
+  const [breakMode, setBreakMode] = useState<BreakModeT>(() => readBreakMode(matchId));
 
   const [loading, setLoading] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -92,86 +105,70 @@ export function ClockPanel({
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [pendingConfirmBusy, setPendingConfirmBusy] = useState(false);
 
-  // localStorage helpers
-  const readBreakStartedAt = () => {
-    try {
-      const raw = localStorage.getItem(`matchBreak:${matchId}:startedAt`);
-      if (!raw) return null;
-      const n = Number(raw);
-      return Number.isFinite(n) && n > 0 ? n : null;
-    } catch {
-      return null;
-    }
-  };
+  useEffect(() => {
+    setBreakMode(readBreakMode(matchId));
+    setPendingConfirm(null);
+    setError(null);
+  }, [matchId]);
 
-  const writeBreakMode = (mode: BreakModeT) => {
-    try {
-      localStorage.setItem(`matchBreak:${matchId}:mode`, mode);
-    } catch {
-      // ignore
-    }
-  };
+  const clockUrl = useCallback((suffix: string) => `/api/matches/${matchId}/clock/${suffix}`, [matchId]);
 
-  const writeBreakStartedAt = (tsMs: number | null) => {
-    try {
-      if (!tsMs) localStorage.removeItem(`matchBreak:${matchId}:startedAt`);
-      else localStorage.setItem(`matchBreak:${matchId}:startedAt`, String(tsMs));
-    } catch {
-      // ignore
-    }
-  };
-
-  const clockUrl = (suffix: string) => `/api/matches/${matchId}/clock/${suffix}`;
-
-  const loadClock = async () => {
+  const loadClock = useCallback(async () => {
     setError(null);
     setLoading(true);
+
     try {
-      const res = await apiFetch(`/api/matches/${matchId}/clock/`);
+      const res = await apiFetch(`/api/matches/${matchId}/clock/`, { toastOnError: false } as any);
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.detail || "Nie udało się pobrać zegara.");
+
       setClock(data);
 
-      // gdy gra RUNNING, nie chcemy wiszącego stanu przerwy w UI
       if (data?.clock_state === "RUNNING") {
         clearBreak(matchId);
         setBreakMode(BreakMode.NONE);
       }
     } catch (e: any) {
       setError(e?.message ?? "Błąd pobierania zegara.");
+      setClock(null);
     } finally {
       setLoading(false);
     }
-  };
+  }, [matchId]);
 
-  const postClock = async (suffix: string, body?: any) => {
-    setError(null);
-    setLoading(true);
-    try {
-      const method = body ? (suffix === "period/" || suffix === "added-seconds/" ? "PATCH" : "POST") : "POST";
-      const res = await apiFetch(clockUrl(suffix), {
-        method,
-        headers: body ? { "Content-Type": "application/json" } : undefined,
-        body: body ? JSON.stringify(body) : undefined,
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.detail || "Operacja zegara nie powiodła się.");
-      setClock(data);
-      return data as MatchClockDTO;
-    } catch (e: any) {
-      setError(e?.message ?? "Błąd operacji zegara.");
-      throw e;
-    } finally {
-      setLoading(false);
-    }
-  };
+  const postClock = useCallback(
+    async (suffix: string, body?: any) => {
+      setError(null);
+      setLoading(true);
+
+      try {
+        const method = body ? (suffix === "period/" || suffix === "added-seconds/" ? "PATCH" : "POST") : "POST";
+        const res = await apiFetch(clockUrl(suffix), {
+          method,
+          headers: body ? { "Content-Type": "application/json" } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+          toastOnError: false,
+        } as any);
+
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.detail || "Operacja zegara nie powiodła się.");
+
+        setClock(data);
+        return data as MatchClockDTO;
+      } catch (e: any) {
+        setError(e?.message ?? "Błąd operacji zegara.");
+        throw e;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [clockUrl]
+  );
 
   useEffect(() => {
     loadClock();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [matchId, reloadToken]);
+  }, [loadClock, reloadToken]);
 
-  // lokalny tick tylko do wyświetlania mm:ss
   useEffect(() => {
     if (!clock || clock.clock_state !== "RUNNING") return;
     const t = window.setInterval(() => setClockTick((x) => x + 1), 250);
@@ -186,7 +183,8 @@ export function ClockPanel({
         ? clock.seconds_total
         : Math.max(0, Number(clock.clock_elapsed_seconds || 0) + Number(clock.clock_added_seconds || 0));
 
-    const snapInPeriod = typeof clock.seconds_in_period === "number" ? Math.max(0, Number(clock.seconds_in_period || 0)) : snapTotal;
+    const snapInPeriod =
+      typeof clock.seconds_in_period === "number" ? Math.max(0, Number(clock.seconds_in_period || 0)) : snapTotal;
 
     if (clock.clock_state !== "RUNNING") return snapInPeriod;
     if (!clock.server_time) return snapInPeriod;
@@ -199,8 +197,8 @@ export function ClockPanel({
   }, [clock, clockTick]);
 
   const baseOffsetSeconds = useMemo(() => {
-    const p = clock?.clock_period || "NONE";
-    return periodBaseOffsetSeconds(discipline, p as ClockPeriod);
+    const p = (clock?.clock_period || "NONE") as ClockPeriod;
+    return periodBaseOffsetSeconds(discipline, p);
   }, [clock?.clock_period, discipline]);
 
   const matchDisplaySeconds = useMemo(() => {
@@ -210,13 +208,15 @@ export function ClockPanel({
   const commentaryMinute = useMemo(() => Math.max(0, Math.floor(matchDisplaySeconds / 60)), [matchDisplaySeconds]);
 
   const isBreakFromBackend = Boolean(clock?.is_break || clock?.write_locked);
-  const localStarted = readBreakStartedAt();
-  const localBreakSeconds = breakMode !== BreakMode.NONE && localStarted ? Math.max(0, Math.floor((Date.now() - localStarted) / 1000)) : 0;
+  const localStartedAt = readBreakStartedAt(matchId);
+  const localBreakSeconds =
+    breakMode !== BreakMode.NONE && localStartedAt ? Math.max(0, Math.floor((Date.now() - localStartedAt) / 1000)) : 0;
 
   const breakSeconds = typeof clock?.break_seconds === "number" ? clock.break_seconds : localBreakSeconds;
   const breakLevel = clock?.break_level ? clock.break_level : computeBreakLevel(breakSeconds);
 
-  const showBreakTimer = (isBreakFromBackend && clock?.clock_state === "PAUSED") || (breakMode !== BreakMode.NONE && !!localStarted);
+  const showBreakTimer =
+    (isBreakFromBackend && clock?.clock_state === "PAUSED") || (breakMode !== BreakMode.NONE && !!localStartedAt);
 
   useEffect(() => {
     if (!showBreakTimer) return;
@@ -292,7 +292,7 @@ export function ClockPanel({
     return "W trakcie";
   }, [clock, breakMode, discipline, scoreContext]);
 
-  const handlePrimary = async () => {
+  const handlePrimary = useCallback(async () => {
     if (!canEdit) return;
 
     if (!clock) {
@@ -331,41 +331,51 @@ export function ClockPanel({
       setBreakMode(BreakMode.NONE);
       await postClock("resume/");
     }
-  };
+  }, [breakMode, canEdit, clock, discipline, loadClock, matchId, onEnterExtraTime, postClock, scoreContext]);
 
-  const handleIntermissionBreak = async () => {
+  const setLocalBreak = useCallback(
+    (mode: BreakModeT) => {
+      writeBreakMode(matchId, mode);
+      writeBreakStartedAt(matchId, Date.now());
+      setBreakMode(mode);
+    },
+    [matchId]
+  );
+
+  const handleIntermissionBreak = useCallback(async () => {
     if (!canEdit) return;
-
-    writeBreakMode(BreakMode.INTERMISSION);
-    writeBreakStartedAt(Date.now());
-    setBreakMode(BreakMode.INTERMISSION);
+    setLocalBreak(BreakMode.INTERMISSION);
     await postClock("pause/", { break: true });
-  };
+  }, [canEdit, postClock, setLocalBreak]);
 
-  const handleTechPause = async () => {
+  const handleTechPause = useCallback(async () => {
     if (!canEdit) return;
-
-    writeBreakMode(BreakMode.TECH);
-    writeBreakStartedAt(Date.now());
-    setBreakMode(BreakMode.TECH);
+    setLocalBreak(BreakMode.TECH);
     await postClock("pause/", { break: false });
-  };
+  }, [canEdit, postClock, setLocalBreak]);
 
-  const handleReset = async () => {
+  // Potwierdzenia muszą być realizowane w UI, bez zależności od confirm().
+  const openResetConfirm = useCallback(() => {
     if (!clock) return;
+    setPendingConfirm({
+      kind: "RESET_CLOCK",
+      title: "Reset zegara",
+      detail:
+        "Reset zresetuje zegar bieżącego okresu do jego początku (bez ingerencji w incydenty i wynik). Kontynuować?",
+      confirmLabel: "Resetuj",
+    });
+  }, [clock]);
 
-    const ok = window.confirm(
-      "To zresetuje zegar bieżącego okresu do jego początku (bez ingerencji w incydenty i wynik). Kontynuować?"
-    );
-    if (!ok) return;
+  const runReset = useCallback(async () => {
+    if (!clock) return;
 
     setResetting(true);
     try {
       clearBreak(matchId);
       setBreakMode(BreakMode.NONE);
 
-      const currentPeriod =
-        clock.clock_period && clock.clock_period !== "NONE" ? clock.clock_period : periodOptions(discipline)[0]?.value || "NONE";
+      const periodFallback = periodOptions(discipline)[0]?.value || "NONE";
+      const currentPeriod = clock.clock_period && clock.clock_period !== "NONE" ? clock.clock_period : periodFallback;
 
       await postClock("period/", { period: currentPeriod });
       await loadClock();
@@ -374,53 +384,53 @@ export function ClockPanel({
     } finally {
       setResetting(false);
     }
-  };
+  }, [clock, discipline, loadClock, matchId, postClock]);
 
-  const runFinish = async (force: boolean) => {
-    setLoading(true);
-    setError(null);
+  const runFinish = useCallback(
+    async (force: boolean) => {
+      setLoading(true);
+      setError(null);
 
-    try {
-      const url = force ? `/api/matches/${matchId}/finish/?force=1` : `/api/matches/${matchId}/finish/`;
-      const res = await apiFetch(url, { method: "POST" });
-      const data: any = await res.json().catch(() => ({}));
+      try {
+        const url = force ? `/api/matches/${matchId}/finish/?force=1` : `/api/matches/${matchId}/finish/`;
+        const res = await apiFetch(url, { method: "POST", toastOnError: false } as any);
+        const data: any = await res.json().catch(() => ({}));
 
-      if (res.status === 409 && !force && data?.code === "SCORE_SYNC_CONFIRM_REQUIRED") {
-        setPendingConfirm({
-          kind: "FINISH_FORCE",
-          title: "Potwierdź zakończenie meczu",
-          detail: String(data?.detail || "Zmiana wyniku wymaga usunięcia części istniejących incydentów GOAL."),
-          delete_count: Number(data?.delete_count || 0),
-          delete_ids: Array.isArray(data?.delete_ids) ? data.delete_ids : undefined,
-        });
-        return;
+        if (res.status === 409 && !force && data?.code === "SCORE_SYNC_CONFIRM_REQUIRED") {
+          setPendingConfirm({
+            kind: "FINISH_FORCE",
+            title: "Potwierdź zakończenie meczu",
+            detail: String(data?.detail || "Zmiana wyniku wymaga usunięcia części istniejących incydentów GOAL."),
+            confirmLabel: "Skoryguj i zakończ",
+            delete_count: Number(data?.delete_count || 0),
+            delete_ids: Array.isArray(data?.delete_ids) ? data.delete_ids : undefined,
+          });
+          return;
+        }
+
+        if (!res.ok) throw new Error(String(data?.detail || "Nie udało się zakończyć meczu."));
+
+        clearBreak(matchId);
+        setBreakMode(BreakMode.NONE);
+
+        await onAfterRecompute?.();
+        await loadClock();
+        onRequestIncidentsReload?.();
+      } catch (e: any) {
+        setError(e?.message ?? "Błąd zakończenia meczu.");
+      } finally {
+        setLoading(false);
       }
+    },
+    [loadClock, matchId, onAfterRecompute, onRequestIncidentsReload]
+  );
 
-      if (!res.ok) throw new Error(String(data?.detail || "Nie udało się zakończyć meczu."));
-
-      clearBreak(matchId);
-      setBreakMode(BreakMode.NONE);
-
-      await onAfterRecompute?.();
-      await loadClock();
-      onRequestIncidentsReload?.();
-    } catch (e: any) {
-      setError(e?.message ?? "Błąd zakończenia meczu.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleFinish = async () => {
+  const handleFinish = useCallback(async () => {
     await runFinish(false);
-  };
+  }, [runFinish]);
 
   const headerBg =
-    matchStatus === "FINISHED"
-      ? "bg-sky-500/10"
-      : inProgress
-      ? "bg-emerald-500/10"
-      : "bg-white/[0.02]";
+    matchStatus === "FINISHED" ? "bg-sky-500/10" : inProgress ? "bg-emerald-500/10" : "bg-white/[0.02]";
 
   const breakBadgeClasses = useMemo(() => {
     if (!showBreakTimer) return "";
@@ -435,70 +445,99 @@ export function ClockPanel({
   }, [timeOverLimit, clock?.cap_reached]);
 
   const periodOpts = useMemo(() => periodOptions(discipline), [discipline]);
+  const periodSelectOptions = useMemo<SelectOption<ClockPeriod>[]>(() => {
+    return periodOpts.map((o) => ({ value: o.value as ClockPeriod, label: o.label }));
+  }, [periodOpts]);
 
-  const canShowPeriodSelect = periodOpts.length > 0;
+  const canShowPeriodSelect = periodSelectOptions.length > 0;
+  const disableActions = !canEdit || loading;
+
+  const selectedPeriod = (clock?.clock_period || periodSelectOptions[0]?.value || "NONE") as ClockPeriod;
+
+  const handlePeriodChange = useCallback(
+    async (p: ClockPeriod) => {
+      if (!canEdit) return;
+      try {
+        await postClock("period/", { period: p });
+        await loadClock();
+      } catch {
+        // Błąd jest obsłużony w postClock.
+      }
+    },
+    [canEdit, loadClock, postClock]
+  );
 
   return (
-    <div className={cn("rounded-2xl border border-white/10 p-4", headerBg)}>
-      {pendingConfirm && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-[560px] rounded-2xl border border-white/10 bg-slate-950 p-4 shadow-2xl">
-            <div className="text-base font-extrabold text-white">{pendingConfirm.title}</div>
-            <div className="mt-2 text-sm leading-6 text-slate-200">{pendingConfirm.detail}</div>
+    <Card className={cn("p-4", headerBg)}>
+      {pendingConfirm ? (
+        <Portal>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="w-full max-w-[560px]">
+              <Card className="p-4 shadow-2xl">
+                <div className="text-base font-extrabold text-white">{pendingConfirm.title}</div>
+                <div className="mt-2 text-sm leading-6 text-slate-200">{pendingConfirm.detail}</div>
 
-            {typeof pendingConfirm.delete_count === "number" && (
-              <div className="mt-3 text-sm text-slate-200">
-                Do usunięcia: <span className="font-bold text-white">{pendingConfirm.delete_count}</span> incydentów GOAL.
-              </div>
-            )}
+                {"delete_count" in pendingConfirm && typeof pendingConfirm.delete_count === "number" ? (
+                  <div className="mt-3 text-sm text-slate-200">
+                    Do usunięcia: <span className="font-bold text-white">{pendingConfirm.delete_count}</span> incydentów GOAL.
+                  </div>
+                ) : null}
 
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                className={cn(
-                  "rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-white",
-                  pendingConfirmBusy && "opacity-60"
-                )}
-                onClick={() => (pendingConfirmBusy ? null : setPendingConfirm(null))}
-                disabled={pendingConfirmBusy}
-              >
-                Anuluj
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  "rounded-xl border border-white/10 bg-white/10 px-3 py-2 text-sm font-semibold text-white",
-                  pendingConfirmBusy && "opacity-60"
-                )}
-                onClick={async () => {
-                  if (pendingConfirmBusy) return;
-                  setPendingConfirmBusy(true);
-                  try {
-                    if (pendingConfirm.kind === "FINISH_FORCE") await runFinish(true);
-                    setPendingConfirm(null);
-                  } finally {
-                    setPendingConfirmBusy(false);
-                  }
-                }}
-                disabled={pendingConfirmBusy}
-              >
-                Skoryguj i zakończ
-              </button>
+                <div className="mt-4 flex items-center justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => (pendingConfirmBusy ? null : setPendingConfirm(null))}
+                    disabled={pendingConfirmBusy}
+                  >
+                    Anuluj
+                  </Button>
+
+                  <Button
+                    type="button"
+                    variant="primary"
+                    onClick={async () => {
+                      if (pendingConfirmBusy) return;
+
+                      setPendingConfirmBusy(true);
+                      try {
+                        if (pendingConfirm.kind === "FINISH_FORCE") {
+                          await runFinish(true);
+                        }
+                        if (pendingConfirm.kind === "RESET_CLOCK") {
+                          await runReset();
+                        }
+                        setPendingConfirm(null);
+                      } finally {
+                        setPendingConfirmBusy(false);
+                      }
+                    }}
+                    disabled={pendingConfirmBusy}
+                  >
+                    {pendingConfirm.confirmLabel}
+                  </Button>
+                </div>
+              </Card>
             </div>
           </div>
-        </div>
-      )}
+        </Portal>
+      ) : null}
 
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="text-base font-extrabold text-white">Zegar</div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {showBreakTimer && (
-              <span className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs text-white", breakBadgeClasses)}>
+            {showBreakTimer ? (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs text-white",
+                  breakBadgeClasses
+                )}
+              >
                 Przerwa: <span className="font-bold">{formatClock(breakSeconds)}</span>
               </span>
-            )}
+            ) : null}
 
             <span className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs text-white", timeBadgeClasses)}>
               Czas meczu: <span className="font-bold">{formatClock(matchDisplaySeconds)}</span>
@@ -507,111 +546,69 @@ export function ClockPanel({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            className={cn(
-              "rounded-xl border border-white/10 bg-emerald-500/15 px-3 py-2 text-sm font-semibold text-white",
-              (!canEdit || loading) && "opacity-60"
-            )}
-            onClick={handlePrimary}
-            disabled={!canEdit || loading}
-          >
+          <Button type="button" variant="primary" onClick={handlePrimary} disabled={disableActions}>
             {primaryLabel}
-          </button>
+          </Button>
 
-          <button
+          <Button
             type="button"
-            className={cn(
-              "rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-white",
-              (!canEdit || loading) && "opacity-60"
-            )}
+            variant="secondary"
             onClick={handleIntermissionBreak}
-            disabled={!canEdit || loading || !clock || clock.clock_state !== "RUNNING"}
+            disabled={disableActions || !clock || clock.clock_state !== "RUNNING"}
           >
             Przerwa
-          </button>
+          </Button>
 
-          <button
+          <Button
             type="button"
-            className={cn(
-              "rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-white",
-              (!canEdit || loading) && "opacity-60"
-            )}
+            variant="secondary"
             onClick={handleTechPause}
-            disabled={!canEdit || loading || !clock || clock.clock_state !== "RUNNING"}
+            disabled={disableActions || !clock || clock.clock_state !== "RUNNING"}
           >
             Pauza techniczna
-          </button>
+          </Button>
 
-          <button
+          <Button
             type="button"
-            className={cn(
-              "rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-white",
-              (!canEdit || resetting || loading) && "opacity-60"
-            )}
-            onClick={handleReset}
-            disabled={!canEdit || resetting || loading || !clock}
+            variant="secondary"
+            onClick={openResetConfirm}
+            disabled={disableActions || resetting || !clock}
           >
             Resetuj zegar
-          </button>
+          </Button>
 
-          <button
-            type="button"
-            className={cn(
-              "rounded-xl border border-white/10 bg-red-500/15 px-3 py-2 text-sm font-semibold text-white",
-              (!canEdit || loading) && "opacity-60"
-            )}
-            onClick={handleFinish}
-            disabled={!canEdit || loading}
-          >
+          <Button type="button" variant="danger" onClick={handleFinish} disabled={disableActions}>
             Zakończ mecz
-          </button>
+          </Button>
 
-          <button
-            type="button"
-            className={cn("rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-white", loading && "opacity-60")}
-            onClick={loadClock}
-            disabled={loading}
-          >
+          <Button type="button" variant="ghost" onClick={loadClock} disabled={loading}>
             Odśwież
-          </button>
+          </Button>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          {canShowPeriodSelect && (
-            <label className="flex items-center gap-2 text-sm text-slate-200">
-              Okres gry:
-              <select
-                className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none"
-                value={clock?.clock_period || periodOpts[0]?.value || "NONE"}
-                onChange={async (e) => {
-                  if (!canEdit) return;
-                  const p = e.target.value as ClockPeriod;
-                  try {
-                    await postClock("period/", { period: p });
-                    await loadClock();
-                  } catch {
-                    // error handled in postClock
-                  }
-                }}
-                disabled={!canEdit || loading}
-              >
-                {periodOpts.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
+          {canShowPeriodSelect ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="text-sm text-slate-200">Okres gry:</div>
+              <div className="min-w-[220px]">
+                <Select<ClockPeriod>
+                  value={selectedPeriod}
+                  onChange={handlePeriodChange}
+                  options={periodSelectOptions}
+                  disabled={!canEdit || loading}
+                  ariaLabel="Okres gry"
+                />
+              </div>
+            </div>
+          ) : null}
 
-          <div className="text-xs text-slate-300">
+          <div className="min-w-0 text-xs text-slate-300">
             {clock ? (
               <>
                 Stan: <span className="font-semibold text-white">{clock.clock_state}</span>
                 {clock.clock_period && clock.clock_period !== "NONE" ? (
                   <>
-                    {" "}- okres: <span className="font-semibold text-white">{clock.clock_period}</span>
+                    {" "} - okres: <span className="font-semibold text-white">{clock.clock_period}</span>
                   </>
                 ) : null}
               </>
@@ -621,8 +618,19 @@ export function ClockPanel({
           </div>
         </div>
 
-        {error && <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{error}</div>}
+        {error ? (
+          <div className="mt-1 space-y-2">
+            <InlineAlert variant="error" title="Błąd">
+              {error}
+            </InlineAlert>
+            <div className="flex justify-end">
+              <Button type="button" variant="ghost" onClick={() => setError(null)}>
+                Zamknij
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </div>
-    </div>
+    </Card>
   );
 }

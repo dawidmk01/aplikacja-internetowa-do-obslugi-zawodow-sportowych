@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { AlertTriangle, ArrowRight, Eye, EyeOff, KeyRound, Loader2, Lock } from "lucide-react";
@@ -9,9 +9,9 @@ import { cn } from "../lib/cn";
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { InlineAlert } from "../ui/InlineAlert";
-import { toast } from "../ui/Toast";
+import { Input } from "../ui/Input";
 
-/** Pobiera pierwszy komunikat błędu z typowych odpowiedzi DRF. */
+/** Normalizuje odpowiedzi DRF do pojedynczego komunikatu, aby formularz mógł wyświetlić spójny błąd. */
 function pickFirstError(data: any): string | null {
   if (!data) return null;
   if (typeof data === "string") return data;
@@ -22,6 +22,7 @@ function pickFirstError(data: any): string | null {
     if (typeof v === "string" && v) return v;
     if (Array.isArray(v) && v.length) return String(v[0]);
   }
+
   return null;
 }
 
@@ -40,6 +41,14 @@ export default function ResetPassword() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  const redirectTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (redirectTimerRef.current) window.clearTimeout(redirectTimerRef.current);
+    };
+  }, []);
 
   const validate = (): string | null => {
     if (password.length < 8) return "Hasło musi mieć co najmniej 8 znaków.";
@@ -69,7 +78,6 @@ export default function ResetPassword() {
       const res = await apiFetch("/api/auth/password-reset/confirm/", {
         method: "POST",
         body: JSON.stringify({ token, new_password: password }),
-        // Komunikaty HTTP są prezentowane w formularzu (InlineAlert).
         toastOnError: false,
       });
 
@@ -84,28 +92,29 @@ export default function ResetPassword() {
       setPassword("");
       setConfirmPassword("");
 
-      window.setTimeout(() => navigate("/login"), 800);
+      redirectTimerRef.current = window.setTimeout(() => navigate("/login"), 800);
     } catch {
-      // Błąd sieciowy jest prezentowany globalnie jako toast.
-      toast.error("Brak połączenia z serwerem. Spróbuj ponownie.", { title: "Sieć" });
+      setError("Brak połączenia z serwerem. Spróbuj ponownie.");
     } finally {
       setLoading(false);
     }
   };
 
+  const inputBase = cn(
+    "pl-10 pr-10 py-2.5",
+    "rounded-2xl bg-white/[0.04]",
+    "text-white placeholder:text-slate-500"
+  );
+
   if (!token) {
     return (
       <div className="mx-auto max-w-md py-8 sm:py-10">
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.25, ease: "easeOut" }}
-        >
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, ease: "easeOut" }}>
           <Card className="p-6 sm:p-7">
             <div className="flex items-start justify-between gap-4">
-              <div>
+              <div className="min-w-0">
                 <h1 className="mt-1 text-2xl font-semibold text-white">Brak tokenu</h1>
-                <p className="mt-2 text-sm text-slate-300 leading-relaxed">
+                <p className="mt-2 text-sm text-slate-300 leading-relaxed break-words">
                   Link do resetu hasła jest nieprawidłowy albo wygasł. Wygeneruj nowy link resetu.
                 </p>
               </div>
@@ -116,11 +125,14 @@ export default function ResetPassword() {
             </div>
 
             <div className="mt-5 flex flex-wrap gap-3">
-              <Link to="/forgot-password">
-                <Button variant="secondary" rightIcon={<ArrowRight className="h-4 w-4" />}>
-                  Wygeneruj nowy link
-                </Button>
-              </Link>
+              <Button
+                type="button"
+                variant="secondary"
+                rightIcon={<ArrowRight className="h-4 w-4" />}
+                onClick={() => navigate("/forgot-password")}
+              >
+                Wygeneruj nowy link
+              </Button>
 
               <Link
                 to="/login"
@@ -137,16 +149,12 @@ export default function ResetPassword() {
 
   return (
     <div className="mx-auto max-w-md py-8 sm:py-10">
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.25, ease: "easeOut" }}
-      >
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, ease: "easeOut" }}>
         <Card className="p-6 sm:p-7">
           <div className="flex items-start justify-between gap-4">
-            <div>
+            <div className="min-w-0">
               <h1 className="mt-1 text-2xl font-semibold text-white">Ustaw nowe hasło</h1>
-              <p className="mt-2 text-sm text-slate-300 leading-relaxed">
+              <p className="mt-2 text-sm text-slate-300 leading-relaxed break-words">
                 Wprowadź nowe hasło i potwierdź je. Po zapisaniu nastąpi przekierowanie do logowania.
               </p>
             </div>
@@ -156,25 +164,24 @@ export default function ResetPassword() {
             </div>
           </div>
 
-          {(error || success) && (
+          {(error || success) ? (
             <div className="mt-4 space-y-2">
-              {error && <InlineAlert variant="error">{error}</InlineAlert>}
-              {success && <InlineAlert variant="success">{success}</InlineAlert>}
+              {error ? <InlineAlert variant="error">{error}</InlineAlert> : null}
+              {success ? <InlineAlert variant="success">{success}</InlineAlert> : null}
             </div>
-          )}
+          ) : null}
 
           <form onSubmit={submit} className="mt-5 space-y-4">
             <div>
-              <label className="text-sm font-medium text-slate-200">Nowe hasło</label>
+              <label htmlFor="reset_pw_1" className="text-sm font-medium text-slate-200">
+                Nowe hasło
+              </label>
               <div className="mt-2 relative">
-                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input
+                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                <Input
+                  id="reset_pw_1"
                   type={showPw ? "text" : "password"}
-                  className={cn(
-                    "w-full rounded-2xl border border-white/10 bg-white/[0.04] pl-10 pr-10 py-2.5 text-sm text-white",
-                    "placeholder:text-slate-500",
-                    "focus:outline-none focus:ring-4 focus:ring-white/10 focus:border-white/15"
-                  )}
+                  className={inputBase}
                   value={password}
                   required
                   autoComplete="new-password"
@@ -184,28 +191,29 @@ export default function ResetPassword() {
                 <button
                   type="button"
                   onClick={() => setShowPw((v) => !v)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-xl p-2 text-slate-300 hover:bg-white/5 hover:text-white"
+                  className={cn(
+                    "absolute right-2 top-1/2 -translate-y-1/2 rounded-xl p-2",
+                    "text-slate-300 hover:bg-white/5 hover:text-white",
+                    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+                  )}
                   aria-label={showPw ? "Ukryj hasło" : "Pokaż hasło"}
                 >
                   {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
-              <div className="mt-2 text-xs text-slate-400">
-                Zalecenie: użyj dłuższego hasła i unikaj oczywistych fraz.
-              </div>
+              <div className="mt-2 text-xs text-slate-400">Zalecenie: użyj dłuższego hasła i unikaj oczywistych fraz.</div>
             </div>
 
             <div>
-              <label className="text-sm font-medium text-slate-200">Powtórz hasło</label>
+              <label htmlFor="reset_pw_2" className="text-sm font-medium text-slate-200">
+                Powtórz hasło
+              </label>
               <div className="mt-2 relative">
-                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input
+                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                <Input
+                  id="reset_pw_2"
                   type={showPw2 ? "text" : "password"}
-                  className={cn(
-                    "w-full rounded-2xl border border-white/10 bg-white/[0.04] pl-10 pr-10 py-2.5 text-sm text-white",
-                    "placeholder:text-slate-500",
-                    "focus:outline-none focus:ring-4 focus:ring-white/10 focus:border-white/15"
-                  )}
+                  className={inputBase}
                   value={confirmPassword}
                   required
                   autoComplete="new-password"
@@ -215,7 +223,11 @@ export default function ResetPassword() {
                 <button
                   type="button"
                   onClick={() => setShowPw2((v) => !v)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-xl p-2 text-slate-300 hover:bg-white/5 hover:text-white"
+                  className={cn(
+                    "absolute right-2 top-1/2 -translate-y-1/2 rounded-xl p-2",
+                    "text-slate-300 hover:bg-white/5 hover:text-white",
+                    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+                  )}
                   aria-label={showPw2 ? "Ukryj hasło" : "Pokaż hasło"}
                 >
                   {showPw2 ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -223,32 +235,22 @@ export default function ResetPassword() {
               </div>
             </div>
 
-            <Button variant="secondary" className="w-full justify-center" disabled={loading}>
-              {loading ? (
-                <span className="inline-flex items-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Zapisywanie…
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-2">
-                  Zmień hasło
-                  <ArrowRight className="h-4 w-4" />
-                </span>
-              )}
+            <Button
+              variant="secondary"
+              className="w-full justify-center"
+              disabled={loading}
+              leftIcon={loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              rightIcon={!loading ? <ArrowRight className="h-4 w-4" /> : null}
+            >
+              {loading ? "Zapisywanie..." : "Zmień hasło"}
             </Button>
           </form>
 
           <div className="mt-5 flex flex-wrap items-center justify-between gap-3 text-sm">
-            <Link
-              to="/login"
-              className="text-slate-300 hover:text-white transition underline underline-offset-4"
-            >
+            <Link to="/login" className="text-slate-300 hover:text-white transition underline underline-offset-4">
               Wróć do logowania
             </Link>
-            <Link
-              to="/forgot-password"
-              className="text-slate-300 hover:text-white transition underline underline-offset-4"
-            >
+            <Link to="/forgot-password" className="text-slate-300 hover:text-white transition underline underline-offset-4">
               Wygeneruj nowy link
             </Link>
           </div>

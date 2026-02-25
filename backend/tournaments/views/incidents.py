@@ -13,6 +13,8 @@ from rest_framework.views import APIView
 
 from tournaments.models import Match, MatchIncident, TeamPlayer, Tournament, TournamentMembership
 
+from ..realtime import ws_emit_tournament
+
 
 def _get_membership_perms(user, tournament: Tournament) -> dict | None:
     if not user or user.is_anonymous:
@@ -474,6 +476,10 @@ class MatchIncidentListCreateView(APIView):
                     match.save(update_fields=["went_to_extra_time"])
                 _recompute_match_score_from_goal_incidents(match)
 
+            ws_emit_tournament(match.tournament_id, {"v": 1, "type": "incidents.changed", "tournamentId": match.tournament_id, "matchId": match.id})
+            ws_emit_tournament(match.tournament_id, {"v": 1, "type": "matches.changed", "tournamentId": match.tournament_id, "matchId": match.id})
+
+
             incident = (
                 MatchIncident.objects.select_related("match__tournament", "player", "player_in", "player_out")
                 .get(pk=incident.id)
@@ -619,6 +625,10 @@ class MatchIncidentDeleteView(APIView):
                         match.save(update_fields=["went_to_extra_time"])
                 _recompute_match_score_from_goal_incidents(match)
 
+            ws_emit_tournament(match.tournament_id, {"v": 1, "type": "incidents.changed", "tournamentId": match.tournament_id, "matchId": match.id})
+            ws_emit_tournament(match.tournament_id, {"v": 1, "type": "matches.changed", "tournamentId": match.tournament_id, "matchId": match.id})
+
+
             incident = (
                 MatchIncident.objects.select_related("match__tournament", "player", "player_in", "player_out")
                 .get(pk=incident.id)
@@ -642,6 +652,8 @@ class MatchIncidentDeleteView(APIView):
             was_goal = incident.kind == "GOAL" and discipline != Tournament.Discipline.TENNIS
 
             incident.delete()
+            ws_emit_tournament(match.tournament_id, {"v": 1, "type": "incidents.changed", "tournamentId": match.tournament_id, "matchId": match.id})
+            ws_emit_tournament(match.tournament_id, {"v": 1, "type": "matches.changed", "tournamentId": match.tournament_id, "matchId": match.id})
 
             if was_goal:
                 _recompute_match_score_from_goal_incidents(match)

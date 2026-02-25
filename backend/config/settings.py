@@ -49,6 +49,8 @@ ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", default=["localhost", "127.0.0.
 
 INSTALLED_APPS = [
     "corsheaders",
+    "daphne",
+    "channels",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -86,10 +88,13 @@ TEMPLATES = [
                 "django.contrib.messages.context_processors.messages",
             ],
         },
-    },
+    }
 ]
 
 WSGI_APPLICATION = "config.wsgi.application"
+
+# Channels - ASGI entrypoint dla HTTP + WebSocket
+ASGI_APPLICATION = "config.asgi.application"
 
 
 # Database
@@ -97,11 +102,14 @@ WSGI_APPLICATION = "config.wsgi.application"
 
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": os.getenv("POSTGRES_DB", "turnieje"),
+        "USER": os.getenv("POSTGRES_USER", "turnieje"),
+        "PASSWORD": os.getenv("POSTGRES_PASSWORD", "turnieje_dev_password"),
+        "HOST": os.getenv("POSTGRES_HOST", "db"),
+        "PORT": int(os.getenv("POSTGRES_PORT", "5432")),
     }
 }
-
 
 # Password validation
 # https://docs.djangoproject.com/en/5.0/ref/settings/#auth-password-validators
@@ -162,6 +170,23 @@ SIMPLE_JWT = {
         days=int(os.getenv("DJANGO_REFRESH_TOKEN_DAYS", "7"))
     ),
 }
+
+
+# ---- CHANNELS / REDIS (wariant docelowy) ----
+# Obsługa: REDIS_URL (opcjonalnie) albo REDIS_HOST/REDIS_PORT (domyślnie redis:6379)
+REDIS_URL = os.getenv("REDIS_URL")
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [REDIS_URL] if REDIS_URL else [(REDIS_HOST, REDIS_PORT)],
+        },
+    }
+}
+
 
 # ---- EMAIL (Mailtrap - DEV) ----
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"

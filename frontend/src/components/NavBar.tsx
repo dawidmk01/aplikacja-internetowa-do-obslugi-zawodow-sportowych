@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import type { ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { LogOut, Menu, Plus, Search, Trophy, X } from "lucide-react";
@@ -23,7 +24,7 @@ function DesktopNavLink({
   active,
 }: {
   to: string;
-  children: React.ReactNode;
+  children: ReactNode;
   active: boolean;
 }) {
   return (
@@ -45,68 +46,108 @@ function DesktopNavLink({
 
 export default function NavBar({ username, onLogout }: Props) {
   const location = useLocation();
+
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
+  const mobileMenuId = "app-mobile-nav";
+
+  const authedLinks = useMemo(
+    () =>
+      [
+        { to: "/", label: "Strona główna" },
+        { to: "/find-tournament", label: "Szukaj" },
+        { to: "/my-tournaments", label: "Moje turnieje" },
+        { to: "/tournaments/new", label: "Utwórz" },
+      ] as const,
+    []
+  );
+
+  const isActive = (path: string) => isActivePath(location.pathname, path);
+
   useEffect(() => {
-    const handleScroll = () => setScrolled(window.scrollY > 16);
-    window.addEventListener("scroll", handleScroll);
+    const handleScroll = () => {
+      const y = typeof window !== "undefined" ? window.scrollY : 0;
+      setScrolled(y > 16);
+    };
+
+    handleScroll();
+    window.addEventListener("scroll", handleScroll, { passive: true });
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
-  // CSS var wysokości - spójne pozycjonowanie dla FlowBar pod NavBarem.
+  // CSS var wysokości - spójne pozycjonowanie elementów pod NavBarem.
   useEffect(() => {
     const h = scrolled ? 72 : 84;
     document.documentElement.style.setProperty("--app-navbar-h", `${h}px`);
   }, [scrolled]);
 
-  const authedLinks = [
-    { to: "/", label: "Strona glowna" },
-    { to: "/find-tournament", label: "Szukaj" },
-    { to: "/my-tournaments", label: "Moje turnieje" },
-    { to: "/tournaments/new", label: "Utworz" },
-  ] as const;
-
-  const isActive = (path: string) => isActivePath(location.pathname, path);
-
   useEffect(() => {
     if (!username && mobileMenuOpen) setMobileMenuOpen(false);
   }, [username, mobileMenuOpen]);
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileMenuOpen(false);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mobileMenuOpen]);
+
+  useEffect(() => {
+    if (mobileMenuOpen) setMobileMenuOpen(false);
+  }, [location.pathname]);
 
   return (
     <>
       <header
         className={cn(
-          "fixed top-0 left-0 right-0 z-50 transition-all duration-300 border-b",
+          "fixed left-0 right-0 top-0 z-50 border-b transition-all duration-300",
           scrolled
             ? "bg-slate-950/65 backdrop-blur-xl border-white/10 py-3 shadow-lg shadow-indigo-500/5"
             : "bg-transparent border-transparent py-5"
         )}
       >
-        <div className="flex w-full items-center justify-between px-4 sm:px-6 lg:px-8 xl:px-10 2xl:px-12">
+        <div className="mx-auto flex w-full max-w-[1400px] items-center justify-between px-4 sm:px-6 lg:px-8">
           <Link to="/" className="group flex items-center gap-3">
-            <div className="relative grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 shadow-[0_0_20px_rgba(99,102,241,0.35)] transition-transform group-hover:scale-[1.03]">
-              <Trophy className="h-5 w-5 text-white" />
-              <div className="absolute inset-0 rounded-xl bg-white/15 opacity-0 group-hover:opacity-100 transition-opacity" />
+            <div
+              className={cn(
+                "relative grid h-10 w-10 place-items-center overflow-hidden rounded-xl",
+                "transition-transform group-hover:scale-[1.03]"
+              )}
+            >
+              <div className="h-8 w-8 overflow-hidden rounded-lg">
+                <img
+                  src={`${import.meta.env.BASE_URL}turnieje_pro.png`}
+                  alt="Turnieje.pro"
+                  className="h-full w-full object-contain p-0.5"
+                  draggable="false"
+                  loading="eager"
+                />
+              </div>
             </div>
 
             <div className="hidden sm:block">
-              <div className="text-lg font-bold leading-none text-white tracking-wide">
+              <div className="text-lg font-bold leading-none tracking-wide text-white">
                 Turnieje<span className="text-indigo-400">.pro</span>
               </div>
-              <div className="text-[10px] font-medium text-slate-400 tracking-widest uppercase opacity-70">
-                System zarzadzania
+              <div className="text-[10px] font-medium uppercase tracking-widest text-slate-400 opacity-70">
+                System zarządzania
               </div>
             </div>
           </Link>
 
-          <nav className="hidden md:flex items-center gap-1">
-            {username &&
-              authedLinks.map((l) => (
-                <DesktopNavLink key={l.to} to={l.to} active={isActive(l.to)}>
-                  {l.label}
-                </DesktopNavLink>
-              ))}
+          <nav className="hidden items-center gap-1 md:flex" aria-label="Nawigacja główna">
+            {username
+              ? authedLinks.map((l) => (
+                  <DesktopNavLink key={l.to} to={l.to} active={isActive(l.to)}>
+                    {l.label}
+                  </DesktopNavLink>
+                ))
+              : null}
           </nav>
 
           <div className="flex items-center gap-3">
@@ -121,22 +162,28 @@ export default function NavBar({ username, onLogout }: Props) {
               </>
             ) : (
               <div className="flex items-center gap-3">
-                <div className="hidden sm:flex items-center gap-3 rounded-full border border-white/10 bg-white/5 pl-2 pr-4 py-1.5 backdrop-blur-md">
+                <div className="hidden items-center gap-3 rounded-full border border-white/10 bg-white/5 py-1.5 pl-2 pr-4 backdrop-blur-md sm:flex">
                   <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-tr from-indigo-500 to-violet-500 shadow-inner">
                     <span className="text-xs font-bold text-white">
                       {username.slice(0, 1).toUpperCase()}
                     </span>
                   </div>
                   <div className="flex flex-col">
-                    <span className="text-xs text-slate-400 leading-none mb-0.5">Witaj,</span>
-                    <span className="text-sm font-semibold text-white leading-none">{username}</span>
+                    <span className="mb-0.5 text-xs leading-none text-slate-400">Witaj,</span>
+                    <span className="text-sm font-semibold leading-none text-white">{username}</span>
                   </div>
                 </div>
 
                 <button
+                  type="button"
                   onClick={onLogout}
-                  className="group flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-slate-300 transition-colors hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-300"
+                  className={cn(
+                    "group flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-slate-300 transition-colors",
+                    "hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-300",
+                    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+                  )}
                   title="Wyloguj"
+                  aria-label="Wyloguj"
                 >
                   <LogOut className="h-5 w-5" />
                 </button>
@@ -144,9 +191,16 @@ export default function NavBar({ username, onLogout }: Props) {
             )}
 
             <button
-              className="md:hidden rounded-xl border border-white/10 bg-white/5 p-2 text-slate-200 hover:bg-white/10"
+              type="button"
+              className={cn(
+                "rounded-xl border border-white/10 bg-white/5 p-2 text-slate-200 transition md:hidden",
+                "hover:bg-white/10",
+                "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+              )}
               onClick={() => setMobileMenuOpen((v) => !v)}
-              aria-label="Otworz menu"
+              aria-label={mobileMenuOpen ? "Zamknij menu" : "Otwórz menu"}
+              aria-expanded={mobileMenuOpen}
+              aria-controls={mobileMenuId}
             >
               {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
             </button>
@@ -155,15 +209,16 @@ export default function NavBar({ username, onLogout }: Props) {
       </header>
 
       <AnimatePresence>
-        {mobileMenuOpen && username && (
+        {mobileMenuOpen && username ? (
           <motion.div
+            id={mobileMenuId}
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }}
             style={{ top: "var(--app-navbar-h, 72px)" }}
             className="fixed left-0 right-0 z-40 overflow-hidden border-b border-white/10 bg-slate-950/90 backdrop-blur-2xl md:hidden"
           >
-            <div className="p-4 space-y-2">
+            <div className="space-y-2 p-4">
               {authedLinks.map((l) => {
                 const active = isActive(l.to);
 
@@ -183,8 +238,10 @@ export default function NavBar({ username, onLogout }: Props) {
                     key={l.to}
                     to={l.to}
                     onClick={() => setMobileMenuOpen(false)}
+                    aria-current={active ? "page" : undefined}
                     className={cn(
                       "flex items-center justify-between rounded-xl px-4 py-3 text-base font-medium transition",
+                      "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
                       active
                         ? "bg-white/10 text-white border border-white/10"
                         : "text-slate-300 hover:bg-white/5 hover:text-white"
@@ -195,25 +252,18 @@ export default function NavBar({ username, onLogout }: Props) {
                       {l.label}
                     </span>
 
-                    {active && (
+                    {active ? (
                       <div className="h-2 w-2 rounded-full bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.7)]" />
-                    )}
+                    ) : null}
                   </Link>
                 );
               })}
             </div>
           </motion.div>
-        )}
+        ) : null}
       </AnimatePresence>
 
       <div className={cn(scrolled ? "h-[72px]" : "h-[84px]")} />
     </>
   );
 }
-
-/*
-Co zmieniono:
-- Dodano CSS var --app-navbar-h (72/84) do spójnego pozycjonowania elementów pod NavBarem.
-- Mobile menu używa teraz top z tej zmiennej (bez hardcoded 72px).
-- Bez zmian w UI i logice linków, tylko stabilizacja layoutu.
-*/

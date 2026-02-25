@@ -4,7 +4,11 @@ import { apiFetch } from "../api";
 import { cn } from "../lib/cn";
 import type { MatchDTO, MatchStatus, TennisSetDTO, TournamentDTO } from "../types/results";
 
+import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
+import { Checkbox } from "../ui/Checkbox";
+import { Input } from "../ui/Input";
+import { toast } from "../ui/Toast";
 
 import ConfirmIncidentDeleteModal from "./ConfirmIncidentDeleteModal";
 import ConfirmScoreSyncModal from "./ConfirmScoreSyncModal";
@@ -13,14 +17,14 @@ import MatchLivePanel from "./MatchLivePanel";
 type ToastKind = "saved" | "success" | "error" | "info";
 
 type Props = {
-  tournamentId: string; // z useParams
+  tournamentId: string;
   tournament: TournamentDTO;
   match: MatchDTO;
 
-  // Rodzic trzyma fetch + układ stron. Row może poprosić o odświeżenie listy.
+  // Rodzic trzyma fetch i układ stron. MatchRow może poprosić o odświeżenie listy.
   onReload: () => Promise<void> | void;
 
-  // Opcjonalnie: toast w rodzicu (jeśli podasz) - w przeciwnym razie row użyje alert().
+  // Jeśli rodzic nie podaje, MatchRow użyje globalnych toastów.
   onToast?: (text: string, kind?: ToastKind) => void;
 };
 
@@ -104,469 +108,400 @@ function comparableResult(m: MatchDraft) {
 }
 
 function sameComparableDraft(a: MatchDraft, b: MatchDraft): boolean {
-  return JSON.stringify(comparableResult(a)) === JSON.stringify(comparableResult(b));
-}
+  const aa = comparableResult(a);
+  const bb = comparableResult(b);
 
-function draftFromMatch(m: MatchDTO): MatchDraft {
-  return {
-    home_score: m.home_score ?? 0,
-    away_score: m.away_score ?? 0,
-    tennis_sets: Array.isArray(m.tennis_sets) ? m.tennis_sets : null,
-    went_to_extra_time: !!m.went_to_extra_time,
-    home_extra_time_score: m.home_extra_time_score ?? null,
-    away_extra_time_score: m.away_extra_time_score ?? null,
-    decided_by_penalties: !!m.decided_by_penalties,
-    home_penalty_score: m.home_penalty_score ?? null,
-    away_penalty_score: m.away_penalty_score ?? null,
-  };
-}
+  if (aa.home_score !== bb.home_score) return false;
+  if (aa.away_score !== bb.away_score) return false;
+  if (aa.went_to_extra_time !== bb.went_to_extra_time) return false;
+  if (aa.home_extra_time_score !== bb.home_extra_time_score) return false;
+  if (aa.away_extra_time_score !== bb.away_extra_time_score) return false;
+  if (aa.decided_by_penalties !== bb.decided_by_penalties) return false;
+  if (aa.home_penalty_score !== bb.home_penalty_score) return false;
+  if (aa.away_penalty_score !== bb.away_penalty_score) return false;
 
-function uiStatusLabelFromBackend(status: MatchStatus | string) {
-  if (status === "FINISHED") return "Zakończony";
-  if (status === "IN_PROGRESS" || status === "RUNNING") return "W trakcie";
-  return "Zaplanowany";
-}
+  const aset = Array.isArray(aa.tennis_sets) ? aa.tennis_sets : null;
+  const bset = Array.isArray(bb.tennis_sets) ? bb.tennis_sets : null;
 
-function toneForStatus(status: MatchStatus) {
-  if (status === "IN_PROGRESS" || status === "RUNNING") {
-    return {
-      card: "border-emerald-400/20 bg-emerald-500/[0.06]",
-      badge: "border-emerald-400/25 bg-emerald-500/[0.10] text-emerald-100",
-      dot: "bg-emerald-400/80",
-    } as const;
+  if (!aset && !bset) return true;
+  if (!aset || !bset) return false;
+  if (aset.length !== bset.length) return false;
+
+  for (let i = 0; i < aset.length; i++) {
+    const x = aset[i];
+    const y = bset[i];
+    if (x.home_games !== y.home_games) return false;
+    if (x.away_games !== y.away_games) return false;
+    if ((x.home_tiebreak ?? null) !== (y.home_tiebreak ?? null)) return false;
+    if ((x.away_tiebreak ?? null) !== (y.away_tiebreak ?? null)) return false;
   }
-  if (status === "FINISHED") {
-    return {
-      card: "border-amber-400/20 bg-amber-500/[0.06]",
-      badge: "border-amber-400/25 bg-amber-500/[0.10] text-amber-100",
-      dot: "bg-amber-400/80",
-    } as const;
-  }
-  return {
-    card: "border-sky-400/20 bg-sky-500/[0.06]",
-    badge: "border-sky-400/25 bg-sky-500/[0.10] text-sky-100",
-    dot: "bg-sky-400/80",
-  } as const;
+
+  return true;
 }
 
-async function parseApiError(res: Response): Promise<{ message: string; code?: string; data?: any }> {
-  const fallback = res.statusText || "Błąd.";
-  try {
-    const data = await res.json().catch(() => null);
-    const message = String(data?.detail || data?.message || data?.error || fallback);
-    const code = typeof data?.code === "string" ? data.code : undefined;
-    return { message, code, data };
-  } catch {
-    return { message: fallback };
+function normalizeTennisSet(s: TennisSetDTO | null | undefined): TennisSetDTO {
+  const home_games = Number(s?.home_games ?? 0) || 0;
+  const away_games = Number(s?.away_games ?? 0) || 0;
+  const home_tiebreak = s?.home_tiebreak == null ? null : Number(s.home_tiebreak) || 0;
+  const away_tiebreak = s?.away_tiebreak == null ? null : Number(s.away_tiebreak) || 0;
+
+  return { home_games, away_games, home_tiebreak, away_tiebreak };
+}
+
+function uiStatusLabelFromBackend(status: MatchStatus): string {
+  switch (status) {
+    case "SCHEDULED":
+      return "Zaplanowany";
+    case "IN_PROGRESS":
+      return "W trakcie";
+    case "FINISHED":
+      return "Zakończony";
+    case "CANCELLED":
+      return "Anulowany";
+    default:
+      return String(status);
   }
 }
 
-function normalizeTennisSet(s: any): TennisSetDTO {
-  return {
-    home_games: Math.max(0, Number(s?.home_games ?? 0) || 0),
-    away_games: Math.max(0, Number(s?.away_games ?? 0) || 0),
-    home_tiebreak: s?.home_tiebreak == null ? null : Math.max(0, Number(s.home_tiebreak) || 0),
-    away_tiebreak: s?.away_tiebreak == null ? null : Math.max(0, Number(s.away_tiebreak) || 0),
-  };
-}
-
-function tennisSetsWon(sets: TennisSetDTO[]): { home: number; away: number } {
-  let home = 0;
-  let away = 0;
-  for (const s of sets) {
-    if (Number(s.home_games) > Number(s.away_games)) home += 1;
-    else if (Number(s.away_games) > Number(s.home_games)) away += 1;
+function getTone(status: MatchStatus) {
+  switch (status) {
+    case "IN_PROGRESS":
+      return {
+        card: "border-emerald-400/20 bg-emerald-500/[0.05]",
+        badge: "border-emerald-400/30 bg-emerald-500/[0.10] text-emerald-100",
+        dot: "bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.5)]",
+      };
+    case "FINISHED":
+      return {
+        card: "border-sky-400/15 bg-sky-500/[0.04]",
+        badge: "border-sky-400/25 bg-sky-500/[0.08] text-sky-100",
+        dot: "bg-sky-300 shadow-[0_0_10px_rgba(125,211,252,0.35)]",
+      };
+    case "CANCELLED":
+      return {
+        card: "border-rose-400/15 bg-rose-500/[0.04]",
+        badge: "border-rose-400/25 bg-rose-500/[0.08] text-rose-100",
+        dot: "bg-rose-400 shadow-[0_0_10px_rgba(244,63,94,0.35)]",
+      };
+    default:
+      return {
+        card: "border-white/10 bg-white/[0.03]",
+        badge: "border-white/15 bg-white/[0.06] text-slate-100",
+        dot: "bg-white/60",
+      };
   }
-  return { home, away };
 }
 
-export default function MatchRow(props: Props) {
-  const { tournamentId, tournament, match, onReload, onToast } = props;
-
-  const toast = useCallback(
-    (text: string, kind: ToastKind = "info") => {
-      if (onToast) return onToast(text, kind);
-      // Fallback (żeby nie zgubić informacji w UI, jeśli rodzic nie podaje toasta).
-      if (kind === "error") window.alert(text);
-    },
-    [onToast]
-  );
-
-  const [draft, setDraft] = useState<MatchDraft>(() => draftFromMatch(match));
-  const openLiveKey = useMemo(() => `results:match:${match.id}:openLive`, [match.id]);
-  const [openLive, setOpenLive] = useState<boolean>(() => {
-    try {
-      return window.localStorage.getItem(openLiveKey) === "1";
-    } catch {
-      return false;
-    }
-  });
-  const [busy, setBusy] = useState(false);
-  const [edited, setEdited] = useState(false);
-  const [editFinished, setEditFinished] = useState(false);
-
-  // Potwierdzenie synchronizacji: "szybki wynik" - LIVE (usunięcie GOAL).
-  const [confirmScoreSync, setConfirmScoreSync] = useState<ConfirmScoreSyncState | null>(null);
-
-  // Potwierdzenie usunięcia incydentu w LIVE.
-  const [confirmIncidentDelete, setConfirmIncidentDelete] = useState<ConfirmIncidentDeleteState | null>(null);
-  const incidentDeleteProceedRef = useRef<(() => void) | null>(null);
-
-  const scoreSyncPrefKey = useMemo(() => `tournament:${tournamentId}:prefs:skipScoreSyncConfirm`, [tournamentId]);
-
-  const readLocalBool = (key: string) => {
-    try {
-      return window.localStorage.getItem(key) === "1";
-    } catch {
-      return false;
-    }
-  };
-  const writeLocalBool = (key: string, v: boolean) => {
-    try {
-      window.localStorage.setItem(key, v ? "1" : "0");
-    } catch {
-      // ignore
-    }
-  };
-
-  const [skipScoreSyncConfirm, setSkipScoreSyncConfirm] = useState<boolean>(() => readLocalBool(scoreSyncPrefKey));
-  // Potwierdzenie usuwania incydentu ma pokazywać się zawsze (bez trybu "nie pytaj więcej").
-
-  useEffect(() => {
-    writeLocalBool(scoreSyncPrefKey, skipScoreSyncConfirm);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scoreSyncPrefKey, skipScoreSyncConfirm]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(openLiveKey, openLive ? "1" : "0");
-    } catch {
-      // ignore
-    }
-  }, [openLiveKey, openLive]);
-
-  // Synchronizuj draft z zewnętrznym stanem meczu, o ile user nie ma lokalnych zmian.
-  const originalDraft = useMemo(() => draftFromMatch(match), [match]);
-  const isDirty = useMemo(() => !sameComparableDraft(draft, originalDraft), [draft, originalDraft]);
-
-  useEffect(() => {
-    if (!isDirty) {
-      setDraft(originalDraft);
-      setEdited(false);
-      // Nie zamykamy LIVE automatycznie.
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    match.id,
-    match.status,
-    match.home_score,
-    match.away_score,
-    JSON.stringify(match.tennis_sets),
-    match.went_to_extra_time,
-    match.decided_by_penalties,
-  ]);
-
-  const lockByFinished = match.status === "FINISHED" && !editFinished;
-  const canEditResult = !busy && !lockByFinished;
+export default function MatchRow({ tournamentId, tournament, match, onReload, onToast }: Props) {
+  const tn = isTennis(tournament);
+  const hb = isHandball(tournament);
 
   const homeName = teamLabel(match.home_team_name);
   const awayName = teamLabel(match.away_team_name);
 
-  const tn = isTennis(tournament);
-  const hb = isHandball(tournament);
+  const tone = getTone(match.status);
 
-  const tone = useMemo(() => toneForStatus(match.status), [match.status]);
+  const canEditResult = Boolean(match.permissions?.results_edit);
+  const canEditLive = Boolean(match.permissions?.live_edit);
+  const canAttemptFinish = Boolean(match.permissions?.finish_match);
+  const canAttemptStart = Boolean(match.permissions?.start_match);
+  const canAttemptSetScheduled = Boolean(match.permissions?.set_scheduled);
+
+  const [draft, setDraft] = useState<MatchDraft>(() => ({
+    home_score: match.home_score ?? 0,
+    away_score: match.away_score ?? 0,
+    tennis_sets: match.tennis_sets ?? null,
+    went_to_extra_time: !!match.went_to_extra_time,
+    home_extra_time_score: match.home_extra_time_score ?? null,
+    away_extra_time_score: match.away_extra_time_score ?? null,
+    decided_by_penalties: !!match.decided_by_penalties,
+    home_penalty_score: match.home_penalty_score ?? null,
+    away_penalty_score: match.away_penalty_score ?? null,
+  }));
+
+  const initialComparable = useMemo(() => comparableResult(draft), []);
+  const isDirty = !sameComparableDraft(draft, initialComparable);
+
+  const [busy, setBusy] = useState(false);
+  const [edited, setEdited] = useState(false);
+
+  const [openLive, setOpenLive] = useState(false);
+  const [editFinished, setEditFinished] = useState(false);
+
+  const [skipScoreSyncConfirm, setSkipScoreSyncConfirm] = useState(false);
+  const [confirmScoreSync, setConfirmScoreSync] = useState<ConfirmScoreSyncState | null>(null);
+  const [confirmIncidentDelete, setConfirmIncidentDelete] = useState<ConfirmIncidentDeleteState | null>(null);
+
+  const incidentDeleteProceedRef = useRef<null | (() => void)>(null);
+
+  useEffect(() => {
+    setDraft({
+      home_score: match.home_score ?? 0,
+      away_score: match.away_score ?? 0,
+      tennis_sets: match.tennis_sets ?? null,
+      went_to_extra_time: !!match.went_to_extra_time,
+      home_extra_time_score: match.home_extra_time_score ?? null,
+      away_extra_time_score: match.away_extra_time_score ?? null,
+      decided_by_penalties: !!match.decided_by_penalties,
+      home_penalty_score: match.home_penalty_score ?? null,
+      away_penalty_score: match.away_penalty_score ?? null,
+    });
+    setEdited(false);
+  }, [
+    match.away_extra_time_score,
+    match.away_penalty_score,
+    match.away_score,
+    match.decided_by_penalties,
+    match.home_extra_time_score,
+    match.home_penalty_score,
+    match.home_score,
+    match.tennis_sets,
+    match.went_to_extra_time,
+  ]);
+
+  const pushToast = useCallback(
+    (text: string, kind: ToastKind = "info") => {
+      if (onToast) {
+        onToast(text, kind);
+        return;
+      }
+
+      if (kind === "error") toast.error(text);
+      else if (kind === "success") toast.success(text);
+      else toast.info(text);
+    },
+    [onToast]
+  );
+
+  const doReload = useCallback(async () => {
+    try {
+      await onReload();
+    } catch {
+      // Rodzic może mieć własną obsługę.
+    }
+  }, [onReload]);
 
   const updateMatchScore = useCallback(
-    async (opts?: { force?: boolean }) => {
-      const forceQ = opts?.force ? "?force=1" : "";
-      let payload: any;
+    async ({ force, op }: { force?: boolean; op: ConfirmScoreSyncOp }) => {
+      const payload: any = {
+        home_score: Number(draft.home_score ?? 0) || 0,
+        away_score: Number(draft.away_score ?? 0) || 0,
+      };
 
       if (tn) {
-        const sets = Array.isArray(draft.tennis_sets) ? draft.tennis_sets.map(normalizeTennisSet) : [];
-        const won = tennisSetsWon(sets);
-        payload = {
-          tennis_sets: sets,
-          home_score: won.home,
-          away_score: won.away,
-          went_to_extra_time: false,
-          home_extra_time_score: null,
-          away_extra_time_score: null,
-          decided_by_penalties: false,
-          home_penalty_score: null,
-          away_penalty_score: null,
-        };
+        payload.tennis_sets = Array.isArray(draft.tennis_sets) ? draft.tennis_sets : [];
       } else {
-        payload = {
-          home_score: draft.home_score ?? 0,
-          away_score: draft.away_score ?? 0,
-          went_to_extra_time: !!draft.went_to_extra_time,
-          home_extra_time_score: draft.went_to_extra_time ? (draft.home_extra_time_score ?? 0) : null,
-          away_extra_time_score: draft.went_to_extra_time ? (draft.away_extra_time_score ?? 0) : null,
-          decided_by_penalties: !!draft.decided_by_penalties,
-          home_penalty_score: draft.decided_by_penalties ? (draft.home_penalty_score ?? 0) : null,
-          away_penalty_score: draft.decided_by_penalties ? (draft.away_penalty_score ?? 0) : null,
-        };
+        payload.went_to_extra_time = !!draft.went_to_extra_time;
+        payload.decided_by_penalties = !!draft.decided_by_penalties;
+
+        payload.home_extra_time_score = draft.went_to_extra_time ? Number(draft.home_extra_time_score ?? 0) || 0 : null;
+        payload.away_extra_time_score = draft.went_to_extra_time ? Number(draft.away_extra_time_score ?? 0) || 0 : null;
+
+        payload.home_penalty_score = draft.decided_by_penalties ? Number(draft.home_penalty_score ?? 0) || 0 : null;
+        payload.away_penalty_score = draft.decided_by_penalties ? Number(draft.away_penalty_score ?? 0) || 0 : null;
       }
 
-      const res = await apiFetch(`/api/matches/${match.id}/result/${forceQ}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+      const res = await apiFetch(`/api/matches/${match.id}/score/`, {
+        method: "POST",
+        body: JSON.stringify({ ...payload, force: !!force, op }),
       });
 
+      const data = await res.json().catch(() => null);
       if (!res.ok) {
-        const err = await parseApiError(res);
-        const code = err.code;
-        if (res.status === 409 && code === "SCORE_SYNC_CONFIRM_REQUIRED") {
-          const delCount = Number(err.data?.delete_count || 0) || 0;
-          const delIds = Array.isArray(err.data?.delete_ids)
-            ? err.data.delete_ids.map((x: any) => Number(x)).filter((n: any) => Number.isFinite(n))
-            : [];
-          setConfirmScoreSync({
-            op: "SAVE",
-            message: err.message,
-            code,
-            deleteCount: delCount,
-            deleteIds: delIds,
-          });
-          throw Object.assign(new Error("SCORE_SYNC_CONFIRM_REQUIRED"), { __syncConfirm__: true });
-        }
-        throw new Error(err.message);
+        const msg = data?.detail || data?.message || "Błąd zapisu.";
+        throw new Error(msg);
       }
+
+      if (data?.needs_confirm) {
+        const st: ConfirmScoreSyncState = {
+          op,
+          message: data?.message ?? "Wykryto konflikt między LIVE a wynikiem.",
+          code: data?.code,
+          deleteCount: Number(data?.delete_count ?? 0) || 0,
+          deleteIds: Array.isArray(data?.delete_ids) ? data.delete_ids : [],
+        };
+        setConfirmScoreSync(st);
+        return { confirmed: false };
+      }
+
+      return { confirmed: true };
     },
     [draft, match.id, tn]
   );
 
   const finishMatch = useCallback(async () => {
     const res = await apiFetch(`/api/matches/${match.id}/finish/`, { method: "POST" });
+    const data = await res.json().catch(() => null);
     if (!res.ok) {
-      const err = await parseApiError(res);
-      throw new Error(err.message);
-    }
-  }, [match.id]);
-
-  const continueMatch = useCallback(async () => {
-    const res = await apiFetch(`/api/matches/${match.id}/continue/`, { method: "POST" });
-    if (!res.ok) {
-      const err = await parseApiError(res);
-      throw new Error(err.message);
+      const msg = data?.detail || data?.message || "Nie udało się zakończyć meczu.";
+      throw new Error(msg);
     }
   }, [match.id]);
 
   const startMatch = useCallback(async () => {
-    const res = await apiFetch(`/api/matches/${match.id}/clock/start/`, { method: "POST" });
+    const res = await apiFetch(`/api/matches/${match.id}/start/`, { method: "POST" });
+    const data = await res.json().catch(() => null);
     if (!res.ok) {
-      const err = await parseApiError(res);
-      throw new Error(err.message);
+      const msg = data?.detail || data?.message || "Nie udało się rozpocząć meczu.";
+      throw new Error(msg);
     }
   }, [match.id]);
 
   const setScheduled = useCallback(async () => {
-    const res = await apiFetch(`/api/matches/${match.id}/set-scheduled/`, { method: "POST" });
+    const res = await apiFetch(`/api/matches/${match.id}/set_scheduled/`, { method: "POST" });
+    const data = await res.json().catch(() => null);
     if (!res.ok) {
-      const err = await parseApiError(res);
-      throw new Error(err.message);
+      const msg = data?.detail || data?.message || "Nie udało się ustawić jako zaplanowany.";
+      throw new Error(msg);
     }
   }, [match.id]);
 
-  const doReload = useCallback(async () => {
-    try {
-      await onReload();
-    } catch {
-      // ignore
-    }
-  }, [onReload]);
-
   const onSaveClick = useCallback(async () => {
-    if (!isDirty) {
-      toast("Brak zmian do zapisania.", "info");
-      return;
-    }
-
     setBusy(true);
     try {
-      await updateMatchScore();
-      await doReload();
-      setEdited(true);
-      toast("Zapisano.", "saved");
-    } catch (e: any) {
-      // 409 handled by modal
-      if (!String(e?.message || "").includes("SCORE_SYNC_CONFIRM_REQUIRED")) {
-        toast(e?.message ?? "Błąd.", "error");
+      const result = await updateMatchScore({ op: "SAVE" });
+      if (result.confirmed) {
+        await doReload();
+        setEdited(true);
+        pushToast("Zapisano.", "saved");
       }
+    } catch (e: any) {
+      pushToast(e?.message ?? "Błąd.", "error");
     } finally {
       setBusy(false);
     }
-  }, [doReload, isDirty, toast, updateMatchScore]);
+  }, [doReload, pushToast, updateMatchScore]);
 
-  const onDynamicStatusButton = useCallback(async () => {
+  const onFinishClick = useCallback(async () => {
     setBusy(true);
     try {
-      if (match.status === "SCHEDULED") {
-        await startMatch();
-        await doReload();
-        toast("Mecz rozpoczęty.", "success");
-        return;
-      }
-
-      if (match.status === "IN_PROGRESS" || match.status === "RUNNING") {
-        // Przed finishem zawsze zapisujemy wynik.
-        try {
-          await updateMatchScore();
-        } catch (e: any) {
-          // 409 -> modal
-          throw e;
-        }
+      const result = await updateMatchScore({ op: "FINISH" });
+      if (result.confirmed) {
         await finishMatch();
         await doReload();
-        toast("Mecz zakończony.", "success");
-        return;
-      }
-
-      if (match.status === "FINISHED") {
-        await continueMatch();
-        await doReload();
-        toast("Mecz wznowiony.", "success");
-        return;
+        setEdited(true);
+        pushToast("Mecz zakończony.", "success");
       }
     } catch (e: any) {
-      if (!String(e?.message || "").includes("SCORE_SYNC_CONFIRM_REQUIRED")) {
-        toast(e?.message ?? "Błąd.", "error");
-      }
+      pushToast(e?.message ?? "Błąd.", "error");
     } finally {
       setBusy(false);
     }
-  }, [continueMatch, doReload, finishMatch, match.status, startMatch, toast, updateMatchScore]);
+  }, [doReload, finishMatch, pushToast, updateMatchScore]);
 
-  const dynamicLabel = useMemo(() => {
-    if (match.status === "SCHEDULED") return "Rozpocznij mecz";
-    if (match.status === "IN_PROGRESS" || match.status === "RUNNING") return "Zakończ mecz";
-    if (match.status === "FINISHED") return "Wznów mecz";
-    return "Akcja";
-  }, [match.status]);
-
-  const canAttemptSetScheduled = useMemo(() => {
-    const h = Number(draft.home_score ?? 0) || 0;
-    const a = Number(draft.away_score ?? 0) || 0;
-    if (h !== 0 || a !== 0) return false;
-
-    // Jeżeli user ma ustawione dogrywka/kary/tenis, to nie pozwalamy "cofnąć" statusu.
-    if (draft.went_to_extra_time) return false;
-    if (draft.decided_by_penalties) return false;
-    if ((Number(draft.home_extra_time_score ?? 0) || 0) !== 0) return false;
-    if ((Number(draft.away_extra_time_score ?? 0) || 0) !== 0) return false;
-    if ((Number(draft.home_penalty_score ?? 0) || 0) !== 0) return false;
-    if ((Number(draft.away_penalty_score ?? 0) || 0) !== 0) return false;
-    if (Array.isArray(draft.tennis_sets) && draft.tennis_sets.length > 0) return false;
-
-    return true;
-  }, [draft]);
-
-  const onSetScheduledClick = useCallback(async () => {
-    if (match.status === "SCHEDULED") {
-      toast("Mecz jest już zaplanowany.", "info");
-      return;
-    }
-
-    if (!canAttemptSetScheduled) {
-      toast(
-        "Możesz ustawić mecz jako zaplanowany tylko przy wyniku 0:0 (bez dogrywki/karnych/setów) i braku incydentów.",
-        "error"
-      );
-      return;
-    }
-
+  const onStartClick = useCallback(async () => {
     setBusy(true);
     try {
-      // Warunek "brak incydentów" weryfikujemy przed akcją.
-      const incRes = await apiFetch(`/api/matches/${match.id}/incidents/`, { method: "GET" });
-      if (incRes.ok) {
-        const list = await incRes.json().catch(() => []);
-        if (Array.isArray(list) && list.length > 0) {
-          toast(
-            "Nie można ustawić jako zaplanowany: mecz ma już zarejestrowane incydenty. Usuń incydenty i spróbuj ponownie.",
-            "error"
-          );
-          return;
-        }
-      }
-
-      setEditFinished(false);
-      await setScheduled();
+      await startMatch();
       await doReload();
-      toast("Status ustawiony: Zaplanowany.", "success");
+      pushToast("Mecz rozpoczęty.", "success");
     } catch (e: any) {
-      toast(e?.message ?? "Błąd.", "error");
+      pushToast(e?.message ?? "Błąd.", "error");
     } finally {
       setBusy(false);
     }
-  }, [canAttemptSetScheduled, doReload, match.id, match.status, setScheduled, toast]);
+  }, [doReload, pushToast, startMatch]);
 
-  // LIVE: delete confirm integration
-  const onRequestConfirmIncidentDelete = useCallback(
-    (req: any, proceed: () => void) => {
-      incidentDeleteProceedRef.current = proceed;
-      setConfirmIncidentDelete({
-        matchId: Number(req?.matchId ?? match.id) || match.id,
-        incidentId: Number(req?.incidentId ?? 0) || 0,
-        incidentType: typeof req?.incidentType === "string" ? req.incidentType : undefined,
-        teamLabel: typeof req?.teamLabel === "string" ? req.teamLabel : undefined,
-        minute: req?.minute == null ? null : Number(req.minute),
-        playerLabel: typeof req?.playerLabel === "string" ? req.playerLabel : null,
-      });
-    },
-    [match.id]
-  );
+  const onSetScheduledClick = useCallback(async () => {
+    setBusy(true);
+    try {
+      await setScheduled();
+      await doReload();
+      pushToast("Status ustawiony na zaplanowany.", "success");
+    } catch (e: any) {
+      pushToast(e?.message ?? "Błąd.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }, [doReload, pushToast, setScheduled]);
 
-  // SCORE SYNC modal actions
+  const onDynamicStatusButton = useCallback(async () => {
+    if (match.status === "IN_PROGRESS") {
+      if (!canAttemptFinish) return;
+      if (!isDirty) return;
+      await onFinishClick();
+      return;
+    }
+
+    if (match.status === "SCHEDULED") {
+      if (!canAttemptStart) return;
+      await onStartClick();
+      return;
+    }
+
+    if (match.status === "FINISHED") {
+      await onSaveClick();
+      return;
+    }
+  }, [canAttemptFinish, canAttemptStart, isDirty, match.status, onFinishClick, onSaveClick, onStartClick]);
+
+  const lockByFinished = match.status === "FINISHED" && !editFinished;
+
+  const dynamicLabel = useMemo(() => {
+    if (match.status === "SCHEDULED") return "Rozpocznij";
+    if (match.status === "IN_PROGRESS") return "Zakończ";
+    if (match.status === "FINISHED") return editFinished ? "Zapisz zmiany" : "Zapisz wynik";
+    return "Akcja";
+  }, [editFinished, match.status]);
+
+  const canAttemptSetScheduledHint = useMemo(() => {
+    const draftComparable = comparableResult(draft);
+    const noExtra = !draftComparable.went_to_extra_time;
+    const noPen = !draftComparable.decided_by_penalties;
+    const noTennis = !Array.isArray(draftComparable.tennis_sets) || draftComparable.tennis_sets.length === 0;
+
+    const zeroScore = (draftComparable.home_score ?? 0) === 0 && (draftComparable.away_score ?? 0) === 0;
+    return noExtra && noPen && noTennis && zeroScore;
+  }, [draft]);
+
+  const canAttemptSetScheduledSafe = canAttemptSetScheduled && canAttemptSetScheduledHint;
+
+  const onRequestConfirmIncidentDelete = useCallback((st: ConfirmIncidentDeleteState, proceed: () => void) => {
+    incidentDeleteProceedRef.current = proceed;
+    setConfirmIncidentDelete(st);
+  }, []);
+
   const forceSync = useCallback(
-    async (op: ConfirmScoreSyncOp, deleteCount: number, deleteIds: number[]) => {
+    async (op: ConfirmScoreSyncOp) => {
       setBusy(true);
       try {
-        await updateMatchScore({ force: true });
+        await updateMatchScore({ force: true, op });
         if (op === "FINISH") {
           await finishMatch();
         }
         await doReload();
         setConfirmScoreSync(null);
         setEdited(true);
-        toast(op === "FINISH" ? "Mecz zakończony." : "Zapisano.", op === "FINISH" ? "success" : "saved");
+        pushToast(op === "FINISH" ? "Mecz zakończony." : "Zapisano.", op === "FINISH" ? "success" : "saved");
       } catch (e: any) {
-        toast(e?.message ?? "Błąd.", "error");
+        pushToast(e?.message ?? "Błąd.", "error");
       } finally {
         setBusy(false);
       }
     },
-    [doReload, finishMatch, toast, updateMatchScore]
+    [doReload, finishMatch, pushToast, updateMatchScore]
   );
 
   const goalScope = draft.went_to_extra_time ? "EXTRA_TIME" : "REGULAR";
 
-  const scoreInputClass =
-    "h-9 w-[72px] rounded-xl border border-white/10 bg-white/[0.04] px-2 text-center text-base font-semibold text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-white/10 disabled:opacity-60";
-
-  const miniScoreInputClass =
-    "h-8 w-[60px] rounded-lg border border-white/10 bg-white/[0.04] px-2 text-center text-sm font-semibold text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-white/10 disabled:opacity-60";
-
-  const actionBtnBase =
-    "h-9 rounded-xl border border-white/12 bg-white/[0.05] px-3 text-sm text-white hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60";
-
-  const liveBtnClass =
-    "h-9 rounded-xl border border-emerald-400/25 bg-emerald-500/[0.12] px-3 text-sm text-white hover:bg-emerald-500/[0.16] disabled:cursor-not-allowed disabled:opacity-60";
-
-  const dangerBtnClass =
-    "h-9 rounded-xl border border-rose-400/25 bg-rose-500/[0.10] px-3 text-sm text-white hover:bg-rose-500/[0.14] disabled:cursor-not-allowed disabled:opacity-60";
-
-  const saveBtnClass = cn(
-    actionBtnBase,
-    isDirty ? "border-sky-400/25 bg-sky-500/[0.12] hover:bg-sky-500/[0.16]" : "",
-    edited && !isDirty ? "border-sky-400/20 bg-sky-500/[0.10]" : ""
+  const scoreInputClass = cn(
+    "h-9 w-[72px] rounded-xl border border-white/10 bg-white/[0.04] px-2 text-center text-base font-semibold text-white placeholder:text-slate-500",
+    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
+    "disabled:opacity-60",
+    "[color-scheme:dark]"
   );
+
+  const miniScoreInputClass = cn(
+    "h-8 w-[60px] rounded-lg border border-white/10 bg-white/[0.04] px-2 text-center text-sm font-semibold text-white placeholder:text-slate-500",
+    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
+    "disabled:opacity-60",
+    "[color-scheme:dark]"
+  );
+
+  const saveVariant = isDirty ? "primary" : "secondary";
 
   return (
     <Card className={cn("mb-4 border p-3 sm:p-4", tone.card)}>
-      {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 truncate text-sm font-semibold text-white sm:text-base">
           {homeName} <span className="font-semibold text-white/70">vs</span> {awayName}
@@ -578,21 +513,28 @@ export default function MatchRow(props: Props) {
         </div>
       </div>
 
-      {/* Quick result + actions */}
       <div className="mt-3 flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
-          <input
+          <Input
+            unstyled
             type="number"
             min={0}
+            inputMode="numeric"
+            name={`match-${match.id}-home_score`}
+            aria-label={`Wynik gospodarzy: ${homeName}`}
             value={scoreToInputValue(draft.home_score ?? 0)}
             disabled={!canEditResult || tn}
             onChange={(e) => setDraft((d) => ({ ...d, home_score: inputValueToScore(e.target.value) }))}
             className={scoreInputClass}
           />
           <span className="px-0.5 text-lg font-extrabold text-white/80">:</span>
-          <input
+          <Input
+            unstyled
             type="number"
             min={0}
+            inputMode="numeric"
+            name={`match-${match.id}-away_score`}
+            aria-label={`Wynik gości: ${awayName}`}
             value={scoreToInputValue(draft.away_score ?? 0)}
             disabled={!canEditResult || tn}
             onChange={(e) => setDraft((d) => ({ ...d, away_score: inputValueToScore(e.target.value) }))}
@@ -601,84 +543,132 @@ export default function MatchRow(props: Props) {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => setOpenLive((v) => !v)} className={liveBtnClass}>
-            {openLive ? "Ukryj LIVE (zegar + incydenty)" : "Pokaż LIVE (zegar + incydenty)"}
-          </button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => setOpenLive((v) => !v)}
+            className={cn(
+              "h-9 rounded-xl",
+              openLive
+                ? "border-emerald-400/25 bg-emerald-500/[0.12] hover:bg-emerald-500/[0.16]"
+                : "border-white/12 bg-white/[0.05] hover:bg-white/[0.08]"
+            )}
+          >
+            <span className="sm:hidden">LIVE</span>
+            <span className="hidden sm:inline">
+              {openLive ? "Ukryj LIVE (zegar + incydenty)" : "Pokaż LIVE (zegar + incydenty)"}
+            </span>
+          </Button>
 
-          <button type="button" onClick={onDynamicStatusButton} disabled={busy} className={actionBtnBase}>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={onDynamicStatusButton}
+            disabled={busy}
+            className="h-9 rounded-xl"
+          >
             {dynamicLabel}
-          </button>
+          </Button>
 
           {match.status !== "SCHEDULED" ? (
-            <button
+            <Button
               type="button"
               onClick={onSetScheduledClick}
-              disabled={busy || !canAttemptSetScheduled}
+              disabled={busy || !canAttemptSetScheduledSafe}
               title={
-                canAttemptSetScheduled
+                canAttemptSetScheduledSafe
                   ? 'Ustawia status meczu na "Zaplanowany" oraz resetuje zegar. Działa tylko, gdy wynik jest 0:0 oraz nie ma żadnych incydentów.'
                   : "Dostępne tylko przy wyniku 0:0 (bez dogrywki/karnych/setów). Dodatkowo mecz musi nie mieć żadnych incydentów."
               }
-              className={actionBtnBase}
+              variant="secondary"
+              size="sm"
+              className="h-9 rounded-xl"
             >
-              Ustaw jako zaplanowany
-            </button>
+              <span className="sm:hidden">Zaplanowany</span>
+              <span className="hidden sm:inline">Ustaw jako zaplanowany</span>
+            </Button>
           ) : null}
 
-          <button type="button" onClick={onSaveClick} disabled={busy || !isDirty || lockByFinished} className={saveBtnClass}>
+          <Button
+            type="button"
+            onClick={onSaveClick}
+            disabled={busy || !isDirty || lockByFinished}
+            variant={saveVariant}
+            size="sm"
+            className={cn("h-9 rounded-xl", edited && !isDirty ? "opacity-95" : "")}
+          >
             {match.status === "FINISHED" ? (editFinished ? "Zapisz zmiany" : "Zapisz wynik") : "Zapisz wynik"}
-          </button>
+          </Button>
 
           {match.status === "FINISHED" && !editFinished ? (
-            <button type="button" onClick={() => setEditFinished(true)} disabled={busy} className={actionBtnBase}>
+            <Button
+              type="button"
+              onClick={() => setEditFinished(true)}
+              disabled={busy}
+              variant="secondary"
+              size="sm"
+              className="h-9 rounded-xl"
+            >
               Wprowadź zmiany
-            </button>
+            </Button>
           ) : null}
 
           {match.status === "FINISHED" && editFinished ? (
-            <button type="button" onClick={() => setEditFinished(false)} disabled={busy} className={dangerBtnClass}>
+            <Button
+              type="button"
+              onClick={() => setEditFinished(false)}
+              disabled={busy}
+              variant="danger"
+              size="sm"
+              className="h-9 rounded-xl"
+            >
               Anuluj edycję
-            </button>
+            </Button>
           ) : null}
         </div>
       </div>
 
-      {/* Extra time / penalties (poza tenisem) */}
       {!tn ? (
         <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-slate-200">
-          <label className="inline-flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={!!draft.went_to_extra_time}
-              disabled={!canEditResult}
-              onChange={(e) =>
-                setDraft((d) => ({
-                  ...d,
-                  went_to_extra_time: e.target.checked,
-                  home_extra_time_score: e.target.checked ? (d.home_extra_time_score ?? 0) : null,
-                  away_extra_time_score: e.target.checked ? (d.away_extra_time_score ?? 0) : null,
-                }))
-              }
-              className="h-4 w-4 rounded border-white/20 bg-white/[0.06]"
-            />
-            Dogrywka
-          </label>
+          <Checkbox
+            checked={!!draft.went_to_extra_time}
+            onCheckedChange={(checked) =>
+              setDraft((d) => ({
+                ...d,
+                went_to_extra_time: checked,
+                home_extra_time_score: checked ? (d.home_extra_time_score ?? 0) : null,
+                away_extra_time_score: checked ? (d.away_extra_time_score ?? 0) : null,
+              }))
+            }
+            disabled={!canEditResult}
+            label="Dogrywka"
+          />
 
           {draft.went_to_extra_time ? (
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs text-slate-400">Wynik dogrywki:</span>
-              <input
+              <Input
+                unstyled
                 type="number"
                 min={0}
+                inputMode="numeric"
+                name={`match-${match.id}-home_extra_time_score`}
+                aria-label="Wynik dogrywki - gospodarze"
                 value={scoreToInputValue(draft.home_extra_time_score ?? 0)}
                 disabled={!canEditResult}
                 onChange={(e) => setDraft((d) => ({ ...d, home_extra_time_score: inputValueToScore(e.target.value) }))}
                 className={miniScoreInputClass}
               />
               <span className="px-0.5 text-sm font-extrabold text-white/70">:</span>
-              <input
+              <Input
+                unstyled
                 type="number"
                 min={0}
+                inputMode="numeric"
+                name={`match-${match.id}-away_extra_time_score`}
+                aria-label="Wynik dogrywki - goście"
                 value={scoreToInputValue(draft.away_extra_time_score ?? 0)}
                 disabled={!canEditResult}
                 onChange={(e) => setDraft((d) => ({ ...d, away_extra_time_score: inputValueToScore(e.target.value) }))}
@@ -687,39 +677,48 @@ export default function MatchRow(props: Props) {
             </div>
           ) : null}
 
-          <label className={cn("inline-flex items-center gap-2", hb ? "opacity-60" : "")}>
-            <input
-              type="checkbox"
+          <div
+            className={cn("inline-flex", hb ? "opacity-60" : "")}
+            title={hb ? "W piłce ręcznej rozstrzygnięcie zależy od konfiguracji turnieju." : undefined}
+          >
+            <Checkbox
               checked={!!draft.decided_by_penalties}
-              disabled={!canEditResult || hb}
-              onChange={(e) =>
+              onCheckedChange={(checked) =>
                 setDraft((d) => ({
                   ...d,
-                  decided_by_penalties: e.target.checked,
-                  home_penalty_score: e.target.checked ? (d.home_penalty_score ?? 0) : null,
-                  away_penalty_score: e.target.checked ? (d.away_penalty_score ?? 0) : null,
+                  decided_by_penalties: checked,
+                  home_penalty_score: checked ? (d.home_penalty_score ?? 0) : null,
+                  away_penalty_score: checked ? (d.away_penalty_score ?? 0) : null,
                 }))
               }
-              className="h-4 w-4 rounded border-white/20 bg-white/[0.06]"
+              disabled={!canEditResult || hb}
+              label="Rozstrzygnięcie w rzutach karnych"
             />
-            Rozstrzygnięcie w rzutach karnych
-          </label>
+          </div>
 
           {draft.decided_by_penalties ? (
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs text-slate-400">Karne:</span>
-              <input
+              <Input
+                unstyled
                 type="number"
                 min={0}
+                inputMode="numeric"
+                name={`match-${match.id}-home_penalty_score`}
+                aria-label="Karne - gospodarze"
                 value={scoreToInputValue(draft.home_penalty_score ?? 0)}
                 disabled={!canEditResult}
                 onChange={(e) => setDraft((d) => ({ ...d, home_penalty_score: inputValueToScore(e.target.value) }))}
                 className={miniScoreInputClass}
               />
               <span className="px-0.5 text-sm font-extrabold text-white/70">:</span>
-              <input
+              <Input
+                unstyled
                 type="number"
                 min={0}
+                inputMode="numeric"
+                name={`match-${match.id}-away_penalty_score`}
+                aria-label="Karne - goście"
                 value={scoreToInputValue(draft.away_penalty_score ?? 0)}
                 disabled={!canEditResult}
                 onChange={(e) => setDraft((d) => ({ ...d, away_penalty_score: inputValueToScore(e.target.value) }))}
@@ -730,7 +729,6 @@ export default function MatchRow(props: Props) {
         </div>
       ) : null}
 
-      {/* Tenis: prosta edycja setów w gemach */}
       {tn ? (
         <div className="mt-3">
           <div className="text-xs text-slate-400">
@@ -739,12 +737,19 @@ export default function MatchRow(props: Props) {
 
           <div className="mt-2 flex flex-col gap-2">
             {(Array.isArray(draft.tennis_sets) ? draft.tennis_sets : []).map((s, idx) => (
-              <div key={idx} className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] p-2">
+              <div
+                key={idx}
+                className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] p-2"
+              >
                 <span className="w-[56px] text-xs font-semibold text-slate-300">Set {idx + 1}</span>
 
-                <input
+                <Input
+                  unstyled
                   type="number"
                   min={0}
+                  inputMode="numeric"
+                  name={`match-${match.id}-tennis-set-${idx}-home_games`}
+                  aria-label={`Set ${idx + 1} - gemy gospodarzy`}
                   value={scoreToInputValue(s.home_games)}
                   disabled={!canEditResult}
                   onChange={(e) => {
@@ -759,9 +764,13 @@ export default function MatchRow(props: Props) {
                   className={miniScoreInputClass}
                 />
                 <span className="px-0.5 text-sm font-extrabold text-white/70">:</span>
-                <input
+                <Input
+                  unstyled
                   type="number"
                   min={0}
+                  inputMode="numeric"
+                  name={`match-${match.id}-tennis-set-${idx}-away_games`}
+                  aria-label={`Set ${idx + 1} - gemy gości`}
                   value={scoreToInputValue(s.away_games)}
                   disabled={!canEditResult}
                   onChange={(e) => {
@@ -777,9 +786,13 @@ export default function MatchRow(props: Props) {
                 />
 
                 <span className="ml-1 text-xs text-slate-400">TB</span>
-                <input
+                <Input
+                  unstyled
                   type="number"
                   min={0}
+                  inputMode="numeric"
+                  name={`match-${match.id}-tennis-set-${idx}-home_tiebreak`}
+                  aria-label={`Set ${idx + 1} - tie-break gospodarzy`}
                   value={s.home_tiebreak == null ? "" : String(s.home_tiebreak)}
                   disabled={!canEditResult}
                   onChange={(e) => {
@@ -795,9 +808,13 @@ export default function MatchRow(props: Props) {
                   className={cn(miniScoreInputClass, "w-[54px]")}
                 />
                 <span className="px-0.5 text-sm font-extrabold text-white/70">:</span>
-                <input
+                <Input
+                  unstyled
                   type="number"
                   min={0}
+                  inputMode="numeric"
+                  name={`match-${match.id}-tennis-set-${idx}-away_tiebreak`}
+                  aria-label={`Set ${idx + 1} - tie-break gości`}
                   value={s.away_tiebreak == null ? "" : String(s.away_tiebreak)}
                   disabled={!canEditResult}
                   onChange={(e) => {
@@ -813,7 +830,7 @@ export default function MatchRow(props: Props) {
                   className={cn(miniScoreInputClass, "w-[54px]")}
                 />
 
-                <button
+                <Button
                   type="button"
                   disabled={!canEditResult}
                   onClick={() => {
@@ -823,15 +840,17 @@ export default function MatchRow(props: Props) {
                       return { ...d, tennis_sets: sets };
                     });
                   }}
-                  className={cn(dangerBtnClass, "h-8 px-2 text-xs")}
+                  variant="danger"
+                  size="sm"
+                  className="h-8 rounded-lg px-2 text-xs"
                 >
                   Usuń set
-                </button>
+                </Button>
               </div>
             ))}
 
             <div>
-              <button
+              <Button
                 type="button"
                 disabled={!canEditResult}
                 onClick={() => {
@@ -841,16 +860,17 @@ export default function MatchRow(props: Props) {
                     return { ...d, tennis_sets: sets };
                   });
                 }}
-                className={cn(actionBtnBase, "h-8 px-2 text-xs")}
+                variant="secondary"
+                size="sm"
+                className="h-8 rounded-lg px-2 text-xs"
               >
                 Dodaj set
-              </button>
+              </Button>
             </div>
           </div>
         </div>
       ) : null}
 
-      {/* LIVE */}
       {openLive ? (
         <div className="mt-3 border-t border-white/10 pt-3">
           <MatchLivePanel
@@ -874,7 +894,6 @@ export default function MatchRow(props: Props) {
               awayTeamName: awayName,
             }}
             onEnterExtraTime={() => {
-              // Natychmiast pokaż dogrywkę w karcie (bez odświeżania strony).
               setDraft((d) => ({
                 ...d,
                 went_to_extra_time: true,
@@ -888,7 +907,6 @@ export default function MatchRow(props: Props) {
         </div>
       ) : null}
 
-      {/* SCORE SYNC confirm */}
       <ConfirmScoreSyncModal
         open={!!confirmScoreSync}
         title="Synchronizacja LIVE z wynikiem"
@@ -903,13 +921,11 @@ export default function MatchRow(props: Props) {
         onConfirm={() => {
           const st = confirmScoreSync;
           if (!st) return;
-          const op: ConfirmScoreSyncOp = st.op;
-          forceSync(op, st.deleteCount, st.deleteIds);
+          forceSync(st.op);
         }}
         onCancel={() => setConfirmScoreSync(null)}
       />
 
-      {/* INCIDENT DELETE confirm */}
       <ConfirmIncidentDeleteModal
         open={!!confirmIncidentDelete}
         incident={confirmIncidentDelete}
@@ -927,11 +943,3 @@ export default function MatchRow(props: Props) {
     </Card>
   );
 }
-
-/*
-Co zmieniono:
-1) Zastąpiono inline styles kompaktowymi klasami Tailwind, bez zmiany logiki.
-2) Zmniejszono wysokości i padding (wynik, przyciski, sekcje dogrywka/karne) - mniej "krowy" w liście.
-3) Dodano spójny badge statusu i delikatne tło zależne od statusu.
-4) Uporządkowano responsywność (kolumny na mobile, jedna linia na większych ekranach).
-*/

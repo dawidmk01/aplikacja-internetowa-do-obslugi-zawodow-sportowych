@@ -1,3 +1,6 @@
+// frontend/src/ui/Select.tsx
+// Komponent udostępnia kontrolkę wyboru o spójnym stylu i dostępności.
+
 import type { CSSProperties, ReactNode, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
@@ -46,7 +49,6 @@ function norm(s: string) {
   return (s || "").toLowerCase().trim();
 }
 
-/** Select zastępuje natywny <select>, aby utrzymać spójny dark mode i pełną kontrolę nad listą opcji. */
 export function Select<T extends string | number = string>({
   value,
   onChange,

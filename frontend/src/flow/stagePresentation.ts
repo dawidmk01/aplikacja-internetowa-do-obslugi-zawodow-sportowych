@@ -1,5 +1,3 @@
-// src/flow/stagePresentation.ts
-
 export type StageType = "LEAGUE" | "KNOCKOUT" | "GROUP" | "THIRD_PLACE";
 
 export type StageMatchLike = {
@@ -14,6 +12,9 @@ export type StageMatchLike = {
   away_team_name?: string | null;
 };
 
+const NO_GROUP_KEY = "-";
+
+/** Wykrywa BYE w nazwach drużyn, aby można było spójnie filtrować i opisywać mecze techniczne. */
 export function isByeTeamName(name: string | null | undefined): boolean {
   if (!name) return false;
   const n = name.trim().toUpperCase();
@@ -30,15 +31,25 @@ export function isByeMatch(m: Pick<StageMatchLike, "home_team_name" | "away_team
 }
 
 export function displayGroupName(originalName: string, index: number): string {
-  if (originalName && originalName.length <= 2 && originalName !== "—") return `Grupa ${originalName}`;
-  const letter = String.fromCharCode(65 + index); // A, B, C...
+  const trimmed = (originalName ?? "").trim();
+  if (trimmed && trimmed.length <= 2 && trimmed !== NO_GROUP_KEY) return `Grupa ${trimmed}`;
+  const letter = String.fromCharCode(65 + index);
   return `Grupa ${letter}`;
+}
+
+/** Placeholder grupy jest normalizowany do "-", a wejściowe wartości nietypowe są sprowadzane do wspólnego klucza. */
+function normalizeGroupKey(name: string | null | undefined): string {
+  const raw = (name ?? "").trim();
+  if (!raw) return NO_GROUP_KEY;
+  if (raw === NO_GROUP_KEY) return NO_GROUP_KEY;
+  if (raw === "\u2014") return NO_GROUP_KEY; // kompatybilność z historycznym placeholderem
+  return raw;
 }
 
 export function groupMatchesByGroup<T extends StageMatchLike>(matches: T[]) {
   const map = new Map<string, T[]>();
   for (const m of matches) {
-    const key = m.group_name ?? "—";
+    const key = normalizeGroupKey(m.group_name);
     const arr = map.get(key) ?? [];
     arr.push(m);
     map.set(key, arr);

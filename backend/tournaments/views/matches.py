@@ -25,6 +25,8 @@ from tournaments.services.match_outcome import (
     validate_penalties_consistency,
 )
 
+from ..realtime import ws_emit_tournament
+
 from ..models import Match, Stage, Tournament, MatchIncident
 from ..serializers import MatchResultUpdateSerializer, MatchSerializer
 from ._helpers import (
@@ -382,6 +384,7 @@ def _apply_manual_result_via_goal_incidents_or_409(
     if et_enabled and not getattr(match, "went_to_extra_time", False):
         match.went_to_extra_time = True
         match.save(update_fields=["went_to_extra_time"])
+        ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
 
     if not et_enabled:
         desired_et_home = 0
@@ -731,6 +734,7 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
             if touched:
                 match.status = Match.Status.IN_PROGRESS
                 match.save(update_fields=["status"])
+                ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
 
         resp = _apply_manual_result_via_goal_incidents_or_409(match, force=force, created_by_id=request.user.id)
         if resp is not None:
@@ -749,8 +753,21 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
             except Exception:
                 pass
 
-            return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
+            transaction.on_commit(
 
+                lambda: ws_emit_tournament(
+
+                    match.tournament_id,
+
+                    "matches_changed",
+
+                    {"match_id": match.id},
+
+                )
+
+            )
+
+            return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
         if is_knockout_like:
             if cup_matches == 1:
                 if _is_tennis(tournament):
@@ -761,6 +778,7 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
                 if new_winner_id != match.winner_id:
                     match.winner_id = new_winner_id
                     match.save(update_fields=["winner"])
+                    ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
 
                 _handle_knockout_progression(tournament, stage, old_single_winner_id, new_winner_id)
 
@@ -769,9 +787,21 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
                 new_pair_winner = _pair_winner_id(_get_pair_matches(stage, match))
                 _handle_knockout_progression(tournament, stage, old_pair_winner, new_pair_winner)
 
+        transaction.on_commit(
+
+            lambda: ws_emit_tournament(
+
+                match.tournament_id,
+
+                "matches_changed",
+
+                {"match_id": match.id},
+
+            )
+
+        )
+
         return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
-
-
 class FinishMatchView(APIView):
     """
     POST /api/matches/<pk>/finish/
@@ -821,14 +851,28 @@ class FinishMatchView(APIView):
             match.status = Match.Status.FINISHED
             _stop_match_clock(match)
             match.save(update_fields=["status", "clock_state", "clock_started_at", "clock_elapsed_seconds"])
+            ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
 
             try:
                 _regenerate_knockout_from_groups_if_safe(tournament)
             except Exception:
                 pass
 
-            return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
+            transaction.on_commit(
 
+                lambda: ws_emit_tournament(
+
+                    match.tournament_id,
+
+                    "matches_changed",
+
+                    {"match_id": match.id},
+
+                )
+
+            )
+
+            return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
         cup_matches = _get_cup_matches(tournament)
         is_knockout_like = stage.stage_type == Stage.StageType.KNOCKOUT or _is_third_place_stage(stage)
 
@@ -873,10 +917,17 @@ class FinishMatchView(APIView):
                 match.status = Match.Status.FINISHED
                 _stop_match_clock(match)
                 match.save(update_fields=["winner", "status", "clock_state", "clock_started_at", "clock_elapsed_seconds"])
+                ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
 
                 _handle_knockout_progression(tournament, stage, old_winner_id, winner_id)
+                transaction.on_commit(
+                    lambda: ws_emit_tournament(
+                        match.tournament_id,
+                        "matches_changed",
+                        {"match_id": match.id},
+                    )
+                )
                 return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
-
             elif cup_matches == 2:
                 old_pair_winner = _pair_winner_id(_get_pair_matches(stage, match))
 
@@ -884,6 +935,7 @@ class FinishMatchView(APIView):
                     match.status = Match.Status.FINISHED
                     _stop_match_clock(match)
                     match.save(update_fields=["status", "clock_state", "clock_started_at", "clock_elapsed_seconds"])
+                    ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
 
                 _sync_two_leg_pair_winner_if_possible(stage, tournament, match)
 
@@ -893,6 +945,7 @@ class FinishMatchView(APIView):
                     if not new_pair_winner:
                         match.status = Match.Status.SCHEDULED
                         match.save(update_fields=["status"])
+                        ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
                         return Response(
                             {"detail": "Dwumecz musi być rozstrzygnięty."},
                             status=status.HTTP_400_BAD_REQUEST,
@@ -901,8 +954,14 @@ class FinishMatchView(APIView):
                     new_pair_winner = None
 
                 _handle_knockout_progression(tournament, stage, old_pair_winner, new_pair_winner)
+                transaction.on_commit(
+                    lambda: ws_emit_tournament(
+                        match.tournament_id,
+                        "matches_changed",
+                        {"match_id": match.id},
+                    )
+                )
                 return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
-
         return Response({"detail": "Nieobsługiwany typ etapu."}, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -941,6 +1000,7 @@ class ContinueMatchView(APIView):
         _continue_match_clock(match)
 
         match.save(update_fields=["status", "clock_state", "clock_started_at"])
+        ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
 
         return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
 
@@ -1027,5 +1087,6 @@ class SetScheduledMatchView(APIView):
             update_fields.append("clock_added_seconds")
 
         match.save(update_fields=update_fields)
+        ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
 
         return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)

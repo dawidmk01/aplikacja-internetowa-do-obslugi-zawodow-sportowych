@@ -1,5 +1,4 @@
-// frontend/src/components/matchLive/MatchLivePanel.tsx
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { cn } from "../../lib/cn";
 
@@ -38,6 +37,7 @@ type Props = {
   onAfterRecompute?: () => Promise<void> | void;
 };
 
+/** Komponuje widok live meczu: zegar, incydenty i komentarz oraz propaguje metadane i sygnały odświeżania. */
 export default function MatchLivePanel({
   tournamentId,
   discipline,
@@ -58,11 +58,11 @@ export default function MatchLivePanel({
   const [clockReloadToken, setClockReloadToken] = useState(0);
   const [incidentsReloadToken, setIncidentsReloadToken] = useState(0);
 
-  const requestClockReload = () => setClockReloadToken((x) => x + 1);
-  const requestIncidentsReload = () => setIncidentsReloadToken((x) => x + 1);
+  const requestClockReload = useCallback(() => setClockReloadToken((x) => x + 1), []);
+  const requestIncidentsReload = useCallback(() => setIncidentsReloadToken((x) => x + 1), []);
 
   const commentaryMinute = useMemo(() => {
-    // Bezpiecznie: różne wersje ClockMeta mogły mieć inne nazwy pola.
+    // Kontrakt: wspiera wsteczną kompatybilność różnych wersji ClockMeta.
     const m: any = clockMeta as any;
     const raw =
       m?.commentaryMinute ??
@@ -78,7 +78,7 @@ export default function MatchLivePanel({
   }, [clockMeta]);
 
   return (
-    <div className={cn("grid gap-3")}>
+    <div className={cn("grid w-full min-w-0 gap-3")}>
       <ClockPanel
         matchId={match.id}
         matchStatus={match.status}
@@ -92,40 +92,37 @@ export default function MatchLivePanel({
         onRequestIncidentsReload={requestIncidentsReload}
       />
 
-      <div className="grid gap-3 lg:grid-cols-2">
-        <IncidentsPanel
-          tournamentId={numericTournamentId}
-          matchId={match.id}
-          discipline={discipline}
-          canEdit={canEdit}
-          goalScope={goalScope}
-          homeTeamId={match.homeTeamId}
-          awayTeamId={match.awayTeamId}
-          homeTeamName={match.homeTeamName}
-          awayTeamName={match.awayTeamName}
-          clockMeta={clockMeta}
-          reloadToken={incidentsReloadToken}
-          onRequestConfirmIncidentDelete={onRequestConfirmIncidentDelete}
-          onAfterRecompute={onAfterRecompute}
-          onRequestClockReload={requestClockReload}
-        />
+      <div className="grid min-w-0 items-start gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <div className="min-w-0">
+          <IncidentsPanel
+            tournamentId={numericTournamentId}
+            matchId={match.id}
+            discipline={discipline}
+            canEdit={canEdit}
+            goalScope={goalScope}
+            homeTeamId={match.homeTeamId}
+            awayTeamId={match.awayTeamId}
+            homeTeamName={match.homeTeamName}
+            awayTeamName={match.awayTeamName}
+            clockMeta={clockMeta}
+            reloadToken={incidentsReloadToken}
+            onRequestConfirmIncidentDelete={onRequestConfirmIncidentDelete}
+            onAfterRecompute={onAfterRecompute}
+            onRequestClockReload={requestClockReload}
+          />
+        </div>
 
-        <CommentaryPanel
-          tournamentId={numericTournamentId}
-          matchId={match.id}
-          canEdit={canEdit}
-          minute={commentaryMinute}
-          homeTeamName={match.homeTeamName}
-          awayTeamName={match.awayTeamName}
-        />
+        <div className="min-w-0">
+          <CommentaryPanel
+            tournamentId={numericTournamentId}
+            matchId={match.id}
+            canEdit={canEdit}
+            minute={commentaryMinute}
+            homeTeamName={match.homeTeamName}
+            awayTeamName={match.awayTeamName}
+          />
+        </div>
       </div>
     </div>
   );
 }
-
-/*
-Co zmieniono:
-1) Przekazano tournamentId do IncidentsPanel - bez tego roster (zawodnicy) nie był pobierany.
-2) Utrzymano tokeny reload (zegar/incydenty) bez zmian w przepływie.
-3) Zachowano layout: ClockPanel u góry, niżej 2 kolumny (Incidents + Commentary).
-*/

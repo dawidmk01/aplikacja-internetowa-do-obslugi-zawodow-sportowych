@@ -16,12 +16,13 @@ import {
 import { cn } from "../../lib/cn";
 
 import { Card } from "../../ui/Card";
+import { Input } from "../../ui/Input";
 
 export type MatchStatusBucket = "PLANNED" | "IN_PROGRESS" | "FINISHED";
 export type StageFilterMode = "ALL" | "GROUP" | "KNOCKOUT";
 export type BaseLayoutMode = "rounds" | "groups";
 
-// Jeden priorytet naraz - czytelność dla użytkownika
+// Dodatkowy priorytet sortowania w obrębie sekcji
 export type SecondaryPriority = "none" | "status" | "term";
 
 export type StageType = "LEAGUE" | "KNOCKOUT" | "GROUP" | "THIRD_PLACE";
@@ -164,7 +165,11 @@ export function bucketForStatus(status?: string | null): MatchStatusBucket {
   return "PLANNED";
 }
 
-export function sectionCardClasses(bucket: MatchStatusBucket): { shell: string; dot: string; title: string } {
+export function sectionCardClasses(bucket: MatchStatusBucket): {
+  shell: string;
+  dot: string;
+  title: string;
+} {
   if (bucket === "IN_PROGRESS") {
     return {
       shell: "border-emerald-400/20 bg-emerald-500/[0.06]",
@@ -193,7 +198,12 @@ function toggleInArray<T>(arr: T[], v: T): T[] {
 export function isByeMatch<TMatch extends MatchLikeBase>(m: TMatch): boolean {
   const h = normalizePL(String(m.home_team_name || ""));
   const a = normalizePL(String(m.away_team_name || ""));
-  return h.includes("bye") || a.includes("bye") || h.includes("__system_bye__") || a.includes("__system_bye__");
+  return (
+    h.includes("bye") ||
+    a.includes("bye") ||
+    h.includes("__system_bye__") ||
+    a.includes("__system_bye__")
+  );
 }
 
 function parseFirstInt(s: string): number | null {
@@ -216,7 +226,9 @@ function sortOptionsStable(options: FilterOption[]): FilterOption[] {
   });
 }
 
-function groupMatchesByRound<TMatch extends MatchLikeBase>(matches: TMatch[]): Array<[string, TMatch[]]> {
+function groupMatchesByRound<TMatch extends MatchLikeBase>(
+  matches: TMatch[]
+): Array<[string, TMatch[]]> {
   const map = new Map<string, TMatch[]>();
 
   for (const m of matches) {
@@ -229,7 +241,9 @@ function groupMatchesByRound<TMatch extends MatchLikeBase>(matches: TMatch[]): A
   return [...map.entries()].sort((a, b) => Number(a[0]) - Number(b[0]));
 }
 
-function groupMatchesByGroup<TMatch extends MatchLikeBase>(matches: TMatch[]): Array<[string, TMatch[]]> {
+function groupMatchesByGroup<TMatch extends MatchLikeBase>(
+  matches: TMatch[]
+): Array<[string, TMatch[]]> {
   const map = new Map<string, TMatch[]>();
 
   for (const m of matches) {
@@ -248,8 +262,13 @@ function displayGroupNameByIndex(idx: number): string {
   return `Grupa ${idx + 1}`;
 }
 
-function buildStagesForView<TMatch extends MatchLikeBase>(allMatches: TMatch[]): StageView<TMatch>[] {
-  const stageMap = new Map<number, { stageType: StageType; stageOrder: number; allMatches: TMatch[] }>();
+function buildStagesForView<TMatch extends MatchLikeBase>(
+  allMatches: TMatch[]
+): StageView<TMatch>[] {
+  const stageMap = new Map<
+    number,
+    { stageType: StageType; stageOrder: number; allMatches: TMatch[] }
+  >();
 
   for (const m of allMatches) {
     const stageId = Number(m.stage_id);
@@ -305,7 +324,11 @@ export function formatDatePL(iso: string): string {
     const [y, m, d] = iso.split("-").map((x) => Number(x));
     if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return iso;
     const dt = new Date(y, (m ?? 1) - 1, d ?? 1);
-    return new Intl.DateTimeFormat("pl-PL", { year: "numeric", month: "2-digit", day: "2-digit" }).format(dt);
+    return new Intl.DateTimeFormat("pl-PL", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(dt);
   } catch {
     return iso;
   }
@@ -324,8 +347,11 @@ function statusPriority(bucket: MatchStatusBucket): number {
   return 2;
 }
 
-// Priorytet zawsze działa wewnątrz listy w sekcji (kolejka/grupa), bez mieszania sekcji
-function applySecondaryPriority<TMatch extends MatchLikeBase>(list: TMatch[], secondaryPriority: SecondaryPriority): TMatch[] {
+// Priorytet działa w obrębie sekcji (kolejka/grupa), bez mieszania sekcji
+function applySecondaryPriority<TMatch extends MatchLikeBase>(
+  list: TMatch[],
+  secondaryPriority: SecondaryPriority
+): TMatch[] {
   if (secondaryPriority === "none") return list;
 
   const enriched = list.map((m, idx) => {
@@ -350,7 +376,9 @@ function applySecondaryPriority<TMatch extends MatchLikeBase>(list: TMatch[], se
     const ah = a.scheduleKey ? 0 : 1;
     const bh = b.scheduleKey ? 0 : 1;
     if (ah !== bh) return ah - bh;
-    if (a.scheduleKey && b.scheduleKey && a.scheduleKey !== b.scheduleKey) return a.scheduleKey.localeCompare(b.scheduleKey);
+    if (a.scheduleKey && b.scheduleKey && a.scheduleKey !== b.scheduleKey) {
+      return a.scheduleKey.localeCompare(b.scheduleKey);
+    }
 
     return a.idx - b.idx;
   });
@@ -359,7 +387,9 @@ function applySecondaryPriority<TMatch extends MatchLikeBase>(list: TMatch[], se
 }
 
 function collapseKey(parts: Array<string | number | null | undefined>): string {
-  return parts.map((p) => (p === null || p === undefined ? "na" : String(p))).join(":");
+  return parts
+    .map((p) => (p === null || p === undefined ? "na" : String(p)))
+    .join(":");
 }
 
 function MatchesListOrGrid({
@@ -373,13 +403,7 @@ function MatchesListOrGrid({
 }) {
   if (mode === "grid") {
     return (
-      <div
-        className={cn(
-          "grid gap-4",
-          "lg:grid-cols-2 2xl:grid-cols-3",
-          className
-        )}
-      >
+      <div className={cn("grid gap-4", "sm:grid-cols-2 xl:grid-cols-3", className)}>
         {children}
       </div>
     );
@@ -406,8 +430,11 @@ function MatchesFilterPanel({
   const roundsSorted = useMemo(() => sortOptionsStable(roundOptions ?? []), [roundOptions]);
   const groupsSorted = useMemo(() => sortOptionsStable(groupOptions ?? []), [groupOptions]);
 
-  const chipBase =
-    "inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-slate-200 hover:bg-white/[0.07] transition";
+  const chipBase = cn(
+    "inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-slate-200 transition",
+    "hover:bg-white/[0.07]",
+    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+  );
   const chipActive = "bg-white/[0.10] border-white/20";
   const chipDisabled = "opacity-50 cursor-not-allowed hover:bg-white/[0.04]";
 
@@ -415,8 +442,7 @@ function MatchesFilterPanel({
   const isStatusActive = (s: MatchStatusBucket) => value.statuses.includes(s);
 
   const [panelCollapsed, setPanelCollapsed] = useState(false);
-
-  const togglePanel = () => setPanelCollapsed((v) => !v);
+  const panelContentId = "matches-filter-panel-content";
 
   const clearAll = () => {
     onChange({
@@ -432,7 +458,9 @@ function MatchesFilterPanel({
   };
 
   const setValue = (next: MatchFiltersState) => {
-    if (next.splitByStatus && next.secondaryPriority === "status") next = { ...next, secondaryPriority: "none" };
+    if (next.splitByStatus && next.secondaryPriority === "status") {
+      next = { ...next, secondaryPriority: "none" };
+    }
     onChange(next);
   };
 
@@ -442,9 +470,12 @@ function MatchesFilterPanel({
       <button
         type="button"
         onClick={() => onViewModeChange(mode)}
+        aria-pressed={active}
+        title={label}
         className={cn(
           "inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-xs transition",
           "border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.07]",
+          "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
           active && "border-white/20 bg-white/[0.10]"
         )}
       >
@@ -463,12 +494,12 @@ function MatchesFilterPanel({
 
       <div className="relative">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-[240px]">
+          <div className="min-w-0">
             <div className="flex items-center gap-2">
               <div className="inline-flex h-9 w-9 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04]">
                 <Filter className="h-4 w-4 text-slate-200" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <div className="text-sm font-semibold text-white">Filtry</div>
                 <div className="text-xs text-slate-400">Łącznie: {totalMatchesCount} meczów</div>
               </div>
@@ -482,7 +513,11 @@ function MatchesFilterPanel({
             <button
               type="button"
               onClick={clearAll}
-              className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-slate-200 hover:bg-white/[0.07]"
+              className={cn(
+                "inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-slate-200 transition",
+                "hover:bg-white/[0.07]",
+                "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+              )}
             >
               <Eraser className="h-4 w-4" />
               Wyczyść
@@ -490,8 +525,14 @@ function MatchesFilterPanel({
 
             <button
               type="button"
-              onClick={togglePanel}
-              className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-slate-200 hover:bg-white/[0.07]"
+              onClick={() => setPanelCollapsed((v) => !v)}
+              aria-expanded={!panelCollapsed}
+              aria-controls={panelContentId}
+              className={cn(
+                "inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-slate-200 transition",
+                "hover:bg-white/[0.07]",
+                "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+              )}
             >
               {panelCollapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
               {panelCollapsed ? "Rozwiń" : "Zwiń"}
@@ -500,16 +541,24 @@ function MatchesFilterPanel({
         </div>
 
         {!panelCollapsed ? (
-          <div className="mt-4 space-y-5">
+          <div id={panelContentId} className="mt-4 space-y-5">
             <div>
               <div className="mb-2 text-xs font-semibold text-slate-300">Szukaj</div>
               <div className="relative">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input
+
+                <Input
+                  unstyled
+                  type="search"
+                  name="matches_query"
+                  aria-label="Szukaj drużyny"
                   value={value.query}
                   onChange={(e) => setValue({ ...value, query: e.target.value })}
                   placeholder="Szukaj drużyny..."
-                  className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-10 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-white/20 focus:outline-none"
+                  className={cn(
+                    "w-full rounded-2xl border border-white/10 bg-white/[0.04] px-10 py-2 text-sm text-slate-100 placeholder:text-slate-500",
+                    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10 focus-visible:border-white/20"
+                  )}
                 />
               </div>
             </div>
@@ -520,6 +569,7 @@ function MatchesFilterPanel({
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
+                  aria-pressed={!statusAny}
                   className={cn(chipBase, !statusAny && chipActive)}
                   onClick={() => setValue({ ...value, statuses: [] })}
                 >
@@ -530,8 +580,14 @@ function MatchesFilterPanel({
 
                 <button
                   type="button"
+                  aria-pressed={isStatusActive("IN_PROGRESS")}
                   className={cn(chipBase, isStatusActive("IN_PROGRESS") && chipActive)}
-                  onClick={() => setValue({ ...value, statuses: toggleInArray(value.statuses, "IN_PROGRESS") })}
+                  onClick={() =>
+                    setValue({
+                      ...value,
+                      statuses: toggleInArray(value.statuses, "IN_PROGRESS"),
+                    })
+                  }
                 >
                   <span className="inline-flex h-2 w-2 rounded-full bg-emerald-400/80" />
                   W trakcie ({statusCounts.IN_PROGRESS})
@@ -540,8 +596,14 @@ function MatchesFilterPanel({
 
                 <button
                   type="button"
+                  aria-pressed={isStatusActive("PLANNED")}
                   className={cn(chipBase, isStatusActive("PLANNED") && chipActive)}
-                  onClick={() => setValue({ ...value, statuses: toggleInArray(value.statuses, "PLANNED") })}
+                  onClick={() =>
+                    setValue({
+                      ...value,
+                      statuses: toggleInArray(value.statuses, "PLANNED"),
+                    })
+                  }
                 >
                   <span className="inline-flex h-2 w-2 rounded-full bg-sky-400/80" />
                   Zaplanowane ({statusCounts.PLANNED})
@@ -550,8 +612,14 @@ function MatchesFilterPanel({
 
                 <button
                   type="button"
+                  aria-pressed={isStatusActive("FINISHED")}
                   className={cn(chipBase, isStatusActive("FINISHED") && chipActive)}
-                  onClick={() => setValue({ ...value, statuses: toggleInArray(value.statuses, "FINISHED") })}
+                  onClick={() =>
+                    setValue({
+                      ...value,
+                      statuses: toggleInArray(value.statuses, "FINISHED"),
+                    })
+                  }
                 >
                   <span className="inline-flex h-2 w-2 rounded-full bg-amber-400/80" />
                   Zakończone ({statusCounts.FINISHED})
@@ -570,6 +638,7 @@ function MatchesFilterPanel({
                       <button
                         key={opt.value}
                         type="button"
+                        aria-pressed={active}
                         className={cn(chipBase, active && chipActive)}
                         onClick={() => setValue({ ...value, stage: opt.value })}
                       >
@@ -592,8 +661,14 @@ function MatchesFilterPanel({
                       <button
                         key={opt.value}
                         type="button"
+                        aria-pressed={active}
                         className={cn(chipBase, active && chipActive)}
-                        onClick={() => setValue({ ...value, rounds: toggleInArray(value.rounds, opt.value) })}
+                        onClick={() =>
+                          setValue({
+                            ...value,
+                            rounds: toggleInArray(value.rounds, opt.value),
+                          })
+                        }
                       >
                         {opt.label} ({opt.count})
                         {active ? <Check className="h-4 w-4 text-white" /> : null}
@@ -614,8 +689,14 @@ function MatchesFilterPanel({
                       <button
                         key={opt.value}
                         type="button"
+                        aria-pressed={active}
                         className={cn(chipBase, active && chipActive)}
-                        onClick={() => setValue({ ...value, groups: toggleInArray(value.groups, opt.value) })}
+                        onClick={() =>
+                          setValue({
+                            ...value,
+                            groups: toggleInArray(value.groups, opt.value),
+                          })
+                        }
                       >
                         {opt.label} ({opt.count})
                         {active ? <Check className="h-4 w-4 text-white" /> : null}
@@ -631,6 +712,7 @@ function MatchesFilterPanel({
                 <div className="mb-2 text-xs font-semibold text-slate-300">BYE</div>
                 <button
                   type="button"
+                  aria-pressed={showBye}
                   className={cn(chipBase, showBye && chipActive)}
                   onClick={() => onToggleShowBye(!showBye)}
                 >
@@ -647,6 +729,7 @@ function MatchesFilterPanel({
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
+                      aria-pressed={value.baseLayout === "rounds"}
                       className={cn(chipBase, value.baseLayout === "rounds" && chipActive)}
                       onClick={() => setValue({ ...value, baseLayout: "rounds" })}
                     >
@@ -655,6 +738,7 @@ function MatchesFilterPanel({
                     </button>
                     <button
                       type="button"
+                      aria-pressed={value.baseLayout === "groups"}
                       className={cn(chipBase, value.baseLayout === "groups" && chipActive)}
                       onClick={() => setValue({ ...value, baseLayout: "groups" })}
                     >
@@ -669,6 +753,7 @@ function MatchesFilterPanel({
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
+                      aria-pressed={value.secondaryPriority === "none"}
                       className={cn(chipBase, value.secondaryPriority === "none" && chipActive)}
                       onClick={() => setValue({ ...value, secondaryPriority: "none" })}
                     >
@@ -677,7 +762,13 @@ function MatchesFilterPanel({
                     </button>
                     <button
                       type="button"
-                      className={cn(chipBase, value.secondaryPriority === "status" && chipActive, value.splitByStatus && chipDisabled)}
+                      aria-pressed={value.secondaryPriority === "status"}
+                      aria-disabled={value.splitByStatus}
+                      className={cn(
+                        chipBase,
+                        value.secondaryPriority === "status" && chipActive,
+                        value.splitByStatus && chipDisabled
+                      )}
                       onClick={() => {
                         if (value.splitByStatus) return;
                         setValue({ ...value, secondaryPriority: "status" });
@@ -689,6 +780,7 @@ function MatchesFilterPanel({
                     </button>
                     <button
                       type="button"
+                      aria-pressed={value.secondaryPriority === "term"}
                       className={cn(chipBase, value.secondaryPriority === "term" && chipActive)}
                       onClick={() => setValue({ ...value, secondaryPriority: "term" })}
                     >
@@ -703,6 +795,7 @@ function MatchesFilterPanel({
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
+                      aria-pressed={!value.splitByStatus}
                       className={cn(chipBase, !value.splitByStatus && chipActive)}
                       onClick={() => setValue({ ...value, splitByStatus: false })}
                     >
@@ -711,6 +804,7 @@ function MatchesFilterPanel({
                     </button>
                     <button
                       type="button"
+                      aria-pressed={value.splitByStatus}
                       className={cn(chipBase, value.splitByStatus && chipActive)}
                       onClick={() => setValue({ ...value, splitByStatus: !value.splitByStatus })}
                     >
@@ -743,12 +837,13 @@ function StatusHeaderCard<TMatch extends MatchLikeBase>({
 
   const matchCount = useMemo(() => stages.reduce((sum, s) => sum + s.matches.length, 0), [stages]);
 
-  const title = bucket === "IN_PROGRESS" ? "W trakcie" : bucket === "FINISHED" ? "Zakończone" : "Zaplanowane";
+  const title =
+    bucket === "IN_PROGRESS" ? "W trakcie" : bucket === "FINISHED" ? "Zakończone" : "Zaplanowane";
 
   return (
     <Card className={cn("p-4 sm:p-5 border", styles.shell)}>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-[220px]">
+        <div className="min-w-0">
           <div className={cn("flex items-center gap-2 text-sm font-semibold", styles.title)}>
             <span className={cn("inline-flex h-2 w-2 rounded-full", styles.dot)} />
             {title}
@@ -761,7 +856,12 @@ function StatusHeaderCard<TMatch extends MatchLikeBase>({
         <button
           type="button"
           onClick={onToggleCollapsed}
-          className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-slate-200 hover:bg-white/[0.07] transition"
+          aria-expanded={!collapsed}
+          className={cn(
+            "inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-slate-200 transition",
+            "hover:bg-white/[0.07]",
+            "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+          )}
         >
           {collapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
           {collapsed ? "Rozwiń wszystko" : "Zwiń wszystko"}
@@ -796,7 +896,8 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
   }, [storageKeyPrefix, storageScope, tournamentId]);
 
   const filtersKey = `${storageBase}.filters.v1`;
-  const uiKey = `${storageBase}.ui.v2`; // v2 bo dodajemy viewMode
+  // Klucz UI jest wersjonowany, aby nie mieszać formatów w localStorage.
+  const uiKey = `${storageBase}.ui.v2`;
 
   const defaultFilters: MatchFiltersState = useMemo(
     () => ({
@@ -816,7 +917,8 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
     const parsed = safeReadJson<Partial<MatchFiltersState>>(filtersKey, {});
 
     const stageRaw = String((parsed as any).stage ?? "ALL");
-    const stage: StageFilterMode = stageRaw === "GROUP" || stageRaw === "KNOCKOUT" || stageRaw === "ALL" ? stageRaw : "ALL";
+    const stage: StageFilterMode =
+      stageRaw === "GROUP" || stageRaw === "KNOCKOUT" || stageRaw === "ALL" ? stageRaw : "ALL";
 
     const baseLayout: BaseLayoutMode = parsed.baseLayout === "groups" ? "groups" : "rounds";
 
@@ -827,7 +929,9 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
       stage,
       query: typeof parsed.query === "string" ? parsed.query : "",
       statuses: Array.isArray(parsed.statuses)
-        ? (parsed.statuses.filter((x) => x === "PLANNED" || x === "IN_PROGRESS" || x === "FINISHED") as MatchStatusBucket[])
+        ? (parsed.statuses.filter(
+            (x) => x === "PLANNED" || x === "IN_PROGRESS" || x === "FINISHED"
+          ) as MatchStatusBucket[])
         : [],
       rounds: Array.isArray(parsed.rounds) ? parsed.rounds.filter((x) => typeof x === "string") : [],
       groups: Array.isArray(parsed.groups) ? parsed.groups.filter((x) => typeof x === "string") : [],
@@ -848,12 +952,16 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
       viewMode?: ViewMode;
     }>(uiKey, {});
 
-    const viewMode: ViewMode = parsed.viewMode === "list" || parsed.viewMode === "grid" ? parsed.viewMode : "grid";
+    const viewMode: ViewMode =
+      parsed.viewMode === "list" || parsed.viewMode === "grid" ? parsed.viewMode : "grid";
 
     return {
       showBye: Boolean(parsed.showBye),
       viewMode,
-      collapsed: parsed.collapsed && typeof parsed.collapsed === "object" ? parsed.collapsed : ({} as Record<string, boolean>),
+      collapsed:
+        parsed.collapsed && typeof parsed.collapsed === "object"
+          ? parsed.collapsed
+          : ({} as Record<string, boolean>),
       statusCollapsed:
         parsed.statusCollapsed && typeof parsed.statusCollapsed === "object"
           ? ({
@@ -888,7 +996,10 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
   const matchesLike = useMemo(() => (Array.isArray(matches) ? matches : ([] as TMatch[])), [matches]);
 
   const allStages = useMemo(() => buildStagesForView(matchesLike), [matchesLike]);
-  const regularStages = useMemo(() => buildStagesForView(matchesLike.filter((m) => !isByeMatch(m))), [matchesLike]);
+  const regularStages = useMemo(
+    () => buildStagesForView(matchesLike.filter((m) => !isByeMatch(m))),
+    [matchesLike]
+  );
 
   const byeMatchesAll = useMemo(() => matchesLike.filter((m) => isByeMatch(m)), [matchesLike]);
 
@@ -960,7 +1071,11 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
       merged.set(o.value, { label: o.label, count: (prev?.count ?? 0) + o.count });
     }
 
-    return Array.from(merged.entries()).map(([value, v]) => ({ value, label: v.label, count: v.count }));
+    return Array.from(merged.entries()).map(([value, v]) => ({
+      value,
+      label: v.label,
+      count: v.count,
+    }));
   }, [allStages, groupLabelByStage]);
 
   const roundOptions = useMemo(() => {
@@ -971,14 +1086,24 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
 
       if (s.stageType === "LEAGUE") {
         groupMatchesByRound(s.allMatches).forEach(([r, ms]) => {
-          out.push({ value: `round:${s.stageId}:${r}`, label: `Kolejka ${r}`, count: ms.length, stage: header });
+          out.push({
+            value: `round:${s.stageId}:${r}`,
+            label: `Kolejka ${r}`,
+            count: ms.length,
+            stage: header,
+          });
         });
       } else if (s.stageType === "GROUP") {
         const c = new Map<number | null, number>();
         s.allMatches.forEach((m) => c.set(m.round_number ?? 0, (c.get(m.round_number ?? 0) || 0) + 1));
         c.forEach((cnt, r) => {
           const rr = r ?? 0;
-          out.push({ value: `round:${s.stageId}:${rr}`, label: `Kolejka ${rr}`, count: cnt, stage: header });
+          out.push({
+            value: `round:${s.stageId}:${rr}`,
+            label: `Kolejka ${rr}`,
+            count: cnt,
+            stage: header,
+          });
         });
       } else if (s.stageType === "KNOCKOUT" || s.stageType === "THIRD_PLACE") {
         out.push({ value: `stage:${s.stageId}`, label: header, count: s.allMatches.length, stage: "Puchar" });
@@ -1047,13 +1172,22 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
 
     return {
       IN_PROGRESS: filteredStagesBase
-        .map((s) => ({ ...s, matches: s.matches.filter((m) => bucketForStatus(m.status) === "IN_PROGRESS") }))
+        .map((s) => ({
+          ...s,
+          matches: s.matches.filter((m) => bucketForStatus(m.status) === "IN_PROGRESS"),
+        }))
         .filter((s) => s.matches.length),
       PLANNED: filteredStagesBase
-        .map((s) => ({ ...s, matches: s.matches.filter((m) => bucketForStatus(m.status) === "PLANNED") }))
+        .map((s) => ({
+          ...s,
+          matches: s.matches.filter((m) => bucketForStatus(m.status) === "PLANNED"),
+        }))
         .filter((s) => s.matches.length),
       FINISHED: filteredStagesBase
-        .map((s) => ({ ...s, matches: s.matches.filter((m) => bucketForStatus(m.status) === "FINISHED") }))
+        .map((s) => ({
+          ...s,
+          matches: s.matches.filter((m) => bucketForStatus(m.status) === "FINISHED"),
+        }))
         .filter((s) => s.matches.length),
     } as Record<MatchStatusBucket, StageView<TMatch>[]>;
   }, [filteredStagesBase, filters.splitByStatus]);
@@ -1069,13 +1203,19 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
     return [{ key: "ALL", bucket: null, list: filteredStagesBase }];
   }, [filteredStagesBase, filteredStagesByStatus, filters.splitByStatus]);
 
-  const toggleCollapsed = (k: string) => setUi((p) => ({ ...p, collapsed: { ...p.collapsed, [k]: !p.collapsed[k] } }));
+  const toggleCollapsed = (k: string) =>
+    setUi((p) => ({ ...p, collapsed: { ...p.collapsed, [k]: !p.collapsed[k] } }));
 
   const collapseBtn = (key: string, labelOpen: string, labelClosed: string) => (
     <button
       type="button"
       onClick={() => toggleCollapsed(key)}
-      className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-slate-200 hover:bg-white/[0.07] transition"
+      aria-expanded={!ui.collapsed[key]}
+      className={cn(
+        "inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-slate-200 transition",
+        "hover:bg-white/[0.07]",
+        "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+      )}
     >
       {ui.collapsed[key] ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
       {ui.collapsed[key] ? labelClosed : labelOpen}
@@ -1108,7 +1248,7 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
 
   if (loading) {
     return (
-      <div className="w-full px-4 py-6 sm:px-6 lg:px-8 xl:px-10 2xl:px-12">
+      <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6">
         <Card className="p-6 text-slate-200">Ładowanie...</Card>
       </div>
     );
@@ -1116,7 +1256,7 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
 
   if (!matchesLike.length) {
     return (
-      <div className="w-full px-4 py-6 sm:px-6 lg:px-8 xl:px-10 2xl:px-12">
+      <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6">
         <div className="mb-6">
           <h1 className="text-2xl font-semibold tracking-tight text-white">{title}</h1>
           {description ? <p className="mt-1 text-sm text-slate-400">{description}</p> : null}
@@ -1132,7 +1272,7 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
   }
 
   return (
-    <div className="w-full px-4 py-6 sm:px-6 lg:px-8 xl:px-10 2xl:px-12">
+    <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6">
       <div className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight text-white">{title}</h1>
         {description ? <p className="mt-1 text-sm text-slate-400">{description}</p> : null}
@@ -1140,7 +1280,6 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
 
       {headerSlot}
 
-      {/* Layout 2-kolumnowy na desktop */}
       <div className="mt-6 grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
         <div className="xl:sticky xl:top-[calc(var(--app-navbar-h,84px)+12px)] xl:self-start">
           <MatchesFilterPanel
@@ -1211,7 +1350,9 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
                               filters.baseLayout === "groups" ? (
                                 groupMatchesByGroup(s.matches).map(([rawGroup, gMatches], idx) => {
                                   const groupKey = String(rawGroup ?? "").trim() || "-";
-                                  const groupLabel = groupLabelByStage.get(s.stageId)?.get(groupKey) ?? displayGroupNameByIndex(idx);
+                                  const groupLabel =
+                                    groupLabelByStage.get(s.stageId)?.get(groupKey) ??
+                                    displayGroupNameByIndex(idx);
                                   const gKey = collapseKey([...collapseKeyBase, "g", groupKey]);
 
                                   return (
@@ -1256,7 +1397,9 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
                                           <div className="space-y-6">
                                             {groupedInRound.map(([rawGroup, gm], idx) => {
                                               const groupKey = String(rawGroup ?? "").trim() || "-";
-                                              const groupLabel = groupLabelByStage.get(s.stageId)?.get(groupKey) ?? displayGroupNameByIndex(idx);
+                                              const groupLabel =
+                                                groupLabelByStage.get(s.stageId)?.get(groupKey) ??
+                                                displayGroupNameByIndex(idx);
 
                                               return (
                                                 <div key={groupKey} className="space-y-2">

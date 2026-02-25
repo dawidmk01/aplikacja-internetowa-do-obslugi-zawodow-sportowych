@@ -1,8 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { apiFetch } from "../../api";
 import { cn } from "../../lib/cn";
 
+import { Button } from "../../ui/Button";
+import { Card } from "../../ui/Card";
+import { InlineAlert } from "../../ui/InlineAlert";
+import { Input } from "../../ui/Input";
+import { Select, type SelectOption } from "../../ui/Select";
+
+import type { ClockMeta } from "./ClockPanel";
 import {
   BreakMode,
   type IncidentDTO,
@@ -13,8 +20,6 @@ import {
   tennisPointLabel,
   tennisPointLabelOther,
 } from "./matchLive.utils";
-
-import type { ClockMeta } from "./ClockPanel";
 
 type TeamPlayerDTO = {
   id: number;
@@ -29,15 +34,12 @@ type IncidentDraft = {
 
   minute: string;
 
-  // roster
   player_id: string;
   player_in_id: string;
   player_out_id: string;
 
-  // basketball
   points: 1 | 2 | 3;
 
-  // tennis
   tennis_set_no: number;
   tennis_game_no: number;
 
@@ -92,6 +94,11 @@ function computeClockMinute(clockMeta: ClockMeta | null): number | null {
   return Math.max(0, Math.floor(Number(chosen) / 60));
 }
 
+function mapPlayersToOptions(players: TeamPlayerDTO[]): SelectOption<string>[] {
+  return players.map((p) => ({ value: String(p.id), label: playerLabel(p) }));
+}
+
+/** IncidentsPanel obsługuje incydenty meczu oraz pobranie składów do wyboru zawodników w ramach edycji live. */
 export function IncidentsPanel({
   tournamentId,
   matchId,
@@ -115,7 +122,12 @@ export function IncidentsPanel({
   const [showAllIncidents, setShowAllIncidents] = useState(false);
 
   const [editIncidentId, setEditIncidentId] = useState<number | null>(null);
-  const [editDraft, setEditDraft] = useState<{ minute: string; player_id: string; player_in_id: string; player_out_id: string } | null>(null);
+  const [editDraft, setEditDraft] = useState<{
+    minute: string;
+    player_id: string;
+    player_in_id: string;
+    player_out_id: string;
+  } | null>(null);
   const [updating, setUpdating] = useState<Record<number, boolean>>({});
 
   const kinds = useMemo(() => incidentKindOptions(discipline), [discipline]);
@@ -141,31 +153,75 @@ export function IncidentsPanel({
   const [playersError, setPlayersError] = useState<string | null>(null);
   const [showRoster, setShowRoster] = useState(false);
 
-  const loadIncidents = async () => {
+  const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+
+  const teamIdForSide = useCallback(
+    (side: "" | "HOME" | "AWAY") => (side === "HOME" ? homeTeamId : side === "AWAY" ? awayTeamId : undefined),
+    [awayTeamId, homeTeamId]
+  );
+
+  const teamNameForSide = useCallback(
+    (side: "" | "HOME" | "AWAY") => (side === "HOME" ? homeTeamName : side === "AWAY" ? awayTeamName : "-"),
+    [awayTeamName, homeTeamName]
+  );
+
+  const clockMinute = useMemo(() => computeClockMinute(clockMeta), [clockMeta]);
+
+  useEffect(() => {
+    setShowAllIncidents(false);
+    setShowRoster(false);
+    setMinuteTouched(false);
+    setPendingDeleteId(null);
+    setEditIncidentId(null);
+    setEditDraft(null);
+
+    setDraft({
+      kind: "",
+      side: "",
+      minute: "",
+      player_id: "",
+      player_in_id: "",
+      player_out_id: "",
+      points: 2,
+      tennis_set_no: 1,
+      tennis_game_no: 1,
+      note: "",
+    });
+  }, [matchId]);
+
+  useEffect(() => {
+    if (minuteTouched) return;
+    if (clockMinute == null) return;
+    setDraft((d) => ({ ...d, minute: String(clockMinute) }));
+  }, [clockMinute, minuteTouched]);
+
+  const loadIncidents = useCallback(async () => {
     setError(null);
     setLoading(true);
+
     try {
-      const res = await apiFetch(`/api/matches/${matchId}/incidents/`, { method: "GET" });
+      const res = await apiFetch(`/api/matches/${matchId}/incidents/`, { method: "GET", toastOnError: false } as any);
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.detail || `Błąd pobierania incydentów (${res.status})`);
 
       const list = Array.isArray(data)
         ? data
         : Array.isArray(data?.incidents)
-        ? data.incidents
-        : Array.isArray(data?.results)
-        ? data.results
-        : [];
+          ? data.incidents
+          : Array.isArray(data?.results)
+            ? data.results
+            : [];
 
       setIncidents(list);
     } catch (e: any) {
       setError(e?.message || "Błąd pobierania incydentów.");
+      setIncidents([]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [matchId]);
 
-  const loadPlayers = async () => {
+  const loadPlayers = useCallback(async () => {
     setPlayersError(null);
 
     const tId = Number(tournamentId || 0);
@@ -179,10 +235,12 @@ export function IncidentsPanel({
     }
 
     setPlayersLoading(true);
+
     try {
       const loadOne = async (teamId: number) => {
         if (!teamId) return [];
-        const res = await apiFetch(`/api/tournaments/${tId}/teams/${teamId}/players/`, { method: "GET" });
+
+        const res = await apiFetch(`/api/tournaments/${tId}/teams/${teamId}/players/`, { method: "GET", toastOnError: false } as any);
         const data = await res.json().catch(() => null);
         if (!res.ok) throw new Error(data?.detail || `Błąd pobierania składu (${res.status})`);
 
@@ -211,49 +269,23 @@ export function IncidentsPanel({
     } finally {
       setPlayersLoading(false);
     }
-  };
+  }, [awayTeamId, homeTeamId, tournamentId]);
 
   useEffect(() => {
     loadIncidents();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [matchId, reloadToken]);
+  }, [loadIncidents, reloadToken]);
 
   useEffect(() => {
-    // skład nie musi się odświeżać co sekundę, tylko przy zmianie meczu/teams/tournament
     loadPlayers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tournamentId, homeTeamId, awayTeamId, matchId]);
+  }, [loadPlayers, matchId]);
 
-  useEffect(() => {
-    // reset widoku na nowy mecz
-    setShowAllIncidents(false);
-    setShowRoster(false);
-    setMinuteTouched(false);
+  const selectedTeamPlayers = useMemo(() => {
+    if (draft.side === "HOME") return homePlayers;
+    if (draft.side === "AWAY") return awayPlayers;
+    return [];
+  }, [draft.side, homePlayers, awayPlayers]);
 
-    setDraft({
-      kind: "",
-      side: "",
-      minute: "",
-      player_id: "",
-      player_in_id: "",
-      player_out_id: "",
-      points: 2,
-      tennis_set_no: 1,
-      tennis_game_no: 1,
-      note: "",
-    });
-  }, [matchId]);
-
-  const clockMinute = useMemo(() => computeClockMinute(clockMeta), [clockMeta]);
-
-  useEffect(() => {
-    if (minuteTouched) return;
-    if (clockMinute == null) return;
-    setDraft((d) => ({ ...d, minute: String(clockMinute) }));
-  }, [clockMinute, minuteTouched]);
-
-  const teamIdForSide = (side: "" | "HOME" | "AWAY") => (side === "HOME" ? homeTeamId : side === "AWAY" ? awayTeamId : undefined);
-  const teamNameForSide = (side: "" | "HOME" | "AWAY") => (side === "HOME" ? homeTeamName : side === "AWAY" ? awayTeamName : "-");
+  const canUseRoster = selectedTeamPlayers.length > 0;
 
   const showNoteInput = draft.kind !== "" && draft.kind !== "GOAL" && draft.kind !== "TENNIS_POINT";
   const showPlayerInput =
@@ -263,11 +295,16 @@ export function IncidentsPanel({
 
   const showSubInputs = draft.kind === "SUBSTITUTION";
 
-  const selectedTeamPlayers = useMemo(() => {
-    if (draft.side === "HOME") return homePlayers;
-    if (draft.side === "AWAY") return awayPlayers;
-    return [];
-  }, [draft.side, homePlayers, awayPlayers]);
+  const pointsOptions = useMemo<SelectOption<1 | 2 | 3>[]>(
+    () => [
+      { value: 1, label: "1" },
+      { value: 2, label: "2" },
+      { value: 3, label: "3" },
+    ],
+    []
+  );
+
+  const playerOptions = useMemo(() => mapPlayersToOptions(selectedTeamPlayers), [selectedTeamPlayers]);
 
   const tennisPointsView = useMemo(() => {
     if (!isTennis(discipline)) return null;
@@ -301,30 +338,17 @@ export function IncidentsPanel({
     };
   }, [discipline, incidents, draft.kind, draft.tennis_set_no, draft.tennis_game_no, homeTeamId, awayTeamId]);
 
-  const submitIncident = async () => {
+  const submitIncident = useCallback(async () => {
     setError(null);
 
-    if (!draft.kind) {
-      setError("Wybierz typ incydentu.");
-      return;
-    }
-
-    if (!draft.side) {
-      setError("Wybierz drużynę.");
-      return;
-    }
+    if (!draft.kind) return setError("Wybierz typ incydentu.");
+    if (!draft.side) return setError("Wybierz drużynę.");
 
     const team_id = teamIdForSide(draft.side);
-    if (!team_id) {
-      setError("Brak team_id dla tej strony (home/away).");
-      return;
-    }
+    if (!team_id) return setError("Brak team_id dla tej strony (home/away).");
 
     const minuteInt = safeInt(draft.minute);
-    if (minuteInt == null) {
-      setError("Podaj minutę.");
-      return;
-    }
+    if (minuteInt == null) return setError("Podaj minutę.");
 
     const payload: any = {
       kind: draft.kind,
@@ -334,11 +358,9 @@ export function IncidentsPanel({
       minute_raw: null,
     };
 
-    // zawodnicy
     if (draft.kind === "SUBSTITUTION") {
       if (!draft.player_in_id.trim() || !draft.player_out_id.trim()) {
-        setError("Dla zmiany wybierz zawodnika schodzącego i wchodzącego.");
-        return;
+        return setError("Dla zmiany wybierz zawodnika schodzącego i wchodzącego.");
       }
       payload.player_in_id = Number(draft.player_in_id);
       payload.player_out_id = Number(draft.player_out_id);
@@ -370,23 +392,24 @@ export function IncidentsPanel({
     payload.meta = meta;
 
     setLoading(true);
+
     try {
       const res = await apiFetch(`/api/matches/${matchId}/incidents/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      });
+        toastOnError: false,
+      } as any);
+
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.detail || "Nie udało się dodać incydentu.");
 
       await loadIncidents();
       await onAfterRecompute?.();
 
-      if (draft.kind === "TIMEOUT") {
-        onRequestClockReload?.();
-      }
+      if (draft.kind === "TIMEOUT") onRequestClockReload?.();
 
-      // neutralny reset po dodaniu
+      setPendingDeleteId(null);
       setMinuteTouched(false);
       setDraft((d) => ({
         ...d,
@@ -403,50 +426,70 @@ export function IncidentsPanel({
     } finally {
       setLoading(false);
     }
-  };
+  }, [
+    clockMeta?.clock?.clock_period,
+    clockMinute,
+    discipline,
+    draft,
+    goalScope,
+    loadIncidents,
+    matchId,
+    onAfterRecompute,
+    onRequestClockReload,
+    teamIdForSide,
+  ]);
 
-  const deleteIncident = async (incidentId: number) => {
-    setError(null);
-    setLoading(true);
-    try {
-      const res = await apiFetch(`/api/incidents/${incidentId}/`, { method: "DELETE" });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.detail || "Nie udało się usunąć incydentu.");
+  const deleteIncident = useCallback(
+    async (incidentId: number) => {
+      setError(null);
+      setLoading(true);
+
+      try {
+        const res = await apiFetch(`/api/incidents/${incidentId}/`, { method: "DELETE", toastOnError: false } as any);
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.detail || "Nie udało się usunąć incydentu.");
+        }
+
+        await loadIncidents();
+        await onAfterRecompute?.();
+      } catch (e: any) {
+        setError(e?.message ?? "Błąd usuwania incydentu.");
+      } finally {
+        setLoading(false);
+        setPendingDeleteId(null);
       }
-      await loadIncidents();
-      await onAfterRecompute?.();
-    } catch (e: any) {
-      setError(e?.message ?? "Błąd usuwania incydentu.");
-    } finally {
-      setLoading(false);
-    }
-  };
+    },
+    [loadIncidents, onAfterRecompute]
+  );
 
-  const requestDeleteIncident = (i: IncidentDTO) => {
-    const proceed = () => deleteIncident(i.id);
+  const requestDeleteIncident = useCallback(
+    (i: IncidentDTO) => {
+      const proceed = () => deleteIncident(i.id);
 
-    if (!onRequestConfirmIncidentDelete) {
-      const ok = window.confirm("Czy na pewno chcesz usunąć ten incydent? Ta operacja jest nieodwracalna.");
-      if (ok) proceed();
-      return;
-    }
+      if (onRequestConfirmIncidentDelete) {
+        const teamLabel = i.team_id === homeTeamId ? homeTeamName : i.team_id === awayTeamId ? awayTeamName : undefined;
+        onRequestConfirmIncidentDelete(
+          {
+            matchId,
+            incidentId: i.id,
+            incidentType: i.kind,
+            teamLabel,
+            minute: i.minute,
+            playerLabel: i.player_name,
+          },
+          proceed
+        );
+        return;
+      }
 
-    const teamLabel = i.team_id === homeTeamId ? homeTeamName : i.team_id === awayTeamId ? awayTeamName : undefined;
-    onRequestConfirmIncidentDelete(
-      {
-        matchId,
-        incidentId: i.id,
-        incidentType: i.kind,
-        teamLabel,
-        minute: i.minute,
-        playerLabel: i.player_name,
-      },
-      proceed
-    );
-  };
+      setPendingDeleteId(i.id);
+    },
+    [awayTeamId, deleteIncident, homeTeamId, homeTeamName, awayTeamName, matchId, onRequestConfirmIncidentDelete]
+  );
 
-  const beginEdit = (i: IncidentDTO) => {
+  const beginEdit = useCallback((i: IncidentDTO) => {
+    setPendingDeleteId(null);
     setEditIncidentId(i.id);
     setEditDraft({
       minute: i.minute != null ? String(i.minute) : "",
@@ -454,57 +497,65 @@ export function IncidentsPanel({
       player_out_id: i.player_out_id != null ? String(i.player_out_id) : "",
       player_in_id: i.player_in_id != null ? String(i.player_in_id) : "",
     });
-  };
+  }, []);
 
-  const cancelEdit = () => {
+  const cancelEdit = useCallback(() => {
     setEditIncidentId(null);
     setEditDraft(null);
-  };
+  }, []);
 
-  const updateIncident = async (incidentId: number, patch: Record<string, any>) => {
-    setError(null);
-    setUpdating((prev) => ({ ...prev, [incidentId]: true }));
-    try {
-      const res = await apiFetch(`/api/incidents/${incidentId}/`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
+  const updateIncident = useCallback(
+    async (incidentId: number, patch: Record<string, any>) => {
+      setError(null);
+      setUpdating((prev) => ({ ...prev, [incidentId]: true }));
 
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.detail || data?.code || "Nie udało się zaktualizować incydentu.");
+      try {
+        const res = await apiFetch(`/api/incidents/${incidentId}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+          toastOnError: false,
+        } as any);
 
-      setIncidents((prev) => prev.map((x) => (x.id === incidentId ? data : x)));
-      await loadIncidents();
-      onRequestClockReload?.();
-    } catch (e: any) {
-      setError(e?.message || "Nie udało się zaktualizować incydentu.");
-    } finally {
-      setUpdating((prev) => {
-        const n = { ...prev };
-        delete n[incidentId];
-        return n;
-      });
-    }
-  };
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.detail || data?.code || "Nie udało się zaktualizować incydentu.");
 
-  const saveEdit = async (i: IncidentDTO) => {
-    if (!editDraft) return;
+        setIncidents((prev) => prev.map((x) => (x.id === incidentId ? data : x)));
+        await loadIncidents();
+        onRequestClockReload?.();
+      } catch (e: any) {
+        setError(e?.message || "Nie udało się zaktualizować incydentu.");
+      } finally {
+        setUpdating((prev) => {
+          const n = { ...prev };
+          delete n[incidentId];
+          return n;
+        });
+      }
+    },
+    [loadIncidents, onRequestClockReload]
+  );
 
-    const minuteRaw = editDraft.minute.trim();
-    const minute = minuteRaw === "" ? null : Math.max(1, Number(minuteRaw));
-    const patch: Record<string, any> = { minute };
+  const saveEdit = useCallback(
+    async (i: IncidentDTO) => {
+      if (!editDraft) return;
 
-    if (supportsSubKind(i.kind)) {
-      patch.player_out_id = editDraft.player_out_id.trim() ? Number(editDraft.player_out_id) : null;
-      patch.player_in_id = editDraft.player_in_id.trim() ? Number(editDraft.player_in_id) : null;
-    } else if (supportsPlayerKind(i.kind)) {
-      patch.player_id = editDraft.player_id.trim() ? Number(editDraft.player_id) : null;
-    }
+      const minuteRaw = editDraft.minute.trim();
+      const minute = minuteRaw === "" ? null : Math.max(1, Number(minuteRaw));
+      const patch: Record<string, any> = { minute };
 
-    await updateIncident(i.id, patch);
-    cancelEdit();
-  };
+      if (supportsSubKind(i.kind)) {
+        patch.player_out_id = editDraft.player_out_id.trim() ? Number(editDraft.player_out_id) : null;
+        patch.player_in_id = editDraft.player_in_id.trim() ? Number(editDraft.player_in_id) : null;
+      } else if (supportsPlayerKind(i.kind)) {
+        patch.player_id = editDraft.player_id.trim() ? Number(editDraft.player_id) : null;
+      }
+
+      await updateIncident(i.id, patch);
+      cancelEdit();
+    },
+    [cancelEdit, editDraft, updateIncident]
+  );
 
   const sortedIncidents = useMemo(() => {
     return incidents.slice().sort((a, b) => (b.minute ?? 0) - (a.minute ?? 0) || b.id - a.id);
@@ -515,49 +566,58 @@ export function IncidentsPanel({
     return sortedIncidents.slice(0, 3);
   }, [sortedIncidents, showAllIncidents]);
 
-  const canUseRoster = selectedTeamPlayers.length > 0;
+  const rosterStatusLabel = useMemo(() => {
+    if (playersLoading) return "Ładowanie składów...";
+    if (playersError) return "Składy: błąd";
+    if (homePlayers.length || awayPlayers.length) return "Składy: OK";
+    return "Składy: brak";
+  }, [awayPlayers.length, homePlayers.length, playersError, playersLoading]);
+
+  const showListToggle = sortedIncidents.length > 3;
+  const disableActions = !canEdit || loading;
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+    <Card className="p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-base font-extrabold text-white">Incydenty</div>
 
-        {sortedIncidents.length > 3 && (
-          <button
+        {showListToggle ? (
+          <Button
             type="button"
-            className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-white"
+            variant="ghost"
             onClick={() => setShowAllIncidents((v) => !v)}
+            className="px-3 py-2"
           >
             {showAllIncidents ? "Zwiń" : `Pokaż wszystkie (${sortedIncidents.length})`}
-          </button>
-        )}
+          </Button>
+        ) : null}
       </div>
 
       <div className="mt-3 grid gap-3">
-        <div className="grid gap-3 rounded-2xl border border-white/10 bg-white/[0.02] p-3">
+        <div className="grid gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
           <div className="grid gap-2">
             <div className="flex items-center justify-between gap-2">
               <div className="text-sm font-semibold text-slate-200">Typ</div>
-              {!draft.kind && <div className="text-xs text-slate-400">Nie wybrano</div>}
+              {!draft.kind ? <div className="text-xs text-slate-400">Nie wybrano</div> : null}
             </div>
 
             <div className="flex flex-wrap gap-2">
               {kinds.map((k) => {
                 const active = draft.kind === k.value;
                 return (
-                  <button
+                  <Button
                     key={k.value}
                     type="button"
+                    variant="secondary"
                     className={cn(
-                      "rounded-full border border-white/10 px-3 py-1 text-xs font-semibold text-white",
-                      active ? "bg-emerald-500/15" : "bg-white/[0.04] hover:bg-white/[0.06]",
-                      (!canEdit || loading) && "opacity-60"
+                      "rounded-full px-3 py-1 text-xs",
+                      active && "border-emerald-400/20 bg-emerald-500/15"
                     )}
                     onClick={() => setDraft((d) => ({ ...d, kind: k.value }))}
-                    disabled={!canEdit || loading}
+                    disabled={disableActions}
                   >
                     {k.label}
-                  </button>
+                  </Button>
                 );
               })}
             </div>
@@ -566,35 +626,29 @@ export function IncidentsPanel({
           <div className="grid gap-2">
             <div className="flex items-center justify-between gap-2">
               <div className="text-sm font-semibold text-slate-200">Drużyna</div>
-              {!draft.side && <div className="text-xs text-slate-400">Nie wybrano</div>}
+              {!draft.side ? <div className="text-xs text-slate-400">Nie wybrano</div> : null}
             </div>
 
             <div className="flex flex-wrap gap-2">
-              <button
+              <Button
                 type="button"
-                className={cn(
-                  "rounded-full border border-white/10 px-3 py-1 text-xs font-semibold text-white",
-                  draft.side === "HOME" ? "bg-emerald-500/15" : "bg-white/[0.04] hover:bg-white/[0.06]",
-                  (!canEdit || loading) && "opacity-60"
-                )}
+                variant="secondary"
+                className={cn("rounded-full px-3 py-1 text-xs", draft.side === "HOME" && "border-emerald-400/20 bg-emerald-500/15")}
                 onClick={() => setDraft((d) => ({ ...d, side: "HOME" }))}
-                disabled={!canEdit || loading}
+                disabled={disableActions}
               >
                 {homeTeamName || "Gospodarze"}
-              </button>
+              </Button>
 
-              <button
+              <Button
                 type="button"
-                className={cn(
-                  "rounded-full border border-white/10 px-3 py-1 text-xs font-semibold text-white",
-                  draft.side === "AWAY" ? "bg-emerald-500/15" : "bg-white/[0.04] hover:bg-white/[0.06]",
-                  (!canEdit || loading) && "opacity-60"
-                )}
+                variant="secondary"
+                className={cn("rounded-full px-3 py-1 text-xs", draft.side === "AWAY" && "border-emerald-400/20 bg-emerald-500/15")}
                 onClick={() => setDraft((d) => ({ ...d, side: "AWAY" }))}
-                disabled={!canEdit || loading}
+                disabled={disableActions}
               >
                 {awayTeamName || "Goście"}
-              </button>
+              </Button>
             </div>
 
             <div className="text-xs text-slate-400">Wybrano: {teamNameForSide(draft.side)}</div>
@@ -603,8 +657,7 @@ export function IncidentsPanel({
           <div className="grid gap-2 sm:grid-cols-2">
             <label className="grid gap-1 text-sm text-slate-200">
               Minuta
-              <input
-                className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none"
+              <Input
                 value={draft.minute}
                 onChange={(e) => {
                   setMinuteTouched(true);
@@ -612,24 +665,21 @@ export function IncidentsPanel({
                 }}
                 placeholder={clockMinute != null ? String(clockMinute) : "np. 31"}
                 inputMode="numeric"
-                disabled={!canEdit || loading}
+                disabled={disableActions}
               />
             </label>
 
             {isBasketball(discipline) && draft.kind === "GOAL" ? (
-              <label className="grid gap-1 text-sm text-slate-200">
+              <div className="grid gap-1 text-sm text-slate-200">
                 Punkty
-                <select
-                  className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none"
+                <Select<1 | 2 | 3>
                   value={draft.points}
-                  onChange={(e) => setDraft((d) => ({ ...d, points: Number(e.target.value) as 1 | 2 | 3 }))}
-                  disabled={!canEdit || loading}
-                >
-                  <option value={1}>1</option>
-                  <option value={2}>2</option>
-                  <option value={3}>3</option>
-                </select>
-              </label>
+                  onChange={(v) => setDraft((d) => ({ ...d, points: v }))}
+                  options={pointsOptions}
+                  disabled={disableActions}
+                  ariaLabel="Punkty"
+                />
+              </div>
             ) : (
               <div className="grid gap-1 text-sm text-slate-200">
                 Zegar
@@ -640,244 +690,213 @@ export function IncidentsPanel({
             )}
           </div>
 
-          {isTennis(discipline) && draft.kind === "TENNIS_POINT" && (
-            <div className="grid gap-2 rounded-xl border border-white/10 bg-white/[0.02] p-3">
+          {isTennis(discipline) && draft.kind === "TENNIS_POINT" ? (
+            <div className="grid gap-2 rounded-xl border border-white/10 bg-white/[0.03] p-3">
               <div className="grid gap-2 sm:grid-cols-2">
                 <label className="grid gap-1 text-sm text-slate-200">
                   Set
-                  <input
-                    className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none"
+                  <Input
+                    type="number"
+                    min={1}
                     value={draft.tennis_set_no}
                     onChange={(e) => setDraft((d) => ({ ...d, tennis_set_no: Math.max(1, Number(e.target.value || 1)) }))}
                     inputMode="numeric"
-                    disabled={!canEdit || loading}
+                    disabled={disableActions}
                   />
                 </label>
 
                 <label className="grid gap-1 text-sm text-slate-200">
                   Gem
-                  <input
-                    className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none"
+                  <Input
+                    type="number"
+                    min={1}
                     value={draft.tennis_game_no}
                     onChange={(e) => setDraft((d) => ({ ...d, tennis_game_no: Math.max(1, Number(e.target.value || 1)) }))}
                     inputMode="numeric"
-                    disabled={!canEdit || loading}
+                    disabled={disableActions}
                   />
                 </label>
               </div>
 
-              {tennisPointsView && (
+              {tennisPointsView ? (
                 <div className="text-sm text-slate-200">
                   Punktacja (set {tennisPointsView.setNo}, gem {tennisPointsView.gameNo}):
                   <span className="ml-2 font-bold text-white">{homeTeamName}</span> {tennisPointsView.homeLabel}
                   <span className="mx-2 text-slate-500">:</span>
                   {tennisPointsView.awayLabel} <span className="font-bold text-white">{awayTeamName}</span>
                 </div>
-              )}
+              ) : null}
             </div>
-          )}
+          ) : null}
 
-          {playersError && (
-            <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{playersError}</div>
-          )}
+          {playersError ? <InlineAlert variant="error">{playersError}</InlineAlert> : null}
 
-          {showPlayerInput && (
+          {showPlayerInput ? (
             <div className="grid gap-2">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-sm font-semibold text-slate-200">Zawodnik (opcjonalnie)</div>
 
-                <button
+                <Button
                   type="button"
-                  className={cn(
-                    "rounded-xl border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-white",
-                    (!draft.side || playersLoading || !canUseRoster) && "opacity-60"
-                  )}
+                  variant="ghost"
+                  className="px-3 py-1.5 text-xs"
                   onClick={() => setShowRoster((v) => !v)}
                   disabled={!draft.side || playersLoading || !canUseRoster}
                 >
                   {showRoster ? "Zwiń" : "Rozwiń"}
-                </button>
+                </Button>
               </div>
 
-              <select
-                className={cn("rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none", (!canEdit || loading) && "opacity-70")}
-                value={draft.player_id}
-                onChange={(e) => setDraft((d) => ({ ...d, player_id: e.target.value }))}
-                disabled={!canEdit || loading || !draft.side || playersLoading || !canUseRoster}
-              >
-                <option value="">Brak</option>
-                {selectedTeamPlayers.map((p) => (
-                  <option key={p.id} value={String(p.id)}>
-                    {playerLabel(p)}
-                  </option>
-                ))}
-              </select>
+              <Select<string>
+                value={draft.player_id ? draft.player_id : null}
+                onChange={(v) => setDraft((d) => ({ ...d, player_id: v }))}
+                options={playerOptions}
+                placeholder="Brak"
+                disabled={disableActions || !draft.side || playersLoading || !canUseRoster}
+                ariaLabel="Zawodnik"
+              />
 
-              {showRoster && canUseRoster && (
-                <div className="grid max-h-[240px] gap-2 overflow-auto rounded-xl border border-white/10 bg-white/[0.02] p-3">
+              {showRoster && canUseRoster ? (
+                <div className="grid max-h-[240px] gap-2 overflow-auto rounded-xl border border-white/10 bg-white/[0.03] p-3">
                   {selectedTeamPlayers.map((p) => (
-                    <button
+                    <Button
                       key={p.id}
                       type="button"
-                      className={cn(
-                        "flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white hover:bg-white/[0.06]",
-                        (!canEdit || loading) && "opacity-60"
-                      )}
+                      variant="secondary"
+                      className="justify-between"
                       onClick={() => setDraft((d) => ({ ...d, player_id: String(p.id) }))}
-                      disabled={!canEdit || loading}
+                      disabled={disableActions}
                     >
-                      <span>{p.display_name}</span>
-                      {p.jersey_number != null && <span className="text-xs text-slate-300">#{p.jersey_number}</span>}
-                    </button>
+                      <span className="min-w-0 truncate">{p.display_name}</span>
+                      {p.jersey_number != null ? <span className="text-xs text-slate-300">#{p.jersey_number}</span> : null}
+                    </Button>
                   ))}
                 </div>
-              )}
+              ) : null}
             </div>
-          )}
+          ) : null}
 
-          {showSubInputs && (
+          {showSubInputs ? (
             <div className="grid gap-2">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-sm font-semibold text-slate-200">Zmiana (schodzi i wchodzi)</div>
 
-                <button
+                <Button
                   type="button"
-                  className={cn(
-                    "rounded-xl border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-white",
-                    (!draft.side || playersLoading || !canUseRoster) && "opacity-60"
-                  )}
+                  variant="ghost"
+                  className="px-3 py-1.5 text-xs"
                   onClick={() => setShowRoster((v) => !v)}
                   disabled={!draft.side || playersLoading || !canUseRoster}
                 >
                   {showRoster ? "Zwiń" : "Rozwiń"}
-                </button>
+                </Button>
               </div>
 
               <div className="grid gap-2 sm:grid-cols-2">
-                <label className="grid gap-1 text-sm text-slate-200">
+                <div className="grid gap-1 text-sm text-slate-200">
                   Schodzi
-                  <select
-                    className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none"
-                    value={draft.player_out_id}
-                    onChange={(e) => setDraft((d) => ({ ...d, player_out_id: e.target.value }))}
-                    disabled={!canEdit || loading || !draft.side || playersLoading || !canUseRoster}
-                  >
-                    <option value="">Wybierz</option>
-                    {selectedTeamPlayers.map((p) => (
-                      <option key={p.id} value={String(p.id)}>
-                        {playerLabel(p)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                  <Select<string>
+                    value={draft.player_out_id ? draft.player_out_id : null}
+                    onChange={(v) => setDraft((d) => ({ ...d, player_out_id: v }))}
+                    options={playerOptions}
+                    placeholder="Wybierz"
+                    disabled={disableActions || !draft.side || playersLoading || !canUseRoster}
+                    ariaLabel="Schodzi"
+                  />
+                </div>
 
-                <label className="grid gap-1 text-sm text-slate-200">
+                <div className="grid gap-1 text-sm text-slate-200">
                   Wchodzi
-                  <select
-                    className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none"
-                    value={draft.player_in_id}
-                    onChange={(e) => setDraft((d) => ({ ...d, player_in_id: e.target.value }))}
-                    disabled={!canEdit || loading || !draft.side || playersLoading || !canUseRoster}
-                  >
-                    <option value="">Wybierz</option>
-                    {selectedTeamPlayers.map((p) => (
-                      <option key={p.id} value={String(p.id)}>
-                        {playerLabel(p)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                  <Select<string>
+                    value={draft.player_in_id ? draft.player_in_id : null}
+                    onChange={(v) => setDraft((d) => ({ ...d, player_in_id: v }))}
+                    options={playerOptions}
+                    placeholder="Wybierz"
+                    disabled={disableActions || !draft.side || playersLoading || !canUseRoster}
+                    ariaLabel="Wchodzi"
+                  />
+                </div>
               </div>
 
-              {showRoster && canUseRoster && (
-                <div className="grid max-h-[240px] gap-2 overflow-auto rounded-xl border border-white/10 bg-white/[0.02] p-3">
+              {showRoster && canUseRoster ? (
+                <div className="grid max-h-[240px] gap-2 overflow-auto rounded-xl border border-white/10 bg-white/[0.03] p-3">
                   {selectedTeamPlayers.map((p) => (
                     <div key={p.id} className="flex flex-wrap items-center gap-2">
-                      <button
+                      <Button
                         type="button"
-                        className={cn(
-                          "flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white hover:bg-white/[0.06]",
-                          (!canEdit || loading) && "opacity-60"
-                        )}
+                        variant="secondary"
+                        className="flex-1 justify-start"
                         onClick={() => setDraft((d) => ({ ...d, player_out_id: String(p.id) }))}
-                        disabled={!canEdit || loading}
+                        disabled={disableActions}
                       >
                         Schodzi: {playerLabel(p)}
-                      </button>
+                      </Button>
 
-                      <button
+                      <Button
                         type="button"
-                        className={cn(
-                          "flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white hover:bg-white/[0.06]",
-                          (!canEdit || loading) && "opacity-60"
-                        )}
+                        variant="secondary"
+                        className="flex-1 justify-start"
                         onClick={() => setDraft((d) => ({ ...d, player_in_id: String(p.id) }))}
-                        disabled={!canEdit || loading}
+                        disabled={disableActions}
                       >
                         Wchodzi: {playerLabel(p)}
-                      </button>
+                      </Button>
                     </div>
                   ))}
                 </div>
-              )}
+              ) : null}
 
-              {!canUseRoster && (
-                <div className="rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2 text-sm text-slate-300">
+              {!canUseRoster ? (
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-slate-300">
                   Brak składu dla tej drużyny.
                 </div>
-              )}
+              ) : null}
             </div>
-          )}
+          ) : null}
 
-          {showNoteInput && (
+          {showNoteInput ? (
             <label className="grid gap-1 text-sm text-slate-200">
               Notatka (opcjonalnie)
-              <input
-                className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none"
+              <Input
                 value={draft.note}
                 onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))}
                 placeholder="np. kontuzja"
-                disabled={!canEdit || loading}
+                disabled={disableActions}
               />
             </label>
-          )}
+          ) : null}
 
-          {error && <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{error}</div>}
+          {error ? <InlineAlert variant="error">{error}</InlineAlert> : null}
 
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xs text-slate-400">
-              {playersLoading ? "Ładowanie składów..." : playersError ? "Składy: błąd" : homePlayers.length || awayPlayers.length ? "Składy: OK" : "Składy: brak"}
-            </div>
+            <div className="text-xs text-slate-400">{rosterStatusLabel}</div>
 
-            <button
-              type="button"
-              className={cn(
-                "rounded-xl border border-white/10 bg-emerald-500/15 px-3 py-2 text-sm font-semibold text-white",
-                (!canEdit || loading) && "opacity-60"
-              )}
-              onClick={submitIncident}
-              disabled={!canEdit || loading}
-            >
+            <Button type="button" variant="primary" onClick={submitIncident} disabled={disableActions}>
               Dodaj incydent
-            </button>
+            </Button>
           </div>
         </div>
 
         <div className="grid gap-2">
           {loading && incidents.length === 0 ? (
-            <div className="rounded-xl border border-white/10 bg-white/[0.02] px-3 py-3 text-sm text-slate-300">Ładowanie incydentów...</div>
+            <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-3 text-sm text-slate-300">
+              Ładowanie incydentów...
+            </div>
           ) : incidents.length === 0 ? (
-            <div className="rounded-xl border border-white/10 bg-white/[0.02] px-3 py-3 text-sm text-slate-300">Brak incydentów.</div>
+            <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-3 text-sm text-slate-300">
+              Brak incydentów.
+            </div>
           ) : (
             visibleIncidents.map((i) => {
               const teamLabel = i.team_id === homeTeamId ? homeTeamName : i.team_id === awayTeamId ? awayTeamName : "-";
               const isEditing = editIncidentId === i.id;
               const busy = !!updating[i.id];
+              const isPendingDelete = pendingDeleteId === i.id;
 
               return (
-                <div key={i.id} className="rounded-2xl border border-white/10 bg-white/[0.02] p-3">
+                <div key={i.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="text-sm text-slate-200">
+                    <div className="min-w-0 text-sm text-slate-200">
                       <span className="font-bold text-white">{i.minute != null ? `${i.minute}'` : "-"}</span>
                       <span className="mx-2 text-slate-500">|</span>
                       <span className="font-semibold text-white">{i.kind_display || i.kind}</span>
@@ -886,70 +905,60 @@ export function IncidentsPanel({
                       {i.player_name ? <span className="ml-2 text-slate-300">({i.player_name})</span> : null}
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       {isEditing ? (
                         <>
-                          <button
-                            type="button"
-                            className={cn(
-                              "rounded-xl border border-white/10 bg-white/[0.04] px-3 py-1.5 text-sm font-semibold text-white",
-                              busy && "opacity-60"
-                            )}
-                            onClick={() => saveEdit(i)}
-                            disabled={busy}
-                          >
+                          <Button type="button" variant="primary" onClick={() => saveEdit(i)} disabled={busy}>
                             Zapisz
-                          </button>
-                          <button
-                            type="button"
-                            className={cn(
-                              "rounded-xl border border-white/10 bg-white/[0.02] px-3 py-1.5 text-sm font-semibold text-white",
-                              busy && "opacity-60"
-                            )}
-                            onClick={cancelEdit}
-                            disabled={busy}
-                          >
+                          </Button>
+                          <Button type="button" variant="secondary" onClick={cancelEdit} disabled={busy}>
                             Anuluj
-                          </button>
+                          </Button>
                         </>
                       ) : (
                         <>
-                          <button
-                            type="button"
-                            className={cn(
-                              "rounded-xl border border-white/10 bg-white/[0.04] px-3 py-1.5 text-sm font-semibold text-white",
-                              (!canEdit || loading) && "opacity-60"
-                            )}
-                            onClick={() => beginEdit(i)}
-                            disabled={!canEdit || loading}
-                          >
+                          <Button type="button" variant="secondary" onClick={() => beginEdit(i)} disabled={!canEdit || loading}>
                             Edytuj
-                          </button>
-                          <button
+                          </Button>
+                          <Button
                             type="button"
-                            className={cn(
-                              "rounded-xl border border-white/10 bg-red-500/10 px-3 py-1.5 text-sm font-semibold text-white",
-                              (!canEdit || loading) && "opacity-60"
-                            )}
+                            variant="danger"
                             onClick={() => requestDeleteIncident(i)}
                             disabled={!canEdit || loading}
                           >
                             Usuń
-                          </button>
+                          </Button>
                         </>
                       )}
                     </div>
                   </div>
 
-                  {isEditing && editDraft && (
+                  {isPendingDelete ? (
+                    <div className="mt-3">
+                      <InlineAlert variant="error" title="Potwierdzenie">
+                        Usunięcie incydentu jest nieodwracalne. Czy na pewno kontynuować?
+                      </InlineAlert>
+
+                      <div className="mt-2 flex flex-wrap justify-end gap-2">
+                        <Button type="button" variant="secondary" onClick={() => setPendingDeleteId(null)} disabled={loading}>
+                          Anuluj
+                        </Button>
+                        <Button type="button" variant="danger" onClick={() => deleteIncident(i.id)} disabled={loading}>
+                          Usuń incydent
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {isEditing && editDraft ? (
                     <div className="mt-3 grid gap-2 sm:grid-cols-2">
                       <label className="grid gap-1 text-sm text-slate-200">
                         Minuta
-                        <input
-                          className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none"
+                        <Input
                           value={editDraft.minute}
                           onChange={(e) => setEditDraft((d) => (d ? { ...d, minute: e.target.value } : d))}
                           inputMode="numeric"
+                          disabled={busy}
                         />
                       </label>
 
@@ -957,53 +966,45 @@ export function IncidentsPanel({
                         <div className="grid gap-2 sm:grid-cols-2">
                           <label className="grid gap-1 text-sm text-slate-200">
                             ID schodzącego
-                            <input
-                              className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none"
+                            <Input
                               value={editDraft.player_out_id}
                               onChange={(e) => setEditDraft((d) => (d ? { ...d, player_out_id: e.target.value } : d))}
                               inputMode="numeric"
+                              disabled={busy}
                             />
                           </label>
+
                           <label className="grid gap-1 text-sm text-slate-200">
                             ID wchodzącego
-                            <input
-                              className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none"
+                            <Input
                               value={editDraft.player_in_id}
                               onChange={(e) => setEditDraft((d) => (d ? { ...d, player_in_id: e.target.value } : d))}
                               inputMode="numeric"
+                              disabled={busy}
                             />
                           </label>
                         </div>
                       ) : supportsPlayerKind(i.kind) ? (
                         <label className="grid gap-1 text-sm text-slate-200">
                           ID zawodnika
-                          <input
-                            className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none"
+                          <Input
                             value={editDraft.player_id}
                             onChange={(e) => setEditDraft((d) => (d ? { ...d, player_id: e.target.value } : d))}
                             inputMode="numeric"
+                            disabled={busy}
                           />
                         </label>
                       ) : (
                         <div />
                       )}
                     </div>
-                  )}
+                  ) : null}
                 </div>
               );
             })
           )}
         </div>
       </div>
-    </div>
+    </Card>
   );
 }
-
-/*
-Co zmieniono:
-1) Typ incydentu i wybór drużyny przeniesiono z select na szybkie pola wyboru (przyciski).
-2) Minuta to jedno pole edytowalne - domyślnie uzupełniane z zegara, bez przełączania "z zegara / ręcznie".
-3) Dodano roster: select z zawodnikami + "Rozwiń" pokazujące pełną listę do kliknięcia (GET /tournaments/<id>/teams/<id>/players/).
-4) Lista incydentów domyślnie pokazuje 3 ostatnie, z opcją "Pokaż wszystkie / Zwiń".
-5) Usunięto przycisk "Odśwież" - odświeżanie odbywa się automatycznie po akcjach i po reloadToken.
-*/

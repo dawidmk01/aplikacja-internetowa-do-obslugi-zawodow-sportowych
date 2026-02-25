@@ -1,5 +1,4 @@
-// frontend/src/components/PublicMatchesBar.tsx
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { CalendarClock, Radio } from "lucide-react";
 
@@ -33,14 +32,18 @@ type Props = {
   spacerHeightClassName?: string;
 };
 
+// Odczyt CSS var z fallbackiem, bezpieczny dla środowisk bez DOM.
 function readCssVarPx(name: string, fallbackPx: number): number {
+  if (typeof window === "undefined" || typeof document === "undefined") return fallbackPx;
+
   try {
     const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     const n = Number.parseFloat(raw);
     if (Number.isFinite(n)) return n;
   } catch {
-    // ignore
+    // brak
   }
+
   return fallbackPx;
 }
 
@@ -54,92 +57,114 @@ export default function PublicMatchesBar({
   topGapPx = 12,
   spacerHeightClassName,
 }: Props) {
-  const barRef = useRef<HTMLDivElement | null>(null);
+  const navRef = useRef<HTMLElement | null>(null);
 
   const liveCount = useMemo(
-    () => matches.filter((m) => m.status === "IN_PROGRESS").length,
+    () => (Array.isArray(matches) ? matches.filter((m) => m.status === "IN_PROGRESS").length : 0),
     [matches]
   );
+
   const upcomingCount = useMemo(
-    () => getUpcomingMatchesPreview(matches).length,
+    () => (Array.isArray(matches) ? getUpcomingMatchesPreview(matches).length : 0),
     [matches]
   );
 
   const [active, setActive] = useState<BarKey>("live");
 
-  useEffect(() => {
-    if (liveCount > 0) setActive("live");
-    else setActive("upcoming");
-  }, [liveCount]);
-
-  if (!matches || matches.length === 0) return null;
-
   const isTop = side === "top";
-  const flowH = underFlowNav ? readCssVarPx("--app-flowbar-h", 0) : 0;
 
-  const scrollTo = (id: string) => {
-    const el = document.getElementById(id);
-    if (!el) return;
+  const flowH = useMemo(() => {
+    if (!underFlowNav) return 0;
+    return readCssVarPx("--app-flowbar-h", 0);
+  }, [underFlowNav]);
 
-    if (!isTop) {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-      return;
-    }
+  useEffect(() => {
+    // Preferuj "Na żywo" jeśli są mecze w trakcie, w przeciwnym razie "Najbliższe" jeśli istnieją.
+    setActive((prev) => {
+      if (prev === "live" && liveCount === 0 && upcomingCount > 0) return "upcoming";
+      if (prev === "upcoming" && upcomingCount === 0 && liveCount > 0) return "live";
+      if (liveCount > 0) return "live";
+      if (upcomingCount > 0) return "upcoming";
+      return prev;
+    });
+  }, [liveCount, upcomingCount]);
 
-    const navbarH = readCssVarPx("--app-navbar-h", 84);
-    const barH = barRef.current?.getBoundingClientRect().height ?? 62;
-    const extra = 12;
+  const scrollTo = useCallback(
+    (id: string) => {
+      if (typeof window === "undefined" || typeof document === "undefined") return;
 
-    const top =
-      el.getBoundingClientRect().top +
-      window.scrollY -
-      (navbarH + flowH + topGapPx + barH + extra);
+      const el = document.getElementById(id);
+      if (!el) return;
 
-    window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
-  };
+      if (!isTop) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
 
-  const handleClick = (key: BarKey) => {
-    setActive(key);
-    scrollTo(key === "live" ? liveTargetId : upcomingTargetId);
-  };
+      const navbarH = readCssVarPx("--app-navbar-h", 84);
+      const barH = navRef.current?.getBoundingClientRect().height ?? 62;
+      const extra = 12;
 
-  const pillBase =
-    "relative inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-sm font-semibold transition " +
-    "border border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10] " +
-    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15";
+      const top =
+        el.getBoundingClientRect().top +
+        window.scrollY -
+        (navbarH + flowH + topGapPx + barH + extra);
 
-  const badgeBase =
-    "relative z-10 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full " +
-    "border border-white/10 bg-white/5 px-1.5 text-xs font-bold text-slate-100";
+      window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    },
+    [flowH, isTop, topGapPx]
+  );
+
+  const handleClick = useCallback(
+    (key: BarKey) => {
+      setActive(key);
+      scrollTo(key === "live" ? liveTargetId : upcomingTargetId);
+    },
+    [liveTargetId, scrollTo, upcomingTargetId]
+  );
+
+  if (!Array.isArray(matches) || matches.length === 0) return null;
+
+  const pillBase = cn(
+    "relative inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-sm font-semibold transition",
+    "border border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10]",
+    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+  );
+
+  const badgeBase = cn(
+    "relative z-10 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full",
+    "border border-white/10 bg-white/5 px-1.5 text-xs font-bold text-slate-100"
+  );
 
   const topOffsetCss =
     isTop && underFlowNav
       ? "calc(var(--app-navbar-h, 84px) + var(--app-flowbar-h, 0px))"
       : undefined;
 
+  const isLiveActive = active === "live";
+  const isUpcomingActive = active === "upcoming";
+
   return (
     <StickyBar
       side={side}
       className={className}
       zIndexClassName={isTop ? (underFlowNav ? "z-30" : "z-40") : "z-50"}
-      maxWidthClassName="max-w-none"
+      maxWidthClassName="max-w-[1400px]"
       topGapPx={topGapPx}
       topOffsetCss={topOffsetCss}
       spacerHeightClassName={spacerHeightClassName ?? "h-16 sm:h-[72px]"}
       contentClassName="p-2 sm:p-2.5"
     >
-      <nav ref={barRef} aria-label="Szybka nawigacja meczów">
+      <nav ref={navRef} aria-label="Szybka nawigacja meczów">
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={() => handleClick("live")}
-            className={cn(
-              pillBase,
-              liveCount > 0 ? "border-emerald-500/25" : "opacity-80"
-            )}
-            aria-current={active === "live" ? "page" : undefined}
+            className={cn(pillBase, liveCount > 0 ? "border-emerald-500/25" : "opacity-80")}
+            aria-pressed={isLiveActive}
+            aria-controls={liveTargetId}
           >
-            {active === "live" ? (
+            {isLiveActive ? (
               <motion.div
                 layoutId="public-matches-bar-active"
                 className="absolute inset-0 rounded-full bg-white/10"
@@ -157,13 +182,11 @@ export default function PublicMatchesBar({
           <button
             type="button"
             onClick={() => handleClick("upcoming")}
-            className={cn(
-              pillBase,
-              upcomingCount > 0 ? "border-sky-500/25" : "opacity-80"
-            )}
-            aria-current={active === "upcoming" ? "page" : undefined}
+            className={cn(pillBase, upcomingCount > 0 ? "border-sky-500/25" : "opacity-80")}
+            aria-pressed={isUpcomingActive}
+            aria-controls={upcomingTargetId}
           >
-            {active === "upcoming" ? (
+            {isUpcomingActive ? (
               <motion.div
                 layoutId="public-matches-bar-active"
                 className="absolute inset-0 rounded-full bg-white/10"
@@ -182,10 +205,3 @@ export default function PublicMatchesBar({
     </StickyBar>
   );
 }
-
-/*
-Co zmieniono:
-- Dodano stały pasek nawigacji meczów (Na żywo, Najbliższe) w stylu pill jak w TournamentFlowNav.
-- Pasek skroluje do sekcji PublicMatchesPanel z poprawnym offsetem (NavBar + opcjonalnie FlowNav).
-- Liczniki bazują na tej samej logice co panel (preview najbliższych meczów).
-*/

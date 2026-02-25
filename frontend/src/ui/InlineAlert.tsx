@@ -1,3 +1,6 @@
+// frontend/src/ui/InlineAlert.tsx
+// Komponent wyświetla komunikaty kontekstowe w obrębie widoku bez użycia toastów.
+
 import type { ReactNode } from "react";
 import { CheckCircle2, Info, XCircle } from "lucide-react";
 
@@ -12,8 +15,8 @@ type Props = {
   className?: string;
 };
 
-/** InlineAlert jest kanałem komunikacji kontekstowej w widokach (np. walidacja formularzy) niezależnym od toastów. */
 export function InlineAlert({ variant = "info", title, children, className }: Props) {
+  // Konfiguracja wariantu zapewnia spójne kolory i ikonę komunikatu.
   const cfg = getVariantConfig(variant);
 
   return (

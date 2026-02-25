@@ -1,8 +1,13 @@
-import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetch } from "../../api";
 import { cn } from "../../lib/cn";
 
+import { Button } from "../../ui/Button";
+import { Card } from "../../ui/Card";
+import { Input } from "../../ui/Input";
+import { Textarea } from "../../ui/Textarea";
+import { Select, type SelectOption } from "../../ui/Select";
 import { toast } from "../../ui/Toast";
 
 type LiveCommentaryEntryDTO = {
@@ -39,6 +44,8 @@ type DictState = {
   words: UiPhrase[];
   templates: UiPhrase[];
 };
+
+type PhraseUiType = "WORD" | "TEMPLATE";
 
 type Props = {
   tournamentId: number;
@@ -118,6 +125,12 @@ function insertAtCursor(el: HTMLTextAreaElement | null, value: string) {
   el.focus();
 }
 
+const PHRASE_TYPE_OPTIONS: SelectOption<PhraseUiType>[] = [
+  { value: "WORD", label: "Słowo" },
+  { value: "TEMPLATE", label: "Zwrot" },
+];
+
+/** Panel komentarza LIVE obsługuje wpisy minutowe oraz słownik fraz dla szybkiego wprowadzania. */
 export function CommentaryPanel({
   tournamentId,
   matchId,
@@ -134,7 +147,12 @@ export function CommentaryPanel({
 
   const [draft, setDraft] = useState("");
   const [newPhrase, setNewPhrase] = useState("");
-  const [newPhraseType, setNewPhraseType] = useState<"WORD" | "TEMPLATE">("WORD");
+  const [newPhraseType, setNewPhraseType] = useState<PhraseUiType>("WORD");
+
+  const [entrySubmitting, setEntrySubmitting] = useState(false);
+  const [dictSubmitting, setDictSubmitting] = useState(false);
+  const [deletingEntryIds, setDeletingEntryIds] = useState<Record<number, boolean>>({});
+  const [deletingPhraseIds, setDeletingPhraseIds] = useState<Record<number, boolean>>({});
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -156,7 +174,11 @@ export function CommentaryPanel({
     const loadEntries = async () => {
       setEntriesLoading(true);
       try {
-        const res = await apiFetch(`/api/matches/${matchId}/commentary/`, { method: "GET" });
+        const res = await apiFetch(
+          `/api/matches/${matchId}/commentary/`,
+          { method: "GET", toastOnError: false } as any
+        );
+
         const data = await readJsonSafe(res);
         if (!res.ok) {
           throw new Error(getApiErrorMessage(data, "Nie udało się pobrać komentarzy."));
@@ -167,7 +189,7 @@ export function CommentaryPanel({
         setEntries(list);
       } catch (e: any) {
         if (!alive) return;
-        toast(e?.message ?? "Nie udało się pobrać komentarzy.");
+        toast.error(e?.message ?? "Nie udało się pobrać komentarzy.", { title: "Komentarz LIVE" });
         setEntries([]);
       } finally {
         if (alive) setEntriesLoading(false);
@@ -187,7 +209,11 @@ export function CommentaryPanel({
     const loadDict = async () => {
       setDictLoading(true);
       try {
-        const res = await apiFetch(`/api/tournaments/${tournamentId}/commentary-phrases/`, { method: "GET" });
+        const res = await apiFetch(
+          `/api/tournaments/${tournamentId}/commentary-phrases/`,
+          { method: "GET", toastOnError: false } as any
+        );
+
         const data = await readJsonSafe(res);
         if (!res.ok) {
           throw new Error(getApiErrorMessage(data, "Nie udało się pobrać słownika."));
@@ -216,7 +242,7 @@ export function CommentaryPanel({
         setDict(merged);
       } catch (e: any) {
         if (!alive) return;
-        toast(e?.message ?? "Nie udało się pobrać słownika.");
+        toast.error(e?.message ?? "Nie udało się pobrać słownika.", { title: "Komentarz LIVE" });
         setDict(defaultPhrases());
       } finally {
         if (alive) setDictLoading(false);
@@ -230,28 +256,33 @@ export function CommentaryPanel({
     };
   }, [tournamentId]);
 
-  const insertPhrase = (text: string) => {
+  const insertPhrase = useCallback((text: string) => {
     const el = textareaRef.current;
     if (!el) return;
     insertAtCursor(el, text);
     setDraft(el.value);
-  };
+  }, []);
 
-  const addEntry = async () => {
+  const addEntry = useCallback(async () => {
     const text = (draft || "").trim();
     if (!text) return;
     if (!canEdit) return;
 
+    setEntrySubmitting(true);
     try {
-      const res = await apiFetch(`/api/matches/${matchId}/commentary/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text,
-          time_source: "CLOCK",
-          minute: minuteSafe,
-        }),
-      });
+      const res = await apiFetch(
+        `/api/matches/${matchId}/commentary/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text,
+            time_source: "CLOCK",
+            minute: minuteSafe,
+          }),
+          toastOnError: false,
+        } as any
+      );
 
       const data = await readJsonSafe(res);
       if (!res.ok) {
@@ -262,40 +293,58 @@ export function CommentaryPanel({
       setEntries((prev) => [created, ...prev]);
       setDraft("");
     } catch (e: any) {
-      toast(e?.message ?? "Nie udało się dodać wpisu.");
+      toast.error(e?.message ?? "Nie udało się dodać wpisu.", { title: "Komentarz LIVE" });
+    } finally {
+      setEntrySubmitting(false);
     }
-  };
+  }, [canEdit, draft, matchId, minuteSafe]);
 
-  const deleteEntry = async (id: number) => {
-    if (!canEdit) return;
+  const deleteEntry = useCallback(
+    async (id: number) => {
+      if (!canEdit) return;
 
-    const prev = entries;
-    setEntries((list) => list.filter((x) => x.id !== id));
+      setDeletingEntryIds((m) => ({ ...m, [id]: true }));
 
-    try {
-      const res = await apiFetch(`/api/commentary/${id}/`, { method: "DELETE" });
-      const data = await readJsonSafe(res);
-      if (!res.ok) {
-        throw new Error(getApiErrorMessage(data, "Nie udało się usunąć wpisu."));
+      const prev = entries;
+      setEntries((list) => list.filter((x) => x.id !== id));
+
+      try {
+        const res = await apiFetch(`/api/commentary/${id}/`, { method: "DELETE", toastOnError: false } as any);
+        const data = await readJsonSafe(res);
+        if (!res.ok) {
+          throw new Error(getApiErrorMessage(data, "Nie udało się usunąć wpisu."));
+        }
+      } catch (e: any) {
+        setEntries(prev);
+        toast.error(e?.message ?? "Nie udało się usunąć wpisu.", { title: "Komentarz LIVE" });
+      } finally {
+        setDeletingEntryIds((m) => {
+          const n = { ...m };
+          delete n[id];
+          return n;
+        });
       }
-    } catch (e: any) {
-      setEntries(prev);
-      toast(e?.message ?? "Nie udało się usunąć wpisu.");
-    }
-  };
+    },
+    [canEdit, entries]
+  );
 
-  const addToDictionary = async () => {
+  const addToDictionary = useCallback(async () => {
     const text = (newPhrase || "").trim();
     if (!text) return;
 
     const kind = newPhraseType === "WORD" ? "TOKEN" : "TEMPLATE";
 
+    setDictSubmitting(true);
     try {
-      const res = await apiFetch(`/api/tournaments/${tournamentId}/commentary-phrases/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind, text, is_active: true }),
-      });
+      const res = await apiFetch(
+        `/api/tournaments/${tournamentId}/commentary-phrases/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind, text, is_active: true }),
+          toastOnError: false,
+        } as any
+      );
 
       const data = await readJsonSafe(res);
       if (!res.ok) {
@@ -318,35 +367,48 @@ export function CommentaryPanel({
 
       setNewPhrase("");
     } catch (e: any) {
-      toast(e?.message ?? "Nie udało się dodać frazy.");
+      toast.error(e?.message ?? "Nie udało się dodać frazy.", { title: "Komentarz LIVE" });
+    } finally {
+      setDictSubmitting(false);
     }
-  };
+  }, [newPhrase, newPhraseType, tournamentId]);
 
-  const deletePhrase = async (phrase: UiPhrase) => {
-    if (!canEdit) return;
-    if (!phrase.id) return;
+  const deletePhrase = useCallback(
+    async (phrase: UiPhrase) => {
+      if (!canEdit) return;
+      if (!phrase.id) return;
 
-    const id = phrase.id;
-    const prev = dict;
+      const id = phrase.id;
+      const prev = dict;
 
-    setDict((d) => {
-      if (phrase.kind === "TOKEN") {
-        return { ...d, words: d.words.filter((x) => x.id !== id) };
+      setDeletingPhraseIds((m) => ({ ...m, [id]: true }));
+
+      setDict((d) => {
+        if (phrase.kind === "TOKEN") {
+          return { ...d, words: d.words.filter((x) => x.id !== id) };
+        }
+        return { ...d, templates: d.templates.filter((x) => x.id !== id) };
+      });
+
+      try {
+        const res = await apiFetch(`/api/commentary-phrases/${id}/`, { method: "DELETE", toastOnError: false } as any);
+        const data = await readJsonSafe(res);
+        if (!res.ok) {
+          throw new Error(getApiErrorMessage(data, "Nie udało się usunąć frazy."));
+        }
+      } catch (e: any) {
+        setDict(prev);
+        toast.error(e?.message ?? "Nie udało się usunąć frazy.", { title: "Komentarz LIVE" });
+      } finally {
+        setDeletingPhraseIds((m) => {
+          const n = { ...m };
+          delete n[id];
+          return n;
+        });
       }
-      return { ...d, templates: d.templates.filter((x) => x.id !== id) };
-    });
-
-    try {
-      const res = await apiFetch(`/api/commentary-phrases/${id}/`, { method: "DELETE" });
-      const data = await readJsonSafe(res);
-      if (!res.ok) {
-        throw new Error(getApiErrorMessage(data, "Nie udało się usunąć frazy."));
-      }
-    } catch (e: any) {
-      setDict(prev);
-      toast(e?.message ?? "Nie udało się usunąć frazy.");
-    }
-  };
+    },
+    [canEdit, dict]
+  );
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
@@ -369,8 +431,18 @@ export function CommentaryPanel({
       });
   }, [entries]);
 
+  const showAddEntryHint = useMemo(() => {
+    const parts: string[] = [];
+    parts.push("Skrót: Ctrl + Enter dodaje wpis.");
+    if (entriesLoading) parts.push("wczytywanie...");
+    return parts.join(" ");
+  }, [entriesLoading]);
+
+  const addEntryDisabled = !canEdit || !draft.trim() || entrySubmitting;
+  const addPhraseDisabled = !newPhrase.trim() || dictSubmitting;
+
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+    <Card className="p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-base font-extrabold text-white">Komentarz LIVE</div>
         <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-white">
@@ -378,187 +450,230 @@ export function CommentaryPanel({
         </span>
       </div>
 
-      <div className="mt-3 grid gap-3">
-        <div className="grid gap-2 rounded-2xl border border-white/10 bg-white/[0.02] p-3">
-          <textarea
+      <div className="mt-3 grid min-w-0 gap-3">
+        <Card className="bg-white/[0.03] p-3">
+          <Textarea
+            unstyled
             ref={textareaRef}
             className={cn(
-              "min-h-[88px] w-full resize-y rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none",
+              "min-h-[88px] w-full resize-y rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white",
+              "placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
               !canEdit && "opacity-70"
             )}
+            aria-label="Treść komentarza"
+            name="live_commentary_draft"
             placeholder="Np. Lewandowski biegnie do bramki, nieudany strzał, Real rozpoczyna z pola..."
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={!canEdit}
+            disabled={!canEdit || entrySubmitting}
           />
 
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xs text-slate-400">
-              Skrót: Ctrl + Enter dodaje wpis.
-              {entriesLoading ? " - wczytywanie..." : ""}
-            </div>
-            <button
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs text-slate-400">{showAddEntryHint}</div>
+
+            <Button
               type="button"
-              className={cn(
-                "rounded-xl border border-white/10 bg-emerald-500/15 px-3 py-2 text-sm font-semibold text-white",
-                (!canEdit || !draft.trim()) && "opacity-60"
-              )}
+              variant="primary"
               onClick={() => void addEntry()}
-              disabled={!canEdit || !draft.trim()}
+              disabled={addEntryDisabled}
+              className="h-9 px-4 text-sm"
             >
-              Dodaj wpis
-            </button>
+              {entrySubmitting ? "Dodawanie..." : "Dodaj wpis"}
+            </Button>
           </div>
-        </div>
+        </Card>
 
-        <div className="grid gap-3 rounded-2xl border border-white/10 bg-white/[0.02] p-3">
-          <div className="grid gap-2">
-            <div className="text-xs font-semibold text-slate-300">Drużyny</div>
-            <div className="flex flex-wrap gap-2">
-              {teams.map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-white hover:bg-white/[0.06]"
-                  onClick={() => insertPhrase(t)}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="grid gap-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-xs font-semibold text-slate-300">Słowa</div>
-              {dictLoading ? <div className="text-xs text-slate-500">wczytywanie...</div> : null}
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {dict.words.map((p) => (
-                <div key={`${p.kind}:${p.id ?? "d"}:${p.text}`} className="group inline-flex items-center gap-1">
-                  <button
+        <Card className="bg-white/[0.03] p-3">
+          <div className="grid gap-3">
+            <div className="grid gap-2">
+              <div className="text-xs font-semibold text-slate-300">Drużyny</div>
+              <div className="flex flex-wrap gap-2">
+                {teams.map((t) => (
+                  <Button
+                    key={t}
                     type="button"
-                    className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-white hover:bg-white/[0.06]"
-                    onClick={() => insertPhrase(p.text)}
+                    variant="secondary"
+                    className="h-8 rounded-full px-3 text-xs"
+                    onClick={() => insertPhrase(t)}
                   >
-                    {p.text}
-                  </button>
-                  {canEdit && p.id ? (
-                    <button
-                      type="button"
-                      className="hidden rounded-full border border-white/10 bg-red-500/10 px-2 py-1 text-[11px] text-white hover:bg-red-500/15 group-hover:inline-flex"
-                      onClick={() => void deletePhrase(p)}
-                      title="Usuń frazę"
-                    >
-                      x
-                    </button>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="grid gap-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-xs font-semibold text-slate-300">Gotowe zwroty</div>
-              {dictLoading ? <div className="text-xs text-slate-500">wczytywanie...</div> : null}
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {dict.templates.map((p) => (
-                <div key={`${p.kind}:${p.id ?? "d"}:${p.text}`} className="group inline-flex items-center gap-1">
-                  <button
-                    type="button"
-                    className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-white hover:bg-white/[0.06]"
-                    onClick={() => insertPhrase(p.text)}
-                  >
-                    {p.text}
-                  </button>
-                  {canEdit && p.id ? (
-                    <button
-                      type="button"
-                      className="hidden rounded-full border border-white/10 bg-red-500/10 px-2 py-1 text-[11px] text-white hover:bg-red-500/15 group-hover:inline-flex"
-                      onClick={() => void deletePhrase(p)}
-                      title="Usuń frazę"
-                    >
-                      x
-                    </button>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {canEdit ? (
-            <div className="grid gap-2 border-t border-white/10 pt-3">
-              <div className="text-xs font-semibold text-slate-300">Dodaj do słownika</div>
-              <div className="flex flex-wrap items-center gap-2">
-                <select
-                  className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none"
-                  value={newPhraseType}
-                  onChange={(e) => setNewPhraseType(e.target.value as any)}
-                >
-                  <option value="WORD">Słowo</option>
-                  <option value="TEMPLATE">Zwrot</option>
-                </select>
-
-                <input
-                  className="min-w-[220px] flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none"
-                  value={newPhrase}
-                  onChange={(e) => setNewPhrase(e.target.value)}
-                  placeholder="Wpisz nowe słowo lub zwrot"
-                />
-
-                <button
-                  type="button"
-                  className={cn(
-                    "rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-sm font-semibold text-white",
-                    !newPhrase.trim() && "opacity-60"
-                  )}
-                  onClick={() => void addToDictionary()}
-                  disabled={!newPhrase.trim()}
-                >
-                  Dodaj
-                </button>
+                    {t}
+                  </Button>
+                ))}
               </div>
             </div>
-          ) : null}
-        </div>
+
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-semibold text-slate-300">Słowa</div>
+                {dictLoading ? <div className="text-xs text-slate-500">wczytywanie...</div> : null}
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {dict.words.map((p) => {
+                  const key = `${p.kind}:${p.id ?? "d"}:${p.text}`;
+                  const canDelete = canEdit && !!p.id;
+                  const busy = p.id ? !!deletingPhraseIds[p.id] : false;
+
+                  return (
+                    <div key={key} className="group inline-flex items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="h-8 rounded-full px-3 text-xs"
+                        onClick={() => insertPhrase(p.text)}
+                      >
+                        {p.text}
+                      </Button>
+
+                      {canDelete ? (
+                        <Button
+                          type="button"
+                          variant="danger"
+                          className="hidden h-8 w-8 rounded-full p-0 text-xs group-hover:inline-flex"
+                          onClick={() => void deletePhrase(p)}
+                          disabled={busy}
+                          aria-label="Usuń frazę"
+                          title="Usuń frazę"
+                        >
+                          {busy ? "..." : "x"}
+                        </Button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-semibold text-slate-300">Gotowe zwroty</div>
+                {dictLoading ? <div className="text-xs text-slate-500">wczytywanie...</div> : null}
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {dict.templates.map((p) => {
+                  const key = `${p.kind}:${p.id ?? "d"}:${p.text}`;
+                  const canDelete = canEdit && !!p.id;
+                  const busy = p.id ? !!deletingPhraseIds[p.id] : false;
+
+                  return (
+                    <div key={key} className="group inline-flex items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="h-8 rounded-full px-3 text-xs"
+                        onClick={() => insertPhrase(p.text)}
+                      >
+                        {p.text}
+                      </Button>
+
+                      {canDelete ? (
+                        <Button
+                          type="button"
+                          variant="danger"
+                          className="hidden h-8 w-8 rounded-full p-0 text-xs group-hover:inline-flex"
+                          onClick={() => void deletePhrase(p)}
+                          disabled={busy}
+                          aria-label="Usuń frazę"
+                          title="Usuń frazę"
+                        >
+                          {busy ? "..." : "x"}
+                        </Button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {canEdit ? (
+              <div className="grid gap-2 border-t border-white/10 pt-3">
+                <div className="text-xs font-semibold text-slate-300">Dodaj do słownika</div>
+
+                <div className="grid gap-2 md:grid-cols-[220px_1fr_auto] md:items-end">
+                  <div className="grid gap-1">
+                    <div className="text-xs text-slate-300">Typ</div>
+                    <Select<PhraseUiType>
+                      value={newPhraseType}
+                      onChange={setNewPhraseType}
+                      options={PHRASE_TYPE_OPTIONS}
+                      disabled={dictSubmitting}
+                      ariaLabel="Typ frazy"
+                    />
+                  </div>
+
+                  <div className="grid min-w-0 gap-1">
+                    <div className="text-xs text-slate-300">Treść</div>
+                    <Input
+                      value={newPhrase}
+                      onChange={(e) => setNewPhrase(e.target.value)}
+                      placeholder="Wpisz nowe słowo lub zwrot"
+                      disabled={dictSubmitting}
+                    />
+                  </div>
+
+                  <div className="flex md:justify-end">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => void addToDictionary()}
+                      disabled={addPhraseDisabled}
+                      className="h-9 px-4"
+                    >
+                      {dictSubmitting ? "Dodawanie..." : "Dodaj"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </Card>
 
         <div className="grid gap-2">
           {entriesLoading ? (
-            <div className="rounded-xl border border-white/10 bg-white/[0.02] px-3 py-3 text-sm text-slate-300">Wczytywanie komentarzy...</div>
+            <Card className="bg-white/[0.03] px-3 py-3">
+              <div className="text-sm text-slate-300">Wczytywanie komentarzy...</div>
+            </Card>
           ) : sortedEntries.length === 0 ? (
-            <div className="rounded-xl border border-white/10 bg-white/[0.02] px-3 py-3 text-sm text-slate-300">Brak komentarzy.</div>
+            <Card className="bg-white/[0.03] px-3 py-3">
+              <div className="text-sm text-slate-300">Brak komentarzy.</div>
+            </Card>
           ) : (
-            sortedEntries.map((e) => (
-              <div key={e.id} className="rounded-2xl border border-white/10 bg-white/[0.02] p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-sm text-slate-200">
-                    <span className="font-bold text-white">{Math.max(0, Number(e.minute ?? 0))}'</span>
-                    <span className="mx-2 text-slate-500">|</span>
-                    <span className="text-slate-200">{e.text}</span>
+            sortedEntries.map((e) => {
+              const busy = !!deletingEntryIds[e.id];
+
+              return (
+                <Card key={e.id} className="bg-white/[0.03] p-3">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
+                    <div className="min-w-0 text-sm text-slate-200">
+                      <span className="font-bold text-white">{Math.max(0, Number(e.minute ?? 0))}'</span>
+                      <span className="mx-2 text-slate-500">|</span>
+                      <span className="break-words text-slate-200">{e.text}</span>
+                    </div>
+
+                    <div className="shrink-0">
+                      <Button
+                        type="button"
+                        variant="danger"
+                        className="h-9 px-4"
+                        onClick={() => void deleteEntry(e.id)}
+                        disabled={!canEdit || busy}
+                      >
+                        {busy ? "Usuwanie..." : "Usuń"}
+                      </Button>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    className={cn(
-                      "rounded-xl border border-white/10 bg-red-500/10 px-3 py-1.5 text-sm font-semibold text-white",
-                      !canEdit && "opacity-60"
-                    )}
-                    onClick={() => void deleteEntry(e.id)}
-                    disabled={!canEdit}
-                  >
-                    Usuń
-                  </button>
-                </div>
-                <div className="mt-2 text-xs text-slate-400">
-                  {e.created_at ? new Date(e.created_at).toLocaleString() : ""}
-                </div>
-              </div>
-            ))
+
+                  <div className="mt-2 text-xs text-slate-400">
+                    {e.created_at ? new Date(e.created_at).toLocaleString() : ""}
+                  </div>
+                </Card>
+              );
+            })
           )}
         </div>
       </div>
-    </div>
+    </Card>
   );
 }

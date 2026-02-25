@@ -19,6 +19,8 @@ from tournaments.models import (
     TournamentMembership,
 )
 
+from tournaments.realtime import ws_emit_tournament
+
 
 def _get_membership_perms(user, tournament: Tournament) -> dict | None:
     if not user or user.is_anonymous:
@@ -190,6 +192,8 @@ class MatchCommentaryListCreateView(APIView):
                 created_by=request.user,
             )
 
+            ws_emit_tournament(match.tournament_id, "commentary_changed", {"match_id": match.id})
+
             return Response(_serialize_commentary_entry(entry), status=status.HTTP_201_CREATED)
 
 
@@ -242,6 +246,7 @@ class MatchCommentaryDetailView(APIView):
 
             if update_fields:
                 entry.save(update_fields=update_fields)
+                ws_emit_tournament(entry.match.tournament_id, "commentary_changed", {"match_id": entry.match_id})
 
             return Response(_serialize_commentary_entry(entry))
 
@@ -257,7 +262,9 @@ class MatchCommentaryDetailView(APIView):
             except PermissionError as e:
                 return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
 
+            match = entry.match
             entry.delete()
+            ws_emit_tournament(match.tournament_id, "commentary_changed", {"match_id": match.id})
             return Response({"ok": True})
 
 

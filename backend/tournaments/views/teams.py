@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from rest_framework import status
 from rest_framework.generics import ListAPIView
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -33,6 +33,7 @@ from ._helpers import (
     can_edit_roster,
     can_approve_name_changes,
     get_membership,
+    public_access_or_403,
 )
 
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
@@ -415,13 +416,17 @@ class TournamentTeamPlayersView(APIView):
     - organizer/asystent: wymaga roster_edit (can_edit_roster)
     - właściciel drużyny: tylko jeśli allow_team_owner_roster_edit = True
     """
-    permission_classes = [IsAuthenticated]
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [AllowAny()]
+        return [IsAuthenticated()]
 
     def get(self, request, pk: int, team_id: int):
         tournament = get_object_or_404(Tournament, pk=pk)
 
-        if not user_can_view_tournament(request.user, tournament):
-            return Response({"detail": "Brak dostępu do turnieju."}, status=status.HTTP_403_FORBIDDEN)
+        err = public_access_or_403(request, tournament)
+        if err is not None:
+            return err
 
         if not _roster_feature_enabled(tournament):
             return Response({"detail": "Składy są dostępne tylko dla turniejów drużynowych."}, status=status.HTTP_400_BAD_REQUEST)
@@ -430,8 +435,7 @@ class TournamentTeamPlayersView(APIView):
         if team.name == BYE_TEAM_NAME:
             return Response({"detail": "BYE nie posiada składu."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if not _can_view_team_roster(request.user, tournament, team):
-            return Response({"detail": "Brak uprawnień do podglądu składu tej drużyny."}, status=status.HTTP_403_FORBIDDEN)
+        # Dostęp do rosteru jest weryfikowany przez public_access_or_403.
 
         players = TeamPlayer.objects.filter(team=team, is_active=True).order_by("id")
         return Response(
@@ -710,6 +714,12 @@ class TournamentTeamNameChangeRequestListView(APIView):
                 for r in qs
             ]
             return Response({"count": len(items), "results": items}, status=status.HTTP_200_OK)
+
+        # Panel (organizator/asystent bez uprawnień) - zwróć pustą listę zamiast 403,
+        # aby UI nie wywalało się przy próbie pobrania kolejki.
+        if request.user and getattr(request.user, "is_authenticated", False):
+            if tournament.organizer_id == request.user.id or get_membership(request.user, tournament) is not None:
+                return Response({"count": 0, "results": []}, status=status.HTTP_200_OK)
 
         # uczestnik: tylko własne prośby
         if not _user_is_participant(request.user, tournament):

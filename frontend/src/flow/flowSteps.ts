@@ -1,10 +1,4 @@
-export type FlowStepKey =
-  | "setup"
-  | "detail"
-  | "teams"
-  | "schedule"
-  | "results"
-  | "public_preview";
+export type FlowStepKey = "setup" | "detail" | "teams" | "schedule" | "results" | "public_preview";
 
 export type FlowStep = {
   key: FlowStepKey;
@@ -13,12 +7,7 @@ export type FlowStep = {
   match: (pathname: string) => boolean;
 };
 
-/* =========================
-   Helpers
-   ========================= */
-
 function cleanPath(pathname: string): string {
-  // usuń query i końcowe slashe
   const p = pathname.split("?")[0];
   return p.replace(/\/+$/, "");
 }
@@ -29,16 +18,10 @@ function isPublicTournamentPath(pathname: string): boolean {
   if (x === "/tournaments/new") return false;
   if (x.includes("/detail")) return false;
 
-  // /tournaments/:id
-  // /tournaments/:id/standings
   return /^\/tournaments\/[^/]+(\/standings)?$/.test(x);
 }
 
-/* =========================
-   Kroki flow
-   Bazowa ścieżka managementu: /tournaments/:id/detail/*
-   ========================= */
-
+/** Definiuje kroki flow panelu i zasady dopasowania ścieżek, aby nawigacja była deterministyczna. */
 export const FLOW_STEPS: FlowStep[] = [
   {
     key: "setup",

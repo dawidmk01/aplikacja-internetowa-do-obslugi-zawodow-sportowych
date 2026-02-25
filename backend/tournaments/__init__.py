@@ -1,0 +1,1 @@
+# backend/tournaments/__init__.py

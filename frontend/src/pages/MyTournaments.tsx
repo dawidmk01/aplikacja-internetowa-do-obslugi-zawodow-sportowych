@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  Archive,
   AlertTriangle,
+  Archive,
   ChevronDown,
   ChevronUp,
   Clipboard,
@@ -18,7 +19,7 @@ import {
   Trophy,
 } from "lucide-react";
 
-import { apiFetch, apiGet } from "../api";
+import { apiFetch, apiGet, getAccess } from "../api";
 import { cn } from "../lib/cn";
 
 import { Button } from "../ui/Button";
@@ -56,6 +57,35 @@ type VisibleSections = {
 };
 
 const LS_KEY = "turniejepro.my_tournaments.v1";
+
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000");
+
+function getApiOrigin() {
+  try {
+    return new URL(String(API_BASE), window.location.origin).origin;
+  } catch {
+    return window.location.origin;
+  }
+}
+
+function getWsOrigin() {
+  const origin = getApiOrigin();
+  try {
+    const u = new URL(origin);
+    const wsProtocol = u.protocol === "https:" ? "wss:" : "ws:";
+    return `${wsProtocol}//${u.host}`;
+  } catch {
+    return String(origin).replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+  }
+}
+
+function buildMeWsUrl() {
+  const token = getAccess();
+  const wsOrigin = getWsOrigin();
+  const u = new URL(`${wsOrigin}/ws/me/`);
+  if (token) u.searchParams.set("token", token);
+  return u.toString();
+}
 
 function disciplineLabel(code: string | undefined) {
   switch (code) {
@@ -139,13 +169,7 @@ function panelNote(t: Tournament) {
   return null;
 }
 
-function Badge({
-  children,
-  className,
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) {
+function Badge({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <span
       className={cn(
@@ -185,7 +209,9 @@ function TabPill({
       <span
         className={cn(
           "grid min-w-[1.5rem] place-items-center rounded-full px-2 py-0.5 text-xs font-bold border",
-          active ? "border-white/15 bg-white/[0.06] text-white" : "border-white/10 bg-white/[0.04] text-slate-200"
+          active
+            ? "border-white/15 bg-white/[0.06] text-white"
+            : "border-white/10 bg-white/[0.04] text-slate-200"
         )}
       >
         {count}
@@ -202,7 +228,10 @@ function safeReadState(): { query: string; activeTab: FilterTab; visible: Visibl
 
     const query = typeof parsed?.query === "string" ? parsed.query : "";
     const activeTab: FilterTab =
-      parsed?.activeTab === "all" || parsed?.activeTab === "unpublished" || parsed?.activeTab === "published" || parsed?.activeTab === "archived"
+      parsed?.activeTab === "all" ||
+      parsed?.activeTab === "unpublished" ||
+      parsed?.activeTab === "published" ||
+      parsed?.activeTab === "archived"
         ? parsed.activeTab
         : "all";
 
@@ -263,7 +292,7 @@ function SectionHeader({
 }
 
 export default function MyTournaments() {
-  const saved = safeReadState();
+  const saved = useMemo(() => safeReadState(), []);
 
   const [items, setItems] = useState<Tournament[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -276,24 +305,16 @@ export default function MyTournaments() {
   const [activeTab, setActiveTab] = useState<FilterTab>(saved?.activeTab ?? "all");
 
   const [visibleSections, setVisibleSections] = useState<VisibleSections>(
-    saved?.visible ?? {
-      draft: true,
-      ready: true,
-      published: true,
-      archived: false,
-    }
+    saved?.visible ?? { draft: true, ready: true, published: true, archived: false }
   );
 
-  const persist = (patch: Partial<{ query: string; activeTab: FilterTab; visible: VisibleSections }>) => {
-    const next = {
-      query: patch.query ?? query,
-      activeTab: patch.activeTab ?? activeTab,
-      visible: patch.visible ?? visibleSections,
-    };
-    safeWriteState(next);
-  };
+  // ===== Persistencja ustawień widoku =====
+  useEffect(() => {
+    safeWriteState({ query, activeTab, visible: visibleSections });
+  }, [query, activeTab, visibleSections]);
 
-  const load = async () => {
+  // ===== Pobieranie listy turniejów =====
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
 
@@ -307,35 +328,108 @@ export default function MyTournaments() {
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    load();
   }, []);
 
-  // Persist query
   useEffect(() => {
-    persist({ query });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query]);
+    void load();
+  }, [load]);
 
-  // Persist tab
   useEffect(() => {
-    persist({ activeTab });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
+    const token = getAccess();
+    if (!token) return;
 
-  // Persist sections collapse
-  useEffect(() => {
-    persist({ visible: visibleSections });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleSections]);
+    let ws: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+    let reloadTimer: number | null = null;
+    let closedByEffect = false;
+    let backoffMs = 400;
+
+    const safeClose = () => {
+      if (!ws) return;
+      if (ws.readyState === WebSocket.CONNECTING) {
+        const prevOnOpen = ws.onopen;
+        ws.onopen = (ev) => {
+          try {
+            (prevOnOpen as any)?.(ev);
+          } finally {
+            try {
+              ws?.close();
+            } catch {
+              // ignoruj
+            }
+          }
+        };
+        return;
+      }
+      try {
+        ws.close();
+      } catch {
+        // ignoruj
+      }
+    };
+
+    const scheduleReload = () => {
+      if (reloadTimer) return;
+
+      reloadTimer = window.setTimeout(() => {
+        reloadTimer = null;
+        void load();
+      }, 200);
+    };
+
+    const scheduleReconnect = () => {
+      if (closedByEffect) return;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, backoffMs);
+      backoffMs = Math.min(backoffMs * 2, 4000);
+    };
+
+    const connect = () => {
+      try {
+        ws = new WebSocket(buildMeWsUrl());
+      } catch {
+        scheduleReconnect();
+        return;
+      }
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg?.type === "membership.changed") scheduleReload();
+        } catch {
+          // ignoruj
+        }
+      };
+
+      ws.onclose = () => {
+        ws = null;
+        scheduleReconnect();
+      };
+
+
+      ws.onerror = () => {
+        // onclose obsłuży reconnect; nie wymuszamy close w CONNECTING, aby nie generować błędów w konsoli.
+      };
+    };
+
+    connect();
+
+    return () => {
+      closedByEffect = true;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      if (reloadTimer) window.clearTimeout(reloadTimer);
+      safeClose();
+    };
+  }, [load]);
 
   const filtered = useMemo(() => {
     const q = normalizePL(query.trim());
     if (!q) return items;
 
-    const scored = items
+    return items
       .map((t) => {
         const name = normalizePL(t.name);
         const discipline = normalizePL(disciplineLabel(t.discipline));
@@ -370,8 +464,6 @@ export default function MyTournaments() {
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score)
       .map((x) => x.t);
-
-    return scored;
   }, [items, query]);
 
   const grouped = useMemo(() => {
@@ -379,8 +471,12 @@ export default function MyTournaments() {
     const notArchived = filtered.filter((t) => !t.is_archived);
 
     const draft = notArchived.filter((t) => (t.status ?? "DRAFT") === "DRAFT");
-    const ready = notArchived.filter((t) => (t.status ?? "DRAFT") !== "DRAFT" && !t.is_published);
-    const published = notArchived.filter((t) => (t.status ?? "DRAFT") !== "DRAFT" && !!t.is_published);
+    const ready = notArchived.filter(
+      (t) => (t.status ?? "DRAFT") !== "DRAFT" && !t.is_published
+    );
+    const published = notArchived.filter(
+      (t) => (t.status ?? "DRAFT") !== "DRAFT" && !!t.is_published
+    );
 
     return { draft, ready, published, archived };
   }, [filtered]);
@@ -394,68 +490,77 @@ export default function MyTournaments() {
     };
   }, [filtered.length, grouped]);
 
-  const togglePublish = async (t: Tournament) => {
-    if (t.my_role !== "ORGANIZER") return;
+  const togglePublish = useCallback(
+    async (t: Tournament) => {
+      if (t.my_role !== "ORGANIZER") return;
 
-    if ((t.status ?? "DRAFT") === "DRAFT") {
-      toast.error("Najpierw skonfiguruj turniej i wygeneruj rozgrywki.", { title: "Wymagane" });
-      return;
-    }
-
-    setBusyId(t.id);
-    setError(null);
-
-    try {
-      const res = await apiFetch(`/api/tournaments/${t.id}/`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ is_published: !t.is_published }),
-      });
-
-      if (!res.ok) {
-        toast.error("Nie udało się zmienić publikacji turnieju.", { title: "System" });
+      if ((t.status ?? "DRAFT") === "DRAFT") {
+        toast.error("Najpierw skonfiguruj turniej i wygeneruj rozgrywki.", {
+          title: "Wymagane",
+        });
         return;
       }
 
-      await load();
-      toast.success(!t.is_published ? "Turniej opublikowany." : "Turniej ukryty.");
-    } catch {
-      toast.error("Brak połączenia z serwerem. Spróbuj ponownie.", { title: "Sieć" });
-    } finally {
-      setBusyId(null);
-    }
-  };
+      setBusyId(t.id);
+      setError(null);
 
-  const toggleArchive = async (t: Tournament) => {
-    if (t.my_role !== "ORGANIZER") return;
+      try {
+        const res = await apiFetch(`/api/tournaments/${t.id}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ is_published: !t.is_published }),
+        });
 
-    setBusyId(t.id);
-    setError(null);
+        if (!res.ok) {
+          toast.error("Nie udało się zmienić publikacji turnieju.", { title: "System" });
+          return;
+        }
 
-    try {
-      const res = await apiFetch(`/api/tournaments/${t.id}/`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ is_archived: !t.is_archived }),
-      });
-
-      if (!res.ok) {
-        toast.error("Błąd archiwizacji.", { title: "System" });
-        return;
+        await load();
+        toast.success(!t.is_published ? "Turniej opublikowany." : "Turniej ukryty.");
+      } catch {
+        toast.error("Brak połączenia z serwerem. Spróbuj ponownie.", { title: "Sieć" });
+      } finally {
+        setBusyId(null);
       }
+    },
+    [load]
+  );
 
-      await load();
-      toast.success(!t.is_archived ? "Przeniesiono do archiwum." : "Przywrócono z archiwum.");
-    } catch {
-      toast.error("Brak połączenia z serwerem. Spróbuj ponownie.", { title: "Sieć" });
-    } finally {
-      setBusyId(null);
-    }
-  };
+  const toggleArchive = useCallback(
+    async (t: Tournament) => {
+      if (t.my_role !== "ORGANIZER") return;
+
+      setBusyId(t.id);
+      setError(null);
+
+      try {
+        const res = await apiFetch(`/api/tournaments/${t.id}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ is_archived: !t.is_archived }),
+        });
+
+        if (!res.ok) {
+          toast.error("Błąd archiwizacji.", { title: "System" });
+          return;
+        }
+
+        await load();
+        toast.success(!t.is_archived ? "Przeniesiono do archiwum." : "Przywrócono z archiwum.");
+      } catch {
+        toast.error("Brak połączenia z serwerem. Spróbuj ponownie.", { title: "Sieć" });
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load]
+  );
 
   const SharePanel = ({ t }: { t: Tournament }) => {
     const isOrganizer = t.my_role === "ORGANIZER";
-    const baseLink = `${window.location.origin}/tournaments/${t.id}`;
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const baseLink = `${origin}/tournaments/${t.id}`;
     const joinLink = `${baseLink}?join=1`;
 
     const viewLinkWithCode =
@@ -481,10 +586,12 @@ export default function MyTournaments() {
                 size="sm"
                 variant="ghost"
                 leftIcon={<Clipboard className="h-4 w-4" />}
-                onClick={async () => {
-                  const ok = await copyToClipboard(baseLink);
-                  if (ok) toast.success("Skopiowano link.");
-                  else toast.error("Nie udało się skopiować.", { title: "System" });
+                onClick={() => {
+                  void (async () => {
+                    const ok = await copyToClipboard(baseLink);
+                    if (ok) toast.success("Skopiowano link.");
+                    else toast.error("Nie udało się skopiować.", { title: "System" });
+                  })();
                 }}
               >
                 Kopiuj
@@ -504,10 +611,12 @@ export default function MyTournaments() {
                 variant="ghost"
                 leftIcon={<KeyRound className="h-4 w-4" />}
                 disabled={!t.access_code?.trim()}
-                onClick={async () => {
-                  const ok = await copyToClipboard(t.access_code ?? "");
-                  if (ok) toast.success("Skopiowano kod dostępu.");
-                  else toast.error("Nie udało się skopiować.", { title: "System" });
+                onClick={() => {
+                  void (async () => {
+                    const ok = await copyToClipboard(t.access_code ?? "");
+                    if (ok) toast.success("Skopiowano kod dostępu.");
+                    else toast.error("Nie udało się skopiować.", { title: "System" });
+                  })();
                 }}
               >
                 Kopiuj
@@ -519,16 +628,20 @@ export default function MyTournaments() {
             <div className="sm:col-span-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
               <div className="text-[11px] text-slate-400">Link z kodem (podgląd)</div>
               <div className="mt-1 flex items-center gap-2">
-                <div className="min-w-0 flex-1 truncate text-sm font-semibold text-white">{viewLinkWithCode}</div>
+                <div className="min-w-0 flex-1 truncate text-sm font-semibold text-white">
+                  {viewLinkWithCode}
+                </div>
                 <Button
                   type="button"
                   size="sm"
                   variant="ghost"
                   leftIcon={<Clipboard className="h-4 w-4" />}
-                  onClick={async () => {
-                    const ok = await copyToClipboard(viewLinkWithCode);
-                    if (ok) toast.success("Skopiowano link z kodem.");
-                    else toast.error("Nie udało się skopiować.", { title: "System" });
+                  onClick={() => {
+                    void (async () => {
+                      const ok = await copyToClipboard(viewLinkWithCode);
+                      if (ok) toast.success("Skopiowano link z kodem.");
+                      else toast.error("Nie udało się skopiować.", { title: "System" });
+                    })();
                   }}
                 >
                   Kopiuj
@@ -543,7 +656,9 @@ export default function MyTournaments() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-white">Dołączanie uczestników</div>
-                <div className="mt-1 text-xs text-slate-300">Uczestnik wchodzi przez link i podaje kod.</div>
+                <div className="mt-1 text-xs text-slate-300">
+                  Uczestnik wchodzi przez link i podaje kod.
+                </div>
               </div>
               <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Włączone</Badge>
             </div>
@@ -558,10 +673,12 @@ export default function MyTournaments() {
                     size="sm"
                     variant="ghost"
                     leftIcon={<Clipboard className="h-4 w-4" />}
-                    onClick={async () => {
-                      const ok = await copyToClipboard(joinLink);
-                      if (ok) toast.success("Skopiowano link do dołączenia.");
-                      else toast.error("Nie udało się skopiować.", { title: "System" });
+                    onClick={() => {
+                      void (async () => {
+                        const ok = await copyToClipboard(joinLink);
+                        if (ok) toast.success("Skopiowano link do dołączenia.");
+                        else toast.error("Nie udało się skopiować.", { title: "System" });
+                      })();
                     }}
                   >
                     Kopiuj
@@ -581,10 +698,12 @@ export default function MyTournaments() {
                     variant="ghost"
                     leftIcon={<Clipboard className="h-4 w-4" />}
                     disabled={!t.registration_code?.trim()}
-                    onClick={async () => {
-                      const ok = await copyToClipboard(t.registration_code ?? "");
-                      if (ok) toast.success("Skopiowano kod dołączania.");
-                      else toast.error("Nie udało się skopiować.", { title: "System" });
+                    onClick={() => {
+                      void (async () => {
+                        const ok = await copyToClipboard(t.registration_code ?? "");
+                        if (ok) toast.success("Skopiowano kod dołączania.");
+                        else toast.error("Nie udało się skopiować.", { title: "System" });
+                      })();
                     }}
                   >
                     Kopiuj
@@ -602,10 +721,14 @@ export default function MyTournaments() {
     const isOrganizer = t.my_role === "ORGANIZER";
     const isDraft = (t.status ?? "DRAFT") === "DRAFT";
     const isShareOpen = shareOpenId === t.id;
+    const sharePanelId = `share-panel-${t.id}`;
 
     const note = panelNote(t);
-
-    const publicationLabel = t.is_archived ? "Archiwum" : t.is_published ? "Opublikowany" : "Nieopublikowany";
+    const publicationLabel = t.is_archived
+      ? "Archiwum"
+      : t.is_published
+      ? "Opublikowany"
+      : "Nieopublikowany";
 
     return (
       <motion.div
@@ -614,17 +737,14 @@ export default function MyTournaments() {
         className="h-full"
       >
         <Card className="relative h-full overflow-hidden p-5">
-          {/* Subtelne „światło” jak w Home - bez gradientu na karcie */}
           <div className="pointer-events-none absolute inset-0">
             <div className="absolute -right-14 -top-14 h-28 w-28 rounded-full bg-white/[0.06] blur-2xl" />
           </div>
 
           <div className="relative flex h-full flex-col">
-            {/* ===== GÓRA (Tytuł + Badges + Ikona Archiwizacji) ===== */}
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
-                {/* Jedna linia: "Nazwa turnieju: XYZ" */}
-                <div className="flex items-baseline gap-2 min-w-0">
+                <div className="flex min-w-0 items-baseline gap-2">
                   <span className="shrink-0 text-xs text-slate-400">Nazwa turnieju:</span>
                   <span className="min-w-0 truncate text-base font-semibold text-white">{t.name}</span>
                 </div>
@@ -635,11 +755,12 @@ export default function MyTournaments() {
                   {t.join_enabled && (
                     <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Dołączanie</Badge>
                   )}
-                  {t.is_archived && <Badge className="border-white/10 bg-white/[0.04] text-slate-200">Archiwum</Badge>}
+                  {t.is_archived && (
+                    <Badge className="border-white/10 bg-white/[0.04] text-slate-200">Archiwum</Badge>
+                  )}
                 </div>
               </div>
 
-              {/* Ikona archiwizacji */}
               <button
                 type="button"
                 onClick={() => {
@@ -650,16 +771,17 @@ export default function MyTournaments() {
                 className={cn(
                   "grid h-10 w-10 shrink-0 place-items-center rounded-2xl border border-white/10 bg-white/[0.06] text-slate-200 transition",
                   "hover:bg-white/[0.09] hover:text-white",
-                  (!isOrganizer || busyId === t.id) && "opacity-60 cursor-not-allowed hover:bg-white/[0.06]"
+                  (!isOrganizer || busyId === t.id) &&
+                    "cursor-not-allowed opacity-60 hover:bg-white/[0.06]"
                 )}
                 title={t.is_archived ? "Przywróć z archiwum" : "Archiwizuj"}
+                aria-label={t.is_archived ? "Przywróć z archiwum" : "Archiwizuj"}
               >
                 {t.is_archived ? <RotateCcw className="h-5 w-5" /> : <Archive className="h-5 w-5" />}
               </button>
             </div>
 
-            {/* ===== STATUSY (Pełna szerokość) ===== */}
-            <div className="mt-4 grid grid-cols-3 gap-3">
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
                 <div className="text-[11px] text-slate-400">Twój status</div>
                 <div className="mt-0.5 truncate text-sm font-semibold text-white">{roleLabel(t.my_role)}</div>
@@ -682,10 +804,8 @@ export default function MyTournaments() {
               </div>
             )}
 
-            {/* ===== AKCJE (Panel, Turniej, Publikuj, Udostępnij) ===== */}
             <div className="mt-5 grid grid-cols-2 gap-2">
-              {/* Panel */}
-              {(t.my_role === "ORGANIZER" || t.my_role === "ASSISTANT") ? (
+              {t.my_role === "ORGANIZER" || t.my_role === "ASSISTANT" ? (
                 <Link to={`/tournaments/${t.id}/detail`} className="w-full">
                   <Button
                     variant="secondary"
@@ -709,14 +829,16 @@ export default function MyTournaments() {
                 </Button>
               )}
 
-              {/* Turniej */}
               <Link to={`/tournaments/${t.id}`} className="w-full">
-                <Button variant="ghost" leftIcon={<Trophy className="h-4 w-4" />} className="w-full justify-center">
+                <Button
+                  variant="ghost"
+                  leftIcon={<Trophy className="h-4 w-4" />}
+                  className="w-full justify-center"
+                >
                   Podgląd
                 </Button>
               </Link>
 
-              {/* Publikacja (tylko organizator) */}
               {isOrganizer && !t.is_archived ? (
                 <Button
                   type="button"
@@ -741,7 +863,6 @@ export default function MyTournaments() {
                 </Button>
               )}
 
-              {/* Udostępnij */}
               {!t.is_archived ? (
                 <Button
                   type="button"
@@ -749,6 +870,8 @@ export default function MyTournaments() {
                   leftIcon={<Share2 className="h-4 w-4" />}
                   onClick={() => setShareOpenId(isShareOpen ? null : t.id)}
                   className="w-full justify-center"
+                  aria-expanded={isShareOpen}
+                  aria-controls={sharePanelId}
                 >
                   Udostępnij
                 </Button>
@@ -768,6 +891,7 @@ export default function MyTournaments() {
             <AnimatePresence initial={false}>
               {isShareOpen && !t.is_archived && (
                 <motion.div
+                  id={sharePanelId}
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
                   exit={{ opacity: 0, height: 0 }}
@@ -783,51 +907,49 @@ export default function MyTournaments() {
     );
   };
 
-  const renderSection = (
-    title: string,
-    list: Tournament[],
-    key: keyof VisibleSections,
-    enabled: boolean
-  ) => {
-    if (!enabled) return null;
-    if (list.length === 0) return null;
+  const renderSection = useCallback(
+    (title: string, list: Tournament[], key: keyof VisibleSections, enabled: boolean) => {
+      if (!enabled) return null;
+      if (list.length === 0) return null;
 
-    const visible = visibleSections[key];
+      const visible = visibleSections[key];
 
-    return (
-      <section className="space-y-4">
-        <SectionHeader
-          title={title}
-          count={list.length}
-          visible={visible}
-          onToggle={(v) => setVisibleSections((s) => ({ ...s, [key]: v }))}
-        />
+      return (
+        <section className="space-y-4">
+          <SectionHeader
+            title={title}
+            count={list.length}
+            visible={visible}
+            onToggle={(v) => setVisibleSections((s) => ({ ...s, [key]: v }))}
+          />
 
-        <AnimatePresence initial={false}>
-          {visible && (
-            <motion.div
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 6 }}
-              transition={{ duration: 0.2 }}
-              className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
-            >
-              {list.map((t, idx) => (
-                <motion.div
-                  key={t.id}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.25, delay: Math.min(idx * 0.03, 0.18) }}
-                >
-                  <TournamentCard t={t} />
-                </motion.div>
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </section>
-    );
-  };
+          <AnimatePresence initial={false}>
+            {visible && (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 6 }}
+                transition={{ duration: 0.2 }}
+                className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
+              >
+                {list.map((t, idx) => (
+                  <motion.div
+                    key={t.id}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.25, delay: Math.min(idx * 0.03, 0.18) }}
+                  >
+                    <TournamentCard t={t} />
+                  </motion.div>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </section>
+      );
+    },
+    [visibleSections]
+  );
 
   const sectionsEnabled = useMemo(() => {
     if (activeTab === "published") return { draft: false, ready: false, published: true, archived: false };
@@ -837,10 +959,10 @@ export default function MyTournaments() {
   }, [activeTab]);
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto w-full max-w-[1400px] space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-semibold text-white">Moje turnieje</h1>
+          <h1 className="text-2xl font-semibold text-white sm:text-3xl">Moje turnieje</h1>
           <div className="mt-2 text-sm text-slate-300">
             Zarządzaj publikacją, udostępnianiem oraz archiwum. Szybko filtruj i przechodź do panelu.
           </div>
@@ -854,7 +976,7 @@ export default function MyTournaments() {
           <Button
             variant="secondary"
             leftIcon={<RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />}
-            onClick={load}
+            onClick={() => void load()}
             disabled={loading}
           >
             Odśwież
@@ -862,7 +984,6 @@ export default function MyTournaments() {
         </div>
       </div>
 
-      {/* ===== SEARCH + TABS (HOME-LIKE BLOBS) ===== */}
       <Card className="relative overflow-hidden p-4 sm:p-5">
         <div className="pointer-events-none absolute inset-0">
           <div className="absolute -top-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-indigo-500/15 blur-3xl" />
@@ -882,35 +1003,28 @@ export default function MyTournaments() {
             </div>
 
             <div className="w-full md:w-[28rem]">
-              <div className="relative">
-                <Input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Szukaj..."
-                  rightIcon={
-                    query ? (
-                      <button
-                        type="button"
-                        onClick={() => setQuery("")}
-                        className="rounded-xl p-1 text-slate-300 hover:text-white hover:bg-white/[0.06] transition"
-                        aria-label="Wyczyść"
-                      >
-                        <RotateCcw className="h-4 w-4" />
-                      </button>
-                    ) : null
-                  }
-                />
-              </div>
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Szukaj..."
+                rightIcon={
+                  query ? (
+                    <button
+                      type="button"
+                      onClick={() => setQuery("")}
+                      className="rounded-xl p-1 text-slate-300 transition hover:bg-white/[0.06] hover:text-white"
+                      aria-label="Wyczyść"
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                    </button>
+                  ) : null
+                }
+              />
             </div>
           </div>
 
           <div className="mt-4 flex flex-wrap gap-2">
-            <TabPill
-              active={activeTab === "all"}
-              label="Wszystkie"
-              count={counts.all}
-              onClick={() => setActiveTab("all")}
-            />
+            <TabPill active={activeTab === "all"} label="Wszystkie" count={counts.all} onClick={() => setActiveTab("all")} />
             <TabPill
               active={activeTab === "unpublished"}
               label="Nieopublikowane"

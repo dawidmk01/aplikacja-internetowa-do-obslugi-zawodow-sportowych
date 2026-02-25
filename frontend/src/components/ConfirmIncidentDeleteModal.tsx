@@ -1,19 +1,23 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-type IncidentMeta = {
-  matchId: number;
-  incidentId: number;
-  incidentType?: string;
-  teamLabel?: string;
-  minute?: number | null;
-  playerLabel?: string | null;
-};
+import { ChevronDown, ChevronUp } from "lucide-react";
+
+import { Button } from "../ui/Button";
+import { Checkbox } from "../ui/Checkbox";
+import { Dialog } from "../ui/Dialog";
 
 type Props = {
   open: boolean;
-  incident: IncidentMeta | null;
+  title: string;
+  message: string;
+  code?: string;
 
-  title?: string;
+  deleteCount: number;
+  deleteIds: number[];
+
+  autoForceInSession: boolean;
+  onToggleAutoForceInSession: (v: boolean) => void;
+
   confirmLabel?: string;
   cancelLabel?: string;
 
@@ -21,48 +25,41 @@ type Props = {
   onCancel: () => void;
 };
 
-function affectsScoreByType(t?: string): boolean {
-  const s = (t ?? "").toLowerCase();
-  // GOAL / POINT / TENNIS_POINT zwykle wpływają na wynik (w zależności od dyscypliny).
-  return s.includes("goal") || s.includes("point");
-}
-
-export default function ConfirmIncidentDeleteModal(props: Props) {
+export default function ConfirmScoreSyncModal(props: Props) {
   const {
     open,
-    incident,
-    title = "Potwierdź usunięcie incydentu",
-    confirmLabel = "Usuń incydent",
+    title,
+    message,
+    code,
+    deleteCount,
+    deleteIds,
+    autoForceInSession,
+    onToggleAutoForceInSession,
+    confirmLabel = "Kontynuuj",
     cancelLabel = "Anuluj",
     onConfirm,
     onCancel,
   } = props;
 
-  const meta = incident;
+  const [showDetails, setShowDetails] = useState(false);
 
-  const details = useMemo(() => {
-    if (!meta) return [];
-    const rows: Array<[string, string]> = [];
+  const safeDeleteCount = Number.isFinite(deleteCount) ? Math.max(0, deleteCount) : 0;
 
-    rows.push(["ID incydentu", String(meta.incidentId)]);
-    if (meta.incidentType) rows.push(["Typ", meta.incidentType]);
-    if (meta.teamLabel) rows.push(["Drużyna", meta.teamLabel]);
-    if (meta.playerLabel) rows.push(["Zawodnik", meta.playerLabel]);
-    if (meta.minute != null && Number.isFinite(Number(meta.minute))) rows.push(["Minuta", String(meta.minute)]);
+  const idsPreview = useMemo(() => {
+    if (!Array.isArray(deleteIds) || deleteIds.length === 0) return "";
+    const list = deleteIds.slice(0, 12).join(", ");
+    if (deleteIds.length <= 12) return list;
+    return `${list}... (+${deleteIds.length - 12})`;
+  }, [deleteIds]);
 
-    return rows;
-  }, [meta]);
-
-  const affectsScore = affectsScoreByType(meta?.incidentType);
+  useEffect(() => {
+    if (open) setShowDetails(false);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
 
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") {
-        ev.preventDefault();
-        onCancel();
-      }
       if (ev.key === "Enter" && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
         const tag = (document.activeElement?.tagName || "").toLowerCase();
         if (tag === "button" || tag === "input" || tag === "textarea" || tag === "select") return;
@@ -73,153 +70,81 @@ export default function ConfirmIncidentDeleteModal(props: Props) {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onCancel, onConfirm]);
-
-  if (!open) return null;
+  }, [open, onConfirm]);
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 10060,
-        background: "rgba(0,0,0,0.62)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: "1.25rem",
-      }}
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onCancel();
-      }}
-    >
-      <div
-        style={{
-          width: "min(680px, 96vw)",
-          borderRadius: 14,
-          background: "#1f1f1f",
-          border: "1px solid rgba(255,255,255,0.10)",
-          boxShadow: "0 16px 40px rgba(0,0,0,0.55)",
-          color: "#fff",
-          overflow: "hidden",
-        }}
-      >
-        {/* Header */}
-        <div
-          style={{
-            padding: "1rem 1.15rem",
-            borderBottom: "1px solid rgba(255,255,255,0.08)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: "0.75rem",
-          }}
-        >
-          <div style={{ fontWeight: 800, fontSize: "1.05rem", letterSpacing: 0.2 }}>{title}</div>
-          <button
-            onClick={onCancel}
-            style={{
-              border: "1px solid rgba(255,255,255,0.12)",
-              background: "rgba(255,255,255,0.05)",
-              color: "#fff",
-              borderRadius: 8,
-              padding: "0.35rem 0.55rem",
-              cursor: "pointer",
-              opacity: 0.9,
-            }}
-            aria-label="Zamknij"
-            title="Zamknij"
-          >
-            ✕
-          </button>
-        </div>
-
-        {/* Body */}
-        <div style={{ padding: "1.05rem 1.15rem" }}>
-          <div style={{ fontSize: "0.95rem", lineHeight: 1.45, opacity: 0.92 }}>
-            Ta operacja jest <strong>nieodwracalna</strong>. Po usunięciu system odświeży listę zdarzeń i przeliczy
-            wynik oraz statystyki (jeżeli dany typ incydentu ma na nie wpływ).
-            {affectsScore ? (
-              <>
-                {" "}
-                Ten incydent prawdopodobnie <strong>wpływa na wynik</strong> – po usunięciu wynik może się zmniejszyć.
-              </>
-            ) : null}{" "}
-            Czy na pewno chcesz usunąć ten incydent?
-          </div>
-
-          {details.length > 0 ? (
-            <div
-              style={{
-                marginTop: "0.9rem",
-                padding: "0.85rem",
-                borderRadius: 12,
-                border: "1px solid rgba(231, 76, 60, 0.55)",
-                background: "rgba(231, 76, 60, 0.10)",
-              }}
-            >
-              <div style={{ fontWeight: 700, marginBottom: "0.55rem", opacity: 0.95 }}>Szczegóły incydentu</div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: "0.35rem 0.75rem" }}>
-                {details.map(([k, v]) => (
-                  <div key={k} style={{ display: "contents" }}>
-                    <div style={{ opacity: 0.75 }}>{k}</div>
-                    <div style={{ opacity: 0.95, wordBreak: "break-word" }}>{v}</div>
-                  </div>
-                ))}
-              </div>
-
-            </div>
-          ) : null}
-
-          <div style={{ marginTop: "0.75rem", fontSize: "0.85rem", opacity: 0.7 }}>
-            Uwaga: jeśli incydent miał uzupełnione dane (zawodnik, czas), po usunięciu nie odzyskasz ich automatycznie.
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div
-          style={{
-            padding: "0.95rem 1.15rem",
-            borderTop: "1px solid rgba(255,255,255,0.08)",
-            display: "flex",
-            justifyContent: "flex-end",
-            gap: "0.75rem",
-          }}
-        >
-          <button
-            onClick={onCancel}
-            style={{
-              padding: "0.55rem 0.95rem",
-              borderRadius: 10,
-              border: "1px solid rgba(255,255,255,0.12)",
-              background: "rgba(255,255,255,0.05)",
-              color: "#fff",
-              cursor: "pointer",
-              opacity: 0.95,
-            }}
-          >
+    <Dialog
+      open={open}
+      title={title}
+      onClose={onCancel}
+      footer={
+        <>
+          <Button type="button" variant="secondary" onClick={onCancel} className="h-9 rounded-xl px-4">
             {cancelLabel}
-          </button>
+          </Button>
 
-          <button
-            onClick={onConfirm}
-            style={{
-              padding: "0.55rem 0.95rem",
-              borderRadius: 10,
-              border: "1px solid rgba(231, 76, 60, 0.70)",
-              background: "rgba(231, 76, 60, 0.24)",
-              color: "#fff",
-              cursor: "pointer",
-              fontWeight: 700,
-            }}
-          >
+          <Button type="button" variant="danger" onClick={onConfirm} className="h-9 rounded-xl px-4">
             {confirmLabel}
-          </button>
+          </Button>
+        </>
+      }
+    >
+      <div className="text-sm leading-relaxed text-slate-200/90">{message}</div>
+
+      {code ? (
+        <div className="mt-2 text-xs text-slate-400">
+          Kod: <span className="font-mono text-slate-200">{code}</span>
+        </div>
+      ) : null}
+
+      <div className="mt-4 rounded-2xl border border-rose-500/35 bg-rose-500/10 p-4">
+        <div className="text-sm leading-relaxed text-slate-100/95">
+          Kontynuacja spowoduje usunięcie <span className="font-semibold">{safeDeleteCount}</span> istniejących
+          incydentów <span className="font-semibold">GOAL</span> w tym meczu, aby dopasować LIVE do "szybkiego wyniku".
+        </div>
+
+        {Array.isArray(deleteIds) && deleteIds.length > 0 ? (
+          <div className="mt-3">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setShowDetails((v) => !v)}
+              className="h-8 rounded-lg px-3 text-xs"
+            >
+              {showDetails ? (
+                <>
+                  <ChevronUp className="h-4 w-4" />
+                  Ukryj szczegóły
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="h-4 w-4" />
+                  Pokaż szczegóły
+                </>
+              )}
+            </Button>
+
+            {showDetails ? (
+              <div className="mt-2 rounded-xl border border-white/10 bg-white/[0.04] p-3 text-xs text-slate-200">
+                <div className="font-mono break-words">ID: {idsPreview}</div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="mt-4">
+          <Checkbox
+            checked={!!autoForceInSession}
+            onCheckedChange={onToggleAutoForceInSession}
+            label="Zawsze kontynuuj w tej sesji (wymuszaj automatycznie)"
+          />
         </div>
       </div>
-    </div>
+
+      <div className="mt-3 text-xs text-slate-400">
+        Uwaga: usunięte incydenty GOAL mogą zawierać uzupełnionego zawodnika i czas, dlatego wymagamy jawnego
+        potwierdzenia.
+      </div>
+    </Dialog>
   );
 }

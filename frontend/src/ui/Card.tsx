@@ -1,10 +1,13 @@
+// frontend/src/ui/Card.tsx
+// Komponent zapewnia spójny kontener wizualny dla sekcji i paneli.
+
 import type { HTMLAttributes } from "react";
 
 import { cn } from "../lib/cn";
 
 type Props = HTMLAttributes<HTMLDivElement>;
 
-/** Card jest bazowym prymitywem powierzchni, aby utrzymać spójne tło i obramowanie w dark mode. */
+// Card stabilizuje tło, obramowanie i odstępy sekcji.
 export function Card({ className, ...props }: Props) {
   return (
     <div

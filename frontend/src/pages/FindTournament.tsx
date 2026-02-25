@@ -1,31 +1,23 @@
-// frontend/src/pages/FindTournament.tsx
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle, Link as LinkIcon, Search } from "lucide-react";
+import { Link as LinkIcon, Search } from "lucide-react";
 
-import { Card } from "../ui/Card";
-import { Input } from "../ui/Input";
-import { Button } from "../ui/Button";
 import { cn } from "../lib/cn";
 
+import { Button } from "../ui/Button";
+import { Card } from "../ui/Card";
+import { InlineAlert } from "../ui/InlineAlert";
+import { Input } from "../ui/Input";
+
+/** Normalizuje wklejone ID/URL do wewnętrznej ścieżki aplikacji, zachowując parametry query. */
 function extractTournamentTarget(rawInput: string): string | null {
   const raw = (rawInput ?? "").trim();
   if (!raw) return null;
 
-  // 1) samo ID
-  if (/^\d+$/.test(raw)) {
-    return `/tournaments/${raw}`;
-  }
-
-  // 2) ścieżka lub URL — próbujemy bezpiecznie zbudować URL
-  //    - pełny URL: https://...
-  //    - ścieżka: /tournaments/12?code=...
-  //    - wklejone "example.com/tournaments/12?..." bez schematu: wycinamy od /tournaments/...
-  let url: URL | null = null;
+  if (/^\d+$/.test(raw)) return `/tournaments/${raw}`;
 
   const tryBuildUrl = (value: string) => {
     try {
-      // jeśli to sama ścieżka, base = origin
       if (value.startsWith("/")) return new URL(value, window.location.origin);
       return new URL(value);
     } catch {
@@ -33,7 +25,7 @@ function extractTournamentTarget(rawInput: string): string | null {
     }
   };
 
-  url = tryBuildUrl(raw);
+  let url = tryBuildUrl(raw);
 
   if (!url) {
     const idx = raw.indexOf("/tournaments/");
@@ -45,8 +37,6 @@ function extractTournamentTarget(rawInput: string): string | null {
 
   if (!url) return null;
 
-  // Wyciągamy: /tournaments/:id + opcjonalny suffix (np. /detail/results)
-  // Zachowujemy query (?code=..., ?tab=..., itd.)
   const m = url.pathname.match(/^\/tournaments\/(\d+)(\/.*)?$/);
   if (!m) return null;
 
@@ -60,6 +50,7 @@ function extractTournamentTarget(rawInput: string): string | null {
 export default function FindTournament() {
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
+
   const navigate = useNavigate();
 
   const hintExamples = useMemo(
@@ -78,7 +69,7 @@ export default function FindTournament() {
 
     const target = extractTournamentTarget(input);
     if (!target) {
-      setError("Wpisz link/ścieżkę lub ID turnieju (np. 12 lub /tournaments/12).");
+      setError("Wpisz link, ścieżkę lub ID turnieju (np. 12 lub /tournaments/12).");
       return;
     }
 
@@ -90,7 +81,8 @@ export default function FindTournament() {
       <div className="mb-4">
         <h1 className="text-2xl font-bold tracking-tight text-white">Wyszukaj turniej</h1>
         <p className="mt-1 text-sm text-slate-300">
-          Wklej link z QR code / ścieżkę lub wpisz ID. Zachowamy też parametry typu <span className="text-slate-200">?code=</span>.
+          Wklej link z QR, ścieżkę lub wpisz ID. Parametry typu{" "}
+          <span className="text-slate-200">?code=</span> zostaną zachowane.
         </p>
       </div>
 
@@ -104,6 +96,7 @@ export default function FindTournament() {
         >
           <div className="space-y-2">
             <div className="text-xs font-semibold text-slate-300">Link / ścieżka / ID</div>
+
             <div className="relative">
               <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
                 <LinkIcon className="h-4 w-4" />
@@ -117,7 +110,7 @@ export default function FindTournament() {
               />
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+            <Card className="bg-white/[0.04] p-3">
               <div className="text-xs font-semibold text-slate-300">Przykłady</div>
               <ul className="mt-2 space-y-1 text-sm text-slate-300">
                 {hintExamples.map((ex) => (
@@ -129,17 +122,10 @@ export default function FindTournament() {
                   </li>
                 ))}
               </ul>
-            </div>
+            </Card>
           </div>
 
-          {error && (
-            <div className="rounded-2xl border border-rose-400/20 bg-rose-400/5 p-3">
-              <div className="flex items-start gap-2">
-                <AlertTriangle className="mt-0.5 h-4 w-4 text-rose-200" />
-                <div className="text-sm text-slate-100">{error}</div>
-              </div>
-            </div>
-          )}
+          {error ? <InlineAlert variant="error">{error}</InlineAlert> : null}
 
           <div className="flex flex-wrap items-center gap-3">
             <Button type="submit" variant="primary" leftIcon={<Search className="h-4 w-4" />}>
@@ -153,7 +139,7 @@ export default function FindTournament() {
                 setInput("");
                 setError(null);
               }}
-              className={cn(!input && "opacity-60 pointer-events-none")}
+              className={cn(!input && "pointer-events-none opacity-60")}
             >
               Wyczyść
             </Button>

@@ -1,17 +1,14 @@
-// frontend/src/api.ts
 import { toast } from "./ui/Toast";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 
-/* =====================
-   TOKEN HELPERS
-===================== */
+// ===== Tokeny =====
 
-export function getAccess() {
+export function getAccess(): string | null {
   return localStorage.getItem("access");
 }
 
-export function getRefresh() {
+export function getRefresh(): string | null {
   return localStorage.getItem("refresh");
 }
 
@@ -32,9 +29,7 @@ export function hasAuthTokens() {
   return Boolean(getAccess() || getRefresh());
 }
 
-/* =====================
-   JWT REFRESH
-===================== */
+// ===== Odświeżanie JWT =====
 
 async function refreshAccessToken(): Promise<string | null> {
   const refresh = getRefresh();
@@ -55,26 +50,19 @@ async function refreshAccessToken(): Promise<string | null> {
   return data.access;
 }
 
-function isFormData(body: any): body is FormData {
+function isFormData(body: unknown): body is FormData {
   return typeof FormData !== "undefined" && body instanceof FormData;
 }
 
-/* =====================
-   TOAST / ERROR MAPPING
-===================== */
+// ===== Mapowanie błędów =====
 
-type ApiFetchInit = RequestInit & {
-  /** Domyślnie: true. Ustaw na false, jeśli dany ekran sam obsługuje błąd. */
+export type ApiFetchInit = RequestInit & {
   toastOnError?: boolean;
-
-  /** Nadpisuje komunikat błędu, jeśli chcesz zawsze stały tekst. */
   errorToastMessage?: string;
-
-  /** Nadpisuje tytuł (opcjonalnie) */
   errorToastTitle?: string;
 };
 
-function pickFirstString(x: any): string | null {
+function pickFirstString(x: unknown): string | null {
   if (!x) return null;
   if (typeof x === "string" && x.trim()) return x.trim();
   if (Array.isArray(x)) {
@@ -84,16 +72,16 @@ function pickFirstString(x: any): string | null {
     }
   }
   if (typeof x === "object") {
-    // typowe: { detail }, { message }, { non_field_errors: [] }, { field: [] }
+    const obj = x as Record<string, unknown>;
     const direct =
-      pickFirstString((x as any).detail) ||
-      pickFirstString((x as any).message) ||
-      pickFirstString((x as any).error) ||
-      pickFirstString((x as any).non_field_errors);
+      pickFirstString(obj.detail) ||
+      pickFirstString(obj.message) ||
+      pickFirstString(obj.error) ||
+      pickFirstString(obj.non_field_errors);
     if (direct) return direct;
 
-    for (const k of Object.keys(x)) {
-      const s = pickFirstString((x as any)[k]);
+    for (const k of Object.keys(obj)) {
+      const s = pickFirstString(obj[k]);
       if (s) return s;
     }
   }
@@ -133,14 +121,13 @@ function defaultMessageForStatus(status: number): string | undefined {
   return undefined;
 }
 
-/* =====================
-   CORE API FETCH
-===================== */
+// ===== apiFetch =====
 
+/** apiFetch centralizuje autoryzację, refresh JWT i globalne toasty dla błędów sieci/systemu. */
 export async function apiFetch(path: string, init: ApiFetchInit = {}): Promise<Response> {
   const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
   const method = (init.method || "GET").toUpperCase();
-  const body: any = (init as any).body;
+  const body = (init as RequestInit).body;
 
   const makeHeaders = (token?: string) => {
     const h = new Headers(init.headers || undefined);
@@ -166,7 +153,6 @@ export async function apiFetch(path: string, init: ApiFetchInit = {}): Promise<R
   try {
     let res = await doFetch(getAccess() ?? undefined);
 
-    // 401 → spróbuj refresh
     if (res.status === 401) {
       const newAccess = await refreshAccessToken();
       if (!newAccess) {
@@ -181,7 +167,6 @@ export async function apiFetch(path: string, init: ApiFetchInit = {}): Promise<R
       res = await doFetch(newAccess);
     }
 
-    // Inne błędy → toast (bez konsumowania body)
     if (!res.ok && toastOnError) {
       const msg =
         init.errorToastMessage ||
@@ -194,20 +179,21 @@ export async function apiFetch(path: string, init: ApiFetchInit = {}): Promise<R
 
     return res;
   } catch {
-    // network / CORS / offline
+    const msg = "Brak połączenia z serwerem. Sprawdź internet i spróbuj ponownie.";
+
     if (toastOnError) {
-      toast.error("Brak połączenia z serwerem. Sprawdź internet i spróbuj ponownie.", {
-        title: "Sieć",
-      });
+      toast.error(msg, { title: "Sieć" });
     }
-    // “udajemy” Response? Nie — zachowujemy kontrakt: rzucamy dalej (łatwiej debugować)
-    throw new Error("Network error");
+
+    // Nie rzucamy wyjątku, żeby nie generować drugiego toastu z unhandled error.
+    return new Response(JSON.stringify({ detail: msg, code: "NETWORK_ERROR" }), {
+      status: 599,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 }
 
-/* =====================
-   HELPERS
-===================== */
+// ===== Helpery JSON =====
 
 export async function apiGet<T>(path: string, init: ApiFetchInit = {}): Promise<T> {
   const res = await apiFetch(path, init);
@@ -218,15 +204,12 @@ export async function apiGet<T>(path: string, init: ApiFetchInit = {}): Promise<
   return res.json();
 }
 
-/* =====================
-   ASSISTANTS API
-===================== */
+// ===== Assistants API =====
 
 export async function addAssistant(tournamentId: number, email: string): Promise<void> {
   const res = await apiFetch(`/api/tournaments/${tournamentId}/assistants/add/`, {
     method: "POST",
     body: JSON.stringify({ email }),
-    // tu toast może zostać włączony globalnie, ale zostawiamy też sensowny wyjątek:
     toastOnError: false,
   });
 

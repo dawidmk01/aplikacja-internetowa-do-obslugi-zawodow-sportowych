@@ -10,9 +10,7 @@ import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { InlineAlert } from "../ui/InlineAlert";
 
-/* =========================
-   HELPERY AUTH
-   ========================= */
+// ===== Dostęp i kontekst publiczny =====
 
 function hasAccessToken(): boolean {
   try {
@@ -34,9 +32,7 @@ function hasAccessToken(): boolean {
   return false;
 }
 
-/* =========================
-   TYPY
-   ========================= */
+// ===== Typy danych =====
 
 export type Tournament = {
   id: number;
@@ -153,19 +149,13 @@ export type StandingsResponse = {
   bracket?: BracketData;
 };
 
-/* =========================
-   PROPS
-   ========================= */
-
 type StandingsBracketProps = {
   tournamentId: number;
   accessCode?: string;
   showHeader?: boolean;
 };
 
-/* =========================
-   KOMPONENT (fetch + render)
-   ========================= */
+// ===== Komponent: pobieranie i render =====
 
 export default function StandingsBracket({ tournamentId, accessCode, showHeader = true }: StandingsBracketProps) {
   const [tournament, setTournament] = useState<Tournament | null>(null);
@@ -183,12 +173,14 @@ export default function StandingsBracket({ tournamentId, accessCode, showHeader 
   const url = (p: string) => `${p}${qs}`;
 
   useEffect(() => {
+    let alive = true;
+
     const load = async () => {
       setLoading(true);
       setError(null);
 
       try {
-        const tRes = await apiFetch(url(`/api/tournaments/${tournamentId}/`));
+        const tRes = await apiFetch(url(`/api/tournaments/${tournamentId}/`), { toastOnError: false } as any);
         if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
         const tData = await tRes.json();
 
@@ -199,24 +191,26 @@ export default function StandingsBracket({ tournamentId, accessCode, showHeader 
           tournament_format: (tData.tournament_format ?? "LEAGUE") as Tournament["tournament_format"],
           format_config: tData.format_config ?? undefined,
         };
-        setTournament(t);
 
         let sData: StandingsResponse | null = null;
-        const sRes = await apiFetch(url(`/api/tournaments/${tournamentId}/standings/`));
+        const sRes = await apiFetch(url(`/api/tournaments/${tournamentId}/standings/`), { toastOnError: false } as any);
         if (sRes.ok) {
           sData = await sRes.json();
         } else {
-          const spRes = await apiFetch(url(`/api/tournaments/${tournamentId}/public/standings/`));
+          const spRes = await apiFetch(url(`/api/tournaments/${tournamentId}/public/standings/`), {
+            toastOnError: false,
+          } as any);
           if (spRes.ok) sData = await spRes.json();
           else sData = null;
         }
-        setStandings(sData);
 
         const authed = hasAccessToken();
         const isPublicContext = !!accessCode || !authed;
 
         const fetchAndMapPublicMatches = async () => {
-          const mpRes = await apiFetch(url(`/api/tournaments/${tournamentId}/public/matches/`));
+          const mpRes = await apiFetch(url(`/api/tournaments/${tournamentId}/public/matches/`), {
+            toastOnError: false,
+          } as any);
           if (!mpRes.ok) throw new Error("Nie udało się pobrać meczów publicznych.");
           const raw = await mpRes.json();
           const list = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? raw.results : [];
@@ -239,27 +233,40 @@ export default function StandingsBracket({ tournamentId, accessCode, showHeader 
           }));
         };
 
+        let mData: MatchDto[] = [];
+
         if (isPublicContext) {
-          setMatches(await fetchAndMapPublicMatches());
+          mData = await fetchAndMapPublicMatches();
         } else {
-          const mRes = await apiFetch(url(`/api/tournaments/${tournamentId}/matches/`));
+          const mRes = await apiFetch(url(`/api/tournaments/${tournamentId}/matches/`), { toastOnError: false } as any);
           if (mRes.status === 401 || mRes.status === 403) {
-            setMatches(await fetchAndMapPublicMatches());
+            mData = await fetchAndMapPublicMatches();
           } else {
             if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
             const raw = await mRes.json();
             const list = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? raw.results : [];
-            setMatches(list);
+            mData = list;
           }
         }
+
+        if (!alive) return;
+
+        setTournament(t);
+        setStandings(sData);
+        setMatches(mData);
       } catch (e: any) {
+        if (!alive) return;
         setError(e?.message || "Wystąpił błąd");
       } finally {
-        setLoading(false);
+        if (alive) setLoading(false);
       }
     };
 
     load();
+
+    return () => {
+      alive = false;
+    };
   }, [tournamentId, qs, accessCode]);
 
   if (loading) return <div className="text-sm text-slate-300">Ładowanie...</div>;
@@ -271,9 +278,7 @@ export default function StandingsBracket({ tournamentId, accessCode, showHeader 
   );
 }
 
-/* =========================
-   HELPERY
-   ========================= */
+// ===== Pomocnicze =====
 
 function normalizeGroupKey(name: string | null | undefined): string {
   const s = (name ?? "").trim().toLowerCase();
@@ -331,9 +336,7 @@ function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
 }
 
-/* =========================
-   WIDOK: tabela + drabinka
-   ========================= */
+// ===== Widok: tabela i drabinka =====
 
 function TournamentStandingsView({
   tournament,
@@ -385,13 +388,22 @@ function TournamentStandingsView({
     };
   }, [tournament, standings]);
 
-  const { discipline, isTennis, showTennisPoints, isCup, isMixed, hasLeagueTable, hasGroups, hasTableData, hasBracketData } =
-    derived;
+  const {
+    discipline,
+    isTennis,
+    showTennisPoints,
+    isCup,
+    isMixed,
+    hasLeagueTable,
+    hasGroups,
+    hasTableData,
+    hasBracketData,
+  } = derived;
 
   const showTabs = isMixed || (hasTableData && hasBracketData);
 
   return (
-    <div className={cn(showHeader ? "px-4 py-4 sm:px-0" : "p-0")}>
+    <div className={cn(showHeader ? "px-4 py-4 sm:px-0" : "p-0", "mx-auto w-full max-w-7xl")}>
       {showHeader ? (
         <div className="mb-4">
           <div className="text-sm text-slate-300">Wyniki</div>
@@ -401,37 +413,37 @@ function TournamentStandingsView({
 
       {showTabs ? (
         <div className="mb-5 flex flex-wrap gap-2">
-          <button
+          <Button
             type="button"
+            variant="secondary"
             onClick={() => setTab("TABLE")}
+            aria-pressed={tab === "TABLE"}
             className={cn(
-              "relative inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-sm font-semibold transition",
-              "border border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10]",
-              "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
-              tab === "TABLE" && "border-white/15"
+              "rounded-full px-3.5 py-2 text-sm font-semibold",
+              tab === "TABLE" && "border-white/15 bg-white/10"
             )}
           >
-            <span className="relative z-10 inline-flex items-center gap-2">
+            <span className="inline-flex items-center gap-2">
               <Table2 className="h-4 w-4 text-white/80" />
               Tabela
             </span>
-          </button>
+          </Button>
 
-          <button
+          <Button
             type="button"
+            variant="secondary"
             onClick={() => setTab("BRACKET")}
+            aria-pressed={tab === "BRACKET"}
             className={cn(
-              "relative inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-sm font-semibold transition",
-              "border border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10]",
-              "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
-              tab === "BRACKET" && "border-white/15"
+              "rounded-full px-3.5 py-2 text-sm font-semibold",
+              tab === "BRACKET" && "border-white/15 bg-white/10"
             )}
           >
-            <span className="relative z-10 inline-flex items-center gap-2">
+            <span className="inline-flex items-center gap-2">
               <Brackets className="h-4 w-4 text-white/80" />
               Drabinka
             </span>
-          </button>
+          </Button>
         </div>
       ) : null}
 
@@ -490,31 +502,31 @@ function TournamentStandingsView({
             </div>
 
             <div className="flex flex-wrap gap-2">
-              <button
+              <Button
                 type="button"
+                variant="secondary"
                 onClick={() => setBracketMode("PYRAMID")}
+                aria-pressed={bracketMode === "PYRAMID"}
                 className={cn(
-                  "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
-                  "border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10]",
-                  "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
+                  "h-8 rounded-full px-3 text-xs font-semibold",
                   bracketMode === "PYRAMID" && "border-white/15 bg-white/10"
                 )}
               >
                 Piramida
-              </button>
+              </Button>
 
-              <button
+              <Button
                 type="button"
+                variant="secondary"
                 onClick={() => setBracketMode("CENTERED")}
+                aria-pressed={bracketMode === "CENTERED"}
                 className={cn(
-                  "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
-                  "border-white/10 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10]",
-                  "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
+                  "h-8 rounded-full px-3 text-xs font-semibold",
                   bracketMode === "CENTERED" && "border-white/15 bg-white/10"
                 )}
               >
                 Finał w środku
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -527,11 +539,173 @@ function TournamentStandingsView({
   );
 }
 
-/* =========================
-   TABELA
-   ========================= */
+// ===== Tabela =====
 
 function StandingsTable({
+  rows,
+  matchesForForm,
+  isTennis,
+  showTennisPoints,
+}: {
+  rows: StandingRow[];
+  matchesForForm: MatchDto[];
+  isTennis: boolean;
+  showTennisPoints: boolean;
+}) {
+  return (
+    <>
+      <div className="sm:hidden">
+        <StandingsTableMobile
+          rows={rows}
+          matchesForForm={matchesForForm}
+          isTennis={isTennis}
+          showTennisPoints={showTennisPoints}
+        />
+      </div>
+
+      <div className="hidden sm:block">
+        <StandingsTableDesktop
+          rows={rows}
+          matchesForForm={matchesForForm}
+          isTennis={isTennis}
+          showTennisPoints={showTennisPoints}
+        />
+      </div>
+    </>
+  );
+}
+
+function StandingsTableMobile({
+  rows,
+  matchesForForm,
+  isTennis,
+  showTennisPoints,
+}: {
+  rows: StandingRow[];
+  matchesForForm: MatchDto[];
+  isTennis: boolean;
+  showTennisPoints: boolean;
+}) {
+  return (
+    <div className="grid gap-2">
+      {rows.map((r, i) => {
+        const form = last5Form(r.team_id, matchesForForm);
+
+        if (isTennis) {
+          const setsFor = safeNum(r.sets_for, safeNum(r.goals_for, 0));
+          const setsAgainst = safeNum(r.sets_against, safeNum(r.goals_against, 0));
+          const setsDiff = safeNum(r.sets_diff, safeNum(r.goal_difference, setsFor - setsAgainst));
+
+          const gamesFor = safeNum(r.games_for, 0);
+          const gamesAgainst = safeNum(r.games_against, 0);
+          const gamesDiff = safeNum(r.games_diff, safeNum(r.games_difference, gamesFor - gamesAgainst));
+
+          return (
+            <Card key={r.team_id} className="bg-white/[0.03] p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs text-slate-400">#{i + 1}</div>
+                  <div className="mt-0.5 truncate text-sm font-semibold text-white">{r.team_name}</div>
+                </div>
+
+                {showTennisPoints ? (
+                  <div className="shrink-0 text-right">
+                    <div className="text-xs text-slate-400">Pkt</div>
+                    <div className="text-sm font-semibold text-sky-200">{r.points}</div>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-200">
+                <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                  <div className="text-[11px] text-slate-400">M</div>
+                  <div className="font-semibold text-white">{r.played}</div>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                  <div className="text-[11px] text-slate-400">Z - P</div>
+                  <div className="font-semibold text-white">
+                    {r.wins} - {r.losses}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                  <div className="text-[11px] text-slate-400">Sety + -</div>
+                  <div className="font-semibold text-white">
+                    {setsFor} - {setsAgainst}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                  <div className="text-[11px] text-slate-400">RS</div>
+                  <div className="font-semibold text-white">{setsDiff}</div>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                  <div className="text-[11px] text-slate-400">Gemy + -</div>
+                  <div className="font-semibold text-white">
+                    {gamesFor} - {gamesAgainst}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                  <div className="text-[11px] text-slate-400">RG</div>
+                  <div className="font-semibold text-white">{gamesDiff}</div>
+                </div>
+              </div>
+
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <div className="text-xs text-slate-400">Forma</div>
+                <FormDots form={form} />
+              </div>
+            </Card>
+          );
+        }
+
+        return (
+          <Card key={r.team_id} className="bg-white/[0.03] p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xs text-slate-400">#{i + 1}</div>
+                <div className="mt-0.5 truncate text-sm font-semibold text-white">{r.team_name}</div>
+              </div>
+
+              <div className="shrink-0 text-right">
+                <div className="text-xs text-slate-400">Pkt</div>
+                <div className="text-sm font-semibold text-sky-200">{r.points}</div>
+              </div>
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-200">
+              <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                <div className="text-[11px] text-slate-400">M</div>
+                <div className="font-semibold text-white">{r.played}</div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                <div className="text-[11px] text-slate-400">Z - R - P</div>
+                <div className="font-semibold text-white">
+                  {r.wins} - {r.draws} - {r.losses}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                <div className="text-[11px] text-slate-400">B+ : B-</div>
+                <div className="font-semibold text-white">
+                  {r.goals_for}:{r.goals_against}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                <div className="text-[11px] text-slate-400">RB</div>
+                <div className="font-semibold text-white">{r.goal_difference}</div>
+              </div>
+            </div>
+
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <div className="text-xs text-slate-400">Forma</div>
+              <FormDots form={form} />
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function StandingsTableDesktop({
   rows,
   matchesForForm,
   isTennis,
@@ -668,9 +842,7 @@ function FormDots({ form }: { form: FormResult[] }) {
   );
 }
 
-/* =========================
-   DRABINKA PREMIUM: układ + linie + drag
-   ========================= */
+// ===== Drabinka premium =====
 
 type BracketMode = "PYRAMID" | "CENTERED";
 
@@ -683,217 +855,168 @@ type BracketDims = {
 };
 
 function getDefaultDims(): BracketDims {
-  // Parametry dobrane pod czytelność i “fit to width” na desktop
   const cardW = 240;
   const cardH = 80;
   const colGap = 64;
-  const rowUnit = 108; // odstęp między meczami w rundzie 1
+  const rowUnit = 108;
   const halfUnit = Math.round(rowUnit / 2);
   return { cardW, cardH, colGap, rowUnit, halfUnit };
 }
 
-function buildPyramidLayout(rounds: BracketRound[], dims: BracketDims) {
-  const nRounds = rounds.length;
-  const n0 = rounds[0]?.items?.length ?? 0;
+type BracketNode = {
+  roundIndex: number;
+  itemIndex: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  item: BracketDuelItem;
+  label: string;
+};
 
-  const contentW = nRounds > 0 ? nRounds * dims.cardW + (nRounds - 1) * dims.colGap : 0;
-  const contentH = n0 > 0 ? (n0 - 1) * dims.rowUnit + dims.cardH : 0;
+type BracketLayout = {
+  nodes: BracketNode[];
+  contentW: number;
+  contentH: number;
+  roundCount: number;
+};
 
-  const pos = rounds.map((r, ri) =>
-    r.items.map((_, mi) => {
-      // piramida bokiem: w kolejnych rundach mecze są “pomiędzy” parami
-      const base = Math.pow(2, ri);
-      const step = Math.pow(2, ri + 1);
-      const slot = step * mi + (base - 1); // 0,2,4... / 1,5,9... / 3,11...
-      const y = slot * dims.halfUnit;
-      const x = ri * (dims.cardW + dims.colGap);
-      return { x, y };
-    })
-  );
+function buildPyramidLayout(rounds: BracketRound[], dims: BracketDims): BracketLayout {
+  const nodes: BracketNode[] = [];
+  const roundCount = rounds.length;
 
-  const paths: string[] = [];
-  for (let ri = 0; ri < rounds.length - 1; ri++) {
-    const fromRound = rounds[ri];
-    const toRound = rounds[ri + 1];
+  const { cardW, cardH, colGap, rowUnit, halfUnit } = dims;
 
-    for (let mi = 0; mi < fromRound.items.length; mi++) {
-      const ti = Math.floor(mi / 2);
-      if (!toRound.items[ti]) continue;
+  const colW = cardW + colGap;
 
-      const a = pos[ri][mi];
-      const b = pos[ri + 1][ti];
+  const maxItemsInAnyRound = Math.max(0, ...rounds.map((r) => r.items.length));
+  const contentH = Math.max(cardH, maxItemsInAnyRound * rowUnit);
 
-      const x1 = a.x + dims.cardW;
-      const y1 = a.y + dims.cardH / 2;
+  const contentW = Math.max(cardW, roundCount * colW);
 
-      const x2 = b.x;
-      const y2 = b.y + dims.cardH / 2;
+  rounds.forEach((round, rIdx) => {
+    const items = round.items;
+    const colX = rIdx * colW;
 
-      const mid = x1 + (x2 - x1) / 2;
+    const totalHeight = items.length * rowUnit;
+    const startY = Math.max(0, (contentH - totalHeight) / 2);
 
-      paths.push(`M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`);
-    }
-  }
+    items.forEach((item, iIdx) => {
+      const y = startY + iIdx * rowUnit + halfUnit - cardH / 2;
 
-  return { contentW, contentH, pos, paths };
+      nodes.push({
+        roundIndex: rIdx,
+        itemIndex: iIdx,
+        x: colX,
+        y,
+        w: cardW,
+        h: cardH,
+        item,
+        label: round.label,
+      });
+    });
+  });
+
+  return { nodes, contentW, contentH, roundCount };
 }
 
-function buildCenteredLayout(data: BracketData, dims: BracketDims) {
+function buildCenteredLayout(data: BracketData, dims: BracketDims): BracketLayout | null {
   const rounds = data.rounds;
   if (rounds.length === 0) return null;
 
-  const finalRound = rounds[rounds.length - 1];
-  const pre = rounds.slice(0, rounds.length - 1);
+  const { cardW, cardH, colGap, rowUnit, halfUnit } = dims;
 
-  const splitIdx0 = Math.ceil((pre[0]?.items?.length ?? 0) / 2);
+  const finalRoundIndex = rounds.length - 1;
+  const finalRound = rounds[finalRoundIndex];
+  if (!finalRound || finalRound.items.length === 0) return null;
 
-  const leftRounds: BracketRound[] = pre.map((r) => ({
-    ...r,
-    items: r.items.slice(0, Math.ceil(r.items.length / 2)),
-  }));
+  const nodes: BracketNode[] = [];
+  const contentH = Math.max(cardH, Math.max(1, finalRound.items.length) * rowUnit);
 
-  const rightRounds: BracketRound[] = pre.map((r) => ({
-    ...r,
-    items: r.items.slice(Math.ceil(r.items.length / 2)),
-  }));
+  const colW = cardW + colGap;
+  const contentW = Math.max(cardW, rounds.length * colW);
 
-  const leftN0 = leftRounds[0]?.items?.length ?? 0;
-  const rightN0 = rightRounds[0]?.items?.length ?? 0;
+  const finalX = finalRoundIndex * colW;
+  const finalStartY = Math.max(0, (contentH - finalRound.items.length * rowUnit) / 2);
 
-  const preCols = pre.length; // bez finału
-  const centerGap = 96;
-
-  const leftW = preCols * dims.cardW + Math.max(0, preCols - 1) * dims.colGap;
-  const finalW = dims.cardW;
-  const rightW = preCols * dims.cardW + Math.max(0, preCols - 1) * dims.colGap;
-
-  const contentW = leftW + centerGap + finalW + centerGap + rightW;
-
-  const maxN0 = Math.max(leftN0 * 2, rightN0 * 2, splitIdx0 * 2);
-  const effectiveN0 = Math.max(maxN0 / 2, 1);
-  const contentH = (effectiveN0 - 1) * dims.rowUnit + dims.cardH;
-
-  const leftBaseX = 0;
-  const finalX = leftW + centerGap;
-  const rightBaseX = finalX + finalW + centerGap;
-
-  const leftPos = leftRounds.map((r, ri) =>
-    r.items.map((_, mi) => {
-      const base = Math.pow(2, ri);
-      const step = Math.pow(2, ri + 1);
-      const slot = step * mi + (base - 1);
-      const y = slot * dims.halfUnit;
-      const x = leftBaseX + ri * (dims.cardW + dims.colGap);
-      return { x, y };
-    })
-  );
-
-  const rightXForRound = (ri: number) => {
-    // round 0 ma być najdalej na prawo, więc round rośnie w lewo
-    const offset = (preCols - 1 - ri) * (dims.cardW + dims.colGap);
-    return rightBaseX + offset;
-  };
-
-  const rightPos = rightRounds.map((r, ri) =>
-    r.items.map((_, mi) => {
-      const base = Math.pow(2, ri);
-      const step = Math.pow(2, ri + 1);
-      const slot = step * mi + (base - 1);
-      const y = slot * dims.halfUnit;
-      const x = rightXForRound(ri);
-      return { x, y };
-    })
-  );
-
-  const finalPos = finalRound.items.map((_, mi) => {
-    const y = (contentH - dims.cardH) / 2;
-    const x = finalX;
-    return { x, y, mi };
+  finalRound.items.forEach((item, iIdx) => {
+    const y = finalStartY + iIdx * rowUnit + halfUnit - cardH / 2;
+    nodes.push({
+      roundIndex: finalRoundIndex,
+      itemIndex: iIdx,
+      x: finalX,
+      y,
+      w: cardW,
+      h: cardH,
+      item,
+      label: finalRound.label,
+    });
   });
 
-  const paths: string[] = [];
+  for (let r = finalRoundIndex - 1; r >= 0; r--) {
+    const round = rounds[r];
+    const colX = r * colW;
 
-  // Lewa strona: standardowo w prawo
-  for (let ri = 0; ri < leftRounds.length - 1; ri++) {
-    for (let mi = 0; mi < leftRounds[ri].items.length; mi++) {
-      const ti = Math.floor(mi / 2);
-      if (!leftRounds[ri + 1].items[ti]) continue;
+    const expectedPairs = round.items.length;
+    const totalHeight = expectedPairs * rowUnit;
+    const startY = Math.max(0, (contentH - totalHeight) / 2);
 
-      const a = leftPos[ri][mi];
-      const b = leftPos[ri + 1][ti];
-
-      const x1 = a.x + dims.cardW;
-      const y1 = a.y + dims.cardH / 2;
-      const x2 = b.x;
-      const y2 = b.y + dims.cardH / 2;
-      const mid = x1 + (x2 - x1) / 2;
-
-      paths.push(`M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`);
-    }
+    round.items.forEach((item, iIdx) => {
+      const y = startY + iIdx * rowUnit + halfUnit - cardH / 2;
+      nodes.push({
+        roundIndex: r,
+        itemIndex: iIdx,
+        x: colX,
+        y,
+        w: cardW,
+        h: cardH,
+        item,
+        label: round.label,
+      });
+    });
   }
 
-  // Prawa strona: w lewo (do centrum)
-  for (let ri = 0; ri < rightRounds.length - 1; ri++) {
-    for (let mi = 0; mi < rightRounds[ri].items.length; mi++) {
-      const ti = Math.floor(mi / 2);
-      if (!rightRounds[ri + 1].items[ti]) continue;
+  return { nodes, contentW, contentH, roundCount: rounds.length };
+}
 
-      const a = rightPos[ri][mi];
-      const b = rightPos[ri + 1][ti];
+type Connection = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+};
 
-      const x1 = a.x; // lewa krawędź (w stronę centrum)
-      const y1 = a.y + dims.cardH / 2;
-      const x2 = b.x + dims.cardW; // prawa krawędź targetu (też w stronę centrum)
-      const y2 = b.y + dims.cardH / 2;
-      const mid = x2 + (x1 - x2) / 2;
+function buildConnections(layout: BracketLayout, dims: BracketDims): Connection[] {
+  const { cardW, cardH, colGap } = dims;
 
-      paths.push(`M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`);
-    }
+  const map = new Map<string, BracketNode>();
+  layout.nodes.forEach((n) => map.set(`${n.roundIndex}:${n.itemIndex}`, n));
+
+  const conns: Connection[] = [];
+
+  for (const node of layout.nodes) {
+    const r = node.roundIndex;
+    if (r >= layout.roundCount - 1) continue;
+
+    const nextRoundIndex = r + 1;
+    const nextIndex = Math.floor(node.itemIndex / 2);
+
+    const next = map.get(`${nextRoundIndex}:${nextIndex}`);
+    if (!next) continue;
+
+    const x1 = node.x + cardW;
+    const y1 = node.y + cardH / 2;
+    const x2 = next.x;
+    const y2 = next.y + cardH / 2;
+
+    const midX = x1 + colGap / 2;
+
+    conns.push({ x1, y1, x2: midX, y2: y1 });
+    conns.push({ x1: midX, y1, x2: midX, y2 });
+    conns.push({ x1: midX, y1: y2, x2, y2 });
   }
 
-  // Połączenia do finału
-  const leftLast = leftRounds[leftRounds.length - 1];
-  const rightLast = rightRounds[rightRounds.length - 1];
-
-  if (finalPos[0]) {
-    // lewy półfinał -> finał (wejście z lewej)
-    if (leftLast?.items?.[0] && leftPos[leftPos.length - 1]?.[0]) {
-      const a = leftPos[leftPos.length - 1][0];
-      const x1 = a.x + dims.cardW;
-      const y1 = a.y + dims.cardH / 2;
-
-      const x2 = finalPos[0].x;
-      const y2 = finalPos[0].y + dims.cardH / 2;
-      const mid = x1 + (x2 - x1) / 2;
-
-      paths.push(`M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`);
-    }
-
-    // prawy półfinał -> finał (wejście z prawej)
-    if (rightLast?.items?.[0] && rightPos[rightPos.length - 1]?.[0]) {
-      const a = rightPos[rightPos.length - 1][0];
-      const x1 = a.x; // lewa krawędź półfinału (w stronę finału)
-      const y1 = a.y + dims.cardH / 2;
-
-      const x2 = finalPos[0].x + dims.cardW; // prawa krawędź finału
-      const y2 = finalPos[0].y + dims.cardH / 2;
-      const mid = x2 + (x1 - x2) / 2;
-
-      paths.push(`M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`);
-    }
-  }
-
-  return {
-    contentW,
-    contentH,
-    leftRounds,
-    rightRounds,
-    finalRound,
-    leftPos,
-    rightPos,
-    finalPos,
-    paths,
-  };
+  return conns;
 }
 
 function BracketPremium({ data, discipline, mode }: { data: BracketData; discipline: string; mode: BracketMode }) {
@@ -908,12 +1031,15 @@ function BracketPremium({ data, discipline, mode }: { data: BracketData; discipl
   const [dragging, setDragging] = useState(false);
 
   const pyramid = useMemo(() => buildPyramidLayout(data.rounds, dims), [data.rounds, dims]);
-  const centered = useMemo(() => buildCenteredLayout(data, dims), [data, dims, mode]);
+  const centered = useMemo(() => buildCenteredLayout(data, dims), [data, dims]);
 
   const contentW = mode === "PYRAMID" ? pyramid.contentW : centered?.contentW ?? pyramid.contentW;
   const contentH = mode === "PYRAMID" ? pyramid.contentH : centered?.contentH ?? pyramid.contentH;
 
-  // ===== Fit to width =====
+  const layout = mode === "PYRAMID" ? pyramid : centered ?? pyramid;
+  const conns = useMemo(() => buildConnections(layout, dims), [layout, dims]);
+
+  // ===== Dopasowanie zoom =====
   useEffect(() => {
     const el = hostRef.current;
     if (!el) return;
@@ -926,11 +1052,10 @@ function BracketPremium({ data, discipline, mode }: { data: BracketData; discipl
 
       setFitZoom(fit);
 
-      // Jeżeli user nie zmieniał ręcznie, trzymamy “fit”
-      setZoom((prev) => {
-        const isNearPrevFit = Math.abs(prev - fit) < 0.02;
-        return isNearPrevFit ? fit : prev;
-      });
+      if (zoom < 0.55) return;
+      if (zoom > 1.05) return;
+
+      setZoom(fit);
     };
 
     compute();
@@ -939,136 +1064,105 @@ function BracketPremium({ data, discipline, mode }: { data: BracketData; discipl
     ro.observe(el);
 
     return () => ro.disconnect();
-  }, [contentW]);
+  }, [contentW, zoom]);
 
-  // ===== Fullscreen =====
-  useEffect(() => {
-    const onChange = () => {
-      const fs = !!document.fullscreenElement;
-      setIsFullscreen(fs);
-    };
-    document.addEventListener("fullscreenchange", onChange);
-    return () => document.removeEventListener("fullscreenchange", onChange);
-  }, []);
-
-  const requestFs = async () => {
-    const el = hostRef.current;
-    if (!el) return;
-    try {
-      await el.requestFullscreen();
-    } catch {
-      // ignore
-    }
-  };
-
-  const exitFs = async () => {
-    try {
-      await document.exitFullscreen();
-    } catch {
-      // ignore
-    }
-  };
-
-  const pannable = isFullscreen || zoom > fitZoom + 0.02;
-
-  // ===== Drag-to-pan =====
-  useEffect(() => {
-    const vp = viewportRef.current;
-    if (!vp) return;
-
-    const state = {
-      active: false,
-      sx: 0,
-      sy: 0,
-      sl: 0,
-      st: 0,
-      pid: -1,
-    };
-
-    const isInteractive = (t: EventTarget | null) => {
-      const el = t as HTMLElement | null;
-      if (!el) return false;
-      return !!el.closest("button, a, input, textarea, select");
-    };
-
-    const onDown = (e: PointerEvent) => {
-      if (!pannable) return;
-      if (e.button !== 0) return;
-      if (isInteractive(e.target)) return;
-
-      state.active = true;
-      state.pid = e.pointerId;
-      state.sx = e.clientX;
-      state.sy = e.clientY;
-      state.sl = vp.scrollLeft;
-      state.st = vp.scrollTop;
-
-      vp.setPointerCapture(e.pointerId);
-      setDragging(true);
-    };
-
-    const onMove = (e: PointerEvent) => {
-      if (!state.active) return;
-      const dx = e.clientX - state.sx;
-      const dy = e.clientY - state.sy;
-      vp.scrollLeft = state.sl - dx;
-      vp.scrollTop = state.st - dy;
-    };
-
-    const onUp = (e: PointerEvent) => {
-      if (!state.active) return;
-      if (state.pid === e.pointerId) {
-        state.active = false;
-        state.pid = -1;
-        setDragging(false);
-      }
-    };
-
-    vp.addEventListener("pointerdown", onDown);
-    vp.addEventListener("pointermove", onMove);
-    vp.addEventListener("pointerup", onUp);
-    vp.addEventListener("pointercancel", onUp);
-
-    return () => {
-      vp.removeEventListener("pointerdown", onDown);
-      vp.removeEventListener("pointermove", onMove);
-      vp.removeEventListener("pointerup", onUp);
-      vp.removeEventListener("pointercancel", onUp);
-    };
-  }, [pannable]);
-
-  const handleZoom = (delta: number) => {
-    setZoom((z) => clamp(Math.round((z + delta) * 100) / 100, 0.5, 1.6));
-  };
-
+  const handleZoom = (delta: number) => setZoom((z) => clamp(z + delta, 0.5, 2));
   const handleFit = () => setZoom(fitZoom);
 
-  const wrapStyle: CSSProperties = {
-    width: contentW,
-    height: contentH,
-    transform: `scale(${zoom})`,
-    transformOrigin: "top left",
+  const requestFs = () => {
+    setIsFullscreen(true);
+    setTimeout(() => setZoom(fitZoom), 50);
+  };
+  const exitFs = () => {
+    setIsFullscreen(false);
+    setTimeout(() => setZoom(fitZoom), 50);
   };
 
-  const svgStyle: CSSProperties = {
-    width: contentW,
-    height: contentH,
-  };
+  // ===== Tryb pełnoekranowy =====
+  useEffect(() => {
+    if (!isFullscreen) return;
 
-  const lineStroke = "rgba(255,255,255,0.22)";
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") exitFs();
+    };
 
-  const paths =
-    mode === "PYRAMID" ? pyramid.paths : centered?.paths ?? pyramid.paths;
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isFullscreen]);
+
+  // ===== Przesuwanie widoku =====
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+
+    let isDown = false;
+    let startX = 0;
+    let startY = 0;
+    let scrollLeft = 0;
+    let scrollTop = 0;
+
+    const onDown = (e: MouseEvent) => {
+      if (!isFullscreen && e.button !== 0) return;
+      isDown = true;
+      setDragging(true);
+      startX = e.pageX - el.offsetLeft;
+      startY = e.pageY - el.offsetTop;
+      scrollLeft = el.scrollLeft;
+      scrollTop = el.scrollTop;
+    };
+
+    const onLeave = () => {
+      isDown = false;
+      setDragging(false);
+    };
+
+    const onUp = () => {
+      isDown = false;
+      setDragging(false);
+    };
+
+    const onMove = (e: MouseEvent) => {
+      if (!isDown) return;
+      e.preventDefault();
+      const x = e.pageX - el.offsetLeft;
+      const y = e.pageY - el.offsetTop;
+      const walkX = x - startX;
+      const walkY = y - startY;
+      el.scrollLeft = scrollLeft - walkX;
+      el.scrollTop = scrollTop - walkY;
+    };
+
+    el.addEventListener("mousedown", onDown);
+    el.addEventListener("mouseleave", onLeave);
+    el.addEventListener("mouseup", onUp);
+    el.addEventListener("mousemove", onMove);
+
+    return () => {
+      el.removeEventListener("mousedown", onDown);
+      el.removeEventListener("mouseleave", onLeave);
+      el.removeEventListener("mouseup", onUp);
+      el.removeEventListener("mousemove", onMove);
+    };
+  }, [isFullscreen]);
+
+  const contentStyle = useMemo<CSSProperties>(() => {
+    return {
+      width: contentW,
+      height: contentH,
+      transform: `scale(${zoom})`,
+      transformOrigin: "top left",
+    };
+  }, [contentW, contentH, zoom]);
 
   return (
     <div
       ref={hostRef}
       className={cn(
-        "relative rounded-2xl border border-white/10 bg-white/[0.03] p-4 sm:p-5",
-        isFullscreen && "h-[100svh] w-full rounded-none border-0 p-0"
+        "relative",
+        isFullscreen &&
+          "fixed inset-0 z-50 overflow-hidden bg-slate-950/95 backdrop-blur"
       )}
     >
-      {/* ===== Toolbar ===== */}
       <div
         className={cn(
           "mb-3 flex flex-wrap items-center justify-between gap-2",
@@ -1109,288 +1203,193 @@ function BracketPremium({ data, discipline, mode }: { data: BracketData; discipl
         </div>
       </div>
 
-      {/* ===== Viewport ===== */}
       <div
         ref={viewportRef}
         className={cn(
-          "relative w-full rounded-2xl border border-white/10 bg-black/10",
-          pannable ? "overflow-auto" : "overflow-hidden",
-          pannable && "select-none",
-          pannable && (dragging ? "cursor-grabbing" : "cursor-grab"),
-          isFullscreen ? "h-[calc(100svh-84px)]" : "h-[520px] sm:h-[560px]"
+          "relative overflow-auto rounded-2xl border border-white/10 bg-white/[0.03]",
+          dragging && "cursor-grabbing",
+          !dragging && "cursor-grab",
+          isFullscreen ? "h-[calc(100vh-86px)]" : "max-h-[560px]"
         )}
       >
-        <div className="relative">
-          <div className="absolute inset-0 pointer-events-none">
-            <div className="absolute -top-24 left-1/2 h-44 w-[34rem] -translate-x-1/2 rounded-full bg-indigo-500/12 blur-3xl" />
-            <div className="absolute -bottom-28 left-1/2 h-44 w-[34rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
-          </div>
-
-          <div className="relative p-4">
-            <div className="relative" style={wrapStyle}>
-              {/* ===== Linie połączeń ===== */}
-              <svg
-                className="absolute left-0 top-0 pointer-events-none"
-                style={svgStyle}
-                viewBox={`0 0 ${contentW} ${contentH}`}
-              >
-                {paths.map((d, idx) => (
-                  <path
-                    key={idx}
-                    d={d}
-                    fill="none"
-                    stroke={lineStroke}
-                    strokeWidth={2}
-                    strokeLinejoin="round"
-                    strokeLinecap="round"
-                  />
-                ))}
-              </svg>
-
-              {/* ===== Karty meczów ===== */}
-              {mode === "PYRAMID" ? (
-                <BracketCardsAbsolute
-                  rounds={data.rounds}
-                  pos={pyramid.pos}
-                  dims={dims}
-                  discipline={discipline}
-                  thirdPlace={data.third_place}
+        <div
+          className="relative"
+          style={{
+            width: contentW * zoom,
+            height: contentH * zoom,
+            padding: 12,
+          }}
+        >
+          <svg
+            className="absolute left-0 top-0"
+            width={contentW * zoom}
+            height={contentH * zoom}
+            style={{ pointerEvents: "none" }}
+          >
+            <g transform={`scale(${zoom})`}>
+              {conns.map((c, idx) => (
+                <path
+                  key={idx}
+                  d={`M ${c.x1} ${c.y1} L ${c.x2} ${c.y2}`}
+                  stroke="rgba(255,255,255,0.18)"
+                  strokeWidth={2}
+                  fill="none"
                 />
-              ) : centered ? (
-                <CenteredCardsAbsolute
-                  centered={centered}
-                  dims={dims}
-                  discipline={discipline}
-                  thirdPlace={data.third_place}
-                />
-              ) : null}
+              ))}
+            </g>
+          </svg>
+
+          <div style={contentStyle}>
+            <div className="relative">
+              {layout.nodes.map((n) => (
+                <div
+                  key={`${n.roundIndex}-${n.itemIndex}-${n.item.id}`}
+                  className="absolute"
+                  style={{ left: n.x, top: n.y, width: n.w, height: n.h }}
+                >
+                  <MatchCard item={n.item} discipline={discipline} roundLabel={n.label} />
+                </div>
+              ))}
             </div>
           </div>
         </div>
       </div>
+
+      {data.third_place ? (
+        <div className={cn("mt-4", isFullscreen && "px-4 pb-4")}>
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Mecz o 3. miejsce
+          </div>
+          <div className="max-w-[420px]">
+            <MatchCard item={data.third_place} discipline={discipline} roundLabel="3. miejsce" />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function BracketCardsAbsolute({
-  rounds,
-  pos,
-  dims,
-  discipline,
-  thirdPlace,
-}: {
-  rounds: BracketRound[];
-  pos: { x: number; y: number }[][];
-  dims: BracketDims;
-  discipline: string;
-  thirdPlace: BracketDuelItem | null;
-}) {
-  return (
-    <>
-      {rounds.map((r, ri) =>
-        r.items.map((item, mi) => {
-          const p = pos[ri]?.[mi];
-          if (!p) return null;
+// ===== Karty meczów =====
 
-          const style: CSSProperties = {
-            position: "absolute",
-            left: p.x,
-            top: p.y,
-            width: dims.cardW,
-            height: dims.cardH,
-          };
-
-          return <BracketMatchCard key={item.id} style={style} item={item} discipline={discipline} />;
-        })
-      )}
-
-      {thirdPlace && rounds.length > 0 ? (
-        <div
-          style={{
-            position: "absolute",
-            left: (rounds.length - 1) * (dims.cardW + dims.colGap),
-            top: Math.max(0, (pos[0]?.length ?? 0) * dims.rowUnit),
-            width: dims.cardW,
-            height: dims.cardH,
-          }}
-        >
-          <div className="mb-1 text-center text-[11px] font-semibold uppercase tracking-wide text-amber-200">
-            3. miejsce
-          </div>
-          <BracketMatchCard item={thirdPlace} discipline={discipline} />
-        </div>
-      ) : null}
-    </>
-  );
+function badgeStatus(status: BracketDuelItem["status"]) {
+  if (status === "FINISHED") return { label: "Zakończony", cls: "bg-emerald-500/15 text-emerald-100 border-emerald-400/20" };
+  if (status === "IN_PROGRESS") return { label: "W trakcie", cls: "bg-sky-500/15 text-sky-100 border-sky-400/20" };
+  return { label: "Zaplanowany", cls: "bg-white/[0.04] text-slate-200 border-white/10" };
 }
 
-function CenteredCardsAbsolute({
-  centered,
-  dims,
-  discipline,
-  thirdPlace,
-}: {
-  centered: NonNullable<ReturnType<typeof buildCenteredLayout>>;
-  dims: BracketDims;
-  discipline: string;
-  thirdPlace: BracketDuelItem | null;
-}) {
-  const { leftRounds, rightRounds, finalRound, leftPos, rightPos, finalPos } = centered;
+function MatchCard({ item, discipline, roundLabel }: { item: BracketDuelItem; discipline: string; roundLabel: string }) {
+  const status = badgeStatus(item.status);
 
   return (
-    <>
-      {leftRounds.map((r, ri) =>
-        r.items.map((item, mi) => {
-          const p = leftPos[ri]?.[mi];
-          if (!p) return null;
-
-          return (
-            <BracketMatchCard
-              key={`L-${item.id}`}
-              style={{ position: "absolute", left: p.x, top: p.y, width: dims.cardW, height: dims.cardH }}
-              item={item}
-              discipline={discipline}
-            />
-          );
-        })
-      )}
-
-      {rightRounds.map((r, ri) =>
-        r.items.map((item, mi) => {
-          const p = rightPos[ri]?.[mi];
-          if (!p) return null;
-
-          return (
-            <BracketMatchCard
-              key={`R-${item.id}`}
-              style={{ position: "absolute", left: p.x, top: p.y, width: dims.cardW, height: dims.cardH }}
-              item={item}
-              discipline={discipline}
-            />
-          );
-        })
-      )}
-
-      {finalRound.items.map((item, idx) => {
-        const p = finalPos[idx];
-        if (!p) return null;
-
-        return (
-          <BracketMatchCard
-            key={`F-${item.id}`}
-            style={{ position: "absolute", left: p.x, top: p.y, width: dims.cardW, height: dims.cardH }}
-            item={item}
-            discipline={discipline}
-            highlight
-          />
-        );
-      })}
-
-      {thirdPlace ? (
-        <div
-          style={{
-            position: "absolute",
-            left: finalPos[0]?.x ?? 0,
-            top: (finalPos[0]?.y ?? 0) + dims.cardH + 70,
-            width: dims.cardW,
-          }}
-        >
-          <div className="mb-1 text-center text-[11px] font-semibold uppercase tracking-wide text-amber-200">
-            3. miejsce
+    <div className="h-full w-full rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-xs text-slate-400">{roundLabel}</div>
+          <div className="mt-0.5 truncate text-sm font-semibold text-white">
+            {item.home_team_name} vs {item.away_team_name}
           </div>
-          <BracketMatchCard item={thirdPlace} discipline={discipline} />
-        </div>
-      ) : null}
-    </>
-  );
-}
-
-/* =========================
-   KARTA MECZU (bez statusu)
-   ========================= */
-
-function BracketMatchCard({
-  item,
-  discipline,
-  style,
-  highlight,
-}: {
-  item: BracketDuelItem;
-  discipline: string;
-  style?: CSSProperties;
-  highlight?: boolean;
-}) {
-  const isTennis = (discipline ?? "").toLowerCase() === "tennis";
-
-  const homeWin = item.winner_id !== null && item.winner_id === item.home_team_id;
-  const awayWin = item.winner_id !== null && item.winner_id === item.away_team_id;
-
-  const aggHome = item.is_two_legged
-    ? (item.aggregate_home ?? ((item.score_leg1_home ?? 0) + (item.score_leg2_home ?? 0)))
-    : null;
-
-  const aggAway = item.is_two_legged
-    ? (item.aggregate_away ?? ((item.score_leg1_away ?? 0) + (item.score_leg2_away ?? 0)))
-    : null;
-
-  const showLeg2 = item.is_two_legged;
-
-  // Zgodnie z wymaganiem: brak statusu. Pokazujemy tylko wynik.
-  return (
-    <div
-      style={style}
-      className={cn(
-        "rounded-2xl border bg-white/[0.04] p-3",
-        "shadow-[0_12px_34px_rgba(0,0,0,0.28)]",
-        highlight ? "border-amber-400/25" : "border-white/10"
-      )}
-    >
-      {item.is_two_legged ? (
-        <div className="mb-1 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-          Dwumecz
-        </div>
-      ) : null}
-
-      <div className="flex items-center justify-between gap-3">
-        <div className={cn("min-w-0 text-sm", homeWin ? "font-semibold text-slate-100" : "text-slate-200")}>
-          <span className="block truncate">{item.home_team_name || "TBD"}</span>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1">
-          <ScoreBox score={item.score_leg1_home} variant="leg" />
-          {showLeg2 ? <ScoreBox score={item.score_leg2_home} variant="leg" /> : null}
-          {showLeg2 ? <ScoreBox score={aggHome} variant={homeWin ? "aggWin" : "agg"} /> : null}
-        </div>
+        <span className={cn("shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold", status.cls)}>
+          {status.label}
+        </span>
       </div>
 
-      <div className="mt-2 flex items-center justify-between gap-3">
-        <div className={cn("min-w-0 text-sm", awayWin ? "font-semibold text-slate-100" : "text-slate-200")}>
-          <span className="block truncate">{item.away_team_name || "TBD"}</span>
-        </div>
-
-        <div className="flex shrink-0 items-center gap-1">
-          <ScoreBox score={item.score_leg1_away} variant="leg" />
-          {showLeg2 ? <ScoreBox score={item.score_leg2_away} variant="leg" /> : null}
-          {showLeg2 ? <ScoreBox score={aggAway} variant={awayWin ? "aggWin" : "agg"} /> : null}
-        </div>
+      <div className="grid gap-2">
+        <MatchScoreBlock item={item} discipline={discipline} />
       </div>
-
-      {!isTennis ? null : (
-        <div className="mt-2 text-[11px] text-slate-400">
-          Tenis: sety w gemach są dostępne w szczegółach meczu.
-        </div>
-      )}
     </div>
   );
 }
 
-function ScoreBox({ score, variant }: { score: number | null | undefined; variant: "leg" | "agg" | "aggWin" }) {
+function scoreText(a: number | null | undefined, b: number | null | undefined) {
+  if (a == null || b == null) return "-";
+  return `${a}:${b}`;
+}
+
+function hasPenalties(item: BracketDuelItem) {
+  const p1 = item.penalties_leg1_home != null || item.penalties_leg1_away != null;
+  const p2 = item.penalties_leg2_home != null || item.penalties_leg2_away != null;
+  return p1 || p2;
+}
+
+function MatchScoreBlock({ item, discipline }: { item: BracketDuelItem; discipline: string }) {
+  const isTennis = String(discipline || "").toLowerCase() === "tennis";
+
+  const leg1 = scoreText(item.score_leg1_home, item.score_leg1_away);
+  const leg2 = item.is_two_legged ? scoreText(item.score_leg2_home ?? null, item.score_leg2_away ?? null) : null;
+
+  const agg = item.aggregate_home != null && item.aggregate_away != null ? `${item.aggregate_home}:${item.aggregate_away}` : null;
+
+  const showPens = hasPenalties(item);
+
+  return (
+    <div className="grid gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <ScorePill label="Mecz" score={leg1} variant="leg" />
+
+        {leg2 ? <ScorePill label="Rewanż" score={leg2} variant="leg" /> : null}
+
+        {agg ? <ScorePill label="Agregat" score={agg} variant="agg" /> : null}
+
+        {item.winner_id ? (
+          <span className="ml-auto text-xs font-semibold text-slate-300">
+            Zwycięzca:{" "}
+            <span className="text-white">
+              {item.winner_id === item.home_team_id ? item.home_team_name : item.away_team_name}
+            </span>
+          </span>
+        ) : null}
+      </div>
+
+      {showPens ? (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
+          <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">
+            Karne:{" "}
+            <span className="font-semibold text-white">
+              {scoreText(item.penalties_leg1_home ?? null, item.penalties_leg1_away ?? null)}
+            </span>
+            {item.is_two_legged ? (
+              <>
+                {" "}
+                /{" "}
+                <span className="font-semibold text-white">
+                  {scoreText(item.penalties_leg2_home ?? null, item.penalties_leg2_away ?? null)}
+                </span>
+              </>
+            ) : null}
+          </span>
+        </div>
+      ) : null}
+
+      {isTennis ? (
+        <div className="text-xs text-slate-300">
+          {item.tennis_sets_leg1 ? (
+            <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">
+              Sety: <span className="font-semibold text-white">{String(item.tennis_sets_leg1)}</span>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ScorePill({
+  label,
+  score,
+  variant,
+}: {
+  label: string;
+  score: string | null;
+  variant: "leg" | "agg" | "aggWin";
+}) {
   return (
     <span
       className={cn(
-        "inline-flex h-6 w-8 items-center justify-center rounded-md text-xs font-semibold",
-        variant === "leg" && "border border-white/10 bg-white/5 text-slate-100",
-        variant === "agg" && "border border-white/10 bg-white/10 text-slate-100",
+        "inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs",
+        "border border-white/10 bg-white/[0.03] text-slate-200",
+        variant === "agg" && "border border-white/15 bg-white/[0.05] text-white",
         variant === "aggWin" && "border border-sky-400/30 bg-sky-500/20 text-sky-100"
       )}
       title={variant === "leg" ? "Wynik" : "Agregat"}
@@ -1399,11 +1398,3 @@ function ScoreBox({ score, variant }: { score: number | null | undefined; varian
     </span>
   );
 }
-
-/*
-Co zmieniono:
-1) Dodano linie łączące rundy (SVG) - drabinka ma układ piramidy bokiem, a nie schodów.
-2) Dodano drag-to-pan (przeciąganie) dla powiększenia i fullscreen.
-3) Dodano kontrolki: +, -, dopasuj (fit) i fullscreen, bez poziomego slidera na desktop w trybie fit.
-4) Usunięto statusy meczów z drabinki - pozostają drużyny i wyniki (oraz agregat dla dwumeczu).
-*/

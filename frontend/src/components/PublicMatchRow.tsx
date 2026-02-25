@@ -1,5 +1,7 @@
-// frontend/src/components/PublicMatchRow.tsx
 import type { KeyboardEvent } from "react";
+import { useMemo } from "react";
+
+import { cn } from "../lib/cn";
 
 import type { CommentaryEntryPublicDTO, IncidentPublicDTO, MatchPublicDTO } from "./PublicMatchesPanel";
 
@@ -134,34 +136,40 @@ export default function PublicMatchRow({
     match.id === selectedMatchId &&
     selectedSection === sectionId;
 
+  const detailsId = `public-match-${sectionId}-${match.id}-details`;
+
   const incidents = (incidentsByMatch?.[match.id] ?? []) as IncidentPublicDTO[];
   const commentary = (commentaryByMatch?.[match.id] ?? []) as CommentaryEntryPublicDTO[];
 
-  const sortedIncidents = incidents
-    .slice()
-    .sort((a, b) => {
-      const am = incidentMinute(a);
-      const bm = incidentMinute(b);
-      if (am == null && bm == null) return (a.id ?? 0) - (b.id ?? 0);
-      if (am == null) return 1;
-      if (bm == null) return -1;
-      if (am !== bm) return am - bm;
-      return (a.id ?? 0) - (b.id ?? 0);
-    });
+  const sortedIncidents = useMemo(() => {
+    return incidents
+      .slice()
+      .sort((a, b) => {
+        const am = incidentMinute(a);
+        const bm = incidentMinute(b);
+        if (am == null && bm == null) return (a.id ?? 0) - (b.id ?? 0);
+        if (am == null) return 1;
+        if (bm == null) return -1;
+        if (am !== bm) return am - bm;
+        return (a.id ?? 0) - (b.id ?? 0);
+      });
+  }, [incidents]);
 
-  const sortedCommentary = commentary
-    .slice()
-    .sort((a, b) => {
-      const am = commentaryMinute(a);
-      const bm = commentaryMinute(b);
-      if (am == null && bm == null) return (a.id ?? 0) - (b.id ?? 0);
-      if (am == null) return 1;
-      if (bm == null) return -1;
-      if (am !== bm) return am - bm;
-      return (a.id ?? 0) - (b.id ?? 0);
-    });
+  const sortedCommentary = useMemo(() => {
+    return commentary
+      .slice()
+      .sort((a, b) => {
+        const am = commentaryMinute(a);
+        const bm = commentaryMinute(b);
+        if (am == null && bm == null) return (a.id ?? 0) - (b.id ?? 0);
+        if (am == null) return 1;
+        if (bm == null) return -1;
+        if (am !== bm) return am - bm;
+        return (a.id ?? 0) - (b.id ?? 0);
+      });
+  }, [commentary]);
 
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+  const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
     if (!isClickable) return;
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
@@ -169,64 +177,71 @@ export default function PublicMatchRow({
     }
   };
 
+  const RowHeader = isClickable ? "button" : "div";
+
   return (
     <div
-      role={isClickable ? "button" : undefined}
-      tabIndex={isClickable ? 0 : undefined}
-      onClick={isClickable ? () => onMatchClick?.(match, sectionId) : undefined}
-      onKeyDown={isClickable ? onKeyDown : undefined}
-      className={[
+      role="listitem"
+      className={cn(
         "px-4 py-3",
         index > 0 ? "border-t border-white/10" : "",
-        isClickable ? "cursor-pointer hover:bg-white/[0.04] focus:outline-none focus:ring-2 focus:ring-white/20" : "",
-        isSelected ? "bg-white/[0.04]" : "",
-      ].join(" ")}
+        isSelected ? "bg-white/[0.04]" : ""
+      )}
     >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-[240px]">
-          <div className="text-sm font-semibold text-slate-100">
-            {match.home_team_name} <span className="font-normal text-slate-400">vs</span> {match.away_team_name}
-          </div>
-
-          {(dateLabel || timeLabel || where) && (
-            <div className="mt-1 text-sm text-slate-300">
-              {dateLabel ? <span>{dateLabel}</span> : null}
-              {dateLabel && timeLabel ? <span className="mx-2 text-slate-500">•</span> : null}
-              {timeLabel ? <span>{timeLabel}</span> : null}
-              {(dateLabel || timeLabel) && where ? <span className="mx-2 text-slate-500">•</span> : null}
-              {where ? <span>{where}</span> : null}
+      <RowHeader
+        {...(isClickable
+          ? {
+              type: "button" as const,
+              onClick: () => onMatchClick?.(match, sectionId),
+              onKeyDown,
+              "aria-expanded": isSelected,
+              "aria-controls": detailsId,
+            }
+          : {})}
+        className={cn(
+          "w-full text-left",
+          isClickable
+            ? cn(
+                "cursor-pointer rounded-xl p-0",
+                "hover:bg-white/[0.03]",
+                "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+              )
+            : ""
+        )}
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold text-slate-100">
+              <span className="break-words">
+                {match.home_team_name} <span className="font-normal text-slate-400">vs</span> {match.away_team_name}
+              </span>
             </div>
-          )}
-        </div>
 
-        <div className="min-w-[170px] text-right">
-          <div className="flex items-center justify-end gap-2">
-            <div className="text-sm font-semibold text-slate-100">{score}</div>
-
-            <span className={`rounded-full border px-2 py-1 text-xs ${statusBadgeClasses(match.status)}`}>
-              {statusPl(match.status)}
-            </span>
-
-            {isSelected && isClickable ? (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onMatchClick?.(match, sectionId);
-                }}
-                aria-label="Zwiń szczegóły"
-                title="Zwiń"
-                className="ml-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-100 hover:bg-white/10"
-              >
-                -
-              </button>
+            {(dateLabel || timeLabel || where) ? (
+              <div className="mt-1 text-sm text-slate-300">
+                {dateLabel ? <span>{dateLabel}</span> : null}
+                {dateLabel && timeLabel ? <span className="mx-2 text-slate-500">•</span> : null}
+                {timeLabel ? <span>{timeLabel}</span> : null}
+                {(dateLabel || timeLabel) && where ? <span className="mx-2 text-slate-500">•</span> : null}
+                {where ? <span className="break-words">{where}</span> : null}
+              </div>
             ) : null}
           </div>
+
+          <div className="shrink-0 text-right">
+            <div className="flex items-center justify-end gap-2">
+              <div className="text-sm font-semibold text-slate-100">{score}</div>
+
+              <span className={cn("rounded-full border px-2 py-1 text-xs", statusBadgeClasses(match.status))}>
+                {statusPl(match.status)}
+              </span>
+            </div>
+          </div>
         </div>
-      </div>
+      </RowHeader>
 
       {isSelected && isClickable ? (
-        <div className="mt-3 border-t border-white/10 pt-3">
+        <div id={detailsId} className="mt-3 border-t border-white/10 pt-3">
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Incydenty</div>
@@ -258,7 +273,7 @@ export default function PublicMatchRow({
               ) : (
                 <div className="space-y-1">
                   {sortedCommentary.map((c) => (
-                    <div key={c.id} className="text-sm text-slate-200 whitespace-pre-wrap">
+                    <div key={c.id} className="whitespace-pre-wrap text-sm text-slate-200">
                       {formatCommentaryLine(c)}
                     </div>
                   ))}
@@ -271,8 +286,3 @@ export default function PublicMatchRow({
     </div>
   );
 }
-
-// Co zmieniono:
-// 1) Dodano obsługę relacji live (komentarzy) w rozwinięciu meczu oraz typowanie propsów.
-// 2) Ujednolicono prezentację: zawsze widoczne drużyny, data, godzina, wynik oraz status.
-// 3) Zapewniono deterministyczne sortowanie incydentów i komentarzy po minucie.

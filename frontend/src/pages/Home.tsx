@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   ArrowRight,
@@ -18,6 +18,8 @@ import {
   Volleyball,
 } from "lucide-react";
 
+import { cn } from "../lib/cn";
+
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 
@@ -27,12 +29,7 @@ type RevealProps = {
   className?: string;
 };
 
-// ===== Ujednolicenie animacji wejścia =====
-
-/**
- * Ujednolicenie animacji ogranicza rozbieżności percepcyjne pomiędzy sekcjami,
- * co stabilizuje odbiór hierarchii informacji na stronach o charakterze promocyjnym.
- */
+/** Reveal ujednolica animację wejścia sekcji, aby utrzymać spójny rytm i hierarchię na stronach promocyjnych. */
 function Reveal({ children, delay = 0, className }: RevealProps) {
   return (
     <motion.div
@@ -53,12 +50,7 @@ type HoverLiftProps = {
   scale?: number;
 };
 
-// ===== Standaryzacja mikronawigacji wizualnej =====
-
-/**
- * Ujednolicenie reakcji na hover wzmacnia spójność semantyki elementów klikalnych
- * oraz redukuje ryzyko niespójnych implementacji interakcji w różnych sekcjach systemu.
- */
+/** HoverLift standaryzuje mikroruch na elementach klikalnych, aby nie powstawały różne wzorce interakcji. */
 function HoverLift({ children, className, scale = 1.01 }: HoverLiftProps) {
   return (
     <motion.div
@@ -81,7 +73,7 @@ type MiniInfoProps = {
 function MiniInfo({ icon, label, title, desc }: MiniInfoProps) {
   return (
     <HoverLift scale={1.015} className="h-full">
-      <div className="h-full min-w-0 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+      <Card className="h-full bg-white/[0.04] px-4 py-3">
         <div className="flex h-full min-w-0 items-start gap-3">
           <div className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
             {icon}
@@ -92,7 +84,7 @@ function MiniInfo({ icon, label, title, desc }: MiniInfoProps) {
             <div className="mt-2 min-h-[3.25rem] text-sm text-slate-300 leading-relaxed break-words">{desc}</div>
           </div>
         </div>
-      </div>
+      </Card>
     </HoverLift>
   );
 }
@@ -106,36 +98,49 @@ type StepProps = {
 
 function Step({ n, title, desc, icon }: StepProps) {
   return (
-    <div className="relative min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+    <Card className="relative h-full min-w-0 overflow-hidden bg-white/[0.04] p-4">
       <div className="absolute -right-12 -top-12 h-28 w-28 rounded-full bg-white/[0.06] blur-2xl" />
-      <div className="relative flex min-w-0 items-start gap-3">
+      <div className="relative flex h-full min-w-0 items-start gap-3">
         <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
           {icon}
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 flex h-full flex-col">
           <div className="flex min-w-0 items-center gap-2">
             <span className="text-xs font-semibold text-slate-300/90">{n}</span>
             <span className="text-sm font-semibold text-white break-words">{title}</span>
           </div>
-          <div className="mt-1 text-sm text-slate-300 leading-relaxed break-words">{desc}</div>
+          <div className="mt-1 flex-1 text-sm text-slate-300 leading-relaxed break-words">{desc}</div>
         </div>
       </div>
-    </div>
+    </Card>
+  );
+}
+
+function FeatureTile({ icon, title, desc }: { icon: ReactNode; title: string; desc: string }) {
+  return (
+    <Card className="h-full min-w-0 bg-white/[0.04] p-4">
+      <div className="flex items-center gap-2 text-sm font-semibold text-white">
+        <span className="text-white/80">{icon}</span>
+        <span className="min-w-0 break-words">{title}</span>
+      </div>
+      <div className="mt-2 text-sm text-slate-300 leading-relaxed break-words">{desc}</div>
+    </Card>
   );
 }
 
 export default function Home() {
+  const navigate = useNavigate();
+
   return (
     <div
-      className={[
+      className={cn(
         "mx-auto pb-10",
         "max-w-7xl",
         "2xl:max-w-[96rem]",
         "[min-width:1920px]:max-w-[110rem]",
-        "[min-width:2560px]:max-w-[128rem]",
-      ].join(" ")}
+        "[min-width:2560px]:max-w-[128rem]"
+      )}
     >
-      {/* ===== HERO ===== */}
       <section className="grid gap-10 lg:grid-cols-2 lg:items-stretch">
         <div className="flex h-full min-w-0 flex-col">
           <Reveal>
@@ -153,17 +158,25 @@ export default function Home() {
 
           <Reveal delay={0.1}>
             <div className="mt-6 grid gap-3 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
-              <Link to="/login?mode=register" className="w-full sm:w-auto">
-                <Button className="w-full sm:w-auto" variant="primary" rightIcon={<ArrowRight className="h-4 w-4" />}>
-                  Utwórz konto
-                </Button>
-              </Link>
+              <Button
+                type="button"
+                className="w-full sm:w-auto"
+                variant="primary"
+                rightIcon={<ArrowRight className="h-4 w-4" />}
+                onClick={() => navigate("/login?mode=register")}
+              >
+                Utwórz konto
+              </Button>
 
-              <Link to="/find-tournament" className="w-full sm:w-auto">
-                <Button className="w-full sm:w-auto" variant="secondary" rightIcon={<Search className="h-4 w-4" />}>
-                  Znajdź turniej
-                </Button>
-              </Link>
+              <Button
+                type="button"
+                className="w-full sm:w-auto"
+                variant="secondary"
+                rightIcon={<Search className="h-4 w-4" />}
+                onClick={() => navigate("/find-tournament")}
+              >
+                Znajdź turniej
+              </Button>
 
               <Link
                 to="/login"
@@ -175,14 +188,7 @@ export default function Home() {
           </Reveal>
 
           <Reveal delay={0.15} className="mt-auto">
-            <div
-              className={[
-                "mt-6 grid items-stretch gap-3",
-                "grid-cols-1",
-                "sm:grid-cols-3",
-                "2xl:gap-4",
-              ].join(" ")}
-            >
+            <div className={cn("mt-6 grid items-stretch gap-3", "grid-cols-1", "sm:grid-cols-3", "2xl:gap-4")}>
               <MiniInfo
                 icon={<QrCode className="h-4 w-4 text-white/90" />}
                 label="Dostęp"
@@ -224,67 +230,48 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div
-                  className={[
-                    "mt-6 grid gap-3",
-                    "grid-cols-1",
-                    "sm:grid-cols-2",
-                    "[min-width:1440px]:grid-cols-2",
-                    "[min-width:1920px]:grid-cols-2",
-                  ].join(" ")}
-                >
-                  <div className="min-w-0 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                      <Brackets className="h-4 w-4 text-white/80" />
-                      Struktura i mecze
-                    </div>
-                    <div className="mt-2 text-sm text-slate-300 leading-relaxed break-words">
-                      Generowanie spotkań po konfiguracji formatu.
-                    </div>
-                  </div>
-
-                  <div className="min-w-0 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                      <ListChecks className="h-4 w-4 text-white/80" />
-                      Zestawienia
-                    </div>
-                    <div className="mt-2 text-sm text-slate-300 leading-relaxed break-words">
-                      Tabela / grupy / drabinka aktualizowane po wynikach.
-                    </div>
-                  </div>
-
-                  <div className="min-w-0 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                      <Users className="h-4 w-4 text-white/80" />
-                      Uczestnicy
-                    </div>
-                    <div className="mt-2 text-sm text-slate-300 leading-relaxed break-words">
-                      Drużyny, składy i szybki podgląd terminarza.
-                    </div>
-                  </div>
-
-                  <div className="min-w-0 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                      <UserCheck className="h-4 w-4 text-white/80" />
-                      Udostępnianie
-                    </div>
-                    <div className="mt-2 text-sm text-slate-300 leading-relaxed break-words">
-                      Publiczny widok z opcją kodu dostępu.
-                    </div>
-                  </div>
+                <div className={cn("mt-6 grid gap-3 items-stretch", "grid-cols-1", "sm:grid-cols-2")}>
+                  <FeatureTile
+                    icon={<Brackets className="h-4 w-4" />}
+                    title="Struktura i mecze"
+                    desc="Generowanie spotkań po konfiguracji formatu."
+                  />
+                  <FeatureTile
+                    icon={<ListChecks className="h-4 w-4" />}
+                    title="Zestawienia"
+                    desc="Tabela / grupy / drabinka aktualizowane po wynikach."
+                  />
+                  <FeatureTile
+                    icon={<Users className="h-4 w-4" />}
+                    title="Uczestnicy"
+                    desc="Drużyny, składy i szybki podgląd terminarza."
+                  />
+                  <FeatureTile
+                    icon={<UserCheck className="h-4 w-4" />}
+                    title="Udostępnianie"
+                    desc="Publiczny widok z opcją kodu dostępu."
+                  />
                 </div>
 
                 <div className="mt-6 grid gap-3 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
-                  <Link to="/tournaments/new" className="w-full sm:w-auto">
-                    <Button className="w-full sm:w-auto" variant="secondary" rightIcon={<Plus className="h-4 w-4" />}>
-                      Nowy turniej
-                    </Button>
-                  </Link>
-                  <Link to="/find-tournament" className="w-full sm:w-auto">
-                    <Button className="w-full sm:w-auto" variant="ghost" rightIcon={<Search className="h-4 w-4" />}>
-                      Otwórz publiczny podgląd
-                    </Button>
-                  </Link>
+                  <Button
+                    type="button"
+                    className="w-full sm:w-auto"
+                    variant="secondary"
+                    rightIcon={<Plus className="h-4 w-4" />}
+                    onClick={() => navigate("/tournaments/new")}
+                  >
+                    Nowy turniej
+                  </Button>
+                  <Button
+                    type="button"
+                    className="w-full sm:w-auto"
+                    variant="ghost"
+                    rightIcon={<Search className="h-4 w-4" />}
+                    onClick={() => navigate("/find-tournament")}
+                  >
+                    Otwórz publiczny podgląd
+                  </Button>
                 </div>
               </div>
             </Card>
@@ -292,15 +279,14 @@ export default function Home() {
         </Reveal>
       </section>
 
-      {/* ===== PROCES ===== */}
       <section className="mt-10">
         <Reveal>
           <div className="text-sm text-slate-300">Proces</div>
           <h2 className="mt-1 text-2xl font-semibold text-white">Jak to działa</h2>
         </Reveal>
 
-        <div className="mt-5 grid gap-3 md:grid-cols-3">
-          <Reveal delay={0.05}>
+        <div className="mt-5 grid items-stretch gap-3 md:grid-cols-3">
+          <Reveal delay={0.05} className="h-full">
             <Step
               n="1"
               title="Konfiguracja turnieju"
@@ -308,7 +294,7 @@ export default function Home() {
               icon={<Trophy className="h-5 w-5 text-white/90" />}
             />
           </Reveal>
-          <Reveal delay={0.1}>
+          <Reveal delay={0.1} className="h-full">
             <Step
               n="2"
               title="Uczestnicy i terminarz"
@@ -316,7 +302,7 @@ export default function Home() {
               icon={<QrCode className="h-5 w-5 text-white/90" />}
             />
           </Reveal>
-          <Reveal delay={0.15}>
+          <Reveal delay={0.15} className="h-full">
             <Step
               n="3"
               title="Wyniki i zestawienia"
@@ -327,15 +313,14 @@ export default function Home() {
         </div>
       </section>
 
-      {/* ===== DYSCYPLINY ===== */}
       <section className="mt-10">
         <Reveal>
           <div className="text-sm text-slate-300">Dyscypliny</div>
           <h2 className="mt-1 text-2xl font-semibold text-white">Różne sporty, jeden panel</h2>
         </Reveal>
 
-        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <Reveal delay={0.05}>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 items-stretch">
+          <Reveal delay={0.05} className="h-full">
             <HoverLift className="h-full">
               <Card className="h-full p-5">
                 <div className="flex min-w-0 items-start gap-3">
@@ -344,16 +329,14 @@ export default function Home() {
                   </div>
                   <div className="min-w-0">
                     <div className="text-base font-semibold text-white break-words">Sporty bramkowe</div>
-                    <div className="mt-1 text-sm text-slate-300 break-words">
-                      Piłka nożna / ręczna - wynik jako gole.
-                    </div>
+                    <div className="mt-1 text-sm text-slate-300 break-words">Piłka nożna / ręczna - wynik jako gole.</div>
                   </div>
                 </div>
               </Card>
             </HoverLift>
           </Reveal>
 
-          <Reveal delay={0.1}>
+          <Reveal delay={0.1} className="h-full">
             <HoverLift className="h-full">
               <Card className="h-full p-5">
                 <div className="flex min-w-0 items-start gap-3">
@@ -369,7 +352,7 @@ export default function Home() {
             </HoverLift>
           </Reveal>
 
-          <Reveal delay={0.15}>
+          <Reveal delay={0.15} className="h-full">
             <HoverLift className="h-full">
               <Card className="h-full p-5">
                 <div className="flex min-w-0 items-start gap-3">

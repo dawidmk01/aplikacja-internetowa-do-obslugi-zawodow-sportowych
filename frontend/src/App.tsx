@@ -1,32 +1,30 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
 import { apiFetch, clearTokens, setAccess } from "./api";
 
-import NavBar from "./components/NavBar";
-import ProtectedRoute from "./ProtectedRoute";
-
-import TournamentLayout from "./layouts/TournamentLayout";
-
-import { TournamentFlowGuardProvider } from "./flow/TournamentFlowGuardContext";
-
-import Home from "./pages/Home";
-import Login from "./pages/Login";
-import ForgotPassword from "./pages/ForgotPassword";
-import ResetPassword from "./pages/ResetPassword";
-import FindTournament from "./pages/FindTournament";
-import TournamentPublic from "./pages/TournamentPublic";
-import MyTournaments from "./pages/MyTournaments";
-import TournamentBasicsSetup from "./pages/TournamentBasicsSetup";
-import TournamentTeams from "./pages/TournamentTeams";
-import TournamentSchedule from "./pages/TournamentSchedule";
-import TournamentResults from "./pages/TournamentResults";
-import TournamentDetail from "./pages/TournamentDetail";
-import TournamentStandings from "./pages/TournamentStandings";
-
 import { Toaster } from "./ui/Toast";
 
-/** Próbuje znaleźć token dostępu w legacy kluczach localStorage. */
+import NavBar from "./components/NavBar";
+import ProtectedRoute from "./ProtectedRoute";
+import { TournamentFlowGuardProvider } from "./flow/TournamentFlowGuardContext";
+import TournamentLayout from "./layouts/TournamentLayout";
+
+import FindTournament from "./pages/FindTournament";
+import ForgotPassword from "./pages/ForgotPassword";
+import Home from "./pages/Home";
+import Login from "./pages/Login";
+import MyTournaments from "./pages/MyTournaments";
+import ResetPassword from "./pages/ResetPassword";
+import TournamentBasicsSetup from "./pages/TournamentBasicsSetup";
+import TournamentDetail from "./pages/TournamentDetail";
+import TournamentPublic from "./pages/TournamentPublic";
+import TournamentResults from "./pages/TournamentResults";
+import TournamentSchedule from "./pages/TournamentSchedule";
+import TournamentStandings from "./pages/TournamentStandings";
+import TournamentTeams from "./pages/TournamentTeams";
+
+/** Utrzymuje kompatybilność z wcześniejszymi kluczami localStorage, aby nie zrywać sesji po migracji. */
 function findAccessToken(): string | null {
   try {
     const directKeys = ["access", "accessToken", "access_token", "jwt_access", "token"];
@@ -46,7 +44,7 @@ function findAccessToken(): string | null {
       }
     }
   } catch {
-    // brak
+    // Odczyt localStorage może być zablokowany przez ustawienia przeglądarki.
   }
   return null;
 }
@@ -54,19 +52,17 @@ function findAccessToken(): string | null {
 export default function App() {
   const [username, setUsername] = useState<string | null>(null);
 
-  const loadMe = async () => {
+  const loadMe = useCallback(async () => {
     const token = findAccessToken();
     if (!token) {
       setUsername(null);
       return;
     }
 
-    // Ujednolicenie klucza dla apiFetch.
     setAccess(token);
 
     try {
       const res = await apiFetch("/api/auth/me/", { method: "GET" });
-
       if (!res.ok) {
         clearTokens();
         setUsername(null);
@@ -78,16 +74,16 @@ export default function App() {
     } catch {
       setUsername(null);
     }
-  };
+  }, []);
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     clearTokens();
     setUsername(null);
-  };
+  }, []);
 
   useEffect(() => {
-    loadMe();
-  }, []);
+    void loadMe();
+  }, [loadMe]);
 
   return (
     <BrowserRouter>

@@ -1,10 +1,8 @@
-/*
-  Wspólne typy i helpery dla LIVE (zegar, incydenty, komentarze).
-  Plik celowo jest "lekki" - logika biznesowa zostaje w panelach.
-*/
+// Wspólne typy i helpery dla trybu live (zegar, incydenty, komentarze).
 
 export type ClockState = "NOT_STARTED" | "RUNNING" | "PAUSED" | "STOPPED";
 export type ClockPeriod = "NONE" | "FH" | "SH" | "ET1" | "ET2" | "H1" | "H2";
+export type BreakLevel = "NORMAL" | "WARN" | "DANGER";
 
 export type MatchClockDTO = {
   match_id: number;
@@ -14,16 +12,17 @@ export type MatchClockDTO = {
   clock_elapsed_seconds: number;
   clock_added_seconds: number;
 
-  // legacy fields
+  // Pola legacy utrzymywane dla kompatybilności.
   seconds_in_period?: number;
   seconds_total?: number;
   minute_total?: number;
+
   server_time: string;
 
-  // nowe (opcjonalnie)
+  // Pola opcjonalne dla UI.
   is_break?: boolean;
   break_seconds?: number;
-  break_level?: "NORMAL" | "WARN" | "DANGER";
+  break_level?: BreakLevel;
   write_locked?: boolean;
   cap_reached?: boolean;
   max_clock_seconds?: number;
@@ -158,7 +157,7 @@ export function incidentKindOptions(discipline: string): { value: string; label:
 }
 
 export function periodBaseOffsetSeconds(discipline: string, period: ClockPeriod): number {
-  // Wyświetlanie "minuty meczu" jako czasu narastającego.
+  // Offset służy do prezentacji minuty narastająco w zależności od okresu.
   const d = lower(discipline);
 
   const isFootballLike = d === "football" || d === "ice_hockey";
@@ -184,7 +183,7 @@ export function periodBaseOffsetSeconds(discipline: string, period: ClockPeriod)
 }
 
 export function periodLimitSeconds(discipline: string, period: ClockPeriod): number | null {
-  // Limity per okres (UI).
+  // Limit jest wykorzystywany wyłącznie w UI do skalowania i walidacji.
   if (isFootball(discipline)) {
     if (period === "FH" || period === "SH") return 45 * 60;
     if (period === "ET1" || period === "ET2") return 15 * 60;
@@ -225,10 +224,9 @@ export function nextPeriodFromIntermission(
   return null;
 }
 
-/* =========================
-   Break UI (frontend-only)
-   ========================= */
+// ===== Przerwy w UI =====
 
+/** Stan przerwy jest frontendowy i utrzymywany w localStorage dla spójności między odświeżeniami. */
 export const BreakMode = {
   NONE: "NONE",
   INTERMISSION: "INTERMISSION",
@@ -240,9 +238,15 @@ function breakKey(matchId: number, key: "mode" | "startedAt") {
   return `matchBreak:${matchId}:${key}`;
 }
 
+function isBreakMode(v: string | null): v is BreakMode {
+  if (!v) return false;
+  return v === BreakMode.NONE || v === BreakMode.INTERMISSION || v === BreakMode.TECH;
+}
+
 export function readBreakMode(matchId: number): BreakMode {
   try {
-    return (localStorage.getItem(breakKey(matchId, "mode")) as BreakMode) || BreakMode.NONE;
+    const v = localStorage.getItem(breakKey(matchId, "mode"));
+    return isBreakMode(v) ? v : BreakMode.NONE;
   } catch {
     return BreakMode.NONE;
   }
@@ -252,7 +256,7 @@ export function writeBreakMode(matchId: number, mode: BreakMode) {
   try {
     localStorage.setItem(breakKey(matchId, "mode"), mode);
   } catch {
-    // ignore
+    // brak
   }
 }
 
@@ -272,7 +276,7 @@ export function writeBreakStartedAt(matchId: number, tsMs: number | null) {
     if (!tsMs) localStorage.removeItem(breakKey(matchId, "startedAt"));
     else localStorage.setItem(breakKey(matchId, "startedAt"), String(tsMs));
   } catch {
-    // ignore
+    // brak
   }
 }
 
@@ -281,15 +285,13 @@ export function clearBreak(matchId: number) {
   writeBreakStartedAt(matchId, null);
 }
 
-export function computeBreakLevel(seconds: number): "NORMAL" | "WARN" | "DANGER" {
+export function computeBreakLevel(seconds: number): BreakLevel {
   if (seconds >= 15 * 60) return "DANGER";
   if (seconds >= 13 * 60) return "WARN";
   return "NORMAL";
 }
 
-/* =========================
-   Tennis points display
-   ========================= */
+// ===== Tenis - prezentacja punktów =====
 
 export function tennisPointLabel(aPts: number, bPts: number): string {
   if (aPts >= 4 && aPts - bPts >= 2) return "G";

@@ -1,3 +1,6 @@
+// frontend/src/ui/StickyBar.tsx
+// Komponent renderuje stały pasek akcji (top/bottom) z kontrolą odstępów i warstw.
+
 import type { CSSProperties, ReactNode } from "react";
 
 import { cn } from "../lib/cn";
@@ -21,7 +24,6 @@ type StickyBarProps = {
   topOffsetCss?: string;
 };
 
-/** StickyBar ujednolica stałe paski akcji (top/bottom) i ich nakładanie z nawigacją aplikacji. */
 export function StickyBar({
   side,
   children,

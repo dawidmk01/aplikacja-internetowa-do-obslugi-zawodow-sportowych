@@ -6,13 +6,21 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from tournaments.models import Match, Tournament, TournamentMembership
+from tournaments.realtime import ws_emit_tournament
+
+from ._helpers import public_access_or_403
 
 MAX_CLOCK_SECONDS = 3 * 60 * 60  # 3h cap
+
+
+def _ws_emit_clock(match: Match) -> None:
+    ws_emit_tournament(match.tournament_id, "clock_changed", {"match_id": match.id})
+    ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
 
 def _has_period(name: str) -> bool:
@@ -161,14 +169,13 @@ def _serialize_clock(match: Match) -> dict:
 
 
 class MatchClockGetView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get(self, request, match_id: int):
         match = get_object_or_404(Match.objects.select_related("tournament"), pk=match_id)
-        try:
-            _require_can_manage_clock(request.user, match)
-        except PermissionError as e:
-            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
+        err = public_access_or_403(request, match.tournament)
+        if err is not None:
+            return err
         return Response(_serialize_clock(match))
 
 
@@ -186,6 +193,7 @@ class MatchClockStartView(APIView):
 
         if _maybe_apply_clock_cap(match, now):
             match.save(update_fields=["clock_elapsed_seconds", "clock_started_at", "clock_state"])
+            _ws_emit_clock(match)
             return Response(_serialize_clock(match))
 
         if match.clock_state == Match.ClockState.RUNNING:
@@ -211,6 +219,7 @@ class MatchClockStartView(APIView):
             update_fields.append("went_to_extra_time")
 
         match.save(update_fields=update_fields)
+        _ws_emit_clock(match)
         return Response(_serialize_clock(match))
 
 
@@ -238,6 +247,7 @@ class MatchClockPauseView(APIView):
         match.clock_started_at = None
 
         match.save(update_fields=["clock_elapsed_seconds", "clock_started_at", "clock_state"])
+        _ws_emit_clock(match)
         return Response(_serialize_clock(match))
 
 
@@ -255,6 +265,7 @@ class MatchClockResumeView(APIView):
 
         if _maybe_apply_clock_cap(match, now):
             match.save(update_fields=["clock_elapsed_seconds", "clock_started_at", "clock_state"])
+            _ws_emit_clock(match)
             return Response(_serialize_clock(match))
 
         if match.clock_state == Match.ClockState.RUNNING:
@@ -268,7 +279,15 @@ class MatchClockResumeView(APIView):
 
         match.clock_state = Match.ClockState.RUNNING
         match.clock_started_at = now
-        match.save(update_fields=["clock_state", "clock_started_at"])
+
+        update_fields = ["clock_state", "clock_started_at"]
+        if status_changed:
+            update_fields.append("status")
+        if _is_extra_time_period(match.clock_period) and _ensure_went_to_extra_time(match):
+            update_fields.append("went_to_extra_time")
+
+        match.save(update_fields=update_fields)
+        _ws_emit_clock(match)
 
         return Response(_serialize_clock(match))
 
@@ -293,6 +312,7 @@ class MatchClockStopView(APIView):
         match.clock_started_at = None
         match.clock_state = Match.ClockState.STOPPED
         match.save(update_fields=["clock_elapsed_seconds", "clock_started_at", "clock_state"])
+        _ws_emit_clock(match)
 
         return Response(_serialize_clock(match))
 
@@ -334,6 +354,7 @@ class MatchClockSetPeriodView(APIView):
             update_fields.append("went_to_extra_time")
 
         match.save(update_fields=update_fields)
+        _ws_emit_clock(match)
         return Response(_serialize_clock(match))
 
 
@@ -357,6 +378,7 @@ class MatchClockSetAddedSecondsView(APIView):
 
         match.clock_added_seconds = added
         match.save(update_fields=["clock_added_seconds"])
+        _ws_emit_clock(match)
         return Response(_serialize_clock(match))
 
 
@@ -413,5 +435,7 @@ class MatchClockResetPeriodView(APIView):
                     "clock_period",
                 ]
             )
+
+            _ws_emit_clock(match)
 
             return Response(_serialize_clock(match), status=status.HTTP_200_OK)

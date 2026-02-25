@@ -1,11 +1,11 @@
-// frontend/src/pages/TournamentPublic.tsx
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useEffect, useCallback, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { BarChart3, Calendar, KeyRound, MapPin, QrCode, Swords, UserCheck, Users } from "lucide-react";
 
-import { apiFetch } from "../api";
+import { apiFetch, hasAuthTokens } from "../api";
+import { useTournamentWs } from "../hooks/useTournamentWs";
 import { cn } from "../lib/cn";
 
 import { Button } from "../ui/Button";
@@ -39,7 +39,7 @@ type TournamentPublicDTO = {
 
   participants_public_preview_enabled?: boolean;
 
-  // Polityka zmiany nazwy (różne warianty nazwy pola - frontend wykrywa)
+  // Kompatybilność: backend może zwracać różne nazwy pól dla polityki zmiany nazwy.
   participants_self_rename_enabled?: boolean;
   participants_self_rename_requires_approval?: boolean;
   participants_self_rename_approval_required?: boolean;
@@ -62,9 +62,7 @@ type NameChangeRequestDTO = {
 
 type ViewTab = "MATCHES" | "STANDINGS";
 
-// ==========================
-// Helpers
-// ==========================
+// ===== Normalizacja danych i kompatybilność backendu =====
 
 function formatDateRange(start: string | null, end: string | null) {
   if (!start && !end) return null;
@@ -80,25 +78,7 @@ function isByePublic(m: MatchPublicDTO): boolean {
 }
 
 function hasAccessToken(): boolean {
-  try {
-    const keys = ["access", "accessToken", "access_token", "jwt_access", "token"];
-    for (const k of keys) {
-      const v = localStorage.getItem(k);
-      if (v && v.trim()) return true;
-    }
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (!k) continue;
-      const lk = k.toLowerCase();
-      if (lk.includes("access") && !lk.includes("refresh")) {
-        const v = localStorage.getItem(k);
-        if (v && v.trim()) return true;
-      }
-    }
-  } catch {
-    // ignore
-  }
-  return false;
+  return hasAuthTokens();
 }
 
 function normalizeName(s: string) {
@@ -128,6 +108,10 @@ function extractList(payload: any): any[] {
   return [];
 }
 
+function normalizePublicMatches(payload: any): MatchPublicDTO[] {
+  return extractList(payload).filter(Boolean) as MatchPublicDTO[];
+}
+
 function formatRoleLabel(role: TournamentPublicDTO["my_role"]): string {
   switch (role) {
     case "ORGANIZER":
@@ -141,9 +125,7 @@ function formatRoleLabel(role: TournamentPublicDTO["my_role"]): string {
   }
 }
 
-// ==========================
-// UI building blocks
-// ==========================
+// ===== Klocki UI widoku publicznego =====
 
 type RevealProps = {
   children: ReactNode;
@@ -151,6 +133,7 @@ type RevealProps = {
   className?: string;
 };
 
+/** Reveal ujednolica animację wejścia sekcji, aby utrzymać spójny rytm i hierarchię informacji. */
 function Reveal({ children, delay = 0, className }: RevealProps) {
   return (
     <motion.div
@@ -171,6 +154,7 @@ type HoverLiftProps = {
   scale?: number;
 };
 
+/** HoverLift standaryzuje mikroruch na elementach klikalnych, aby nie powstawały różne wzorce interakcji. */
 function HoverLift({ children, className, scale = 1.01 }: HoverLiftProps) {
   return (
     <motion.div
@@ -193,18 +177,20 @@ type MiniInfoProps = {
 function MiniInfo({ icon, label, title, desc }: MiniInfoProps) {
   return (
     <HoverLift scale={1.015} className="h-full">
-      <div className="h-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
-        <div className="flex h-full items-start gap-3">
+      <Card className="h-full bg-white/[0.04] px-4 py-3">
+        <div className="flex min-w-0 items-start gap-3">
           <div className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
             {icon}
           </div>
-          <div className="min-w-0 flex h-full flex-col">
-            <div className="text-xs text-slate-400">{label}</div>
-            <div className="mt-1 text-sm font-semibold text-white">{title}</div>
-            <div className="mt-2 min-h-[3.25rem] text-sm text-slate-300 leading-relaxed">{desc}</div>
+
+          <div className="min-w-0">
+            <div className="text-xs text-slate-400 break-words">{label}</div>
+            <div className="mt-1 text-sm font-semibold text-white break-words">{title}</div>
           </div>
         </div>
-      </div>
+
+        <div className="mt-3 text-sm text-slate-300 leading-relaxed break-words">{desc}</div>
+      </Card>
     </HoverLift>
   );
 }
@@ -218,9 +204,7 @@ type PillProps = {
 function Pill({ icon, label, value }: PillProps) {
   return (
     <div className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
-      <span className="grid h-8 w-8 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
-        {icon}
-      </span>
+      <span className="grid h-8 w-8 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">{icon}</span>
       <div className="min-w-0">
         <div className="text-[11px] text-slate-400">{label}</div>
         <div className="truncate text-sm font-semibold text-slate-100">{value}</div>
@@ -259,45 +243,36 @@ type ViewTabsProps = {
 };
 
 function ViewTabs({ value, onChange, disabled }: ViewTabsProps) {
+  const base = "h-10 px-4 rounded-xl border text-sm font-semibold";
+  const active = "border-white/15 bg-white/10 text-slate-100";
+  const idle = "border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.07]";
+
   return (
-    <div className={cn("flex items-center gap-2", disabled && "opacity-60")}>
-      <button
+    <div className={cn("flex flex-wrap items-center gap-2", disabled && "opacity-60")}>
+      <Button
         type="button"
+        variant="ghost"
         onClick={() => onChange("MATCHES")}
         disabled={disabled}
-        className={cn(
-          "h-10 rounded-xl border px-4 text-sm font-semibold transition",
-          "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
-          value === "MATCHES"
-            ? "border-white/15 bg-white/10 text-slate-100"
-            : "border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.07]",
-          disabled && "cursor-not-allowed"
-        )}
+        className={cn(base, value === "MATCHES" ? active : idle)}
       >
         Mecze
-      </button>
-      <button
+      </Button>
+
+      <Button
         type="button"
+        variant="ghost"
         onClick={() => onChange("STANDINGS")}
         disabled={disabled}
-        className={cn(
-          "h-10 rounded-xl border px-4 text-sm font-semibold transition",
-          "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
-          value === "STANDINGS"
-            ? "border-white/15 bg-white/10 text-slate-100"
-            : "border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.07]",
-          disabled && "cursor-not-allowed"
-        )}
+        className={cn(base, value === "STANDINGS" ? active : idle)}
       >
         Tabela / Drabinka
-      </button>
+      </Button>
     </div>
   );
 }
 
-// ==========================
-// PUBLIC: incydenty + król strzelców
-// ==========================
+// ===== Dane publiczne: incydenty i statystyki =====
 
 type ScorerRow = {
   player_name: string;
@@ -315,9 +290,7 @@ function incidentMinute(i: IncidentPublicDTO): number | null {
   return null;
 }
 
-// ==========================
-// Page
-// ==========================
+// ===== Widok publiczny turnieju =====
 
 export default function TournamentPublic({ initialView = "MATCHES" }: { initialView?: ViewTab } = {}) {
   const { id } = useParams<{ id: string }>();
@@ -325,55 +298,49 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  // kod dostępu (public access code)
   const urlAccessCode = searchParams.get("code") ?? "";
   const [code, setCode] = useState("");
 
   useEffect(() => {
-    if (urlAccessCode && !code) setCode(urlAccessCode);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!urlAccessCode) return;
+    setCode((prev) => (prev ? prev : urlAccessCode));
   }, [urlAccessCode]);
 
-  // tryb "dołączania"
   const joinFlag = searchParams.get("join") === "1";
   const urlJoinCode = searchParams.get("join_code") ?? searchParams.get("joinCode") ?? "";
 
   const [tournament, setTournament] = useState<TournamentPublicDTO | null>(null);
+  const [tournamentLoaded, setTournamentLoaded] = useState(false);
   const [matches, setMatches] = useState<MatchPublicDTO[]>([]);
   const [myMatches, setMyMatches] = useState<MatchPublicDTO[]>([]);
 
   const showManagerNav = tournament?.my_role === "ORGANIZER" || tournament?.my_role === "ASSISTANT";
+  const showParticipantJoin = !showManagerNav;
 
   const [error, setError] = useState<string | null>(null);
   const [needsCode, setNeedsCode] = useState(false);
   const [view, setView] = useState<ViewTab>(initialView);
 
-  // rejestracja
   const isLogged = hasAccessToken();
   const [regMe, setRegMe] = useState<RegistrationMeDTO | null>(null);
   const [regBusy, setRegBusy] = useState(false);
   const [regInfo, setRegInfo] = useState<string | null>(null);
   const [regError, setRegError] = useState<string | null>(null);
 
-  // JOIN (tylko do pierwszego dołączenia)
   const [regCode, setRegCode] = useState("");
   const [verified, setVerified] = useState(false);
 
-  // NAZWA (po dołączeniu)
   const [displayName, setDisplayName] = useState("");
 
   const [joinDisabledByServer, setJoinDisabledByServer] = useState(false);
 
-  // PENDING prośba o zmianę nazwy (jeśli backend pozwala odczytać)
   const [pendingNameReq, setPendingNameReq] = useState<NameChangeRequestDTO | null>(null);
 
-  // prefill join code z URL
   useEffect(() => {
-    if (joinFlag && urlJoinCode && !regCode) setRegCode(urlJoinCode);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!joinFlag || !urlJoinCode) return;
+    setRegCode((prev) => (prev ? prev : urlJoinCode));
   }, [joinFlag, urlJoinCode]);
 
-  // po zmianie kodu reset weryfikacji
   useEffect(() => {
     setVerified(false);
     setRegInfo(null);
@@ -389,10 +356,6 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
   }, [code]);
 
   const publicMatches = useMemo(() => matches.filter((m) => !isByePublic(m)), [matches]);
-
-  // ==========================
-  // PUBLIC: wybór meczu -> podgląd incydentów
-  // ==========================
 
   const [selectedMatchId, setSelectedMatchId] = useState<number | null>(null);
   const [selectedSection, setSelectedSection] = useState<string | null>(null);
@@ -417,35 +380,30 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
         setSelectedSection(null);
       }
     };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
   }, [selectedMatchId]);
 
   const loadIncidentsForMatch = async (matchId: number) => {
-    if (!matchId) return;
+    if (!id) return;
     setIncError(null);
     setIncBusy(true);
+
     try {
-      const res = await apiFetch(`/api/matches/${matchId}/incidents/${qs}`);
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.detail || "Nie udało się pobrać incydentów.");
-      }
-      const raw = await res.json().catch(() => []);
-      const list = extractList(raw) as IncidentPublicDTO[];
+      const res = await apiFetch(`/api/matches/${matchId}/incidents/${qs}`, { toastOnError: false });
+      if (!res.ok) throw new Error("Nie udało się pobrać incydentów.");
+      const data = (await res.json().catch(() => null)) as IncidentPublicDTO[] | null;
 
-      // public: prezentujemy chronologicznie (minute ASC)
-      list.sort((a, b) => {
-        const am = incidentMinute(a);
-        const bm = incidentMinute(b);
-        if (am == null && bm == null) return (a.id ?? 0) - (b.id ?? 0);
-        if (am == null) return 1;
-        if (bm == null) return -1;
-        if (am !== bm) return am - bm;
-        return (a.id ?? 0) - (b.id ?? 0);
-      });
+      const sorted = Array.isArray(data)
+        ? [...data].sort((a, b) => {
+            const ma = incidentMinute(a) ?? 1e9;
+            const mb = incidentMinute(b) ?? 1e9;
+            if (ma !== mb) return ma - mb;
+            return (a.id ?? 0) - (b.id ?? 0);
+          })
+        : [];
 
-      setIncidentsByMatch((prev) => ({ ...prev, [matchId]: list }));
+      setIncidentsByMatch((prev) => ({ ...prev, [matchId]: sorted }));
     } catch (e: any) {
       setIncError(e?.message ?? "Błąd pobierania incydentów.");
     } finally {
@@ -454,93 +412,111 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
   };
 
   const loadCommentaryForMatch = async (matchId: number) => {
-    if (!matchId) return;
+    if (!id) return;
     setComError(null);
     setComBusy(true);
+
     try {
-      const res = await apiFetch(`/api/matches/${matchId}/commentary/${qs}`);
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.detail || "Nie udało się pobrać komentarzy.");
-      }
-      const raw = await res.json().catch(() => []);
-      const list = extractList(raw) as CommentaryEntryPublicDTO[];
-      setCommentaryByMatch((prev) => ({ ...prev, [matchId]: list }));
+      const res = await apiFetch(`/api/matches/${matchId}/commentary/${qs}`, { toastOnError: false });
+      if (!res.ok) throw new Error("Nie udało się pobrać komentarza.");
+      const data = (await res.json().catch(() => null)) as CommentaryEntryPublicDTO[] | null;
+
+      const sorted = Array.isArray(data)
+        ? [...data].sort((a, b) => {
+            const ma = a.minute ?? 1e9;
+            const mb = b.minute ?? 1e9;
+            if (ma !== mb) return ma - mb;
+            return (a.id ?? 0) - (b.id ?? 0);
+          })
+        : [];
+
+      setCommentaryByMatch((prev) => ({ ...prev, [matchId]: sorted }));
     } catch (e: any) {
-      setComError(e?.message ?? "Błąd pobierania komentarzy.");
+      setComError(e?.message ?? "Błąd pobierania komentarza.");
     } finally {
       setComBusy(false);
     }
   };
 
-  const onPublicMatchClick = async (m: MatchPublicDTO, sectionId: string) => {
-    // public: rozwijamy szczegóły tylko dla meczów w trakcie / zakończonych
-    if (m.status !== "IN_PROGRESS" && m.status !== "FINISHED") return;
+  const onPublicMatchClick = async (match: MatchPublicDTO) => {
+    if (!match) return;
 
-    const isSame = selectedMatchId === m.id && selectedSection === sectionId;
-    const willOpen = !isSame;
-    setSelectedMatchId(willOpen ? m.id : null);
-    setSelectedSection(willOpen ? sectionId : null);
+    const isExpandable = match.status === "IN_PROGRESS" || match.status === "FINISHED";
+    if (!isExpandable) return;
 
-    // bez przycisku "odśwież" - dociągamy automatycznie przy otwarciu
-    if (willOpen) {
-      await Promise.all([loadIncidentsForMatch(m.id), loadCommentaryForMatch(m.id)]);
+    const matchId = match.id;
+
+    if (selectedMatchId === matchId) {
+      setSelectedMatchId(null);
+      setSelectedSection(null);
+      return;
+    }
+
+    setSelectedMatchId(matchId);
+    setSelectedSection(null);
+
+    if (!incidentsByMatch[matchId]) {
+      await loadIncidentsForMatch(matchId);
+    }
+    if (!commentaryByMatch[matchId]) {
+      await loadCommentaryForMatch(matchId);
     }
   };
-
-  // ==========================
-  // PUBLIC: Król strzelców (tylko piłka nożna / ręczna)
-  // ==========================
-
-  const showTopScorers = useMemo(() => {
-    const d = (tournament?.discipline ?? "").toLowerCase();
-    return d === "football" || d === "handball";
-  }, [tournament?.discipline]);
 
   const [scorers, setScorers] = useState<ScorerRow[]>([]);
   const [scorerBusy, setScorerBusy] = useState(false);
   const [scorerError, setScorerError] = useState<string | null>(null);
 
+  const isGoalSport = useMemo(() => {
+    const d = (tournament?.discipline ?? "").toLowerCase();
+    return d.includes("piłka") || d.includes("football") || d.includes("ręczna") || d.includes("handball");
+  }, [tournament?.discipline]);
+
+  const showTopScorers = Boolean(isGoalSport && tournament?.participants_public_preview_enabled);
+
   const computeTopScorers = async () => {
+    if (!showTopScorers) return;
     setScorerError(null);
     setScorerBusy(true);
+
     try {
-      const relevant = publicMatches.filter((m) => m.status === "IN_PROGRESS" || m.status === "FINISHED");
-      const goalCounts = new Map<string, number>();
+      const list = publicMatches;
 
-      // Pobieramy incydenty per mecz (cache -> incidentsByMatch)
-      const lists = await Promise.all(
-        relevant.map(async (m) => {
-          if (!incidentsByMatch[m.id]) {
-            const res = await apiFetch(`/api/matches/${m.id}/incidents/${qs}`);
-            if (res.ok) {
-              const raw = await res.json().catch(() => []);
-              const list = extractList(raw) as IncidentPublicDTO[];
-              setIncidentsByMatch((prev) => ({ ...prev, [m.id]: list }));
-              return list;
-            }
-            return [] as IncidentPublicDTO[];
-          }
-          return incidentsByMatch[m.id];
-        })
-      );
+      const perMatch: Record<number, IncidentPublicDTO[]> = {};
+      for (const m of list) {
+        if (incidentsByMatch[m.id]) {
+          perMatch[m.id] = incidentsByMatch[m.id];
+          continue;
+        }
+        const res = await apiFetch(`/api/matches/${m.id}/incidents/${qs}`, { toastOnError: false });
+        if (!res.ok) continue;
+        const data = (await res.json().catch(() => null)) as IncidentPublicDTO[] | null;
+        perMatch[m.id] = Array.isArray(data) ? data : [];
+      }
 
-      for (const list of lists) {
-        for (const inc of list) {
-          if ((inc.kind ?? "").toUpperCase() !== "GOAL") continue;
-          const name = (inc.player_name ?? "").trim();
-          if (!name) continue; // wymagamy przypisanego zawodnika
-          goalCounts.set(name, (goalCounts.get(name) ?? 0) + 1);
+      const counts = new Map<string, number>();
+      for (const ids of Object.values(perMatch)) {
+        for (const inc of ids) {
+          const kind = ((inc as any).type ?? (inc as any).kind ?? "").toString().toUpperCase();
+          if (kind !== "GOAL") continue;
+
+          const name = normalizeName(((inc as any).player_name ?? (inc as any).player ?? "").toString());
+          if (!name) continue;
+
+          counts.set(name, (counts.get(name) ?? 0) + 1);
         }
       }
 
-      const rows: ScorerRow[] = Array.from(goalCounts.entries())
+      const rows: ScorerRow[] = Array.from(counts.entries())
         .map(([player_name, goals]) => ({ player_name, goals }))
-        .sort((a, b) => (b.goals !== a.goals ? b.goals - a.goals : a.player_name.localeCompare(b.player_name)));
+        .sort((a, b) => {
+          if (b.goals !== a.goals) return b.goals - a.goals;
+          return a.player_name.localeCompare(b.player_name);
+        });
 
       setScorers(rows);
     } catch (e: any) {
-      setScorerError(e?.message ?? "Błąd liczenia rankingu.");
+      setScorerError(e?.message ?? "Błąd liczenia strzelców.");
     } finally {
       setScorerBusy(false);
     }
@@ -559,149 +535,183 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
     if (typeof t.participants_self_rename_approval_required === "boolean") {
       return !!t.participants_self_rename_approval_required;
     }
-    return false; // brak pola -> domyślnie mogą zmieniać
+    return false;
   }, [tournament]);
 
-  const loadMyMatches = async () => {
+  const loadMyMatches = useCallback(async () => {
     if (!id || !isLogged) return;
     try {
-      const res = await apiFetch(`/api/tournaments/${id}/registrations/my/matches/`);
+      const res = await apiFetch(`/api/tournaments/${id}/registrations/my/matches/`, { toastOnError: false });
       if (!res.ok) return;
 
       const data = await res.json().catch(() => []);
       const list: MatchPublicDTO[] = Array.isArray(data) ? data : [];
       setMyMatches(list.filter((m) => !isByePublic(m)));
     } catch {
-      // ignore
-    }
-  };
-
-  const loadMyPendingNameChange = async (teamId: number | null) => {
-    if (!id || !teamId) {
-      setPendingNameReq(null);
       return;
     }
+  }, [id, isLogged]);
 
-    try {
-      const res = await apiFetch(`/api/tournaments/${id}/teams/name-change-requests/?status=PENDING&team_id=${teamId}`);
-
-      if (!res.ok) {
-        // 403/404 ignorujemy (np. endpoint tylko dla organizerów)
+  const loadMyPendingNameChange = useCallback(
+    async (teamId: number | null) => {
+      if (!id || !teamId) {
+        setPendingNameReq(null);
         return;
       }
 
-      const data = await res.json().catch(() => null);
-      const list = extractList(data) as any[];
-      const first = list?.[0] ?? null;
+      try {
+        const res = await apiFetch(
+          `/api/tournaments/${id}/teams/name-change-requests/?status=PENDING&team_id=${teamId}`,
+          { toastOnError: false }
+        );
 
-      if (first) {
-        setPendingNameReq({
-          id: first.id,
-          status: first.status,
-          old_name: first.old_name,
-          requested_name: first.requested_name,
-          created_at: first.created_at,
-        });
-      } else {
-        setPendingNameReq(null);
+        if (!res.ok) return;
+
+        const data = await res.json().catch(() => null);
+        const list = extractList(data) as any[];
+        const first = list?.[0] ?? null;
+
+        if (first) {
+          setPendingNameReq({
+            id: first.id,
+            status: first.status,
+            old_name: first.old_name,
+            requested_name: first.requested_name,
+            created_at: first.created_at,
+          });
+        } else {
+          setPendingNameReq(null);
+        }
+      } catch {
+        return;
       }
-    } catch {
-      // ignore
-    }
-  };
+    },
+    [id]
+  );
 
-  const loadTournamentAndMatches = async () => {
+  const loadTournamentAndMatches = useCallback(async () => {
     if (!id) return;
 
-    setError(null);
+    try {
 
-    const tRes = await apiFetch(`/api/tournaments/${id}/${qs}`);
-    if (tRes.status === 403) {
-      const data = await tRes.json().catch(() => null);
-      const msg = data?.detail || "Brak dostępu.";
+      setTournamentLoaded(false);
+      setError(null);
 
-      if (String(msg).toLowerCase().includes("kod")) setNeedsCode(true);
-      else setNeedsCode(false);
+      const tRes = await apiFetch(`/api/tournaments/${id}/${qs}`, { toastOnError: false });
+      if (tRes.status === 403) {
+        const data = await tRes.json().catch(() => null);
+        const msg = data?.detail || "Brak dostępu.";
 
-      // ważne: join panel ma działać nawet przy braku dostępu do public view
+        if (String(msg).toLowerCase().includes("kod")) setNeedsCode(true);
+        else setNeedsCode(false);
+
+        setTournament(null);
+        setMatches([]);
+        setError(msg);
+        setTournamentLoaded(false);
+        return;
+      }
+
+      if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
+      setNeedsCode(false);
+
+      const tData = await tRes.json().catch(() => ({}));
+
+      const t: TournamentPublicDTO = {
+        id: tData.id,
+        name: tData.name,
+        description: tData.description ?? null,
+        discipline: Object.prototype.hasOwnProperty.call(tData, "discipline") ? (tData.discipline ?? null) : null,
+        start_date: tData.start_date ?? null,
+        end_date: tData.end_date ?? null,
+        location: tData.location ?? null,
+        is_published: tData.is_published,
+
+        entry_mode: tData.entry_mode,
+        competition_type: tData.competition_type,
+        my_role: tData.my_role ?? null,
+
+        allow_join_by_code: Object.prototype.hasOwnProperty.call(tData, "allow_join_by_code")
+          ? Boolean(tData.allow_join_by_code)
+          : undefined,
+
+        join_code: Object.prototype.hasOwnProperty.call(tData, "join_code") ? (tData.join_code ?? null) : undefined,
+
+        participants_public_preview_enabled: Object.prototype.hasOwnProperty.call(
+          tData,
+          "participants_public_preview_enabled"
+        )
+          ? Boolean(tData.participants_public_preview_enabled)
+          : undefined,
+
+        participants_self_rename_enabled: Object.prototype.hasOwnProperty.call(tData, "participants_self_rename_enabled")
+          ? Boolean(tData.participants_self_rename_enabled)
+          : undefined,
+
+        participants_self_rename_requires_approval: Object.prototype.hasOwnProperty.call(
+          tData,
+          "participants_self_rename_requires_approval"
+        )
+          ? Boolean(tData.participants_self_rename_requires_approval)
+          : undefined,
+
+        participants_self_rename_approval_required: Object.prototype.hasOwnProperty.call(
+          tData,
+          "participants_self_rename_approval_required"
+        )
+          ? Boolean(tData.participants_self_rename_approval_required)
+          : undefined,
+      };
+
+      setTournament(t);
+      setTournamentLoaded(true);
+
+      const mRes = await apiFetch(`/api/tournaments/${id}/public/matches/${qs}`, { toastOnError: false });
+      if (mRes.status === 403) {
+        const data = await mRes.json().catch(() => null);
+        const msg = data?.detail || "Brak dostępu.";
+        if (String(msg).toLowerCase().includes("kod")) setNeedsCode(true);
+        setMatches([]);
+        setError((prev) => prev ?? msg);
+        setTournamentLoaded(false);
+        return;
+      }
+      if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
+
+      const raw = await mRes.json().catch(() => []);
+      const list: MatchPublicDTO[] = Array.isArray(raw)
+        ? raw
+        : Array.isArray((raw as any)?.results)
+          ? (raw as any).results
+          : [];
+      setMatches(list);
+  
+
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Wystąpił błąd.";
       setTournament(null);
       setMatches([]);
+      setTournamentLoaded(false);
       setError(msg);
-      return;
-    }
+    }}, [id, qs]);
 
-    if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
-    setNeedsCode(false);
-
-    const tData = await tRes.json().catch(() => ({}));
-
-    const t: TournamentPublicDTO = {
-      id: tData.id,
-      name: tData.name,
-      description: tData.description ?? null,
-      discipline: Object.prototype.hasOwnProperty.call(tData, "discipline") ? (tData.discipline ?? null) : null,
-      start_date: tData.start_date ?? null,
-      end_date: tData.end_date ?? null,
-      location: tData.location ?? null,
-      is_published: tData.is_published,
-
-      entry_mode: tData.entry_mode,
-      competition_type: tData.competition_type,
-      my_role: tData.my_role ?? null,
-
-      allow_join_by_code: Object.prototype.hasOwnProperty.call(tData, "allow_join_by_code")
-        ? Boolean(tData.allow_join_by_code)
-        : undefined,
-
-      join_code: Object.prototype.hasOwnProperty.call(tData, "join_code") ? (tData.join_code ?? null) : undefined,
-
-      participants_public_preview_enabled: Object.prototype.hasOwnProperty.call(tData, "participants_public_preview_enabled")
-        ? Boolean(tData.participants_public_preview_enabled)
-        : undefined,
-
-      participants_self_rename_enabled: Object.prototype.hasOwnProperty.call(tData, "participants_self_rename_enabled")
-        ? Boolean(tData.participants_self_rename_enabled)
-        : undefined,
-
-      participants_self_rename_requires_approval: Object.prototype.hasOwnProperty.call(tData, "participants_self_rename_requires_approval")
-        ? Boolean(tData.participants_self_rename_requires_approval)
-        : undefined,
-
-      participants_self_rename_approval_required: Object.prototype.hasOwnProperty.call(tData, "participants_self_rename_approval_required")
-        ? Boolean(tData.participants_self_rename_approval_required)
-        : undefined,
-    };
-
-    setTournament(t);
-
-    const mRes = await apiFetch(`/api/tournaments/${id}/public/matches/${qs}`);
-    if (mRes.status === 403) {
-      const data = await mRes.json().catch(() => null);
-      const msg = data?.detail || "Brak dostępu.";
-      if (String(msg).toLowerCase().includes("kod")) setNeedsCode(true);
-      setMatches([]);
-      setError((prev) => prev ?? msg);
-      return;
-    }
-    if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
-
-    const raw = await mRes.json().catch(() => []);
-    const list: MatchPublicDTO[] = Array.isArray(raw)
-      ? raw
-      : Array.isArray((raw as any)?.results)
-        ? (raw as any).results
-        : [];
-    setMatches(list);
-  };
-
-  const loadRegistrationMe = async () => {
+  const loadRegistrationMe = useCallback(async () => {
     if (!id || !isLogged) {
       setRegMe(null);
       setPendingNameReq(null);
       return;
     }
 
-    const res = await apiFetch(`/api/tournaments/${id}/registrations/me/`);
+    if (!tournamentLoaded) return;
+
+    // Rejestracja dotyczy uczestników. Dla organizatora/asystenta nie ma sensu odpalać tego requestu.
+    if (!showParticipantJoin && !joinFlag) {
+      setRegMe(null);
+      setPendingNameReq(null);
+      return;
+    }
+
+    const res = await apiFetch(`/api/tournaments/${id}/registrations/me/`, { toastOnError: false });
     if (res.status === 404) {
       setRegMe(null);
       setPendingNameReq(null);
@@ -718,34 +728,85 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
       setRegMe({ display_name: data.display_name, team_id: data.team_id ?? null });
       setDisplayName(data.display_name);
       loadMyMatches();
-
-      // spróbuj dociągnąć pending request (jeśli endpoint pozwala)
       await loadMyPendingNameChange(data.team_id ?? null);
     } else {
       setRegMe(null);
       setPendingNameReq(null);
     }
-  };
+  }, [id, isLogged, joinFlag, loadMyMatches, loadMyPendingNameChange, showParticipantJoin, tournamentLoaded]);
 
   useEffect(() => {
     loadTournamentAndMatches().catch((e: any) => setError(e.message));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, qs]);
+  }, [loadTournamentAndMatches]);
+
+  const wsReloadTimerRef = useRef<number | null>(null);
+
+  const reloadMatchesOnly = useCallback(async () => {
+    if (!tournamentId) return;
+
+    try {
+      const matchesRes = await apiFetch(`/api/tournaments/${tournamentId}/public/matches/${qs}`);
+
+      if (matchesRes.status === 403) {
+        setNeedsCode(true);
+        return;
+      }
+
+      if (!matchesRes.ok) return;
+
+      const raw = await matchesRes.json();
+      const list = normalizePublicMatches(raw?.matches);
+      setPublicMatches(list);
+    } catch {
+      // brak
+    }
+  }, [qs, tournamentId]);
+
+  const requestMatchesReload = useCallback(() => {
+    if (wsReloadTimerRef.current) return;
+    wsReloadTimerRef.current = window.setTimeout(() => {
+      wsReloadTimerRef.current = null;
+      void reloadMatchesOnly();
+    }, 250);
+  }, [reloadMatchesOnly]);
+
+  useTournamentWs({
+    tournamentId,
+    enabled: Boolean(tournamentId),
+    onEvent: ({ event, payload }) => {
+        const normalized = String(event).replaceAll(".", "_");
+
+        if (
+          normalized === "matches_changed" ||
+          normalized === "incidents_changed" ||
+          normalized === "clock_changed" ||
+          normalized === "commentary_changed"
+        ) {
+          requestMatchesReload();
+          return;
+        }
+
+        if (payload && typeof payload === "object" && "match_id" in (payload as any)) {
+          requestMatchesReload();
+        }
+      },
+  });
+
+  useEffect(() => {
+    return () => {
+      if (wsReloadTimerRef.current) window.clearTimeout(wsReloadTimerRef.current);
+      wsReloadTimerRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     loadRegistrationMe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [loadRegistrationMe]);
 
   const dateRange = formatDateRange(tournament?.start_date ?? null, tournament?.end_date ?? null);
 
-  // --- JOIN: verify code (tylko przed dołączeniem) ---
   const verifyRegistrationCode = async () => {
     if (!id) return;
-
-    setRegError(null);
-    setRegInfo(null);
-
     const c = regCode.trim();
     if (!c) {
       setRegError("Wpisz kod dołączania.");
@@ -753,8 +814,12 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
     }
 
     setRegBusy(true);
+    setRegError(null);
+    setRegInfo(null);
+
     try {
       const res = await apiFetch(`/api/tournaments/${id}/registrations/verify/`, {
+        toastOnError: false,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: c }),
@@ -762,29 +827,23 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
 
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        const msg = data?.detail || "Nie udało się zweryfikować kodu.";
-        if (looksLikeJoinDisabledMessage(msg)) setJoinDisabledByServer(true);
-        throw new Error(msg);
+        const msg = data?.detail ?? "Nieprawidłowy kod.";
+        if (looksLikeJoinDisabledMessage(String(msg))) setJoinDisabledByServer(true);
+        setRegError(msg);
+        return;
       }
 
       setVerified(true);
-      setJoinDisabledByServer(false);
-      setRegInfo("Kod poprawny. Uzupełnij nazwę i dołącz do turnieju.");
+      setRegInfo("Kod poprawny. Uzupełnij nazwę i dołącz.");
     } catch (e: any) {
-      setVerified(false);
       setRegError(e?.message ?? "Błąd weryfikacji kodu.");
     } finally {
       setRegBusy(false);
     }
   };
 
-  // --- JOIN: dołączenie (wymaga kodu) ---
   const joinTournament = async () => {
     if (!id) return;
-
-    setRegError(null);
-    setRegInfo(null);
-
     const c = regCode.trim();
     const dn = normalizeName(displayName);
 
@@ -793,13 +852,17 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
       return;
     }
     if (!dn) {
-      setRegError("Podaj nazwę drużyny / imię i nazwisko.");
+      setRegError("Wpisz nazwę.");
       return;
     }
 
     setRegBusy(true);
+    setRegError(null);
+    setRegInfo(null);
+
     try {
       const res = await apiFetch(`/api/tournaments/${id}/registrations/join/`, {
+        toastOnError: false,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: c, display_name: dn }),
@@ -807,34 +870,33 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
 
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        const msg = data?.detail || "Nie udało się zapisać do turnieju.";
-        if (looksLikeJoinDisabledMessage(msg)) setJoinDisabledByServer(true);
-        throw new Error(msg);
+        const msg = data?.detail ?? "Nie udało się dołączyć.";
+        if (looksLikeJoinDisabledMessage(String(msg))) setJoinDisabledByServer(true);
+        setRegError(msg);
+        return;
       }
 
+      setRegInfo("Dołączono do turnieju.");
+      setVerified(false);
+      setJoinDisabledByServer(false);
+
+      const keepAccess = code.trim() ? `?code=${encodeURIComponent(code.trim())}` : "";
+      navigate(location.pathname + keepAccess, { replace: true });
+
+      await loadTournamentAndMatches();
       await loadRegistrationMe();
-      setRegInfo("Zapisano do turnieju.");
-      setRegError(null);
-
-      await loadTournamentAndMatches().catch(() => null);
-
-      // jeżeli weszliśmy przez join=1, czyścimy join flagę (zostawiamy ewentualny code=)
-      if (joinFlag) {
-        const keepAccess = code.trim() ? `?code=${encodeURIComponent(code.trim())}` : "";
-        navigate(location.pathname + keepAccess, { replace: true });
-      }
     } catch (e: any) {
-      setRegError(e?.message ?? "Błąd rejestracji.");
+      setRegError(e?.message ?? "Błąd dołączania.");
     } finally {
       setRegBusy(false);
     }
   };
 
-  // --- RENAME (1): bezpośrednia zmiana nazwy (gdy nie ma akceptacji) ---
   const renameRegistrationImmediate = async (dn: string) => {
     if (!id) return;
 
     const res = await apiFetch(`/api/tournaments/${id}/registrations/me/`, {
+      toastOnError: false,
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ display_name: dn }),
@@ -842,22 +904,24 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
 
     const data = await res.json().catch(() => null);
     if (!res.ok) {
-      const msg = data?.detail || "Nie udało się zmienić nazwy.";
+      const msg = data?.detail ?? "Nie udało się zmienić nazwy.";
       throw new Error(msg);
     }
 
-    await loadRegistrationMe();
     setRegInfo("Zmieniono nazwę.");
+    await loadRegistrationMe();
   };
 
-  // --- RENAME (2): prośba o zmianę nazwy (gdy wymagana akceptacja) ---
   const requestNameChangeApproval = async (dn: string) => {
     if (!id) return;
 
-    const payload: any = { requested_name: dn };
-    if (regMe?.team_id) payload.team_id = regMe.team_id;
+    const payload = {
+      team_id: regMe?.team_id,
+      requested_name: dn,
+    };
 
     const res = await apiFetch(`/api/tournaments/${id}/teams/name-change-requests/`, {
+      toastOnError: false,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -865,34 +929,20 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
 
     const data = await res.json().catch(() => null);
     if (!res.ok) {
-      const msg = data?.detail || "Nie udało się wysłać prośby o zmianę nazwy.";
+      const msg = data?.detail ?? "Nie udało się wysłać prośby.";
       throw new Error(msg);
     }
 
-    setRegInfo("Wysłano prośbę o zmianę nazwy. Oczekuje na akceptację organizatora.");
-    setRegError(null);
-
-    // spróbuj odświeżyć pending (jeśli endpoint działa dla uczestnika)
+    setRegInfo("Wysłano prośbę o zmianę nazwy.");
     await loadMyPendingNameChange(regMe?.team_id ?? null);
   };
 
-  // --- RENAME: handler (sam dobiera tryb + fallback) ---
   const handleRenameOrRequest = async () => {
-    if (!id) return;
-
-    setRegError(null);
-    setRegInfo(null);
-
-    if (!regMe) return;
+    if (!id || !isLogged) return;
 
     const dn = normalizeName(displayName);
     if (!dn) {
-      setRegError("Podaj nową nazwę.");
-      return;
-    }
-
-    if (normalizeName(regMe.display_name) === dn) {
-      setRegInfo("Nazwa nie uległa zmianie.");
+      setRegError("Wpisz nazwę.");
       return;
     }
 
@@ -908,10 +958,8 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
         return;
       }
 
-      // standard: zmiana natychmiastowa
       await renameRegistrationImmediate(dn);
     } catch (e: any) {
-      // fallback: backend może wymagać akceptacji nawet jeśli public view nie zwrócił pola
       const msg = e?.message ?? "Błąd zmiany nazwy.";
       if (looksLikeRenameRequiresApprovalMessage(msg)) {
         try {
@@ -928,11 +976,8 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
     }
   };
 
-  // Panel join pokazujemy gdy:
-  // - join=1 lub allow_join_by_code=true lub użytkownik już zapisany
-  const shouldShowJoinPanel = joinFlag || !!regMe || Boolean(tournament?.allow_join_by_code);
+  const shouldShowJoinPanel = showParticipantJoin && (joinFlag || !!regMe || Boolean(tournament?.allow_join_by_code));
 
-  // "Join wyłączony" pokazujemy tylko, gdy wiemy to na pewno i użytkownik NIE jest zapisany
   const joinIsDisabledKnown =
     !regMe && (joinDisabledByServer || (tournament ? tournament.allow_join_by_code === false : false));
 
@@ -943,49 +988,43 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
     return "Sprawdź";
   }, [joinIsDisabledKnown, regMe, tournament?.allow_join_by_code]);
 
-  // ==========================
-  // View
-  // ==========================
-
   return (
-    <div className="w-full pb-24">
+    <div
+      className={cn(
+        "mx-auto w-full pb-24",
+        "max-w-7xl",
+        "2xl:max-w-[96rem]",
+        "[min-width:1920px]:max-w-[110rem]",
+        "[min-width:2560px]:max-w-[128rem]"
+      )}
+    >
+      {view === "MATCHES" && !needsCode ? <PublicMatchesBar matches={publicMatches} /> : null}
 
-      {view === "MATCHES" && !needsCode ? (
-        <PublicMatchesBar matches={publicMatches} />
-      ) : null}
-
-      {/* ===== HERO ===== */}
       <section className="grid gap-10 lg:grid-cols-2 lg:items-stretch">
-        <div className="flex h-full flex-col">
+        <div className="flex h-full flex-col min-w-0">
           <Reveal>
-            <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+            <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl break-words">
               {tournament?.name ?? "Turniej"}
             </h1>
           </Reveal>
 
           <Reveal delay={0.05}>
             {tournament?.description ? (
-              <p className="mt-4 text-base text-slate-300 leading-relaxed">{tournament.description}</p>
+              <p className="mt-4 text-base text-slate-300 leading-relaxed break-words">{tournament.description}</p>
             ) : (
-              <p className="mt-4 text-base text-slate-300 leading-relaxed">Publiczny podgląd turnieju.</p>
+              <p className="mt-4 text-base text-slate-300 leading-relaxed break-words">Publiczny podgląd turnieju.</p>
             )}
           </Reveal>
 
           <Reveal delay={0.1}>
             <div className="mt-6 flex flex-wrap gap-3">
-              {dateRange ? (
-                <Pill icon={<Calendar className="h-4 w-4 text-white/90" />} label="Termin" value={dateRange} />
-              ) : null}
+              {dateRange ? <Pill icon={<Calendar className="h-4 w-4 text-white/90" />} label="Termin" value={dateRange} /> : null}
 
               {tournament?.location ? (
                 <Pill icon={<MapPin className="h-4 w-4 text-white/90" />} label="Miejsce" value={tournament.location} />
               ) : null}
 
-              <Pill
-                icon={<UserCheck className="h-4 w-4 text-white/90" />}
-                label="Rola"
-                value={formatRoleLabel(tournament?.my_role ?? null)}
-              />
+              <Pill icon={<UserCheck className="h-4 w-4 text-white/90" />} label="Rola" value={formatRoleLabel(tournament?.my_role ?? null)} />
             </div>
           </Reveal>
 
@@ -1021,7 +1060,7 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
           ) : null}
         </div>
 
-        <Reveal className="h-full lg:justify-self-end">
+        <Reveal className="h-full lg:justify-self-end min-w-0">
           <HoverLift scale={1.01} className="h-full">
             <Card className="relative h-full overflow-hidden p-6 sm:p-7">
               <div className="pointer-events-none absolute inset-0">
@@ -1029,11 +1068,11 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
                 <div className="absolute -bottom-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
               </div>
 
-              <div className="relative flex h-full flex-col">
+              <div className="relative flex h-full flex-col min-w-0">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="text-sm text-slate-300">Widok publiczny</div>
-                    <div className="mt-1 text-lg font-semibold text-white">Mecze i tabela w jednym miejscu</div>
+                    <div className="mt-1 text-lg font-semibold text-white break-words">Mecze i tabela w jednym miejscu</div>
                   </div>
                   <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-white/10 bg-white/[0.06]">
                     <QrCode className="h-5 w-5 text-white/90" />
@@ -1055,40 +1094,40 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
                   </div>
                 ) : (
                   <div className="mt-5 grid gap-3">
-                    <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+                    <Card className="bg-white/[0.04] px-4 py-3">
                       <div className="flex items-start gap-3">
                         <div className="mt-0.5 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
                           <BarChart3 className="h-4 w-4 text-white/90" />
                         </div>
                         <div className="min-w-0">
                           <div className="text-sm font-semibold text-white">Incydenty meczu</div>
-                          <div className="mt-1 text-sm text-slate-300 leading-relaxed">
+                          <div className="mt-1 text-sm text-slate-300 leading-relaxed break-words">
                             Kliknij mecz w trakcie lub zakończony, aby rozwinąć szczegóły.
                           </div>
                         </div>
                       </div>
-                    </div>
+                    </Card>
 
                     {!isLogged ? (
-                      <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+                      <Card className="bg-white/[0.04] px-4 py-3">
                         <div className="flex items-start gap-3">
                           <div className="mt-0.5 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
                             <Users className="h-4 w-4 text-white/90" />
                           </div>
                           <div className="min-w-0">
                             <div className="text-sm font-semibold text-white">Dołączanie</div>
-                            <div className="mt-1 text-sm text-slate-300 leading-relaxed">
+                            <div className="mt-1 text-sm text-slate-300 leading-relaxed break-words">
                               Aby zapisać się do turnieju, zaloguj się i użyj kodu dołączania.
                             </div>
                           </div>
                         </div>
-                      </div>
+                      </Card>
                     ) : null}
                   </div>
                 )}
 
                 <div className="mt-auto pt-6">
-                  <div className="text-xs text-slate-400">
+                  <div className="text-xs text-slate-400 break-words">
                     Jeśli jesteś organizatorem lub asystentem, po zalogowaniu zobaczysz na dole nawigację panelu.
                   </div>
                 </div>
@@ -1098,14 +1137,16 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
         </Reveal>
       </section>
 
-      {/* ===== ACCESS CODE ===== */}
       {needsCode ? (
         <div className="mt-6">
           <SectionCard
             title="Kod dostępu"
             hint="Ten turniej wymaga kodu. Wpisz go i odśwież dane."
             right={
-              <Button variant="secondary" onClick={() => loadTournamentAndMatches().catch((e: any) => setError(e.message))}>
+              <Button
+                variant="secondary"
+                onClick={() => loadTournamentAndMatches().catch((e: any) => setError(e.message))}
+              >
                 Odśwież
               </Button>
             }
@@ -1120,7 +1161,6 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
         </div>
       ) : null}
 
-      {/* ===== JOIN / RENAME ===== */}
       {shouldShowJoinPanel ? (
         <div className="mt-6">
           <SectionCard
@@ -1138,12 +1178,16 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
                 </InlineAlert>
 
                 <div className="flex flex-wrap gap-2">
-                  <Link to={`/login?next=${nextParam}`}>
-                    <Button variant="secondary">Zaloguj</Button>
-                  </Link>
-                  <Link to={`/login?mode=register&next=${nextParam}`}>
-                    <Button variant="secondary">Zarejestruj konto</Button>
-                  </Link>
+                  <Button type="button" variant="secondary" onClick={() => navigate(`/login?next=${nextParam}`)}>
+                    Zaloguj
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => navigate(`/login?mode=register&next=${nextParam}`)}
+                  >
+                    Zarejestruj konto
+                  </Button>
                 </div>
               </div>
             ) : joinIsDisabledKnown ? (
@@ -1169,22 +1213,24 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
               </div>
             ) : (
               <div className="grid gap-3">
-                {/* Stan: już zapisany -> zmiana nazwy (lub prośba) */}
                 {regMe ? (
                   <>
-                    <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
-                      <div className="text-sm text-slate-200">
+                    <Card className="bg-black/10 p-4">
+                      <div className="text-sm text-slate-200 break-words">
                         Jesteś zapisany jako: <span className="font-semibold text-slate-100">{regMe.display_name}</span>
                       </div>
-                      <div className="mt-1 text-xs text-slate-400">Kod dołączania służy tylko do pierwszego dołączenia.</div>
+                      <div className="mt-1 text-xs text-slate-400 break-words">
+                        Kod dołączania służy tylko do pierwszego dołączenia.
+                      </div>
 
                       {pendingNameReq?.status === "PENDING" ? (
                         <div className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-500/10 p-3 text-sm text-amber-200">
                           <div className="font-semibold">Oczekująca prośba o zmianę nazwy</div>
-                          <div className="mt-1">
+                          <div className="mt-1 break-words">
                             {pendingNameReq.old_name ? (
                               <>
-                                {pendingNameReq.old_name} → <span className="font-semibold">{pendingNameReq.requested_name ?? "…"}</span>
+                                {pendingNameReq.old_name} →{" "}
+                                <span className="font-semibold">{pendingNameReq.requested_name ?? "…"}</span>
                               </>
                             ) : (
                               <>
@@ -1192,25 +1238,29 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
                               </>
                             )}
                           </div>
-                          <div className="mt-1 text-xs text-amber-200/80">
+                          <div className="mt-1 text-xs text-amber-200/80 break-words">
                             Nie możesz wysłać kolejnej prośby, dopóki organizator nie podejmie decyzji.
                           </div>
                         </div>
                       ) : null}
 
                       {nameChangeApprovalRequired ? (
-                        <div className="mt-3 text-sm text-slate-300">
+                        <div className="mt-3 text-sm text-slate-300 break-words">
                           Zmiana nazwy wymaga akceptacji organizatora - zostanie wysłana prośba.
                         </div>
                       ) : null}
-                    </div>
+                    </Card>
 
                     <div className="flex flex-wrap gap-2">
-                      <div className="min-w-[260px] flex-1">
+                      <div className="w-full sm:min-w-[260px] sm:flex-1">
                         <Input
                           value={displayName}
                           onChange={(e) => setDisplayName(e.target.value)}
-                          placeholder={tournament?.competition_type === "INDIVIDUAL" ? "Imię i nazwisko" : "Nazwa drużyny / imię i nazwisko"}
+                          placeholder={
+                            tournament?.competition_type === "INDIVIDUAL"
+                              ? "Imię i nazwisko"
+                              : "Nazwa drużyny / imię i nazwisko"
+                          }
                         />
                       </div>
                       <Button onClick={handleRenameOrRequest} disabled={regBusy || pendingNameReq?.status === "PENDING"}>
@@ -1220,9 +1270,8 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
                   </>
                 ) : (
                   <>
-                    {/* Stan: nie zapisany -> join przez kod */}
                     <div className="flex flex-wrap items-center gap-2">
-                      <div className="min-w-[220px] flex-1">
+                      <div className="w-full sm:min-w-[220px] sm:flex-1">
                         <Input value={regCode} onChange={(e) => setRegCode(e.target.value)} placeholder="Kod dołączania" />
                       </div>
                       <Button variant="secondary" onClick={verifyRegistrationCode} disabled={regBusy}>
@@ -1232,11 +1281,15 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
 
                     {verified || joinFlag ? (
                       <div className="flex flex-wrap items-center gap-2">
-                        <div className="min-w-[220px] flex-1">
+                        <div className="w-full sm:min-w-[220px] sm:flex-1">
                           <Input
                             value={displayName}
                             onChange={(e) => setDisplayName(e.target.value)}
-                            placeholder={tournament?.competition_type === "INDIVIDUAL" ? "Imię i nazwisko" : "Nazwa drużyny / imię i nazwisko"}
+                            placeholder={
+                              tournament?.competition_type === "INDIVIDUAL"
+                                ? "Imię i nazwisko"
+                                : "Nazwa drużyny / imię i nazwisko"
+                            }
                           />
                         </div>
                         <Button onClick={joinTournament} disabled={regBusy}>
@@ -1255,50 +1308,47 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
         </div>
       ) : null}
 
-      {/* ===== CONTENT ===== */}
       <div className="mt-6 space-y-6">
         {view === "MATCHES" ? (
           <>
-            {/* Moje mecze */}
             {regMe && tournament?.is_published ? (
               <SectionCard title="Moje mecze" hint="Widoczne tylko dla zapisanych uczestników">
                 {myMatches.length === 0 ? (
                   <div className="text-sm text-slate-300">Brak meczów do wyświetlenia.</div>
                 ) : (
-                  <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
+                  <Card className="bg-black/10 p-4">
                     <div className="divide-y divide-white/10">
                       {myMatches.map((m) => (
                         <div key={m.id} className="py-3">
                           <div className="flex flex-wrap items-start justify-between gap-3">
-                            <div className="min-w-[260px]">
-                              <div className="text-sm font-semibold text-slate-100">
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm font-semibold text-slate-100 break-words">
                                 {m.home_team_name} <span className="font-normal text-slate-400">vs</span> {m.away_team_name}
                               </div>
-                              <div className="mt-1 text-xs text-slate-400">
+                              <div className="mt-1 text-xs text-slate-400 break-words">
                                 {[m.scheduled_date, m.scheduled_time, m.location].filter(Boolean).join(" • ")}
                               </div>
                             </div>
 
-                            <div className="min-w-[140px] text-right">
+                            <div className="min-w-0 w-full sm:w-auto sm:text-right">
                               {typeof m.home_score === "number" && typeof m.away_score === "number" ? (
                                 <div className="text-sm font-semibold text-slate-100">
                                   {m.home_score} : {m.away_score}
                                 </div>
                               ) : (
-                                <div className="text-sm text-slate-600">&nbsp;</div>
+                                <div className="text-sm text-slate-500">&nbsp;</div>
                               )}
-                              <div className="mt-1 text-xs text-slate-400">{m.status ?? ""}</div>
+                              <div className="mt-1 text-xs text-slate-400 break-words">{m.status ?? ""}</div>
                             </div>
                           </div>
                         </div>
                       ))}
                     </div>
-                  </div>
+                  </Card>
                 )}
               </SectionCard>
             ) : null}
 
-            {/* Król strzelców */}
             {showTopScorers ? (
               <SectionCard
                 title="Król strzelców"
@@ -1315,23 +1365,25 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
                   {scorers.length === 0 ? (
                     <div className="text-sm text-slate-300">Brak danych do rankingu (albo brak zawodników w incydentach).</div>
                   ) : (
-                    <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
+                    <Card className="bg-black/10 p-4">
                       <div className="divide-y divide-white/10">
                         {scorers.map((r) => (
                           <div key={r.player_name} className="flex items-center justify-between gap-3 py-2">
-                            <div className="text-sm font-semibold text-slate-100">{r.player_name}</div>
+                            <div className="text-sm font-semibold text-slate-100 break-words">{r.player_name}</div>
                             <div className="text-sm font-semibold text-slate-100">{r.goals}</div>
                           </div>
                         ))}
                       </div>
-                    </div>
+                    </Card>
                   )}
                 </div>
               </SectionCard>
             ) : null}
 
-            {/* Mecze */}
-            <SectionCard title="Mecze" hint="Kliknij mecz (w trakcie / zakończony), aby rozwinąć relację live (incydenty i komentarze).">
+            <SectionCard
+              title="Mecze"
+              hint="Kliknij mecz (w trakcie / zakończony), aby rozwinąć relację live (incydenty i komentarze)."
+            >
               <div ref={matchesPanelRef}>
                 <PublicMatchesPanel
                   matches={publicMatches}
@@ -1359,10 +1411,3 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
     </div>
   );
 }
-
-// Co zmieniono:
-// 1) Przeprojektowano układ strony publicznej w stylu Home (hero, karty, mikro-sekcje z ikonami).
-// 2) Zastąpiono ręczne klasy formularzy komponentami UI: Card, Button, Input, InlineAlert.
-// 3) Podzielono widok na mniejsze bloki (Reveal, SectionCard, ViewTabs, Pill, MiniInfo) w obrębie pliku.
-// 4) Ujednolicono hierarchię nagłówków i spacing, dodano czytelniejsze komunikaty w kartach.
-// 5) U góry strony (także dla organizatora) pokazuje się PublicMatchesBar, a TournamentFlowNav przeniesiono na dół.

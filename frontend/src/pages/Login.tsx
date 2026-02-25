@@ -9,13 +9,13 @@ import { cn } from "../lib/cn";
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { InlineAlert } from "../ui/InlineAlert";
-import { toast } from "../ui/Toast";
+import { Input } from "../ui/Input";
 
 type Props = {
   onLogin?: () => Promise<void>;
 };
 
-/** Pobiera pierwszy komunikat błędu z typowych odpowiedzi DRF. */
+/** Normalizuje odpowiedzi DRF do pojedynczego komunikatu, aby formularz mógł wyświetlić spójny błąd. */
 function pickFirstError(data: any): string | null {
   if (!data) return null;
   if (typeof data === "string") return data;
@@ -25,6 +25,7 @@ function pickFirstError(data: any): string | null {
     const v = (data as any)[k];
     if (Array.isArray(v) && v.length) return String(v[0]);
   }
+
   return null;
 }
 
@@ -35,9 +36,7 @@ export default function Login({ onLogin }: Props) {
   const urlMode = searchParams.get("mode");
   const nextParam = searchParams.get("next") || "";
 
-  const [mode, setMode] = useState<"login" | "register">(
-    urlMode === "register" ? "register" : "login"
-  );
+  const [mode, setMode] = useState<"login" | "register">(urlMode === "register" ? "register" : "login");
 
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
@@ -67,7 +66,7 @@ export default function Login({ onLogin }: Props) {
     navigate(nextQs ? `/login?mode=register&${nextQs}` : "/login?mode=register");
   };
 
-  /** Normalizuje wybrane komunikaty backendu do spójnej treści UI. */
+  /** Ujednolica typowe komunikaty logowania do przewidywalnych treści UI. */
   const translateLoginError = (msg?: string) => {
     if (!msg) return "Błąd logowania.";
     if (msg.includes("No active account")) return "Nieprawidłowy login lub hasło.";
@@ -86,7 +85,6 @@ export default function Login({ onLogin }: Props) {
         const res = await apiFetch(`/api/auth/login/`, {
           method: "POST",
           body: JSON.stringify({ username, password }),
-          // Komunikaty HTTP są prezentowane w formularzu (InlineAlert).
           toastOnError: false,
         });
 
@@ -126,27 +124,28 @@ export default function Login({ onLogin }: Props) {
         goLogin();
       }
     } catch {
-      // Błąd sieciowy jest prezentowany globalnie jako toast.
-      toast.error("Brak połączenia z serwerem. Spróbuj ponownie.", { title: "Sieć" });
+      setError("Brak połączenia z serwerem. Spróbuj ponownie.");
     } finally {
       setLoading(false);
     }
   };
 
+  const inputBase = cn(
+    "pl-10 pr-3 py-2.5",
+    "rounded-2xl bg-white/[0.04]",
+    "text-white placeholder:text-slate-500"
+  );
+
   return (
     <div className="mx-auto max-w-md py-8 sm:py-10">
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.25, ease: "easeOut" }}
-      >
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, ease: "easeOut" }}>
         <Card className="p-6 sm:p-7">
           <div className="flex items-start justify-between gap-4">
-            <div>
+            <div className="min-w-0">
               <h1 className="mt-1 text-2xl font-semibold text-white">
                 {mode === "login" ? "Logowanie" : "Rejestracja"}
               </h1>
-              <div className="mt-2 text-sm text-slate-300 leading-relaxed">
+              <div className="mt-2 text-sm text-slate-300 leading-relaxed break-words">
                 {mode === "login"
                   ? "Zaloguj się, aby zarządzać turniejami lub dołączyć jako zawodnik, jeśli organizator włączył dołączanie."
                   : "Załóż konto, aby tworzyć turnieje lub dołączać do rozgrywek."}
@@ -154,11 +153,7 @@ export default function Login({ onLogin }: Props) {
             </div>
 
             <div className="hidden sm:grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
-              {mode === "login" ? (
-                <LogIn className="h-5 w-5 text-white/90" />
-              ) : (
-                <UserPlus className="h-5 w-5 text-white/90" />
-              )}
+              {mode === "login" ? <LogIn className="h-5 w-5 text-white/90" /> : <UserPlus className="h-5 w-5 text-white/90" />}
             </div>
           </div>
 
@@ -189,24 +184,23 @@ export default function Login({ onLogin }: Props) {
             </button>
           </div>
 
-          {(error || success) && (
+          {(error || success) ? (
             <div className="mt-4 space-y-2">
-              {error && <InlineAlert variant="error">{error}</InlineAlert>}
-              {success && <InlineAlert variant="success">{success}</InlineAlert>}
+              {error ? <InlineAlert variant="error">{error}</InlineAlert> : null}
+              {success ? <InlineAlert variant="success">{success}</InlineAlert> : null}
             </div>
-          )}
+          ) : null}
 
           <form onSubmit={submit} className="mt-5 space-y-4">
             <div>
-              <label className="text-sm font-medium text-slate-200">Login</label>
+              <label htmlFor="login_username" className="text-sm font-medium text-slate-200">
+                Login
+              </label>
               <div className="mt-2 relative">
-                <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input
-                  className={cn(
-                    "w-full rounded-2xl border border-white/10 bg-white/[0.04] pl-10 pr-3 py-2.5 text-sm text-white",
-                    "placeholder:text-slate-500",
-                    "focus:outline-none focus:ring-4 focus:ring-white/10 focus:border-white/15"
-                  )}
+                <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                <Input
+                  id="login_username"
+                  className={inputBase}
                   value={username}
                   required
                   autoComplete="username"
@@ -216,18 +210,17 @@ export default function Login({ onLogin }: Props) {
               </div>
             </div>
 
-            {mode === "register" && (
+            {mode === "register" ? (
               <div>
-                <label className="text-sm font-medium text-slate-200">Email</label>
+                <label htmlFor="login_email" className="text-sm font-medium text-slate-200">
+                  Email
+                </label>
                 <div className="mt-2 relative">
-                  <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                  <input
+                  <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                  <Input
+                    id="login_email"
                     type="email"
-                    className={cn(
-                      "w-full rounded-2xl border border-white/10 bg-white/[0.04] pl-10 pr-3 py-2.5 text-sm text-white",
-                      "placeholder:text-slate-500",
-                      "focus:outline-none focus:ring-4 focus:ring-white/10 focus:border-white/15"
-                    )}
+                    className={inputBase}
                     value={email}
                     required
                     autoComplete="email"
@@ -236,19 +229,18 @@ export default function Login({ onLogin }: Props) {
                   />
                 </div>
               </div>
-            )}
+            ) : null}
 
             <div>
-              <label className="text-sm font-medium text-slate-200">Hasło</label>
+              <label htmlFor="login_password" className="text-sm font-medium text-slate-200">
+                Hasło
+              </label>
               <div className="mt-2 relative">
-                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input
+                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                <Input
+                  id="login_password"
                   type={showPassword ? "text" : "password"}
-                  className={cn(
-                    "w-full rounded-2xl border border-white/10 bg-white/[0.04] pl-10 pr-10 py-2.5 text-sm text-white",
-                    "placeholder:text-slate-500",
-                    "focus:outline-none focus:ring-4 focus:ring-white/10 focus:border-white/15"
-                  )}
+                  className={cn(inputBase, "pr-10")}
                   value={password}
                   required
                   autoComplete={mode === "login" ? "current-password" : "new-password"}
@@ -258,7 +250,11 @@ export default function Login({ onLogin }: Props) {
                 <button
                   type="button"
                   onClick={() => setShowPassword((v) => !v)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-xl p-2 text-slate-300 hover:bg-white/5 hover:text-white"
+                  className={cn(
+                    "absolute right-2 top-1/2 -translate-y-1/2 rounded-xl p-2",
+                    "text-slate-300 hover:bg-white/5 hover:text-white",
+                    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+                  )}
                   aria-label={showPassword ? "Ukryj hasło" : "Pokaż hasło"}
                 >
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -271,23 +267,9 @@ export default function Login({ onLogin }: Props) {
                 variant={mode === "login" ? "secondary" : "primary"}
                 className="w-full justify-center"
                 disabled={loading}
+                leftIcon={loading ? <Loader2 className="h-4 w-4 animate-spin" /> : mode === "login" ? <LogIn className="h-4 w-4" /> : <UserPlus className="h-4 w-4" />}
               >
-                {loading ? (
-                  <span className="inline-flex items-center gap-2">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Przetwarzanie…
-                  </span>
-                ) : mode === "login" ? (
-                  <span className="inline-flex items-center gap-2">
-                    <LogIn className="h-4 w-4" />
-                    Zaloguj
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-2">
-                    <UserPlus className="h-4 w-4" />
-                    Zarejestruj
-                  </span>
-                )}
+                {loading ? "Przetwarzanie..." : mode === "login" ? "Zaloguj" : "Zarejestruj"}
               </Button>
             </div>
           </form>

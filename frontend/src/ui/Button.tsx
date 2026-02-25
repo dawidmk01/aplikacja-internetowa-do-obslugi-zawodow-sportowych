@@ -1,3 +1,6 @@
+// frontend/src/ui/Button.tsx
+// Komponent udostępnia spójny przycisk akcji w całej aplikacji.
+
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { motion } from "framer-motion";
 
@@ -11,7 +14,7 @@ type Props = ButtonHTMLAttributes<HTMLButtonElement> & {
   rightIcon?: ReactNode;
 };
 
-/** Warianty definiują semantykę akcji, aby utrzymać spójne znaczenie kolorów w całej aplikacji. */
+// Warianty zapewniają spójne semantyki akcji w UI.
 const variants: Record<ButtonVariant, string> = {
   primary: "bg-white text-slate-950 hover:bg-slate-100",
   secondary: "bg-white/10 text-slate-100 border border-white/15 hover:bg-white/15",
@@ -19,7 +22,6 @@ const variants: Record<ButtonVariant, string> = {
   ghost: "bg-transparent text-slate-200 hover:bg-white/10",
 };
 
-/** Button centralizuje style interakcji (focus/disabled) i ogranicza rozproszenie klas w widokach. */
 export function Button({
   className,
   variant = "primary",

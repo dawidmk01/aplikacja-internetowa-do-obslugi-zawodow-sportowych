@@ -40,7 +40,6 @@ export default function TournamentStepFooter({ getCreatedId, className }: Props)
   const showBack = Boolean(backPath) && !isStandings;
   const showNext = Boolean(nextPath) && !isStandings;
 
-  // Zasada: jak nie ma wstecz/dalej - nie pokazujemy nic.
   if (!showStandingsBack && !showBack && !showNext) return null;
 
   const justify =
@@ -56,14 +55,18 @@ export default function TournamentStepFooter({ getCreatedId, className }: Props)
       className={className}
       spacerHeightClassName="h-16 sm:h-[72px]"
       zIndexClassName="z-50"
-      maxWidthClassName="max-w-none"
+      maxWidthClassName="max-w-[1400px]"
       contentClassName="p-2 sm:p-2.5"
     >
-      <div className={cn("flex flex-wrap items-center gap-2 sm:gap-3", justify)}>
+      <div
+        className={cn("flex flex-wrap items-center gap-2 sm:gap-3", justify)}
+        aria-label="Nawigacja kroków turnieju"
+      >
         {showStandingsBack ? (
           <Button
+            type="button"
             variant="secondary"
-            className="h-9 px-3 text-sm rounded-xl"
+            className="h-9 rounded-xl px-3 text-sm"
             onClick={() => navigate(`/tournaments/${resolvedId}/detail/results`)}
             leftIcon={<ArrowLeft className="h-4 w-4" />}
           >
@@ -73,9 +76,12 @@ export default function TournamentStepFooter({ getCreatedId, className }: Props)
 
         {showBack ? (
           <Button
+            type="button"
             variant="secondary"
-            className="h-9 px-3 text-sm rounded-xl"
-            onClick={() => backPath && navigate(backPath)}
+            className="h-9 rounded-xl px-3 text-sm"
+            onClick={() => {
+              if (backPath) navigate(backPath);
+            }}
             leftIcon={<ArrowLeft className="h-4 w-4" />}
           >
             {prev?.label ?? "Wstecz"}
@@ -84,9 +90,12 @@ export default function TournamentStepFooter({ getCreatedId, className }: Props)
 
         {showNext ? (
           <Button
+            type="button"
             variant="primary"
-            className="h-9 px-3 text-sm rounded-xl"
-            onClick={() => nextPath && navigate(nextPath)}
+            className="h-9 rounded-xl px-3 text-sm"
+            onClick={() => {
+              if (nextPath) navigate(nextPath);
+            }}
             leftIcon={next?.key === "public_preview" ? <Eye className="h-4 w-4" /> : undefined}
             rightIcon={<ArrowRight className="h-4 w-4" />}
           >
@@ -97,11 +106,3 @@ export default function TournamentStepFooter({ getCreatedId, className }: Props)
     </StickyBar>
   );
 }
-
-/*
-Co zmieniono:
-- Footer przeniesiono do stałego, kompaktowego paska (mniejsza wysokość).
-- Przyciski mają mniejszą wysokość i padding (h-9, px-3).
-- Brak “wyłączonego” Wstecz/Dalej - jeśli brak akcji, nie renderujemy.
-- Zostawiono obsługę powrotu ze standings do wyników.
-*/

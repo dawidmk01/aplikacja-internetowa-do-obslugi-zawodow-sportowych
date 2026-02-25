@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 
 from rest_framework import status
@@ -10,6 +11,7 @@ from rest_framework.views import APIView
 
 from ..models import Tournament, TournamentMembership
 from ..permissions import IsTournamentOrganizer
+from ..realtime import ws_emit_tournament, ws_emit_user
 from ..serializers import (
     AddAssistantSerializer,
     TournamentAssistantSerializer,
@@ -45,14 +47,12 @@ class AddAssistantView(APIView):
 
         user = serializer.validated_data["user"]
 
-        # Nie dodawaj organizatora jako asystenta
         if user.id == tournament.organizer_id:
             return Response(
                 {"detail": "Organizator nie może być dodany jako asystent."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Unikaj duplikatów membership
         obj, created = TournamentMembership.objects.get_or_create(
             tournament=tournament,
             user=user,
@@ -64,6 +64,29 @@ class AddAssistantView(APIView):
                 {"detail": "Ten użytkownik jest już asystentem w tym turnieju."},
                 status=status.HTTP_409_CONFLICT,
             )
+
+        transaction.on_commit(
+            lambda: ws_emit_tournament(
+                tournament.id,
+                "permissions.changed",
+                {
+                    "userId": user.id,
+                    "action": "assistant_added",
+                },
+            )
+        )
+
+        transaction.on_commit(
+            lambda: ws_emit_user(
+                user.id,
+                {
+                    "v": 1,
+                    "type": "membership.changed",
+                    "tournamentId": tournament.id,
+                    "action": "assistant_added",
+                },
+            )
+        )
 
         return Response(status=status.HTTP_201_CREATED)
 
@@ -80,6 +103,29 @@ class RemoveAssistantView(APIView):
             user_id=user_id,
             role=TournamentMembership.Role.ASSISTANT,
         ).delete()
+
+        transaction.on_commit(
+            lambda: ws_emit_tournament(
+                tournament.id,
+                "permissions.changed",
+                {
+                    "userId": int(user_id),
+                    "action": "assistant_removed",
+                },
+            )
+        )
+
+        transaction.on_commit(
+            lambda: ws_emit_user(
+                int(user_id),
+                {
+                    "v": 1,
+                    "type": "membership.changed",
+                    "tournamentId": tournament.id,
+                    "action": "assistant_removed",
+                },
+            )
+        )
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -103,9 +149,7 @@ class AssistantPermissionsView(APIView):
     def get(self, request, pk: int, user_id: int):
         tournament = get_object_or_404(Tournament, pk=pk)
 
-        # Organizer zawsze widzi
         if tournament.organizer_id != request.user.id:
-            # Asystent może widzieć tylko swoje, żeby nie podglądał cudzych
             if request.user.id != user_id:
                 return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -128,7 +172,6 @@ class AssistantPermissionsView(APIView):
     def patch(self, request, pk: int, user_id: int):
         tournament = get_object_or_404(Tournament, pk=pk)
 
-        # Tylko organizer edytuje
         if tournament.organizer_id != request.user.id:
             return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -143,7 +186,6 @@ class AssistantPermissionsView(APIView):
         ser = AssistantPermissionsSerializer(data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
 
-        # Twardo filtrujemy do dozwolonych kluczy (żadnych organizer-only i żadnych "śmieci")
         allowed_keys = set(AssistantPermissionsSerializer.allowed_keys())
 
         raw = dict(m.permissions or {})
@@ -155,6 +197,17 @@ class AssistantPermissionsView(APIView):
 
         m.permissions = raw
         m.save(update_fields=["permissions"])
+
+        transaction.on_commit(
+            lambda: ws_emit_tournament(
+                tournament.id,
+                "permissions.changed",
+                {
+                    "userId": int(user_id),
+                    "action": "assistant_permissions_updated",
+                },
+            )
+        )
 
         return Response(
             {

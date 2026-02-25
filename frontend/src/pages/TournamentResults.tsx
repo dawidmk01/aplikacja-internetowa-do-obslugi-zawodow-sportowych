@@ -1,10 +1,10 @@
-// frontend/src/pages/TournamentResults.tsx
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { Brackets, Calendar, Clock } from "lucide-react";
 
 import { apiFetch } from "../api";
+import { useTournamentWs } from "../hooks/useTournamentWs";
 
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
@@ -13,18 +13,38 @@ import { toast } from "../ui/Toast";
 import MatchRow from "../components/MatchRow";
 import type { MatchDTO, TournamentDTO } from "../types/results";
 
-import { isByeMatch, TournamentMatchesScaffold, formatDatePL, type MatchLikeBase } from "./_shared/TournamentMatchesScaffold";
+import {
+  formatDatePL,
+  isByeMatch,
+  TournamentMatchesScaffold,
+  type MatchLikeBase,
+} from "./_shared/TournamentMatchesScaffold";
 
 type ToastKind = "saved" | "success" | "error" | "info";
-
 type MatchLike = MatchDTO & MatchLikeBase;
+
+function normalizeMatchList(raw: any): MatchLike[] {
+  if (Array.isArray(raw)) return raw as MatchLike[];
+  if (Array.isArray(raw?.results)) return raw.results as MatchLike[];
+  return [];
+}
 
 export default function TournamentResults() {
   const { id } = useParams<{ id: string }>();
+  const tournamentId = id ?? "";
+
+  const mountedRef = useRef(true);
 
   const [tournament, setTournament] = useState<TournamentDTO | null>(null);
   const [matches, setMatches] = useState<MatchLike[]>([]);
   const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const pushToast = useCallback((message: string, kind: ToastKind = "info") => {
     if (kind === "success" || kind === "saved") {
@@ -39,35 +59,62 @@ export default function TournamentResults() {
   }, []);
 
   const reloadAll = useCallback(async () => {
-    if (!id) return;
+    if (!tournamentId) return;
+
+    if (mountedRef.current) setLoading(true);
 
     try {
-      setLoading(true);
-
-      const [tRes, mRes] = await Promise.all([apiFetch(`/api/tournaments/${id}/`), apiFetch(`/api/tournaments/${id}/matches/`)]);
+      const [tRes, mRes] = await Promise.all([
+        apiFetch(`/api/tournaments/${tournamentId}/`),
+        apiFetch(`/api/tournaments/${tournamentId}/matches/`),
+      ]);
 
       if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
       if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
 
       const tData = (await tRes.json()) as TournamentDTO;
-      setTournament(tData);
-
       const raw = await mRes.json();
-      const list = (Array.isArray(raw) ? raw : raw.results) as MatchLike[];
+      const list = normalizeMatchList(raw);
+
+      if (!mountedRef.current) return;
+
+      setTournament(tData);
       setMatches(list);
     } catch (e) {
       pushToast(e instanceof Error ? e.message : "Wystąpił błąd podczas ładowania.", "error");
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
-  }, [id, pushToast]);
+  }, [pushToast, tournamentId]);
 
   useEffect(() => {
-    if (!id) return;
-    reloadAll();
-  }, [id, reloadAll]);
+    if (!tournamentId) return;
+    void reloadAll();
+  }, [reloadAll, tournamentId]);
 
-  const tournamentFormat = useMemo(() => String((tournament as any)?.tournament_format ?? ""), [tournament]);
+  
+
+  useTournamentWs({
+    tournamentId,
+    enabled: Boolean(tournamentId),
+    onEvent: ({ event }) => {
+      const normalized = String(event).replaceAll(".", "_");
+
+      if (
+        normalized === "matches_changed" ||
+        normalized === "incidents_changed" ||
+        normalized === "clock_changed" ||
+        normalized === "commentary_changed"
+      ) {
+        void reloadAll();
+      }
+    },
+  });
+
+  const tournamentFormat = useMemo(
+    () => String((tournament as any)?.tournament_format ?? ""),
+    [tournament]
+  );
 
   const canManageTournament = useMemo(() => {
     const role = String((tournament as any)?.my_role ?? "");
@@ -95,18 +142,20 @@ export default function TournamentResults() {
     const fmt = String(tournamentFormat ?? "").toUpperCase();
     const isMixed = fmt === "MIXED";
 
-    // UI jest defensywne: jeśli backend zwraca GROUP, a KO jeszcze nie istnieje, pokaż akcję.
     return canManageTournament && (isMixed || hasGroupStage) && !hasKnockoutStage;
   }, [canManageTournament, hasGroupStage, hasKnockoutStage, tournamentFormat]);
 
   const [advanceBusy, setAdvanceBusy] = useState(false);
 
   const onAdvanceFromGroups = useCallback(async () => {
-    if (!id) return;
+    if (!tournamentId) return;
 
     setAdvanceBusy(true);
     try {
-      const res = await apiFetch(`/api/tournaments/${id}/advance-from-groups/`, { method: "POST" });
+      const res = await apiFetch(`/api/tournaments/${tournamentId}/advance-from-groups/`, {
+        method: "POST",
+      });
+
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         throw new Error(String(data?.detail || "Nie udało się wygenerować następnego etapu."));
@@ -119,7 +168,7 @@ export default function TournamentResults() {
     } finally {
       setAdvanceBusy(false);
     }
-  }, [id, pushToast, reloadAll]);
+  }, [pushToast, reloadAll, tournamentId]);
 
   const stageAdvanceCard = useMemo(() => {
     if (!showAdvanceFromGroups) return null;
@@ -133,13 +182,13 @@ export default function TournamentResults() {
           <div className="absolute -bottom-20 left-1/2 h-44 w-[28rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
         </div>
 
-        <div className="relative flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-[240px]">
+        <div className="relative flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
             <div className="flex items-center gap-2">
               <div className="inline-flex h-9 w-9 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04]">
                 <Brackets className="h-4 w-4 text-slate-200" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <div className="text-sm font-semibold text-white">Następny etap</div>
                 <div className="mt-1 text-xs text-slate-400">
                   Faza pucharowa po grupach - generowanie na podstawie tabel.
@@ -159,6 +208,7 @@ export default function TournamentResults() {
             onClick={onAdvanceFromGroups}
             disabled={disabled}
             leftIcon={<Brackets className="h-4 w-4" />}
+            className="w-full sm:w-auto"
           >
             {advanceBusy ? "Generowanie..." : "Wygeneruj fazę pucharową"}
           </Button>
@@ -194,9 +244,9 @@ export default function TournamentResults() {
             </div>
           ) : null}
 
-          {/* MatchRow ma własną kartę - nie dokładamy drugiej */}
+          {/* MatchRow renderuje własną kartę meczu. */}
           <MatchRow
-            tournamentId={String(id ?? "")}
+            tournamentId={tournamentId}
             tournament={tournament as TournamentDTO}
             match={m as unknown as MatchDTO}
             onReload={reloadAll}
@@ -205,10 +255,10 @@ export default function TournamentResults() {
         </div>
       );
     },
-    [id, pushToast, reloadAll, tournament]
+    [pushToast, reloadAll, tournament, tournamentId]
   );
 
-  if (!id) {
+  if (!tournamentId) {
     return (
       <div className="w-full py-6">
         <Card className="p-6 text-slate-200">Brak ID turnieju.</Card>
@@ -226,7 +276,7 @@ export default function TournamentResults() {
 
   return (
     <TournamentMatchesScaffold
-      tournamentId={id}
+      tournamentId={tournamentId}
       tournamentFormat={tournamentFormat}
       title="Wyniki"
       description="Wprowadzaj wyniki meczów i kontroluj postęp rozgrywek."
@@ -238,10 +288,3 @@ export default function TournamentResults() {
     />
   );
 }
-
-/*
-Co zmieniono:
-1) Usunięto z Wyników kartę "Dane turnieju" (start/koniec/lokalizacja) - te dane są edytowane w Harmonogramie.
-2) Dodano generowanie następnego etapu dla formatu z fazą grupową -> puchar (POST /advance-from-groups/) z walidacją ukończenia grup.
-3) Zachowano wspólny scaffold (filtry, podziały, zwijanie) identyczny jak w Harmonogramie.
-*/

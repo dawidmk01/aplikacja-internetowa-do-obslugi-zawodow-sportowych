@@ -53,14 +53,14 @@ class AssistantPermissionsSerializer(serializers.Serializer):
     """
 
     teams_edit = serializers.BooleanField(required=False)
-    roster_edit = serializers.BooleanField(required=False)                 # NEW
+    roster_edit = serializers.BooleanField(required=False)
     schedule_edit = serializers.BooleanField(required=False)
     results_edit = serializers.BooleanField(required=False)
     bracket_edit = serializers.BooleanField(required=False)
     tournament_edit = serializers.BooleanField(required=False)
-    name_change_approve = serializers.BooleanField(required=False)         # NEW
+    name_change_approve = serializers.BooleanField(required=False)
 
-    # organizer-only (mogą być zwrócone w effective, ale NIE chcemy ich zapisywać)
+    # organizer-only (mogą być zwrócone w effective, ale nie powinny być zapisywane)
     publish = serializers.BooleanField(required=False)
     archive = serializers.BooleanField(required=False)
     manage_assistants = serializers.BooleanField(required=False)
@@ -68,7 +68,6 @@ class AssistantPermissionsSerializer(serializers.Serializer):
 
     @classmethod
     def allowed_keys(cls) -> set[str]:
-        # tylko to wolno zapisać do TournamentMembership.permissions
         return {
             TournamentMembership.PERM_TEAMS_EDIT,
             TournamentMembership.PERM_ROSTER_EDIT,

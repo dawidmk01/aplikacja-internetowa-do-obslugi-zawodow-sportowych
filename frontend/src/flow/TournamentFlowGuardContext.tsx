@@ -1,11 +1,5 @@
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import type { ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 
 type SaveHandler = () => Promise<void> | void;
 
@@ -21,25 +15,21 @@ type TournamentFlowGuardCtx = {
   lastError: string | null;
   clearError: () => void;
 
-  // Dodano dla obsługi ID nowo utworzonego turnieju (wymagane przez TournamentBasicsSetup/Footer)
   createdId: string | null;
   setCreatedId: (id: string | null) => void;
 };
 
 const Ctx = createContext<TournamentFlowGuardCtx | null>(null);
 
-export function TournamentFlowGuardProvider({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+/** Guard flow utrzymuje wspólny kontrakt "dirty + save handler" dla kroków panelu turnieju. */
+export function TournamentFlowGuardProvider({ children }: { children: ReactNode }) {
   const saveRef = useRef<SaveHandler | null>(null);
 
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
 
-  // Stan dla ID utworzonego turnieju (aby Footer wiedział o nim bez odświeżania)
+  /** Id nowo utworzonego turnieju jest dostępne w krokach flow bez odświeżania i bez zależności od routingu. */
   const [createdId, setCreatedId] = useState<string | null>(null);
 
   const registerSave = useCallback((fn: SaveHandler | null) => {
@@ -51,19 +41,13 @@ export function TournamentFlowGuardProvider({
 
   const saveIfDirty = useCallback(async (): Promise<boolean> => {
     if (!dirty) {
-  // jeśli strona ma handler zapisu, wywołujemy go TYLKO DO WALIDACJI
+      // Dla widoków z walidacją: jeśli handler istnieje, może zostać wywołany także bez zmian w stanie "dirty".
       if (saveRef.current) {
-        try {
-          await Promise.resolve(saveRef.current());
-        } catch (e) {
-          throw e; // pokaże komunikat walidacyjny
-        }
+        await Promise.resolve(saveRef.current());
       }
       return true;
     }
 
-
-    // Jeśli strona nie zarejestrowała handlera, a jest dirty
     if (!saveRef.current) {
       setLastError("Brak obsługi zapisu na tej stronie.");
       return true;
@@ -78,12 +62,13 @@ export function TournamentFlowGuardProvider({
       await Promise.resolve(saveRef.current());
       setDirty(false);
       return true;
-    } catch (e: any) {
-      // Ustawiamy błąd w stanie (do wyświetlenia np. w nawigacji)
-      setLastError(e?.message ?? "Nie udało się zapisać zmian.");
+    } catch (e: unknown) {
+      const msg =
+        typeof e === "object" && e && "message" in e && typeof (e as any).message === "string"
+          ? (e as any).message
+          : "Nie udało się zapisać zmian.";
 
-      // ⚠️ KLUCZOWA ZMIANA: Rzucamy błąd dalej, aby komponent (np. Setup)
-      // mógł zareagować (np. przekierowaniem z flashError)
+      setLastError(msg);
       throw e;
     } finally {
       setSaving(false);
@@ -103,16 +88,7 @@ export function TournamentFlowGuardProvider({
       createdId,
       setCreatedId,
     }),
-    [
-      dirty,
-      markDirty,
-      registerSave,
-      saveIfDirty,
-      saving,
-      lastError,
-      clearError,
-      createdId,
-    ]
+    [dirty, markDirty, registerSave, saveIfDirty, saving, lastError, clearError, createdId]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -121,9 +97,7 @@ export function TournamentFlowGuardProvider({
 export function useTournamentFlowGuard() {
   const ctx = useContext(Ctx);
   if (!ctx) {
-    throw new Error(
-      "useTournamentFlowGuard musi być użyty wewnątrz TournamentFlowGuardProvider."
-    );
+    throw new Error("useTournamentFlowGuard musi być użyty wewnątrz TournamentFlowGuardProvider.");
   }
   return ctx;
 }

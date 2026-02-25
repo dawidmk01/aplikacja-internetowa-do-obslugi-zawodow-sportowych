@@ -1,3 +1,6 @@
+// frontend/src/ui/Toast.tsx
+// Komponent zapewnia globalne powiadomienia systemowe w spójnym stylu.
+
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { CheckCircle2, Info, Settings2, X, XCircle } from "lucide-react";
@@ -38,7 +41,6 @@ const CORNER_KEY = "turnieje.toast.corner";
 
 // ===== Konfiguracja klienta =====
 
-/** Preferencja położenia toastów jest utrwalana lokalnie, aby ograniczyć konflikt z nawigacją. */
 function readCorner(): ToastCorner {
   try {
     const v = window.localStorage.getItem(CORNER_KEY) as ToastCorner | null;
@@ -61,7 +63,6 @@ function writeCorner(corner: ToastCorner) {
 
 // ===== Magazyn toastów =====
 
-/** Magazyn utrzymuje globalny kanał powiadomień, bez propagacji stanu przez drzewo komponentów. */
 const store = {
   items: [] as ToastItem[],
   listeners: new Set<ToastListener>(),

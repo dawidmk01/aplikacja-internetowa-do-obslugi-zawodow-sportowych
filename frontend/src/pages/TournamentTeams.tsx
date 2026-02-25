@@ -9,10 +9,12 @@ import { apiFetch } from "../api";
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { Input } from "../ui/Input";
+import { Select, type SelectOption } from "../ui/Select";
 import { toast } from "../ui/Toast";
 
 import { useAutosave } from "../hooks/useAutosave";
 import { AutosaveIndicator } from "../components/AutosaveIndicator";
+import ConfirmActionModal from "../components/ConfirmActionModal";
 
 type Team = { id: number; name: string; players_count?: number };
 
@@ -109,6 +111,18 @@ function clonePlayers(rows: PlayerRow[]): PlayerRow[] {
   return rows.map((r) => ({ id: r.id, display_name: r.display_name, jersey_number: r.jersey_number ?? null }));
 }
 
+
+type ConfirmDialogState = {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  confirmVariant?: "primary" | "danger";
+  resolve: (result: boolean) => void;
+};
+
+type ConfirmDialogRequest = Omit<ConfirmDialogState, "resolve">;
+
 export default function TournamentTeams() {
   const { id } = useParams<{ id: string }>();
 
@@ -116,6 +130,12 @@ export default function TournamentTeams() {
   const tournamentRef = useRef<TournamentDTO | null>(null);
 
   const [teams, setTeams] = useState<Team[]>([]);
+
+  const teamOptions = useMemo<SelectOption<number>[]>(
+    () => teams.map((t) => ({ value: t.id, label: t.name })),
+    [teams]
+  );
+
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
@@ -135,6 +155,19 @@ export default function TournamentTeams() {
   const [participantMode, setParticipantMode] = useState(false);
 
   const inFlightRef = useRef(false);
+
+
+  // ===== potwierdzenia (modal zamiast window.confirm) =====
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+
+  const requestConfirm = (req: ConfirmDialogRequest) =>
+    new Promise<boolean>((resolve) => setConfirmDialog({ ...req, resolve }));
+
+  const resolveConfirm = (result: boolean) => {
+    const resolver = confirmDialog?.resolve;
+    setConfirmDialog(null);
+    resolver?.(result);
+  };
 
   // ===== podgląd składu w kartach drużyn =====
   const [expandedTeams, setExpandedTeams] = useState<Record<number, boolean>>({});
@@ -516,7 +549,8 @@ export default function TournamentTeams() {
   // ===== teams count =====
   const currentCount = useMemo(() => Math.max(2, teams.length), [teams.length]);
 
-  const confirmChangeCount = (): boolean => {
+
+  const confirmChangeCount = async (): Promise<boolean> => {
     if (!canChangeTeamsCount) {
       if (isAssistant) {
         if (!myPerms?.tournament_edit) toast.error("Brak uprawnień: asystent nie ma tournament_edit.");
@@ -530,25 +564,36 @@ export default function TournamentTeams() {
     if (tournament?.status === "DRAFT" && !matchesStarted) return true;
 
     if (isOrganizer && matchesStarted) {
-      return window.confirm(
-        [
-          "Turniej jest rozpoczęty.",
-          "",
-          "Zmiana liczby uczestników spowoduje PEŁNY RESET rozgrywek:",
-          "- usunięcie wszystkich etapów i meczów (także rozegranych)",
-          "- skasowanie wyników i postępu drabinki/tabel",
-          "- skasowanie harmonogramu meczów",
-          "",
-          "Nazwy drużyn pozostaną (część może zostać dezaktywowana przy zmniejszeniu liczby).",
-          "",
-          "Kontynuować?",
-        ].join("\n")
-      );
+      const message = [
+        "Turniej jest rozpoczęty.",
+        "",
+        "Zmiana liczby uczestników spowoduje PEŁNY RESET rozgrywek:",
+        "- usunięcie wszystkich etapów i meczów (także rozegranych)",
+        "- skasowanie wyników i postępu drabinki/tabel",
+        "- skasowanie harmonogramu meczów",
+        "",
+        "Nazwy drużyn pozostaną (część może zostać dezaktywowana przy zmniejszeniu liczby).",
+        "",
+        "Kontynuować?",
+      ].join("\n");
+
+      return await requestConfirm({
+        title: "Potwierdź reset rozgrywek",
+        message,
+        confirmLabel: "Kontynuuj",
+        cancelLabel: "Anuluj",
+        confirmVariant: "danger",
+      });
     }
 
-    return window.confirm("Zmiana liczby uczestników spowoduje reset rozgrywek (etapy i mecze).\nKontynuować?");
+    return await requestConfirm({
+      title: "Potwierdź zmianę liczby uczestników",
+      message: "Zmiana liczby uczestników spowoduje reset rozgrywek (etapy i mecze).\nKontynuować?",
+      confirmLabel: "Kontynuuj",
+      cancelLabel: "Anuluj",
+      confirmVariant: "danger",
+    });
   };
-
   const changeTeamsCount = async (delta: number) => {
     if (!tournament || busy || inFlightRef.current) return;
     if (!canChangeTeamsCount) return;
@@ -556,7 +601,7 @@ export default function TournamentTeams() {
     const next = currentCount + delta;
     if (next < 2) return;
 
-    if (!confirmChangeCount()) return;
+    if (!(await confirmChangeCount())) return;
 
     try {
       inFlightRef.current = true;
@@ -846,25 +891,24 @@ export default function TournamentTeams() {
                   {canEditRosterAsManager ? (
                     <>
                       <div className="text-sm text-slate-300">Drużyna:</div>
-                      <select
-                        className="rounded-2xl border border-white/10 bg-white/[0.06] px-3 py-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10"
-                        value={selectedTeamId ?? ""}
-                        onChange={async (e) => {
-                          const nextId = Number(e.target.value || 0);
+                      <Select<number>
+                        value={selectedTeamId ?? (teamOptions[0]?.value ?? 0)}
+                        onChange={(nextId) => {
                           if (!nextId) return;
 
                           setSelectedTeamId(nextId);
                           clearUndoStack(nextId);
-                          await loadTeamPlayers(nextId);
+                          void loadTeamPlayers(nextId);
                         }}
-                        disabled={playersLoading}
-                      >
-                        {teams.map((t) => (
-                          <option key={t.id} value={t.id}>
-                            {t.name}
-                          </option>
-                        ))}
-                      </select>
+                        options={teamOptions}
+                        disabled={playersLoading || teamOptions.length === 0}
+                        ariaLabel="Wybierz drużynę"
+                        className=""
+                        buttonClassName="rounded-2xl border border-white/10 bg-white/[0.06] px-3 py-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10"
+                        menuClassName="rounded-2xl"
+                        size="md"
+                        align="start"
+                      />
 
                       <Button variant="ghost" disabled={!canUndoNow} onClick={undoLastRosterChange}>
                         Cofnij
@@ -1049,12 +1093,19 @@ export default function TournamentTeams() {
         )}
       </div>
 
-      {/* Co zmieniono:
-         1) Usunięto przycisk "Odśwież" w kolejce zmian nazw.
-         2) Usunięto tekst "Tryb organizatora/asystenta" (zostaje tylko "Tryb uczestnika", gdy dotyczy).
-         3) Usunięto zdanie obok "Cofnij" - sam przycisk robi undo ostatniej zmiany dla wybranej drużyny.
-         4) Podgląd składu w kartach jako zgrabna lista (3/4 nazwa + 1/4 numer), numer biały i bez "#".
-      */}
+
+
+<ConfirmActionModal
+  open={!!confirmDialog}
+  title={confirmDialog?.title ?? ""}
+  message={confirmDialog?.message ?? ""}
+  confirmLabel={confirmDialog?.confirmLabel}
+  cancelLabel={confirmDialog?.cancelLabel}
+  confirmVariant={confirmDialog?.confirmVariant}
+  onCancel={() => resolveConfirm(false)}
+  onConfirm={() => resolveConfirm(true)}
+/>
+
     </div>
   );
 }

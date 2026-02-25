@@ -1,13 +1,17 @@
 import { Navigate, useLocation } from "react-router-dom";
 
-export default function ProtectedRoute({ children }: { children: JSX.Element }) {
+type Props = {
+  children: JSX.Element;
+};
+
+/** Ochrona tras panelu - wymusza obecność tokenów i zachowuje docelowy adres w parametrze next. */
+export default function ProtectedRoute({ children }: Props) {
   const access = localStorage.getItem("access");
   const refresh = localStorage.getItem("refresh");
-  const loc = useLocation();
+  const location = useLocation();
 
   if (!access && !refresh) {
-    // Zachowujemy pełną ścieżkę wraz z query params (search)
-    const next = encodeURIComponent(loc.pathname + loc.search);
+    const next = encodeURIComponent(location.pathname + location.search);
     return <Navigate to={`/login?next=${next}`} replace />;
   }
 
