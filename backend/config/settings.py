@@ -60,6 +60,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "rest_framework_simplejwt.token_blacklist",
     "tournaments",
     "users",
 ]
@@ -138,9 +139,14 @@ REST_FRAMEWORK = {
     ),
 }
 
+PASSWORD_RESET_TOKEN_HOURS = env_int("PASSWORD_RESET_TOKEN_HOURS", 1)
+
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=env_int("DJANGO_ACCESS_TOKEN_MINUTES", 15)),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=env_int("DJANGO_REFRESH_TOKEN_DAYS", 7)),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": True,
 }
 
 REDIS_URL = env_str("REDIS_URL")
