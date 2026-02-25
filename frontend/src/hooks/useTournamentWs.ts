@@ -21,6 +21,7 @@ function isDev() {
 }
 
 const warnOnceKeys = new Set<string>();
+
 function warnOnce(key: string, message: string) {
   if (!isDev()) return;
   if (warnOnceKeys.has(key)) return;
@@ -43,19 +44,40 @@ function getApiOrigin(): string {
 }
 
 function getWsOrigin(): string {
-  const origin = getApiOrigin();
+  const configured = (import.meta as any).env?.VITE_WS_BASE_URL;
+  const fallback = getApiOrigin();
+
+  if (configured) {
+    try {
+      const u = new URL(String(configured), fallback);
+
+      if (u.protocol === "ws:" || u.protocol === "wss:") {
+        return u.origin;
+      }
+
+      const wsProtocol = u.protocol === "https:" ? "wss:" : "ws:";
+      return `${wsProtocol}//${u.host}`;
+    } catch {
+      return String(configured)
+        .replace(/\/+$/, "")
+        .replace(/\/ws$/, "")
+        .replace(/^http:/, "ws:")
+        .replace(/^https:/, "wss:");
+    }
+  }
+
   try {
-    const u = new URL(origin);
+    const u = new URL(fallback);
     const wsProtocol = u.protocol === "https:" ? "wss:" : "ws:";
     return `${wsProtocol}//${u.host}`;
   } catch {
-    return String(origin).replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+    return String(fallback).replace(/^http:/, "ws:").replace(/^https:/, "wss:");
   }
 }
 
 function getWsUrl(tournamentId: string | number) {
   const wsOrigin = getWsOrigin();
-  return `${wsOrigin}/ws/tournaments/${tournamentId}/`;
+  return `${wsOrigin}/ws/tournaments/${encodeURIComponent(String(tournamentId))}/`;
 }
 
 function buildWsUrlWithToken(base: string, token: string | null) {
@@ -91,6 +113,7 @@ function normalizeIncoming(msg: unknown): TournamentWsEvent | null {
       "ws.legacy.eventWrapper",
       "[WS] Otrzymano legacy wrapper {event,payload}. Docelowo oczekiwany jest {v:1,type,...}."
     );
+
     const payload = m.payload && typeof m.payload === "object" ? (m.payload as any) : {};
     return { v: 1, type: m.event, event: m.event, ...payload };
   }
@@ -149,9 +172,17 @@ export function useTournamentWs({ tournamentId, enabled = true, onEvent }: Param
 
     let cancelled = false;
 
+    const clearRetry = () => {
+      if (retryRef.current !== null) {
+        window.clearTimeout(retryRef.current);
+        retryRef.current = null;
+      }
+    };
+
     const connect = () => {
       if (cancelled) return;
 
+      clearRetry();
       safeCloseWs(wsRef.current);
       wsRef.current = null;
 
@@ -184,9 +215,7 @@ export function useTournamentWs({ tournamentId, enabled = true, onEvent }: Param
 
       ws.onclose = (ev) => {
         if (cancelled) return;
-
         if (!shouldReconnect(ev.code)) return;
-
         if (!token) return;
 
         const attempt = Math.min(attemptsRef.current + 1, 10);
@@ -200,7 +229,7 @@ export function useTournamentWs({ tournamentId, enabled = true, onEvent }: Param
       };
 
       ws.onerror = () => {
-        // onclose obsłuży reconnect; nie wymusza się close w CONNECTING, aby nie generować błędów w konsoli.
+        // onclose obsłuży reconnect
       };
     };
 
@@ -208,10 +237,7 @@ export function useTournamentWs({ tournamentId, enabled = true, onEvent }: Param
 
     return () => {
       cancelled = true;
-
-      if (retryRef.current) window.clearTimeout(retryRef.current);
-      retryRef.current = null;
-
+      clearRetry();
       safeCloseWs(wsRef.current);
       wsRef.current = null;
     };

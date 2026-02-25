@@ -1,6 +1,30 @@
 {
-  "dependencies": {
-    "clsx": "^2.1.1",
-    "tailwind-merge": "^3.4.0"
+  "name": "organizator_turniej",
+  "private": true,
+  "scripts": {
+    "dev": "docker compose up --build",
+    "up": "docker compose up -d --build",
+    "down": "docker compose down",
+    "restart": "docker compose down && docker compose up -d --build",
+    "ps": "docker compose ps",
+
+    "logs": "docker compose logs -f",
+    "logs:backend": "docker compose logs -f backend",
+    "logs:frontend": "docker compose logs -f frontend",
+    "logs:db": "docker compose logs -f db",
+    "logs:redis": "docker compose logs -f redis",
+    "logs:pgadmin": "docker compose logs -f pgadmin",
+
+    "shell:backend": "docker compose exec backend sh",
+    "shell:frontend": "docker compose exec frontend sh",
+    "shell:db": "docker compose exec db sh",
+
+    "migrate": "docker compose exec backend python manage.py migrate",
+    "makemigrations": "docker compose exec backend python manage.py makemigrations",
+    "createsuperuser": "docker compose exec backend python manage.py createsuperuser",
+
+    "npm:frontend": "cd frontend && npm install",
+    "audit:frontend": "cd frontend && npm audit",
+    "build:frontend": "docker compose exec frontend npm run build"
   }
 }

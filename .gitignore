@@ -1,25 +1,64 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.sqlite3
-
-# Django
-db.sqlite3
-
-# Environment
+# Root environment files
 .env
 .env.*
 !.env.example
 
-# PyCharm
-.idea/
-
-# Node
+# Root npm wrapper artifacts
 node_modules/
+/package-lock.json
 
-# OS
+# Python / Django
+*.py[cod]
+*.pyo
+*.pyd
+*.sqlite3
+*.db
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Python virtual environments
+venv/
+.venv/
+
+# Backend local artifacts
+backend/*.sqlite3
+backend/media/
+backend/staticfiles/
+
+# Frontend dependencies and build outputs
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/coverage/
+
+# Frontend local environment and cache
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+frontend/.vite/
+frontend/.eslintcache
+
+# Generic JS logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Global logs
+*.log
+logs/
+
+# IDE / OS
 .DS_Store
-Thumbs.db
-
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
