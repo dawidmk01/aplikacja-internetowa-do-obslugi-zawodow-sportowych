@@ -33,27 +33,32 @@ type ToastInput = {
 type ToastListener = (items: ToastItem[]) => void;
 type PauseListener = (paused: boolean) => void;
 
+const CORNER_KEY = "turnieje.toast.corner";
+
 function uid() {
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
 
-const CORNER_KEY = "turnieje.toast.corner";
-
-// ===== Konfiguracja klienta =====
-
 function readCorner(): ToastCorner {
+  if (typeof window === "undefined") {
+    return "bottom-center";
+  }
+
   try {
-    const v = window.localStorage.getItem(CORNER_KEY) as ToastCorner | null;
-    if (v && ["bottom-center", "bottom-left", "bottom-right", "top-left", "top-right"].includes(v)) {
-      return v;
+    const value = window.localStorage.getItem(CORNER_KEY) as ToastCorner | null;
+    if (value && ["bottom-center", "bottom-left", "bottom-right", "top-left", "top-right"].includes(value)) {
+      return value;
     }
   } catch {
     // Odczyt może być zablokowany przez ustawienia przeglądarki.
   }
+
   return "bottom-center";
 }
 
 function writeCorner(corner: ToastCorner) {
+  if (typeof window === "undefined") return;
+
   try {
     window.localStorage.setItem(CORNER_KEY, corner);
   } catch {
@@ -61,40 +66,45 @@ function writeCorner(corner: ToastCorner) {
   }
 }
 
-// ===== Magazyn toastów =====
-
 const store = {
   items: [] as ToastItem[],
   listeners: new Set<ToastListener>(),
   pauseListeners: new Set<PauseListener>(),
   max: 3,
   paused: false,
-  gcHandle: 0 as number | 0,
+  gcHandle: null as number | null,
 
   emit() {
     const snapshot = [...this.items];
-    for (const l of this.listeners) l(snapshot);
+    for (const listener of this.listeners) {
+      listener(snapshot);
+    }
   },
 
   emitPaused() {
-    for (const l of this.pauseListeners) l(this.paused);
+    for (const listener of this.pauseListeners) {
+      listener(this.paused);
+    }
   },
 
   ensureGc() {
-    if (this.gcHandle) return;
+    if (typeof window === "undefined") return;
+    if (this.gcHandle !== null) return;
+
     this.gcHandle = window.setInterval(() => {
       if (this.paused) return;
 
       const now = Date.now();
-      const next = this.items.filter((t) => t.expiresAt > now);
+      const next = this.items.filter((item) => item.expiresAt > now);
+
       if (next.length !== this.items.length) {
         this.items = next;
         this.emit();
       }
 
-      if (this.items.length === 0 && !this.paused) {
+      if (this.items.length === 0 && !this.paused && this.gcHandle !== null) {
         window.clearInterval(this.gcHandle);
-        this.gcHandle = 0;
+        this.gcHandle = null;
       }
     }, 250);
   },
@@ -102,20 +112,30 @@ const store = {
   setPaused(paused: boolean) {
     if (this.paused === paused) return;
     this.paused = paused;
-    if (!paused) this.ensureGc();
+
+    if (!paused) {
+      this.ensureGc();
+    }
+
     this.emitPaused();
   },
 
-  subscribe(l: ToastListener) {
-    this.listeners.add(l);
-    l([...this.items]);
-    return () => this.listeners.delete(l);
+  subscribe(listener: ToastListener) {
+    this.listeners.add(listener);
+    listener([...this.items]);
+
+    return () => {
+      this.listeners.delete(listener);
+    };
   },
 
-  subscribePaused(l: PauseListener) {
-    this.pauseListeners.add(l);
-    l(this.paused);
-    return () => this.pauseListeners.delete(l);
+  subscribePaused(listener: PauseListener) {
+    this.pauseListeners.add(listener);
+    listener(this.paused);
+
+    return () => {
+      this.pauseListeners.delete(listener);
+    };
   },
 
   push(input: ToastInput) {
@@ -135,12 +155,14 @@ const store = {
     this.items = [item, ...this.items].slice(0, this.max);
     this.emit();
     this.ensureGc();
+
     return item.id;
   },
 
   remove(id: string) {
-    const next = this.items.filter((t) => t.id !== id);
+    const next = this.items.filter((item) => item.id !== id);
     if (next.length === this.items.length) return;
+
     this.items = next;
     this.emit();
   },
@@ -175,8 +197,15 @@ export function Toaster() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paused, setPaused] = useState(false);
 
-  useEffect(() => store.subscribe(setItems), []);
-  useEffect(() => store.subscribePaused(setPaused), []);
+  useEffect(() => {
+    const unsubscribe = store.subscribe(setItems);
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = store.subscribePaused(setPaused);
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     store.setPaused(settingsOpen);
@@ -184,8 +213,9 @@ export function Toaster() {
 
   const dock = useMemo(() => getDockClasses(corner), [corner]);
 
-  const canShow = items.length > 0 || settingsOpen;
-  if (!canShow) return null;
+  if (items.length === 0 && !settingsOpen) {
+    return null;
+  }
 
   return (
     <>
@@ -194,6 +224,7 @@ export function Toaster() {
           <div className="relative z-10 mb-2 flex items-center justify-end gap-2 text-xs text-slate-300/80 select-none">
             <Button
               type="button"
+              size="sm"
               variant="ghost"
               onClick={() => setSettingsOpen(true)}
               className={cn(
@@ -218,8 +249,8 @@ export function Toaster() {
             )}
           >
             <AnimatePresence initial={false}>
-              {items.map((t) => (
-                <ToastCard key={t.id} item={t} onClose={() => toast.dismiss(t.id)} />
+              {items.map((item) => (
+                <ToastCard key={item.id} item={item} onClose={() => toast.dismiss(item.id)} />
               ))}
             </AnimatePresence>
           </div>
@@ -249,6 +280,7 @@ export function Toaster() {
                   </div>
 
                   <Button
+                    type="button"
                     variant="ghost"
                     className="h-9 w-9 p-0 rounded-xl shrink-0"
                     onClick={() => setSettingsOpen(false)}
@@ -278,7 +310,6 @@ export function Toaster() {
                     onClick={() => setCornerAndPersist("bottom-right", setCorner)}
                     label="Dół - prawy"
                   />
-
                   <CornerButton
                     active={corner === "bottom-center"}
                     onClick={() => setCornerAndPersist("bottom-center", setCorner)}
@@ -324,9 +355,9 @@ function CornerButton({
   );
 }
 
-function setCornerAndPersist(c: ToastCorner, setCorner: (c: ToastCorner) => void) {
-  setCorner(c);
-  writeCorner(c);
+function setCornerAndPersist(corner: ToastCorner, setCorner: (value: ToastCorner) => void) {
+  setCorner(corner);
+  writeCorner(corner);
 }
 
 function ToastCard({ item, onClose }: { item: ToastItem; onClose: () => void }) {
@@ -354,13 +385,12 @@ function ToastCard({ item, onClose }: { item: ToastItem; onClose: () => void }) 
         </div>
 
         <div className="min-w-0 flex-1">
-          {item.title ? (
-            <div className="text-sm font-semibold text-slate-100 leading-5 break-words">{item.title}</div>
-          ) : null}
+          {item.title ? <div className="text-sm font-semibold text-slate-100 leading-5 break-words">{item.title}</div> : null}
           <div className="text-sm text-slate-200/90 leading-5 break-words">{item.message}</div>
         </div>
 
         <Button
+          type="button"
           variant="ghost"
           className="h-8 w-8 p-0 rounded-xl shrink-0"
           onClick={onClose}

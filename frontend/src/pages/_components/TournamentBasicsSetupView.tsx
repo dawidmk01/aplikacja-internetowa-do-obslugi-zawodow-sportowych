@@ -1,7 +1,9 @@
+// frontend/src/pages/_components/TournamentBasicsSetupView.tsx
+// Komponent renderuje widok konfiguracji podstawowej turnieju i podsumowanie zmian.
+
 import type { ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  AlertTriangle,
   BadgeCheck,
   Brackets,
   Cog,
@@ -822,12 +824,9 @@ export function SummaryCard({
 
         {isAssistantReadOnly && (
           <div className="mt-4">
-            <InlineAlert
-              tone="warning"
-              title="Tryb podglądu"
-              description='Jako asystent nie możesz zmieniać konfiguracji bez uprawnienia "tournament_edit".'
-              icon={<AlertTriangle className="h-5 w-5" />}
-            />
+            <InlineAlert variant="info" title="Tryb podglądu">
+              Jako asystent nie możesz zmieniać konfiguracji bez uprawnienia "tournament_edit".
+            </InlineAlert>
           </div>
         )}
       </div>

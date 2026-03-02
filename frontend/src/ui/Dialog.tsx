@@ -15,14 +15,11 @@ type Props = {
   open: boolean;
   title: ReactNode;
   onClose: () => void;
-
   children: ReactNode;
   footer?: ReactNode;
-
   maxWidthClassName?: string;
   overlayClassName?: string;
   cardClassName?: string;
-
   closeLabel?: string;
 };
 
@@ -40,15 +37,13 @@ export function Dialog({
   const uid = useId().replace(/:/g, "");
   const titleId = `dialog-${uid}-title`;
   const descId = `dialog-${uid}-desc`;
-
-  // Fokus startowy na przycisku zamknięcia dla spójnej nawigacji klawiaturą.
-  const closeBtnRef = useRef<HTMLButtonElement | null>(null);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
 
   return (
     <Modal
       open={open}
       onClose={onClose}
-      initialFocusRef={closeBtnRef as any}
+      initialFocusRef={closeBtnRef}
       className={cn("flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm", overlayClassName)}
     >
       <div role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descId} className="w-full">
@@ -59,13 +54,13 @@ export function Dialog({
             </div>
 
             <Button
-              ref={closeBtnRef as any}
+              ref={closeBtnRef}
               type="button"
               variant="ghost"
-              onClick={onClose}
               className="h-9 w-9 justify-center rounded-xl px-0"
               aria-label={closeLabel}
               title={closeLabel}
+              onClick={onClose}
             >
               <X className="h-4 w-4" />
             </Button>

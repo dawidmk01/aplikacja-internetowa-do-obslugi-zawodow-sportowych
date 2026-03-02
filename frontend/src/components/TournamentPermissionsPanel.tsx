@@ -1,3 +1,6 @@
+// frontend/src/components/TournamentPermissionsPanel.tsx
+// Komponent udostępnia panel zarządzania dostępem i asystentami turnieju.
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetch } from "../api";
@@ -10,7 +13,6 @@ import { InlineAlert } from "../ui/InlineAlert";
 import { Select, type SelectOption } from "../ui/Select";
 
 import AddAssistantForm from "./AddAssistantForm";
-import AssistantsList from "./AssistantsList";
 
 type EntryMode = "MANAGER" | "ORGANIZER_ONLY";
 
@@ -64,6 +66,112 @@ const entryModeOptions: SelectOption<EntryMode>[] = [
   { value: "MANAGER", label: "MANAGER" },
   { value: "ORGANIZER_ONLY", label: "ORGANIZER_ONLY" },
 ];
+
+
+type AssistantListItem = {
+  user_id: number;
+  username?: string | null;
+  email?: string | null;
+};
+
+function AssistantsList({ tournamentId, canManage }: { tournamentId: number; canManage: boolean }) {
+  const [items, setItems] = useState<AssistantListItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  const loadItems = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const res = await apiFetch(`/api/tournaments/${tournamentId}/assistants/`);
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.detail || "Nie udało się pobrać listy asystentów.");
+
+      const list = Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+      setItems(list as AssistantListItem[]);
+    } catch (e: any) {
+      setError(e?.message ?? "Błąd ładowania listy asystentów.");
+    } finally {
+      setLoading(false);
+    }
+  }, [tournamentId]);
+
+  useEffect(() => {
+    void loadItems();
+  }, [loadItems]);
+
+  const removeAssistant = useCallback(
+    async (userId: number) => {
+      if (!canManage) return;
+
+      setBusyId(userId);
+      setError(null);
+
+      try {
+        const res = await apiFetch(`/api/tournaments/${tournamentId}/assistants/${userId}/`, {
+          method: "DELETE",
+        });
+
+        if (!res.ok && res.status !== 204) {
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.detail || "Nie udało się usunąć asystenta.");
+        }
+
+        setItems((prev) => prev.filter((item) => item.user_id !== userId));
+      } catch (e: any) {
+        setError(e?.message ?? "Błąd usuwania asystenta.");
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [canManage, tournamentId]
+  );
+
+  if (loading) {
+    return <div className="text-sm text-slate-300">Ładowanie listy asystentów...</div>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {error ? <InlineAlert variant="error">{error}</InlineAlert> : null}
+
+      {items.length === 0 ? (
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-slate-300">
+          Brak asystentów.
+        </div>
+      ) : (
+        items.map((item) => (
+          <div
+            key={item.user_id}
+            className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3"
+          >
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-white">{item.username || `ID ${item.user_id}`}</div>
+              {item.email ? <div className="truncate text-xs text-slate-400">{item.email}</div> : null}
+            </div>
+
+            {canManage ? (
+              <Button
+                type="button"
+                variant="danger"
+                size="sm"
+                disabled={busyId === item.user_id}
+                onClick={() => {
+                  void removeAssistant(item.user_id);
+                }}
+              >
+                Usuń
+              </Button>
+            ) : null}
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
 
 export default function TournamentPermissionsPanel({ tournamentId }: { tournamentId: number }) {
   const [t, setT] = useState<TournamentDTO | null>(null);

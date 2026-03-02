@@ -1,3 +1,6 @@
+// frontend/src/pages/TournamentPublic.tsx
+// Komponent renderuje publiczny widok turnieju z obsługą dostępu, rejestracji i odświeżania WebSocket.
+
 import type { ReactNode } from "react";
 import { useEffect, useCallback, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -62,7 +65,6 @@ type NameChangeRequestDTO = {
 
 type ViewTab = "MATCHES" | "STANDINGS";
 
-// ===== Normalizacja danych i kompatybilność backendu =====
 
 function formatDateRange(start: string | null, end: string | null) {
   if (!start && !end) return null;
@@ -125,7 +127,6 @@ function formatRoleLabel(role: TournamentPublicDTO["my_role"]): string {
   }
 }
 
-// ===== Klocki UI widoku publicznego =====
 
 type RevealProps = {
   children: ReactNode;
@@ -133,7 +134,7 @@ type RevealProps = {
   className?: string;
 };
 
-/** Reveal ujednolica animację wejścia sekcji, aby utrzymać spójny rytm i hierarchię informacji. */
+// Reveal ujednolica animację wejścia sekcji dla spójnego rytmu treści.
 function Reveal({ children, delay = 0, className }: RevealProps) {
   return (
     <motion.div
@@ -272,7 +273,6 @@ function ViewTabs({ value, onChange, disabled }: ViewTabsProps) {
   );
 }
 
-// ===== Dane publiczne: incydenty i statystyki =====
 
 type ScorerRow = {
   player_name: string;
@@ -290,13 +290,13 @@ function incidentMinute(i: IncidentPublicDTO): number | null {
   return null;
 }
 
-// ===== Widok publiczny turnieju =====
-
 export default function TournamentPublic({ initialView = "MATCHES" }: { initialView?: ViewTab } = {}) {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+
+  const tournamentId = id ?? null;
 
   const urlAccessCode = searchParams.get("code") ?? "";
   const [code, setCode] = useState("");
@@ -685,7 +685,7 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
           ? (raw as any).results
           : [];
       setMatches(list);
-  
+
 
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Wystąpił błąd.";
@@ -742,10 +742,10 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
   const wsReloadTimerRef = useRef<number | null>(null);
 
   const reloadMatchesOnly = useCallback(async () => {
-    if (!tournamentId) return;
+    if (!id) return;
 
     try {
-      const matchesRes = await apiFetch(`/api/tournaments/${tournamentId}/public/matches/${qs}`);
+      const matchesRes = await apiFetch(`/api/tournaments/${id}/public/matches/${qs}`);
 
       if (matchesRes.status === 403) {
         setNeedsCode(true);
@@ -755,12 +755,12 @@ export default function TournamentPublic({ initialView = "MATCHES" }: { initialV
       if (!matchesRes.ok) return;
 
       const raw = await matchesRes.json();
-      const list = normalizePublicMatches(raw?.matches);
-      setPublicMatches(list);
+      const list = normalizePublicMatches(raw);
+      setMatches(list);
     } catch {
       // brak
     }
-  }, [qs, tournamentId]);
+  }, [id, qs]);
 
   const requestMatchesReload = useCallback(() => {
     if (wsReloadTimerRef.current) return;

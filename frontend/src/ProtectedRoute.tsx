@@ -1,19 +1,22 @@
+// frontend/src/ProtectedRoute.tsx
+// Plik chroni trasy panelu i wymaga aktywnego access tokena w pamięci aplikacji.
+
+import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
+import { hasAuthTokens } from "./api";
+
 type Props = {
-  children: JSX.Element;
+  children: ReactNode;
 };
 
-/** Ochrona tras panelu - wymusza obecność tokenów i zachowuje docelowy adres w parametrze next. */
 export default function ProtectedRoute({ children }: Props) {
-  const access = localStorage.getItem("access");
-  const refresh = localStorage.getItem("refresh");
   const location = useLocation();
 
-  if (!access && !refresh) {
+  if (!hasAuthTokens()) {
     const next = encodeURIComponent(location.pathname + location.search);
     return <Navigate to={`/login?next=${next}`} replace />;
   }
 
-  return children;
+  return <>{children}</>;
 }

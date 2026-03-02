@@ -19,7 +19,7 @@ type Props = {
   closeOnBackdrop?: boolean;
   closeOnEscape?: boolean;
 
-  initialFocusRef?: RefObject<HTMLElement>;
+  initialFocusRef?: RefObject<HTMLElement | null>;
 };
 
 export function Modal({
@@ -41,30 +41,31 @@ export function Modal({
 
     document.body.style.overflow = "hidden";
 
-    const t = window.setTimeout(() => {
-      const el = initialFocusRef?.current;
-      el?.focus?.();
+    const timer = window.setTimeout(() => {
+      initialFocusRef?.current?.focus?.();
     }, 0);
 
     return () => {
-      window.clearTimeout(t);
+      window.clearTimeout(timer);
       document.body.style.overflow = prevOverflow;
       prevFocus?.focus?.();
     };
   }, [open, initialFocusRef]);
 
-  // Zamknięcie modala klawiszem Escape.
+  // Escape zamyka modal, jeśli zachowanie jest włączone.
   useEffect(() => {
     if (!open || !closeOnEscape) return;
 
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key !== "Escape") return;
-      ev.preventDefault();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
       onClose();
     };
 
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
   }, [open, closeOnEscape, onClose]);
 
   if (!open) return null;
@@ -73,9 +74,9 @@ export function Modal({
     <Portal>
       <div
         className={cn("fixed inset-0", zIndexClassName, className)}
-        onMouseDown={(e) => {
+        onMouseDown={(event) => {
           if (!closeOnBackdrop) return;
-          if (e.target === e.currentTarget) onClose();
+          if (event.target === event.currentTarget) onClose();
         }}
       >
         {children}

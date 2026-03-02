@@ -1,4 +1,6 @@
-// src/pages/TournamentTeams.tsx
+// frontend/src/pages/TournamentTeams.tsx
+// Strona obsługuje zarządzanie drużynami i składem turnieju.
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
@@ -1038,7 +1040,7 @@ export default function TournamentTeams() {
                         onBlur={() => {
                           if (!canEditTeams) return;
                           const v = normName((teamNameAutosave.drafts[team.id]?.name ?? team.name) || "");
-                          teamNameAutosave.forceSave(team.id, { name: v }).catch((err: any) => {
+                          void Promise.resolve(teamNameAutosave.forceSave(team.id, { name: v })).catch((err: any) => {
                             toast.error(err?.message || "Nie udało się zapisać nazwy.");
                           });
                         }}

@@ -1,10 +1,12 @@
+// frontend/src/pages/TournamentBasicsSetup.tsx
+// Strona obsługuje konfigurację podstawowych parametrów turnieju przed kolejnymi etapami.
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle } from "lucide-react";
 
 import { apiFetch } from "../api";
-import { cn } from "../lib/cn";
 import { useTournamentFlowGuard } from "../flow/TournamentFlowGuardContext";
 
 import { Button } from "../ui/Button";
@@ -13,15 +15,12 @@ import { InlineAlert } from "../ui/InlineAlert";
 import { toast } from "../ui/Toast";
 
 import TournamentFlowNav from "../components/TournamentFlowNav";
-import TournamentStepFooter from "../components/TournamentStepFooter";
 
 import {
   BasicsCard,
   ConfirmModal,
   StructureCard,
   SummaryCard,
-  disciplineLabel,
-  formatLabel,
   type Discipline,
   type HandballKnockoutTiebreak,
   type HandballPointsMode,
@@ -823,12 +822,9 @@ export default function TournamentBasicsSetup() {
         {inlineError && (
           <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}>
             <div className="space-y-2">
-              <InlineAlert
-                tone="danger"
-                title="Nie udało się zapisać"
-                description={inlineError}
-                icon={<AlertTriangle className="h-5 w-5" />}
-              />
+              <InlineAlert variant="error" title="Nie udało się zapisać">
+                {inlineError}
+              </InlineAlert>
               <div className="flex justify-end">
                 <Button variant="ghost" onClick={() => setInlineError(null)}>
                   Zamknij
@@ -965,13 +961,17 @@ export default function TournamentBasicsSetup() {
 
           {isCreateMode && (
             <div className="pt-2">
-              <TournamentStepFooter
-                nextLabel={saving ? "Zapisywanie..." : "Utwórz turniej"}
-                onNext={goNext}
-                disabledNext={saving || disableForm || !name.trim()}
-                saving={saving}
-                getCreatedId={() => createdIdRef.current}
-              />
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  onClick={() => {
+                    void goNext();
+                  }}
+                  disabled={saving || disableForm || !name.trim()}
+                >
+                  {saving ? "Zapisywanie..." : "Utwórz turniej"}
+                </Button>
+              </div>
             </div>
           )}
         </div>

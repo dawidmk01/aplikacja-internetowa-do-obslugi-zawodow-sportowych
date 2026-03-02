@@ -1,3 +1,6 @@
+// frontend/src/pages/TournamentDetail.tsx
+// Strona obsługuje szczegóły turnieju oraz konfigurację dostępu i asystentów.
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
@@ -436,10 +439,12 @@ export default function TournamentDetail() {
         const action = typeof (evt as any).action === "string" ? String((evt as any).action) : "";
 
         if (action == "assistant_removed" && typeof evt.userId === "number") {
-          setAssistants((prev) => prev.filter((a) => a.user_id !== evt.userId));
+          const removedUserId = evt.userId;
+
+          setAssistants((prev) => prev.filter((a) => a.user_id !== removedUserId));
           setAssistantDrafts((prev) => {
             const copy = { ...prev };
-            delete copy[evt.userId];
+            delete copy[removedUserId];
             return copy;
           });
         }

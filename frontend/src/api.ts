@@ -1,14 +1,17 @@
 // frontend/src/api.ts
-// Plik centralizuje tokeny, wywołania HTTP oraz obsługę globalnych błędów API.
+// Plik centralizuje tokeny in-memory, wywołania HTTP oraz obsługę globalnych błędów API.
 
 import { toast } from "./ui/Toast";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 const API_ORIGIN = getOrigin(API_BASE);
-const ACCESS_TOKEN_KEY = "access";
-const REFRESH_TOKEN_KEY = "refresh";
 
+const LEGACY_ACCESS_KEYS = ["access", "accessToken", "access_token", "jwt_access", "token"];
+const LEGACY_REFRESH_KEYS = ["refresh", "refreshToken", "refresh_token", "jwt_refresh"];
+
+let accessToken: string | null = null;
 let refreshPromise: Promise<string | null> | null = null;
+let bootstrapPromise: Promise<string | null> | null = null;
 
 export type ApiFetchInit = RequestInit & {
   toastOnError?: boolean;
@@ -34,18 +37,6 @@ function getOrigin(value: string): string {
   }
 }
 
-function getToken(key: string): string | null {
-  return getStorage()?.getItem(key) ?? null;
-}
-
-function setToken(key: string, token: string) {
-  getStorage()?.setItem(key, token);
-}
-
-function removeToken(key: string) {
-  getStorage()?.removeItem(key);
-}
-
 function resolveUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path;
   return `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
@@ -58,6 +49,63 @@ function shouldAttachAuthHeader(url: string): boolean {
 
 function isFormData(body: unknown): body is FormData {
   return typeof FormData !== "undefined" && body instanceof FormData;
+}
+
+function readLegacyToken(keys: string[]): string | null {
+  const storage = getStorage();
+  if (!storage) return null;
+
+  for (const key of keys) {
+    const value = storage.getItem(key);
+    if (value && value.trim()) return value.trim();
+  }
+
+  return null;
+}
+
+function readLegacyAccessToken(): string | null {
+  const direct = readLegacyToken(LEGACY_ACCESS_KEYS);
+  if (direct) return direct;
+
+  const storage = getStorage();
+  if (!storage) return null;
+
+  for (let i = 0; i < storage.length; i++) {
+    const key = storage.key(i);
+    if (!key) continue;
+
+    const lower = key.toLowerCase();
+    if (!lower.includes("access") || lower.includes("refresh")) continue;
+
+    const value = storage.getItem(key);
+    if (value && value.trim()) return value.trim();
+  }
+
+  return null;
+}
+
+function clearLegacyAuthStorage() {
+  const storage = getStorage();
+  if (!storage) return;
+
+  for (const key of [...LEGACY_ACCESS_KEYS, ...LEGACY_REFRESH_KEYS]) {
+    storage.removeItem(key);
+  }
+
+  const dynamicKeys: string[] = [];
+  for (let i = 0; i < storage.length; i++) {
+    const key = storage.key(i);
+    if (!key) continue;
+
+    const lower = key.toLowerCase();
+    if (lower.includes("access") || lower.includes("refresh")) {
+      dynamicKeys.push(key);
+    }
+  }
+
+  for (const key of dynamicKeys) {
+    storage.removeItem(key);
+  }
 }
 
 function pickFirstString(value: unknown): string | null {
@@ -132,14 +180,13 @@ async function refreshAccessToken(): Promise<string | null> {
   if (refreshPromise) return refreshPromise;
 
   refreshPromise = (async () => {
-    const refresh = getRefresh();
-    if (!refresh) return null;
-
     try {
       const res = await fetch(`${API_BASE}/api/auth/refresh/`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh }),
+        credentials: "include",
+        headers: {
+          Accept: "application/json",
+        },
       });
 
       if (!res.ok) return null;
@@ -161,35 +208,52 @@ async function refreshAccessToken(): Promise<string | null> {
   }
 }
 
+export async function bootstrapSession(): Promise<string | null> {
+  if (accessToken) return accessToken;
+  if (bootstrapPromise) return bootstrapPromise;
+
+  bootstrapPromise = (async () => {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) return refreshed;
+
+    // Tymczasowy fallback utrzymuje stare sesje do czasu pełnego wdrożenia backendu.
+    const legacy = readLegacyAccessToken();
+    if (legacy) {
+      accessToken = legacy;
+      return legacy;
+    }
+
+    return null;
+  })();
+
+  try {
+    return await bootstrapPromise;
+  } finally {
+    bootstrapPromise = null;
+  }
+}
+
 export function getAccess(): string | null {
-  return getToken(ACCESS_TOKEN_KEY);
+  return accessToken;
 }
 
-export function getRefresh(): string | null {
-  return getToken(REFRESH_TOKEN_KEY);
-}
-
-export function setAccess(token: string) {
-  setToken(ACCESS_TOKEN_KEY, token);
-}
-
-export function setRefresh(token: string) {
-  setToken(REFRESH_TOKEN_KEY, token);
+export function setAccess(token: string | null) {
+  accessToken = token && token.trim() ? token.trim() : null;
 }
 
 export function clearTokens() {
-  removeToken(ACCESS_TOKEN_KEY);
-  removeToken(REFRESH_TOKEN_KEY);
+  accessToken = null;
+  clearLegacyAuthStorage();
 }
 
 export function hasAuthTokens() {
-  return Boolean(getAccess() || getRefresh());
+  return Boolean(accessToken);
 }
 
 export async function apiFetch(path: string, init: ApiFetchInit = {}): Promise<Response> {
   const url = resolveUrl(path);
   const method = (init.method || "GET").toUpperCase();
-  const body = (init as RequestInit).body;
+  const body = init.body;
   const toastOnError = init.toastOnError !== false;
 
   const makeHeaders = (token?: string) => {
@@ -211,6 +275,7 @@ export async function apiFetch(path: string, init: ApiFetchInit = {}): Promise<R
     fetch(url, {
       ...init,
       method,
+      credentials: init.credentials ?? "include",
       headers: makeHeaders(token),
     });
 
@@ -283,7 +348,7 @@ export async function addAssistant(tournamentId: number, email: string): Promise
   });
 
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
+    const data = (await res.json().catch(() => ({}))) as Record<string, any>;
 
     throw new Error(
       data?.detail ||

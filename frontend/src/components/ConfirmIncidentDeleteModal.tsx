@@ -1,149 +1,99 @@
-import { useEffect, useMemo, useState } from "react";
+// frontend/src/components/ConfirmIncidentDeleteModal.tsx
+// Komponent obsługuje potwierdzenie usunięcia pojedynczego incydentu z meczu.
 
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { useMemo } from "react";
 
 import { Button } from "../ui/Button";
-import { Checkbox } from "../ui/Checkbox";
 import { Dialog } from "../ui/Dialog";
+
+type IncidentSummary = {
+  matchId: number;
+  incidentId: number;
+  incidentType?: string;
+  teamLabel?: string;
+  minute?: number | null;
+  playerLabel?: string | null;
+};
 
 type Props = {
   open: boolean;
-  title: string;
-  message: string;
-  code?: string;
-
-  deleteCount: number;
-  deleteIds: number[];
-
-  autoForceInSession: boolean;
-  onToggleAutoForceInSession: (v: boolean) => void;
-
+  incident: IncidentSummary | null;
   confirmLabel?: string;
   cancelLabel?: string;
-
   onConfirm: () => void;
   onCancel: () => void;
 };
 
-export default function ConfirmScoreSyncModal(props: Props) {
-  const {
-    open,
-    title,
-    message,
-    code,
-    deleteCount,
-    deleteIds,
-    autoForceInSession,
-    onToggleAutoForceInSession,
-    confirmLabel = "Kontynuuj",
-    cancelLabel = "Anuluj",
-    onConfirm,
-    onCancel,
-  } = props;
+function incidentTypeLabel(value?: string): string {
+  const normalized = (value ?? "").trim().toUpperCase();
 
-  const [showDetails, setShowDetails] = useState(false);
+  if (normalized === "GOAL") return "Gol";
+  if (normalized === "OWN_GOAL") return "Gol samobójczy";
+  if (normalized === "YELLOW_CARD") return "Żółta kartka";
+  if (normalized === "RED_CARD") return "Czerwona kartka";
+  if (normalized === "PENALTY_GOAL") return "Gol z karnego";
+  if (normalized === "PENALTY_MISSED") return "Niewykorzystany karny";
+  if (normalized === "SUBSTITUTION") return "Zmiana";
+  if (normalized === "POINT") return "Punkt";
+  if (normalized === "SET_POINT") return "Punkt setowy";
 
-  const safeDeleteCount = Number.isFinite(deleteCount) ? Math.max(0, deleteCount) : 0;
+  return value?.trim() || "Incydent";
+}
 
-  const idsPreview = useMemo(() => {
-    if (!Array.isArray(deleteIds) || deleteIds.length === 0) return "";
-    const list = deleteIds.slice(0, 12).join(", ");
-    if (deleteIds.length <= 12) return list;
-    return `${list}... (+${deleteIds.length - 12})`;
-  }, [deleteIds]);
+export default function ConfirmIncidentDeleteModal({
+  open,
+  incident,
+  confirmLabel = "Usuń",
+  cancelLabel = "Anuluj",
+  onConfirm,
+  onCancel,
+}: Props) {
+  // Opis buduje czytelny komunikat bez logiki w JSX.
+  const description = useMemo(() => {
+    if (!incident) {
+      return "Czy na pewno chcesz usunąć ten incydent?";
+    }
 
-  useEffect(() => {
-    if (open) setShowDetails(false);
-  }, [open]);
+    const parts: string[] = [];
+    const kind = incidentTypeLabel(incident.incidentType);
+    const minute = typeof incident.minute === "number" ? `${incident.minute}'` : null;
+    const team = (incident.teamLabel ?? "").trim();
+    const player = (incident.playerLabel ?? "").trim();
 
-  useEffect(() => {
-    if (!open) return;
+    parts.push(kind);
+    if (minute) parts.push(minute);
+    if (team) parts.push(team);
+    if (player) parts.push(player);
 
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Enter" && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
-        const tag = (document.activeElement?.tagName || "").toLowerCase();
-        if (tag === "button" || tag === "input" || tag === "textarea" || tag === "select") return;
-        ev.preventDefault();
-        onConfirm();
-      }
-    };
+    const subject = parts.join(" - ");
+    return `Czy na pewno chcesz usunąć incydent${subject ? `: ${subject}` : ""}?`;
+  }, [incident]);
 
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onConfirm]);
+  // Id techniczny pomaga potwierdzić właściwy rekord.
+  const meta = useMemo(() => {
+    if (!incident) return null;
+    return `ID incydentu: ${incident.incidentId}`;
+  }, [incident]);
 
   return (
     <Dialog
       open={open}
-      title={title}
+      title="Potwierdzenie usunięcia incydentu"
       onClose={onCancel}
       footer={
         <>
-          <Button type="button" variant="secondary" onClick={onCancel} className="h-9 rounded-xl px-4">
+          <Button type="button" variant="secondary" onClick={onCancel} size="sm" className="h-9 rounded-xl px-4">
             {cancelLabel}
           </Button>
-
-          <Button type="button" variant="danger" onClick={onConfirm} className="h-9 rounded-xl px-4">
+          <Button type="button" variant="danger" onClick={onConfirm} size="sm" className="h-9 rounded-xl px-4">
             {confirmLabel}
           </Button>
         </>
       }
     >
-      <div className="text-sm leading-relaxed text-slate-200/90">{message}</div>
-
-      {code ? (
-        <div className="mt-2 text-xs text-slate-400">
-          Kod: <span className="font-mono text-slate-200">{code}</span>
-        </div>
-      ) : null}
-
-      <div className="mt-4 rounded-2xl border border-rose-500/35 bg-rose-500/10 p-4">
-        <div className="text-sm leading-relaxed text-slate-100/95">
-          Kontynuacja spowoduje usunięcie <span className="font-semibold">{safeDeleteCount}</span> istniejących
-          incydentów <span className="font-semibold">GOAL</span> w tym meczu, aby dopasować LIVE do "szybkiego wyniku".
-        </div>
-
-        {Array.isArray(deleteIds) && deleteIds.length > 0 ? (
-          <div className="mt-3">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => setShowDetails((v) => !v)}
-              className="h-8 rounded-lg px-3 text-xs"
-            >
-              {showDetails ? (
-                <>
-                  <ChevronUp className="h-4 w-4" />
-                  Ukryj szczegóły
-                </>
-              ) : (
-                <>
-                  <ChevronDown className="h-4 w-4" />
-                  Pokaż szczegóły
-                </>
-              )}
-            </Button>
-
-            {showDetails ? (
-              <div className="mt-2 rounded-xl border border-white/10 bg-white/[0.04] p-3 text-xs text-slate-200">
-                <div className="font-mono break-words">ID: {idsPreview}</div>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        <div className="mt-4">
-          <Checkbox
-            checked={!!autoForceInSession}
-            onCheckedChange={onToggleAutoForceInSession}
-            label="Zawsze kontynuuj w tej sesji (wymuszaj automatycznie)"
-          />
-        </div>
-      </div>
-
-      <div className="mt-3 text-xs text-slate-400">
-        Uwaga: usunięte incydenty GOAL mogą zawierać uzupełnionego zawodnika i czas, dlatego wymagamy jawnego
-        potwierdzenia.
+      <div className="space-y-3">
+        <p className="text-sm leading-relaxed text-slate-200">{description}</p>
+        {meta ? <p className="text-xs text-slate-400">{meta}</p> : null}
       </div>
     </Dialog>
   );

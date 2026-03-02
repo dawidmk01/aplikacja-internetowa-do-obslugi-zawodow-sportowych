@@ -1,3 +1,6 @@
+// frontend/src/components/StandingsBracket.tsx
+// Komponent renderuje tabelę i drabinkę turnieju w widoku publicznym oraz panelowym.
+
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Brackets, Maximize2, Minimize2, Minus, Plus, Scan, Table2 } from "lucide-react";
@@ -1392,7 +1395,8 @@ function ScorePill({
         variant === "agg" && "border border-white/15 bg-white/[0.05] text-white",
         variant === "aggWin" && "border border-sky-400/30 bg-sky-500/20 text-sky-100"
       )}
-      title={variant === "leg" ? "Wynik" : "Agregat"}
+      title={label}
+      aria-label={label}
     >
       {score ?? "-"}
     </span>

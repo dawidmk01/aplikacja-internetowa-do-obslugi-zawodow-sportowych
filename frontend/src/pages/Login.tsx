@@ -1,9 +1,13 @@
+// frontend/src/pages/Login.tsx
+// Plik udostępnia formularze logowania i rejestracji oraz inicjuje sesję po udanym logowaniu.
+
 import { useEffect, useMemo, useState } from "react";
+import type { FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Eye, EyeOff, Loader2, Lock, LogIn, Mail, User, UserPlus } from "lucide-react";
 
-import { apiFetch, setAccess, setRefresh } from "../api";
+import { apiFetch, setAccess } from "../api";
 import { cn } from "../lib/cn";
 
 import { Button } from "../ui/Button";
@@ -15,15 +19,23 @@ type Props = {
   onLogin?: () => Promise<void>;
 };
 
-/** Normalizuje odpowiedzi DRF do pojedynczego komunikatu, aby formularz mógł wyświetlić spójny błąd. */
-function pickFirstError(data: any): string | null {
+function pickFirstError(data: unknown): string | null {
   if (!data) return null;
   if (typeof data === "string") return data;
-  if (typeof data?.detail === "string") return data.detail;
 
-  for (const k of ["username", "email", "password", "non_field_errors"]) {
-    const v = (data as any)[k];
-    if (Array.isArray(v) && v.length) return String(v[0]);
+  if (typeof data === "object") {
+    const record = data as Record<string, unknown>;
+
+    if (typeof record.detail === "string") {
+      return record.detail;
+    }
+
+    for (const key of ["username", "email", "password", "non_field_errors"]) {
+      const value = record[key];
+      if (Array.isArray(value) && value.length) {
+        return String(value[0]);
+      }
+    }
   }
 
   return null;
@@ -51,7 +63,6 @@ export default function Login({ onLogin }: Props) {
   useEffect(() => {
     setMode(urlMode === "register" ? "register" : "login");
     setError(null);
-    // Komunikat sukcesu po rejestracji pozostaje widoczny po przejściu do logowania.
   }, [urlMode]);
 
   const nextQs = useMemo(() => {
@@ -66,7 +77,6 @@ export default function Login({ onLogin }: Props) {
     navigate(nextQs ? `/login?mode=register&${nextQs}` : "/login?mode=register");
   };
 
-  /** Ujednolica typowe komunikaty logowania do przewidywalnych treści UI. */
   const translateLoginError = (msg?: string) => {
     if (!msg) return "Błąd logowania.";
     if (msg.includes("No active account")) return "Nieprawidłowy login lub hasło.";
@@ -74,7 +84,7 @@ export default function Login({ onLogin }: Props) {
     return msg;
   };
 
-  const submit = async (e: React.FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
@@ -82,7 +92,7 @@ export default function Login({ onLogin }: Props) {
 
     try {
       if (mode === "login") {
-        const res = await apiFetch(`/api/auth/login/`, {
+        const res = await apiFetch("/api/auth/login/", {
           method: "POST",
           body: JSON.stringify({ username, password }),
           toastOnError: false,
@@ -91,22 +101,27 @@ export default function Login({ onLogin }: Props) {
         const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {
-          setError(translateLoginError(pickFirstError(data) || data?.detail));
+          setError(translateLoginError(pickFirstError(data) || (data as Record<string, unknown>)?.detail?.toString()));
           return;
         }
 
-        if (data?.access) setAccess(data.access);
-        if (data?.refresh) setRefresh(data.refresh);
+        const access = (data as Record<string, unknown>)?.access;
+        if (typeof access === "string" && access.trim()) {
+          setAccess(access);
+        } else {
+          setError("Brak access tokena w odpowiedzi logowania.");
+          return;
+        }
 
         await onLogin?.();
 
         if (nextParam && nextParam.startsWith("/")) {
           navigate(nextParam, { replace: true });
         } else {
-          navigate("/my-tournaments");
+          navigate("/my-tournaments", { replace: true });
         }
       } else {
-        const res = await apiFetch(`/api/auth/register/`, {
+        const res = await apiFetch("/api/auth/register/", {
           method: "POST",
           body: JSON.stringify({ username, email, password }),
           toastOnError: false,
@@ -138,53 +153,66 @@ export default function Login({ onLogin }: Props) {
 
   return (
     <div className="mx-auto max-w-md py-8 sm:py-10">
-      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, ease: "easeOut" }}>
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.25, ease: "easeOut" }}
+      >
         <Card className="p-6 sm:p-7">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <h1 className="mt-1 text-2xl font-semibold text-white">
                 {mode === "login" ? "Logowanie" : "Rejestracja"}
               </h1>
-              <div className="mt-2 text-sm text-slate-300 leading-relaxed break-words">
+              <div className="mt-2 break-words text-sm leading-relaxed text-slate-300">
                 {mode === "login"
                   ? "Zaloguj się, aby zarządzać turniejami lub dołączyć jako zawodnik, jeśli organizator włączył dołączanie."
                   : "Załóż konto, aby tworzyć turnieje lub dołączać do rozgrywek."}
               </div>
             </div>
 
-            <div className="hidden sm:grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/[0.06]">
-              {mode === "login" ? <LogIn className="h-5 w-5 text-white/90" /> : <UserPlus className="h-5 w-5 text-white/90" />}
+            <div className="hidden h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/[0.06] sm:grid">
+              {mode === "login" ? (
+                <LogIn className="h-5 w-5 text-white/90" />
+              ) : (
+                <UserPlus className="h-5 w-5 text-white/90" />
+              )}
             </div>
           </div>
 
           <div className="mt-5 grid grid-cols-2 gap-2 rounded-2xl border border-white/10 bg-white/[0.04] p-1">
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="sm"
               onClick={goLogin}
               className={cn(
-                "rounded-xl px-3 py-2 text-sm font-semibold transition",
+                "rounded-xl px-3 py-2 text-sm font-semibold",
                 mode === "login"
                   ? "bg-white/10 text-white shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
-                  : "text-slate-300 hover:text-white hover:bg-white/5"
+                  : "text-slate-300 hover:bg-white/5 hover:text-white"
               )}
             >
               Logowanie
-            </button>
-            <button
+            </Button>
+
+            <Button
               type="button"
+              variant="ghost"
+              size="sm"
               onClick={goRegister}
               className={cn(
-                "rounded-xl px-3 py-2 text-sm font-semibold transition",
+                "rounded-xl px-3 py-2 text-sm font-semibold",
                 mode === "register"
                   ? "bg-white/10 text-white shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
-                  : "text-slate-300 hover:text-white hover:bg-white/5"
+                  : "text-slate-300 hover:bg-white/5 hover:text-white"
               )}
             >
               Rejestracja
-            </button>
+            </Button>
           </div>
 
-          {(error || success) ? (
+          {error || success ? (
             <div className="mt-4 space-y-2">
               {error ? <InlineAlert variant="error">{error}</InlineAlert> : null}
               {success ? <InlineAlert variant="success">{success}</InlineAlert> : null}
@@ -196,8 +224,11 @@ export default function Login({ onLogin }: Props) {
               <label htmlFor="login_username" className="text-sm font-medium text-slate-200">
                 Login
               </label>
-              <div className="mt-2 relative">
-                <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+              <div className="relative mt-2">
+                <User
+                  className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                  aria-hidden="true"
+                />
                 <Input
                   id="login_username"
                   className={inputBase}
@@ -215,8 +246,11 @@ export default function Login({ onLogin }: Props) {
                 <label htmlFor="login_email" className="text-sm font-medium text-slate-200">
                   Email
                 </label>
-                <div className="mt-2 relative">
-                  <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                <div className="relative mt-2">
+                  <Mail
+                    className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                    aria-hidden="true"
+                  />
                   <Input
                     id="login_email"
                     type="email"
@@ -235,8 +269,11 @@ export default function Login({ onLogin }: Props) {
               <label htmlFor="login_password" className="text-sm font-medium text-slate-200">
                 Hasło
               </label>
-              <div className="mt-2 relative">
-                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+              <div className="relative mt-2">
+                <Lock
+                  className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                  aria-hidden="true"
+                />
                 <Input
                   id="login_password"
                   type={showPassword ? "text" : "password"}
@@ -247,27 +284,38 @@ export default function Login({ onLogin }: Props) {
                   placeholder="••••••••"
                   onChange={(e) => setPassword(e.target.value)}
                 />
-                <button
+
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="sm"
                   onClick={() => setShowPassword((v) => !v)}
                   className={cn(
-                    "absolute right-2 top-1/2 -translate-y-1/2 rounded-xl p-2",
-                    "text-slate-300 hover:bg-white/5 hover:text-white",
-                    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+                    "absolute right-2 top-1/2 h-8 min-h-0 -translate-y-1/2 rounded-xl p-2",
+                    "text-slate-300 hover:bg-white/5 hover:text-white"
                   )}
                   aria-label={showPassword ? "Ukryj hasło" : "Pokaż hasło"}
                 >
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
+                </Button>
               </div>
             </div>
 
             <div className="pt-2">
               <Button
+                type="submit"
                 variant={mode === "login" ? "secondary" : "primary"}
                 className="w-full justify-center"
                 disabled={loading}
-                leftIcon={loading ? <Loader2 className="h-4 w-4 animate-spin" /> : mode === "login" ? <LogIn className="h-4 w-4" /> : <UserPlus className="h-4 w-4" />}
+                leftIcon={
+                  loading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : mode === "login" ? (
+                    <LogIn className="h-4 w-4" />
+                  ) : (
+                    <UserPlus className="h-4 w-4" />
+                  )
+                }
               >
                 {loading ? "Przetwarzanie..." : mode === "login" ? "Zaloguj" : "Zarejestruj"}
               </Button>
@@ -276,32 +324,36 @@ export default function Login({ onLogin }: Props) {
 
           <div className="mt-5 flex items-center justify-between gap-3">
             {mode === "login" ? (
-              <Link to="/forgot-password" className="text-sm text-slate-300 hover:text-white transition">
+              <Link to="/forgot-password" className="text-sm text-slate-300 transition hover:text-white">
                 Nie pamiętasz hasła?
               </Link>
             ) : (
               <span className="text-sm text-slate-400">
                 Masz już konto?{" "}
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="sm"
                   onClick={goLogin}
-                  className="text-slate-200 hover:text-white underline underline-offset-4"
+                  className="h-auto min-h-0 p-0 text-slate-200 underline underline-offset-4 hover:bg-transparent hover:text-white"
                 >
                   Zaloguj się
-                </button>
+                </Button>
               </span>
             )}
 
             {mode === "login" ? (
               <span className="text-sm text-slate-400">
                 Nie masz konta?{" "}
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="sm"
                   onClick={goRegister}
-                  className="text-slate-200 hover:text-white underline underline-offset-4"
+                  className="h-auto min-h-0 p-0 text-slate-200 underline underline-offset-4 hover:bg-transparent hover:text-white"
                 >
                   Zarejestruj się
-                </button>
+                </Button>
               </span>
             ) : (
               <span className="text-sm text-slate-400">Po rejestracji wrócisz do logowania.</span>

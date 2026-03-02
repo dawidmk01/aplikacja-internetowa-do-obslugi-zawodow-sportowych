@@ -1,4 +1,5 @@
 // frontend/src/pages/_shared/TournamentMatchesScaffold.tsx
+// Komponent udostępnia wspólny szkielet widoku meczów z filtrami, sekcjami i trwałym stanem UI.
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -898,20 +899,6 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
   const filtersKey = `${storageBase}.filters.v1`;
   // Klucz UI jest wersjonowany, aby nie mieszać formatów w localStorage.
   const uiKey = `${storageBase}.ui.v2`;
-
-  const defaultFilters: MatchFiltersState = useMemo(
-    () => ({
-      stage: "ALL",
-      query: "",
-      statuses: [],
-      rounds: [],
-      groups: [],
-      baseLayout: "rounds",
-      secondaryPriority: "none",
-      splitByStatus: false,
-    }),
-    []
-  );
 
   const [filters, setFilters] = useState<MatchFiltersState>(() => {
     const parsed = safeReadJson<Partial<MatchFiltersState>>(filtersKey, {});

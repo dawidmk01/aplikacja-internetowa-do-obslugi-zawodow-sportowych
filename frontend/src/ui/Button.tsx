@@ -1,20 +1,24 @@
 // frontend/src/ui/Button.tsx
 // Komponent udostępnia spójny przycisk akcji w całej aplikacji.
 
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { forwardRef } from "react";
+import type { ReactNode } from "react";
 import { motion } from "framer-motion";
+import type { HTMLMotionProps } from "framer-motion";
 
 import { cn } from "../lib/cn";
 
 export type ButtonVariant = "primary" | "secondary" | "danger" | "ghost";
+export type ButtonSize = "sm" | "md" | "lg";
 
-type Props = ButtonHTMLAttributes<HTMLButtonElement> & {
+type Props = Omit<HTMLMotionProps<"button">, "children"> & {
   variant?: ButtonVariant;
+  size?: ButtonSize;
   leftIcon?: ReactNode;
   rightIcon?: ReactNode;
+  children?: ReactNode;
 };
 
-// Warianty zapewniają spójne semantyki akcji w UI.
 const variants: Record<ButtonVariant, string> = {
   primary: "bg-white text-slate-950 hover:bg-slate-100",
   secondary: "bg-white/10 text-slate-100 border border-white/15 hover:bg-white/15",
@@ -22,31 +26,47 @@ const variants: Record<ButtonVariant, string> = {
   ghost: "bg-transparent text-slate-200 hover:bg-white/10",
 };
 
-export function Button({
-  className,
-  variant = "primary",
-  leftIcon,
-  rightIcon,
-  children,
-  ...props
-}: Props) {
+const sizes: Record<ButtonSize, string> = {
+  sm: "px-3 py-1.5 text-sm",
+  md: "px-4 py-2 text-sm",
+  lg: "px-5 py-2.5 text-base",
+};
+
+export const Button = forwardRef<HTMLButtonElement, Props>(function Button(
+  {
+    className,
+    variant = "primary",
+    size = "md",
+    leftIcon,
+    rightIcon,
+    children,
+    disabled,
+    type = "button",
+    ...props
+  },
+  ref
+) {
   return (
     <motion.button
-      whileHover={{ y: -1 }}
-      whileTap={{ scale: 0.98 }}
+      ref={ref}
+      type={type}
+      disabled={disabled}
+      whileHover={disabled ? undefined : { y: -1 }}
+      whileTap={disabled ? undefined : { scale: 0.98 }}
       className={cn(
-        "inline-flex min-w-0 items-center justify-center gap-2 rounded-xl px-4 py-2",
-        "text-sm font-semibold transition-colors",
+        "inline-flex min-w-0 items-center justify-center gap-2 rounded-xl",
+        "font-semibold transition-colors",
         "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
         "disabled:pointer-events-none disabled:opacity-50",
+        sizes[size],
         variants[variant],
         className
       )}
       {...props}
     >
       {leftIcon ? <span className="shrink-0">{leftIcon}</span> : null}
-      <span className="min-w-0 truncate">{children}</span>
+      {children !== undefined && children !== null ? <span className="min-w-0 truncate">{children}</span> : null}
       {rightIcon ? <span className="shrink-0">{rightIcon}</span> : null}
     </motion.button>
   );
-}
+});

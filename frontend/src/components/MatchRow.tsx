@@ -1,3 +1,6 @@
+// frontend/src/components/MatchRow.tsx
+// Komponent renderuje wiersz meczu z edycją wyniku, sterowaniem statusem i panelem LIVE.
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetch } from "../api";
@@ -21,10 +24,7 @@ type Props = {
   tournament: TournamentDTO;
   match: MatchDTO;
 
-  // Rodzic trzyma fetch i układ stron. MatchRow może poprosić o odświeżenie listy.
   onReload: () => Promise<void> | void;
-
-  // Jeśli rodzic nie podaje, MatchRow użyje globalnych toastów.
   onToast?: (text: string, kind?: ToastKind) => void;
 };
 
@@ -60,6 +60,14 @@ type ConfirmIncidentDeleteState = {
   teamLabel?: string;
   minute?: number | null;
   playerLabel?: string | null;
+};
+
+type MatchPermissions = {
+  results_edit?: boolean;
+  live_edit?: boolean;
+  finish_match?: boolean;
+  start_match?: boolean;
+  set_scheduled?: boolean;
 };
 
 function lower(s: string | null | undefined) {
@@ -148,48 +156,43 @@ function normalizeTennisSet(s: TennisSetDTO | null | undefined): TennisSetDTO {
   return { home_games, away_games, home_tiebreak, away_tiebreak };
 }
 
-function uiStatusLabelFromBackend(status: MatchStatus): string {
-  switch (status) {
-    case "SCHEDULED":
-      return "Zaplanowany";
-    case "IN_PROGRESS":
-      return "W trakcie";
-    case "FINISHED":
-      return "Zakończony";
-    case "CANCELLED":
-      return "Anulowany";
-    default:
-      return String(status);
-  }
+function uiStatusLabelFromBackend(status: MatchStatus | string): string {
+  if (status === "FINISHED") return "Zakończony";
+  if (status === "IN_PROGRESS" || status === "RUNNING") return "W trakcie";
+  if (status === "CANCELLED") return "Anulowany";
+  return "Zaplanowany";
 }
 
-function getTone(status: MatchStatus) {
-  switch (status) {
-    case "IN_PROGRESS":
-      return {
-        card: "border-emerald-400/20 bg-emerald-500/[0.05]",
-        badge: "border-emerald-400/30 bg-emerald-500/[0.10] text-emerald-100",
-        dot: "bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.5)]",
-      };
-    case "FINISHED":
-      return {
-        card: "border-sky-400/15 bg-sky-500/[0.04]",
-        badge: "border-sky-400/25 bg-sky-500/[0.08] text-sky-100",
-        dot: "bg-sky-300 shadow-[0_0_10px_rgba(125,211,252,0.35)]",
-      };
-    case "CANCELLED":
-      return {
-        card: "border-rose-400/15 bg-rose-500/[0.04]",
-        badge: "border-rose-400/25 bg-rose-500/[0.08] text-rose-100",
-        dot: "bg-rose-400 shadow-[0_0_10px_rgba(244,63,94,0.35)]",
-      };
-    default:
-      return {
-        card: "border-white/10 bg-white/[0.03]",
-        badge: "border-white/15 bg-white/[0.06] text-slate-100",
-        dot: "bg-white/60",
-      };
+function getTone(status: MatchStatus | string) {
+  if (status === "IN_PROGRESS" || status === "RUNNING") {
+    return {
+      card: "border-emerald-400/20 bg-emerald-500/[0.05]",
+      badge: "border-emerald-400/30 bg-emerald-500/[0.10] text-emerald-100",
+      dot: "bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.5)]",
+    };
   }
+
+  if (status === "FINISHED") {
+    return {
+      card: "border-sky-400/15 bg-sky-500/[0.04]",
+      badge: "border-sky-400/25 bg-sky-500/[0.08] text-sky-100",
+      dot: "bg-sky-300 shadow-[0_0_10px_rgba(125,211,252,0.35)]",
+    };
+  }
+
+  if (status === "CANCELLED") {
+    return {
+      card: "border-rose-400/15 bg-rose-500/[0.04]",
+      badge: "border-rose-400/25 bg-rose-500/[0.08] text-rose-100",
+      dot: "bg-rose-400 shadow-[0_0_10px_rgba(244,63,94,0.35)]",
+    };
+  }
+
+  return {
+    card: "border-white/10 bg-white/[0.03]",
+    badge: "border-white/15 bg-white/[0.06] text-slate-100",
+    dot: "bg-white/60",
+  };
 }
 
 export default function MatchRow({ tournamentId, tournament, match, onReload, onToast }: Props) {
@@ -201,11 +204,12 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
 
   const tone = getTone(match.status);
 
-  const canEditResult = Boolean(match.permissions?.results_edit);
-  const canEditLive = Boolean(match.permissions?.live_edit);
-  const canAttemptFinish = Boolean(match.permissions?.finish_match);
-  const canAttemptStart = Boolean(match.permissions?.start_match);
-  const canAttemptSetScheduled = Boolean(match.permissions?.set_scheduled);
+  const matchPermissions = (match as MatchDTO & { permissions?: MatchPermissions }).permissions;
+
+  const canEditResult = Boolean(matchPermissions?.results_edit ?? true);
+  const canAttemptFinish = Boolean(matchPermissions?.finish_match ?? true);
+  const canAttemptStart = Boolean(matchPermissions?.start_match ?? true);
+  const canAttemptSetScheduled = Boolean(matchPermissions?.set_scheduled ?? true);
 
   const [draft, setDraft] = useState<MatchDraft>(() => ({
     home_score: match.home_score ?? 0,
@@ -219,8 +223,32 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
     away_penalty_score: match.away_penalty_score ?? null,
   }));
 
-  const initialComparable = useMemo(() => comparableResult(draft), []);
-  const isDirty = !sameComparableDraft(draft, initialComparable);
+  const originalDraft = useMemo<MatchDraft>(
+    () => ({
+      home_score: match.home_score ?? 0,
+      away_score: match.away_score ?? 0,
+      tennis_sets: match.tennis_sets ?? null,
+      went_to_extra_time: !!match.went_to_extra_time,
+      home_extra_time_score: match.home_extra_time_score ?? null,
+      away_extra_time_score: match.away_extra_time_score ?? null,
+      decided_by_penalties: !!match.decided_by_penalties,
+      home_penalty_score: match.home_penalty_score ?? null,
+      away_penalty_score: match.away_penalty_score ?? null,
+    }),
+    [
+      match.away_extra_time_score,
+      match.away_penalty_score,
+      match.away_score,
+      match.decided_by_penalties,
+      match.home_extra_time_score,
+      match.home_penalty_score,
+      match.home_score,
+      match.tennis_sets,
+      match.went_to_extra_time,
+    ]
+  );
+
+  const isDirty = useMemo(() => !sameComparableDraft(draft, originalDraft), [draft, originalDraft]);
 
   const [busy, setBusy] = useState(false);
   const [edited, setEdited] = useState(false);
@@ -235,29 +263,11 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
   const incidentDeleteProceedRef = useRef<null | (() => void)>(null);
 
   useEffect(() => {
-    setDraft({
-      home_score: match.home_score ?? 0,
-      away_score: match.away_score ?? 0,
-      tennis_sets: match.tennis_sets ?? null,
-      went_to_extra_time: !!match.went_to_extra_time,
-      home_extra_time_score: match.home_extra_time_score ?? null,
-      away_extra_time_score: match.away_extra_time_score ?? null,
-      decided_by_penalties: !!match.decided_by_penalties,
-      home_penalty_score: match.home_penalty_score ?? null,
-      away_penalty_score: match.away_penalty_score ?? null,
-    });
-    setEdited(false);
-  }, [
-    match.away_extra_time_score,
-    match.away_penalty_score,
-    match.away_score,
-    match.decided_by_penalties,
-    match.home_extra_time_score,
-    match.home_penalty_score,
-    match.home_score,
-    match.tennis_sets,
-    match.went_to_extra_time,
-  ]);
+    if (!isDirty) {
+      setDraft(originalDraft);
+      setEdited(false);
+    }
+  }, [isDirty, originalDraft]);
 
   const pushToast = useCallback(
     (text: string, kind: ToastKind = "info") => {
@@ -267,7 +277,7 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
       }
 
       if (kind === "error") toast.error(text);
-      else if (kind === "success") toast.success(text);
+      else if (kind === "success" || kind === "saved") toast.success(text);
       else toast.info(text);
     },
     [onToast]
@@ -283,45 +293,63 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
 
   const updateMatchScore = useCallback(
     async ({ force, op }: { force?: boolean; op: ConfirmScoreSyncOp }) => {
-      const payload: any = {
-        home_score: Number(draft.home_score ?? 0) || 0,
-        away_score: Number(draft.away_score ?? 0) || 0,
-      };
+      let payload: Record<string, unknown>;
 
       if (tn) {
-        payload.tennis_sets = Array.isArray(draft.tennis_sets) ? draft.tennis_sets : [];
+        const sets = Array.isArray(draft.tennis_sets) ? draft.tennis_sets.map((item) => normalizeTennisSet(item)) : [];
+        const home = sets.reduce((sum, item) => sum + (item.home_games > item.away_games ? 1 : 0), 0);
+        const away = sets.reduce((sum, item) => sum + (item.away_games > item.home_games ? 1 : 0), 0);
+
+        payload = {
+          tennis_sets: sets,
+          home_score: home,
+          away_score: away,
+          went_to_extra_time: false,
+          home_extra_time_score: null,
+          away_extra_time_score: null,
+          decided_by_penalties: false,
+          home_penalty_score: null,
+          away_penalty_score: null,
+        };
       } else {
-        payload.went_to_extra_time = !!draft.went_to_extra_time;
-        payload.decided_by_penalties = !!draft.decided_by_penalties;
-
-        payload.home_extra_time_score = draft.went_to_extra_time ? Number(draft.home_extra_time_score ?? 0) || 0 : null;
-        payload.away_extra_time_score = draft.went_to_extra_time ? Number(draft.away_extra_time_score ?? 0) || 0 : null;
-
-        payload.home_penalty_score = draft.decided_by_penalties ? Number(draft.home_penalty_score ?? 0) || 0 : null;
-        payload.away_penalty_score = draft.decided_by_penalties ? Number(draft.away_penalty_score ?? 0) || 0 : null;
+        payload = {
+          home_score: Number(draft.home_score ?? 0) || 0,
+          away_score: Number(draft.away_score ?? 0) || 0,
+          went_to_extra_time: !!draft.went_to_extra_time,
+          home_extra_time_score: draft.went_to_extra_time ? Number(draft.home_extra_time_score ?? 0) || 0 : null,
+          away_extra_time_score: draft.went_to_extra_time ? Number(draft.away_extra_time_score ?? 0) || 0 : null,
+          decided_by_penalties: !!draft.decided_by_penalties,
+          home_penalty_score: draft.decided_by_penalties ? Number(draft.home_penalty_score ?? 0) || 0 : null,
+          away_penalty_score: draft.decided_by_penalties ? Number(draft.away_penalty_score ?? 0) || 0 : null,
+        };
       }
 
-      const res = await apiFetch(`/api/matches/${match.id}/score/`, {
-        method: "POST",
-        body: JSON.stringify({ ...payload, force: !!force, op }),
+      const suffix = force ? "?force=1" : "";
+      const res = await apiFetch(`/api/matches/${match.id}/result/${suffix}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
       });
 
       const data = await res.json().catch(() => null);
-      if (!res.ok) {
-        const msg = data?.detail || data?.message || "Błąd zapisu.";
-        throw new Error(msg);
-      }
 
-      if (data?.needs_confirm) {
-        const st: ConfirmScoreSyncState = {
-          op,
-          message: data?.message ?? "Wykryto konflikt między LIVE a wynikiem.",
-          code: data?.code,
-          deleteCount: Number(data?.delete_count ?? 0) || 0,
-          deleteIds: Array.isArray(data?.delete_ids) ? data.delete_ids : [],
-        };
-        setConfirmScoreSync(st);
-        return { confirmed: false };
+      if (!res.ok) {
+        const message = data?.detail || data?.message || "Błąd zapisu.";
+        const code = typeof data?.code === "string" ? data.code : undefined;
+
+        if (res.status === 409 && code === "SCORE_SYNC_CONFIRM_REQUIRED") {
+          setConfirmScoreSync({
+            op,
+            message,
+            code,
+            deleteCount: Number(data?.delete_count ?? 0) || 0,
+            deleteIds: Array.isArray(data?.delete_ids)
+              ? data.delete_ids.map((item: unknown) => Number(item)).filter((item: number) => Number.isFinite(item))
+              : [],
+          });
+          return { confirmed: false };
+        }
+
+        throw new Error(message);
       }
 
       return { confirmed: true };
@@ -338,8 +366,17 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
     }
   }, [match.id]);
 
+  const continueMatch = useCallback(async () => {
+    const res = await apiFetch(`/api/matches/${match.id}/continue/`, { method: "POST" });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg = data?.detail || data?.message || "Nie udało się wznowić meczu.";
+      throw new Error(msg);
+    }
+  }, [match.id]);
+
   const startMatch = useCallback(async () => {
-    const res = await apiFetch(`/api/matches/${match.id}/start/`, { method: "POST" });
+    const res = await apiFetch(`/api/matches/${match.id}/clock/start/`, { method: "POST" });
     const data = await res.json().catch(() => null);
     if (!res.ok) {
       const msg = data?.detail || data?.message || "Nie udało się rozpocząć meczu.";
@@ -348,7 +385,7 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
   }, [match.id]);
 
   const setScheduled = useCallback(async () => {
-    const res = await apiFetch(`/api/matches/${match.id}/set_scheduled/`, { method: "POST" });
+    const res = await apiFetch(`/api/matches/${match.id}/set-scheduled/`, { method: "POST" });
     const data = await res.json().catch(() => null);
     if (!res.ok) {
       const msg = data?.detail || data?.message || "Nie udało się ustawić jako zaplanowany.";
@@ -357,6 +394,11 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
   }, [match.id]);
 
   const onSaveClick = useCallback(async () => {
+    if (!isDirty) {
+      pushToast("Brak zmian do zapisania.", "info");
+      return;
+    }
+
     setBusy(true);
     try {
       const result = await updateMatchScore({ op: "SAVE" });
@@ -370,7 +412,7 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
     } finally {
       setBusy(false);
     }
-  }, [doReload, pushToast, updateMatchScore]);
+  }, [doReload, isDirty, pushToast, updateMatchScore]);
 
   const onFinishClick = useCallback(async () => {
     setBusy(true);
@@ -402,47 +444,19 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
     }
   }, [doReload, pushToast, startMatch]);
 
-  const onSetScheduledClick = useCallback(async () => {
+  const onContinueClick = useCallback(async () => {
     setBusy(true);
     try {
-      await setScheduled();
+      await continueMatch();
       await doReload();
-      pushToast("Status ustawiony na zaplanowany.", "success");
-    } catch (e: any) {
-      pushToast(e?.message ?? "Błąd.", "error");
+      pushToast("Mecz wznowiony.", "success");
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Błąd.";
+      pushToast(message, "error");
     } finally {
       setBusy(false);
     }
-  }, [doReload, pushToast, setScheduled]);
-
-  const onDynamicStatusButton = useCallback(async () => {
-    if (match.status === "IN_PROGRESS") {
-      if (!canAttemptFinish) return;
-      if (!isDirty) return;
-      await onFinishClick();
-      return;
-    }
-
-    if (match.status === "SCHEDULED") {
-      if (!canAttemptStart) return;
-      await onStartClick();
-      return;
-    }
-
-    if (match.status === "FINISHED") {
-      await onSaveClick();
-      return;
-    }
-  }, [canAttemptFinish, canAttemptStart, isDirty, match.status, onFinishClick, onSaveClick, onStartClick]);
-
-  const lockByFinished = match.status === "FINISHED" && !editFinished;
-
-  const dynamicLabel = useMemo(() => {
-    if (match.status === "SCHEDULED") return "Rozpocznij";
-    if (match.status === "IN_PROGRESS") return "Zakończ";
-    if (match.status === "FINISHED") return editFinished ? "Zapisz zmiany" : "Zapisz wynik";
-    return "Akcja";
-  }, [editFinished, match.status]);
+  }, [continueMatch, doReload, pushToast]);
 
   const canAttemptSetScheduledHint = useMemo(() => {
     const draftComparable = comparableResult(draft);
@@ -455,6 +469,75 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
   }, [draft]);
 
   const canAttemptSetScheduledSafe = canAttemptSetScheduled && canAttemptSetScheduledHint;
+
+  const onSetScheduledClick = useCallback(async () => {
+    if (match.status === "SCHEDULED") {
+      pushToast("Mecz jest już zaplanowany.", "info");
+      return;
+    }
+
+    if (!canAttemptSetScheduledSafe) {
+      pushToast(
+        "Możesz ustawić mecz jako zaplanowany tylko przy wyniku 0:0 i bez dodatkowych rozstrzygnięć.",
+        "error"
+      );
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await setScheduled();
+      await doReload();
+      setEditFinished(false);
+      pushToast("Status ustawiony na zaplanowany.", "success");
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Błąd.";
+      pushToast(message, "error");
+    } finally {
+      setBusy(false);
+    }
+  }, [canAttemptSetScheduledSafe, doReload, match.status, pushToast, setScheduled]);
+
+  const onDynamicStatusButton = useCallback(async () => {
+    if (match.status === "IN_PROGRESS" || match.status === "RUNNING") {
+      if (!canAttemptFinish) return;
+      await onFinishClick();
+      return;
+    }
+
+    if (match.status === "SCHEDULED") {
+      if (!canAttemptStart) return;
+      await onStartClick();
+      return;
+    }
+
+    if (match.status === "FINISHED" && !editFinished) {
+      await onContinueClick();
+      return;
+    }
+
+    if (match.status === "FINISHED" && editFinished) {
+      await onSaveClick();
+    }
+  }, [
+    canAttemptFinish,
+    canAttemptStart,
+    editFinished,
+    match.status,
+    onContinueClick,
+    onFinishClick,
+    onSaveClick,
+    onStartClick,
+  ]);
+
+  const lockByFinished = match.status === "FINISHED" && !editFinished;
+
+  const dynamicLabel = useMemo(() => {
+    if (match.status === "SCHEDULED") return "Rozpocznij mecz";
+    if (match.status === "IN_PROGRESS" || match.status === "RUNNING") return "Zakończ mecz";
+    if (match.status === "FINISHED") return editFinished ? "Zapisz zmiany" : "Wznów mecz";
+    return "Akcja";
+  }, [editFinished, match.status]);
 
   const onRequestConfirmIncidentDelete = useCallback((st: ConfirmIncidentDeleteState, proceed: () => void) => {
     incidentDeleteProceedRef.current = proceed;
