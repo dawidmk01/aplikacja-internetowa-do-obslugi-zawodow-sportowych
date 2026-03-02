@@ -1,4 +1,6 @@
 # backend/tournaments/views/commentary.py
+# Plik obsługuje odczyt, tworzenie, edycję i usuwanie komentarzy live oraz słowników fraz.
+
 from __future__ import annotations
 
 from django.db import transaction
@@ -11,77 +13,56 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from tournaments.models import (
-    Match,
-    MatchCommentaryEntry,
-    Tournament,
-    TournamentCommentaryPhrase,
-    TournamentMembership,
-)
+from tournaments.access import can_edit_results
+from tournaments.models import Match, MatchCommentaryEntry, Tournament, TournamentCommentaryPhrase
 
-from tournaments.realtime import ws_emit_tournament
-
-
-def _get_membership_perms(user, tournament: Tournament) -> dict | None:
-    if not user or user.is_anonymous:
-        return None
-    if user.id == tournament.organizer_id:
-        return {"__organizer__": True}
-    m = TournamentMembership.objects.filter(tournament=tournament, user=user).first()
-    if not m:
-        return None
-    return m.effective_permissions()
+from ..realtime import ws_emit_tournament
+from ._helpers import public_access_or_403
 
 
 def _require_can_manage_commentary(user, tournament: Tournament) -> None:
-    """
-    Komentarze live są elementem wyników (results_edit).
-    """
-    perms = _get_membership_perms(user, tournament)
-    if not perms:
-        raise PermissionError("Brak uprawnień.")
-    if perms.get("__organizer__"):
-        return
-    if perms.get(TournamentMembership.PERM_RESULTS_EDIT):
+    # Komentarze live są traktowane jako część warstwy wyników/live.
+    if can_edit_results(user, tournament):
         return
     raise PermissionError("Brak uprawnień do relacji live.")
 
 
-def _parse_int(v, field: str, allow_none: bool = True) -> int | None:
-    if v is None or v == "":
+def _parse_int(value, field: str, allow_none: bool = True) -> int | None:
+    if value is None or value == "":
         return None if allow_none else 0
+
     try:
-        return int(v)
+        return int(value)
     except (TypeError, ValueError):
         raise ValueError(f"{field} musi być liczbą całkowitą.")
 
 
-def _serialize_commentary_entry(e: MatchCommentaryEntry) -> dict:
+def _serialize_commentary_entry(entry: MatchCommentaryEntry) -> dict:
     return {
-        "id": e.id,
-        "match_id": e.match_id,
-        "period": e.period,
-        "time_source": e.time_source,
-        "minute": e.minute,
-        "minute_raw": e.minute_raw,
-        "text": e.text,
-        "created_by": e.created_by_id,
-        "created_at": e.created_at.isoformat() if e.created_at else None,
+        "id": entry.id,
+        "match_id": entry.match_id,
+        "period": entry.period,
+        "time_source": entry.time_source,
+        "minute": entry.minute,
+        "minute_raw": entry.minute_raw,
+        "text": entry.text,
+        "created_by": entry.created_by_id,
+        "created_at": entry.created_at.isoformat() if entry.created_at else None,
     }
 
 
-def _serialize_phrase(p: TournamentCommentaryPhrase) -> dict:
+def _serialize_phrase(phrase: TournamentCommentaryPhrase) -> dict:
     return {
-        "id": p.id,
-        "tournament_id": p.tournament_id,
-        "kind": p.kind,
-        "category": p.category,
-        "text": p.text,
-        "order": int(p.order or 0),
-        "is_active": bool(p.is_active),
-        "created_by": p.created_by_id,
-        "created_at": p.created_at.isoformat() if p.created_at else None,
-        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+        "id": phrase.id,
+        "tournament_id": phrase.tournament_id,
+        "kind": phrase.kind,
+        "category": phrase.category,
+        "text": phrase.text,
+        "order": int(phrase.order or 0),
+        "is_active": bool(phrase.is_active),
+        "created_by": phrase.created_by_id,
+        "created_at": phrase.created_at.isoformat() if phrase.created_at else None,
+        "updated_at": phrase.updated_at.isoformat() if phrase.updated_at else None,
     }
 
 
@@ -89,43 +70,19 @@ class MatchCommentaryListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get_permissions(self):
-        # Publiczny podgląd relacji live (TournamentPublic) może działać bez logowania.
-        # Weryfikacja dostępu (is_published + access_code) jest w get().
+        # Publiczny odczyt jest dozwolony, zapis pozostaje prywatny.
         if self.request.method in ("GET", "HEAD", "OPTIONS"):
             return [AllowAny()]
         return [IsAuthenticated()]
 
     def get(self, request, match_id: int):
-        """
-        LISTA komentarzy live dla meczu.
-
-        Tryby:
-        - panel (autoryzowany): wymagane results_edit (lub organizer)
-        - public: dozwolone tylko gdy turniej jest opublikowany
-          + jeśli turniej ma access_code, wymagamy ?code=<access_code>
-        """
-
         match = get_object_or_404(Match.objects.select_related("tournament"), pk=match_id)
 
-        can_manage = False
-        if request.user and getattr(request.user, "is_authenticated", False):
-            try:
-                _require_can_manage_commentary(request.user, match.tournament)
-                can_manage = True
-            except PermissionError:
-                can_manage = False
+        denied = public_access_or_403(request, match.tournament)
+        if denied is not None:
+            return denied
 
-        if not can_manage:
-            t = match.tournament
-            if not getattr(t, "is_published", False):
-                return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
-
-            access_code = getattr(t, "access_code", None)
-            if access_code:
-                provided = request.query_params.get("code")
-                if provided != access_code:
-                    return Response({"detail": "Nieprawidłowy kod dostępu."}, status=status.HTTP_403_FORBIDDEN)
-
+        # Komentarze bez minuty są wyżej, potem sortowanie malejące po minucie i id.
         qs = (
             MatchCommentaryEntry.objects.select_related("match__tournament")
             .filter(match_id=match_id)
@@ -138,7 +95,8 @@ class MatchCommentaryListCreateView(APIView):
             )
             .order_by("_no_minute", F("minute").desc(nulls_last=True), F("id").desc())
         )
-        return Response([_serialize_commentary_entry(x) for x in qs])
+
+        return Response([_serialize_commentary_entry(item) for item in qs], status=status.HTTP_200_OK)
 
     def post(self, request, match_id: int):
         with transaction.atomic():
@@ -149,8 +107,8 @@ class MatchCommentaryListCreateView(APIView):
 
             try:
                 _require_can_manage_commentary(request.user, match.tournament)
-            except PermissionError as e:
-                return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
+            except PermissionError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
             data = request.data or {}
 
@@ -160,16 +118,19 @@ class MatchCommentaryListCreateView(APIView):
 
             time_source = (data.get("time_source") or MatchCommentaryEntry.TimeSource.CLOCK).strip()
             if time_source not in (MatchCommentaryEntry.TimeSource.CLOCK, MatchCommentaryEntry.TimeSource.MANUAL):
-                return Response({"detail": "time_source musi być CLOCK albo MANUAL."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"detail": "time_source musi być CLOCK albo MANUAL."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             try:
                 minute = _parse_int(data.get("minute"), "minute", allow_none=True)
-            except ValueError as e:
-                return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
             minute_raw = (data.get("minute_raw") or "").strip() or None
 
-            # CLOCK + brak minuty => policz z zegara
+            # Przy CLOCK minuta może zostać policzona z aktualnego stanu zegara.
             if time_source == MatchCommentaryEntry.TimeSource.CLOCK and minute is None:
                 if match.clock_state == Match.ClockState.NOT_STARTED and int(match.clock_elapsed_seconds or 0) == 0:
                     return Response(
@@ -193,7 +154,6 @@ class MatchCommentaryListCreateView(APIView):
             )
 
             ws_emit_tournament(match.tournament_id, "commentary_changed", {"match_id": match.id})
-
             return Response(_serialize_commentary_entry(entry), status=status.HTTP_201_CREATED)
 
 
@@ -209,8 +169,8 @@ class MatchCommentaryDetailView(APIView):
 
             try:
                 _require_can_manage_commentary(request.user, entry.match.tournament)
-            except PermissionError as e:
-                return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
+            except PermissionError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
             data = request.data or {}
             update_fields: list[str] = []
@@ -223,17 +183,20 @@ class MatchCommentaryDetailView(APIView):
                 update_fields.append("text")
 
             if "time_source" in data:
-                ts = (data.get("time_source") or "").strip()
-                if ts not in (MatchCommentaryEntry.TimeSource.CLOCK, MatchCommentaryEntry.TimeSource.MANUAL):
-                    return Response({"detail": "time_source musi być CLOCK albo MANUAL."}, status=status.HTTP_400_BAD_REQUEST)
-                entry.time_source = ts
+                time_source = (data.get("time_source") or "").strip()
+                if time_source not in (MatchCommentaryEntry.TimeSource.CLOCK, MatchCommentaryEntry.TimeSource.MANUAL):
+                    return Response(
+                        {"detail": "time_source musi być CLOCK albo MANUAL."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                entry.time_source = time_source
                 update_fields.append("time_source")
 
             if "minute" in data:
                 try:
                     entry.minute = _parse_int(data.get("minute"), "minute", allow_none=True)
-                except ValueError as e:
-                    return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                except ValueError as exc:
+                    return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
                 update_fields.append("minute")
 
             if "minute_raw" in data:
@@ -241,14 +204,14 @@ class MatchCommentaryDetailView(APIView):
                 update_fields.append("minute_raw")
 
             if "period" in data:
-                entry.period = (str(data.get("period") or "").strip() or entry.period)
+                entry.period = str(data.get("period") or "").strip() or entry.period
                 update_fields.append("period")
 
             if update_fields:
                 entry.save(update_fields=update_fields)
                 ws_emit_tournament(entry.match.tournament_id, "commentary_changed", {"match_id": entry.match_id})
 
-            return Response(_serialize_commentary_entry(entry))
+            return Response(_serialize_commentary_entry(entry), status=status.HTTP_200_OK)
 
     def delete(self, request, commentary_id: int):
         with transaction.atomic():
@@ -259,13 +222,14 @@ class MatchCommentaryDetailView(APIView):
 
             try:
                 _require_can_manage_commentary(request.user, entry.match.tournament)
-            except PermissionError as e:
-                return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
+            except PermissionError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
             match = entry.match
             entry.delete()
             ws_emit_tournament(match.tournament_id, "commentary_changed", {"match_id": match.id})
-            return Response({"ok": True})
+
+            return Response({"ok": True}, status=status.HTTP_200_OK)
 
 
 class TournamentCommentaryPhraseListCreateView(APIView):
@@ -273,10 +237,11 @@ class TournamentCommentaryPhraseListCreateView(APIView):
 
     def get(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
+
         try:
             _require_can_manage_commentary(request.user, tournament)
-        except PermissionError as e:
-            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
         qs = TournamentCommentaryPhrase.objects.filter(tournament=tournament).order_by(
             "kind",
@@ -284,14 +249,15 @@ class TournamentCommentaryPhraseListCreateView(APIView):
             "order",
             "id",
         )
-        return Response([_serialize_phrase(x) for x in qs])
+        return Response([_serialize_phrase(item) for item in qs], status=status.HTTP_200_OK)
 
     def post(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
+
         try:
             _require_can_manage_commentary(request.user, tournament)
-        except PermissionError as e:
-            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
         data = request.data or {}
 
@@ -307,13 +273,12 @@ class TournamentCommentaryPhraseListCreateView(APIView):
 
         try:
             order = _parse_int(data.get("order"), "order", allow_none=True)
-        except ValueError as e:
-            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         is_active = data.get("is_active")
         if is_active is None:
             is_active = True
-        is_active = bool(is_active)
 
         phrase = TournamentCommentaryPhrase.objects.create(
             tournament=tournament,
@@ -321,9 +286,10 @@ class TournamentCommentaryPhraseListCreateView(APIView):
             category=category,
             text=text,
             order=int(order or 0),
-            is_active=is_active,
+            is_active=bool(is_active),
             created_by=request.user,
         )
+
         return Response(_serialize_phrase(phrase), status=status.HTTP_201_CREATED)
 
 
@@ -332,12 +298,15 @@ class TournamentCommentaryPhraseDetailView(APIView):
 
     def patch(self, request, phrase_id: int):
         with transaction.atomic():
-            phrase = get_object_or_404(TournamentCommentaryPhrase.objects.select_related("tournament").select_for_update(), pk=phrase_id)
+            phrase = get_object_or_404(
+                TournamentCommentaryPhrase.objects.select_related("tournament").select_for_update(),
+                pk=phrase_id,
+            )
 
             try:
                 _require_can_manage_commentary(request.user, phrase.tournament)
-            except PermissionError as e:
-                return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
+            except PermissionError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
             data = request.data or {}
             update_fields: list[str] = []
@@ -362,10 +331,10 @@ class TournamentCommentaryPhraseDetailView(APIView):
 
             if "order" in data:
                 try:
-                    o = _parse_int(data.get("order"), "order", allow_none=True)
-                except ValueError as e:
-                    return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-                phrase.order = int(o or 0)
+                    order = _parse_int(data.get("order"), "order", allow_none=True)
+                except ValueError as exc:
+                    return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                phrase.order = int(order or 0)
                 update_fields.append("order")
 
             if "is_active" in data:
@@ -375,16 +344,19 @@ class TournamentCommentaryPhraseDetailView(APIView):
             if update_fields:
                 phrase.save(update_fields=update_fields)
 
-            return Response(_serialize_phrase(phrase))
+            return Response(_serialize_phrase(phrase), status=status.HTTP_200_OK)
 
     def delete(self, request, phrase_id: int):
         with transaction.atomic():
-            phrase = get_object_or_404(TournamentCommentaryPhrase.objects.select_related("tournament").select_for_update(), pk=phrase_id)
+            phrase = get_object_or_404(
+                TournamentCommentaryPhrase.objects.select_related("tournament").select_for_update(),
+                pk=phrase_id,
+            )
 
             try:
                 _require_can_manage_commentary(request.user, phrase.tournament)
-            except PermissionError as e:
-                return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
+            except PermissionError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
             phrase.delete()
-            return Response({"ok": True})
+            return Response({"ok": True}, status=status.HTTP_200_OK)

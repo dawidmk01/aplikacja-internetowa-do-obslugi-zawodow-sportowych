@@ -1,0 +1,54 @@
+* [33mefbfb3a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mrefactor/new-app-architecture[m[33m)[m Bezpieczenstwo auth i testy integracyjne - etap 2
+* [33mcc3d5ea[m Poprawa plikow podstawowych i bezpieczenstwa - etap 1
+* [33m6bb5c37[m  PostgreSQL + baza WebSocket + docelowa struktura src/ui
+* [33m8c1595b[m Wdrazenie nowoczenych roziwazan ui , ux w całęj apliakcji
+* [33mb15d804[m Live: uporządkowanie MatchRow i MatchLivePanel przed split paneli
+* [33me34790a[m refaktor wygladu
+* [33m4ab159e[m Wersja finalna aplikacji
+* [33m5ab533c[m Wprowadzenie do systemu dogrywek
+* [33md69d434[m Wprowadzanie integranosci 2 systemow
+* [33m3bd66c8[m Mechanizm live dla piłki nozniej i recznej
+* [33me415af9[m Poprawa mechanizum uprawnien i dodanie uprawnien do nowych elementów
+* [33m59ffb7a[m Wdrązanie rejestracji zawodnikow z ograniczeniem widoku i z kolejoa prosb o zmiane nazw
+* [33m8ec6216[m AKtulizacja systemu uprawnien aby były per konto
+* [33mbe95f3b[m Wdrązanie systemu pełnych uprawnien
+* [33m16ab692[m Ogrniczenie asystena to niektorych funkcji organizatora
+* [33m0562362[m ROzdzielenie frontendu na publiczny/prywatny
+* [33mb1b0cb6[m strony i widoki publiczne
+* [33mf7e680a[m modyfikacja sturktury tabel dla tenisa
+* [33m9f66a66[m Wproawdzenie pełnej obsługi turniej tenisowych
+* [33m487086c[m Przebudowa beckendu zwiazana z team.is.active
+* [33m5b130a2[m Naprawiona dorgrywka i karne oraz inne elementy backenud
+* [33mfd34d56[m Wprowadzenie roznego typu punktacji, mechaniuzmow konczenia meczów (dogrywki, karne)
+* [33ma9c902b[m Wprowadzenie fundamentalnych zmian w strukture proejktu w celu wydzielenia piłki noznej jako głownej czesci aplikacji
+* [33m919a6b3[m Wprowadzenie mechanizmow na podstawie przepisów PZPN
+* [33mc0a2621[m Ujednolicenie prezentacji etapów: wspólne helpery (BYE, grupy, tytuły KO) i porządki w standings
+* [33mc2e0560[m NAprawa błedów generowania meczy
+* [33mdb0d168[m Ujednolicenie warstwy kontrolerów – usunięcie nieaktualnych odwołań do widoków
+* [33md1c2d6e[m Dodanie nawigacji przepływu turnieju z zabezpieczonym zapisem i ujednoliconą nawigacją wsteczą
+* [33m56ae434[m Przeprojektowanie interfejsów, dodanie pelej obłsugi turniej typu mixed
+* [33m4d443dd[m[33m ([m[1;32mmain[m[33m)[m Wprowadzenie mechaniuzmu aktulizacji turniej z trasnkrypcją
+* [33m9ccb519[m Poprawienie genrowania meczy dla lig dwu meczowych oraz ujednoliczenie nazewnictwa
+* [33m9d8380d[m Utworzenie drabinek dla turniej pucharowych, prezentacja od lezej po prawa oraz do srodka
+* [33mdcf82d5[m Utworzenie tabeli prezentujace dla turniej ligowych
+* [33m13d7ea1[m Dodanie meczu o 3. miejsce w fazie pucharowej (KO)
+* [33m123657b[m Wdrazenie systemu dwu spotkaniowego
+* [33mbc6e5d0[m Wdrazenie systemu zmiennej ilosci meczu na kazdym etapie
+* [33m2c5b894[m Naprawa rollbacku KO: cofanie kolejnych etapów tylko przy zmianie zwycięzcy
+* [33mb06d443[m Wprowadzenie mechaniuzmu BYE do pucharów
+* [33m7631b12[m Poprawa obsługi wyników turnieju: podział meczów na etapy, automatyczne odświeżanie stanu oraz poprawna finalizacja faz pucharowych (KO)
+* [33mbfd4d30[m Wdrązenie strony harmonogram, poprawy w beckend-ie
+* [33me004311[m Przebudowa przepływu konfiguracji turnieju + opracowanie nowych podstorn oraz obsługa formatu mieszanego
+* [33m90a5cf4[m Dodanie generatora rozgrywek pucharowych (KO) oraz integracja z endpointem generowania
+* [33macec3a1[m Wdrożenie mechanizmu generowania rozgrywek ligowych wraz z numeracją kolejek i zmianą gospodarza
+* [33m9988b18[m Dodanie mechanizmu resetu hasła z wysyłką e-mail (Mailtrap) oraz poprawki autoryzacji
+* [33m698b1ca[m Generowanie i pobieranie kodów QR turniejów
+* [33m9d1720e[m Wdrożenie mechanizmu wyszukiwania turniejów oraz utworzenie strony głównej aplikacji
+* [33m76353c9[m Implementacja dostępu do turniejów przez link z opcjonalnym kodem
+* [33mdca4920[m Implementacja dostępu do turniejów przez link z opcjonalnym kodem
+* [33m054819a[m Implementacja rejestracji użytkownika oraz globalnego paska nawigacji
+* [33m203e2a0[m Implementacja mechanizmu ról użytkowników (ORGANIZER / ASSISTANT)
+* [33m0fd637b[m Add users auth endpoints and frontend pages
+* [33m522c0a2[m Stop tracking .env
+* [33mef62e9c[m Add tournaments API and React frontend integration
+* [33m54c745c[m Initial backend setup with Docker and Tournament model

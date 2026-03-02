@@ -1,4 +1,6 @@
 # backend/tournaments/views/registrations.py
+# Plik obsługuje samodzielne dołączanie uczestnika, zmianę nazwy i podgląd własnych meczów.
+
 from __future__ import annotations
 
 from typing import Optional
@@ -19,14 +21,11 @@ from tournaments.serializers.matches import MatchSerializer
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
 
 
-def _norm_name(s: str) -> str:
-    return " ".join((s or "").strip().split())
+def _norm_name(value: str) -> str:
+    return " ".join((value or "").strip().split())
 
 
 def _join_enabled_or_400(tournament: Tournament) -> Optional[Response]:
-    """
-    join działa, gdy tournament.join_enabled == True
-    """
     if not getattr(tournament, "join_enabled", False):
         return Response(
             {"detail": "Dołączanie przez konto i kod jest wyłączone dla tego turnieju."},
@@ -41,18 +40,18 @@ def _validate_code_or_400(tournament: Tournament, code: str) -> Optional[Respons
             {"detail": "Turniej nie ma ustawionego kodu dołączania."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
     if (code or "").strip() != (tournament.registration_code or "").strip():
         return Response(
             {"detail": "Nieprawidłowy kod dołączania."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
     return None
 
 
 def _tournament_real_started(tournament: Tournament) -> bool:
-    """
-    Realny start = wynik wpisany w meczu nie-BYE.
-    """
+    # Start oznacza wynik wpisany w meczu innym niż BYE.
     qs = Match.objects.filter(tournament=tournament).exclude(
         Q(home_team__name__iexact=BYE_TEAM_NAME) | Q(away_team__name__iexact=BYE_TEAM_NAME)
     )
@@ -72,12 +71,10 @@ def _get_user_team(tournament: Tournament, user) -> Optional[Team]:
 
 
 def _claim_free_team_or_none(tournament: Tournament, user) -> Optional[Team]:
-    """
-    Zajmuje pierwszy wolny slot Team (aktywny, bez registered_user).
-    Nie tworzymy nowych slotów tutaj — to robi organizer przez teams/setup/.
-    """
+    # Blokada rekordu ogranicza wyścig o ten sam wolny slot.
     team = (
-        Team.objects.filter(
+        Team.objects.select_for_update()
+        .filter(
             tournament=tournament,
             is_active=True,
             registered_user__isnull=True,
@@ -95,10 +92,6 @@ def _claim_free_team_or_none(tournament: Tournament, user) -> Optional[Team]:
     return team
 
 
-# ============================================================
-# SERIALIZERY
-# ============================================================
-
 class RegistrationVerifySerializer(serializers.Serializer):
     code = serializers.CharField(max_length=64, allow_blank=False, trim_whitespace=True, required=False)
     registration_code = serializers.CharField(max_length=64, allow_blank=False, trim_whitespace=True, required=False)
@@ -106,8 +99,10 @@ class RegistrationVerifySerializer(serializers.Serializer):
     def validate(self, attrs):
         if not attrs.get("code") and attrs.get("registration_code"):
             attrs["code"] = attrs["registration_code"]
+
         if not attrs.get("code"):
             raise serializers.ValidationError({"code": "Wymagany kod."})
+
         return attrs
 
 
@@ -119,8 +114,11 @@ class RegistrationJoinSerializer(serializers.Serializer):
     def validate(self, attrs):
         if not attrs.get("display_name") and attrs.get("name"):
             attrs["display_name"] = attrs["name"]
+
         if not attrs.get("display_name"):
             raise serializers.ValidationError({"display_name": "Wymagana nazwa."})
+
+        attrs["display_name"] = _norm_name(attrs["display_name"])
         return attrs
 
 
@@ -128,17 +126,16 @@ class RegistrationRenameSerializer(serializers.Serializer):
     display_name = serializers.CharField(max_length=80, allow_blank=False, trim_whitespace=True)
 
     def validate_display_name(self, value: str) -> str:
-        v = _norm_name(value)
-        if not v:
+        normalized = _norm_name(value)
+
+        if not normalized:
             raise serializers.ValidationError("Wymagana nazwa.")
-        if len(v) > 80:
+
+        if len(normalized) > 80:
             raise serializers.ValidationError("Nazwa jest za długa (max 80 znaków).")
-        return v
 
+        return normalized
 
-# ============================================================
-# WIDOKI
-# ============================================================
 
 class TournamentRegistrationVerifyView(APIView):
     permission_classes = [IsAuthenticated]
@@ -150,10 +147,10 @@ class TournamentRegistrationVerifyView(APIView):
         if denied:
             return denied
 
-        ser = RegistrationVerifySerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
+        serializer = RegistrationVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-        denied = _validate_code_or_400(tournament, ser.validated_data["code"])
+        denied = _validate_code_or_400(tournament, serializer.validated_data["code"])
         if denied:
             return denied
 
@@ -171,11 +168,11 @@ class TournamentRegistrationJoinView(APIView):
         if denied:
             return denied
 
-        ser = RegistrationJoinSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
+        serializer = RegistrationJoinSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-        code = ser.validated_data["code"]
-        display_name = _norm_name(ser.validated_data["display_name"])
+        code = serializer.validated_data["code"]
+        display_name = serializer.validated_data["display_name"]
 
         denied = _validate_code_or_400(tournament, code)
         if denied:
@@ -184,7 +181,7 @@ class TournamentRegistrationJoinView(APIView):
         existing = TournamentRegistration.objects.filter(tournament=tournament, user=request.user).first()
         if not existing and _tournament_real_started(tournament):
             return Response(
-                {"detail": "Turniej już się rozpoczął — nie można dołączyć po starcie rozgrywek."},
+                {"detail": "Turniej już się rozpoczął - nie można dołączyć po starcie rozgrywek."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -196,7 +193,7 @@ class TournamentRegistrationJoinView(APIView):
         reg.display_name = display_name
 
         team = reg.team if reg.team_id else None
-        if team and team.tournament_id != tournament.id:
+        if team and (team.tournament_id != tournament.id or not team.is_active):
             team = None
 
         if team and team.registered_user_id not in (None, request.user.id):
@@ -211,7 +208,8 @@ class TournamentRegistrationJoinView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        update_fields = []
+        update_fields: list[str] = []
+
         if team.registered_user_id != request.user.id:
             team.registered_user = request.user
             update_fields.append("registered_user")
@@ -255,31 +253,31 @@ class TournamentRegistrationMeView(APIView):
     def patch(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
 
-        # KLUCZOWE: jeśli wymagana akceptacja, blokujemy bezpośredni rename
+        # Bezpośredni rename jest blokowany, gdy wymagana jest akceptacja organizatora.
         if not getattr(tournament, "participants_self_rename_enabled", True):
             return Response(
-                {
-                    "detail": (
-                        "Zmiana nazwy wymaga akceptacji organizatora — wyślij prośbę o zmianę nazwy."
-                    )
-                },
+                {"detail": "Zmiana nazwy wymaga akceptacji organizatora - wyślij prośbę o zmianę nazwy."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        reg = TournamentRegistration.objects.select_for_update().filter(
-            tournament=tournament,
-            user=request.user,
-        ).first()
+        reg = (
+            TournamentRegistration.objects.select_for_update()
+            .filter(
+                tournament=tournament,
+                user=request.user,
+            )
+            .first()
+        )
 
         if not reg:
             return Response({"detail": "Brak rejestracji."}, status=status.HTTP_404_NOT_FOUND)
 
-        ser = RegistrationRenameSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
+        serializer = RegistrationRenameSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-        new_name = ser.validated_data["display_name"]
-
+        new_name = serializer.validated_data["display_name"]
         changed = False
+
         if reg.display_name != new_name:
             reg.display_name = new_name
             reg.save(update_fields=["display_name"])

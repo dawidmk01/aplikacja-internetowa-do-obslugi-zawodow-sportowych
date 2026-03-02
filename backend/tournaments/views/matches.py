@@ -1,8 +1,10 @@
 # backend/tournaments/views/matches.py
+# Plik obsługuje listy meczów, harmonogram, wyniki i zmiany statusu meczu.
+
 from __future__ import annotations
 
 import math
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from django.db import transaction
 from django.db.models import Q
@@ -11,45 +13,39 @@ from django.utils import timezone
 
 from rest_framework import status
 from rest_framework.generics import ListAPIView, RetrieveUpdateAPIView
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-# Hard cap used when computing clock-based minutes for auto-generated incidents
-_MAX_MATCH_SECONDS = 3 * 60 * 60  # 3h
-
-from tournaments.services.match_result import MatchResultService
+from tournaments.access import (
+    can_edit_results,
+    can_edit_schedule,
+    user_can_view_tournament,
+    user_is_assistant,
+)
 from tournaments.services.match_outcome import (
     knockout_winner_id,
     validate_extra_time_consistency,
     validate_penalties_consistency,
 )
+from tournaments.services.match_result import MatchResultService
 
+from ..models import Match, MatchIncident, Stage, Tournament
 from ..realtime import ws_emit_tournament
-
-from ..models import Match, Stage, Tournament, MatchIncident
 from ..serializers import MatchResultUpdateSerializer, MatchSerializer
 from ._helpers import (
-    # PODGLĄD/ROLE (NOWA STRATEGIA)
-    user_is_assistant,
-    user_can_view_tournament,
-    can_edit_schedule,
-    can_edit_results,
-    public_access_or_403,  # <-- NOWE: wspólna kontrola dostępu do TournamentPublic
-
-    # KO helpers (bez zmian)
     _get_cup_matches,
     _sync_two_leg_pair_winner_if_possible,
     _try_auto_advance_knockout,
     handle_knockout_winner_change,
+    public_access_or_403,
 )
 
-# ============================================================
-# Local Helpers
-# ============================================================
+# Limit zabezpiecza automatyczne liczenie minut z zegara.
+_MAX_MATCH_SECONDS = 3 * 60 * 60
+
 
 def _third_place_value() -> str:
-    """Safely retrieves the value for Third Place stage type."""
     return getattr(Stage.StageType, "THIRD_PLACE", "THIRD_PLACE")
 
 
@@ -62,24 +58,29 @@ def _is_tennis(tournament: Tournament) -> bool:
 
 
 def _get_pair_matches(stage: Stage, match: Match) -> List[Match]:
-    """
-    Returns matches belonging to the same pair (Home vs Away or Away vs Home) in the same stage.
-    Used for two-legged ties.
-    """
+    # Helper zwraca oba mecze tego samego dwumeczu.
     if not match.home_team_id or not match.away_team_id:
         return [match]
 
     qs = Match.objects.filter(
-        Q(home_team_id=match.home_team_id, away_team_id=match.away_team_id) |
-        Q(home_team_id=match.away_team_id, away_team_id=match.home_team_id),
-        stage=stage
+        Q(home_team_id=match.home_team_id, away_team_id=match.away_team_id)
+        | Q(home_team_id=match.away_team_id, away_team_id=match.home_team_id),
+        stage=stage,
     ).only(
-        "id", "status", "winner_id",
-        "home_team_id", "away_team_id",
-        "home_score", "away_score",
+        "id",
+        "status",
+        "winner_id",
+        "home_team_id",
+        "away_team_id",
+        "home_score",
+        "away_score",
         "tennis_sets",
-        "went_to_extra_time", "home_extra_time_score", "away_extra_time_score",
-        "decided_by_penalties", "home_penalty_score", "away_penalty_score",
+        "went_to_extra_time",
+        "home_extra_time_score",
+        "away_extra_time_score",
+        "decided_by_penalties",
+        "home_penalty_score",
+        "away_penalty_score",
         "result_entered",
     )
     return list(qs)
@@ -90,11 +91,10 @@ def _pair_is_complete_two_leg(group: List[Match]) -> bool:
 
 
 def _pair_winner_id(group: List[Match]) -> Optional[int]:
-    """
-    Assumes _sync_two_leg_pair_winner_if_possible sets winner_id on BOTH matches when possible.
-    """
+    # Zwycięzca pary jest zwracany tylko, gdy oba rekordy wskazują ten sam wynik.
     if not group:
         return None
+
     ids = {m.winner_id for m in group}
     if None in ids:
         return None
@@ -109,9 +109,7 @@ def _handle_knockout_progression(
     old_winner_id: Optional[int],
     new_winner_id: Optional[int],
 ) -> None:
-    """
-    Applies only to the main KNOCKOUT tree (not Third Place).
-    """
+    # Progresja dotyczy tylko głównego drzewa KO.
     if stage.stage_type != Stage.StageType.KNOCKOUT:
         return
 
@@ -134,13 +132,13 @@ def _stringify_validation_detail(detail: object) -> str:
     if isinstance(detail, list):
         return "; ".join(str(x) for x in detail)
     if isinstance(detail, dict):
-        for k in ("non_field_errors", "tennis_sets", "detail"):
-            v = detail.get(k)
-            if v:
-                if isinstance(v, list):
-                    return "; ".join(str(x) for x in v)
-                return str(v)
-        return "; ".join(f"{k}: {v}" for k, v in detail.items())
+        for key in ("non_field_errors", "tennis_sets", "detail"):
+            value = detail.get(key)
+            if value:
+                if isinstance(value, list):
+                    return "; ".join(str(x) for x in value)
+                return str(value)
+        return "; ".join(f"{key}: {value}" for key, value in detail.items())
     return str(detail)
 
 
@@ -162,28 +160,31 @@ def _validate_tennis_match_before_finish(match: Match, cfg: dict) -> Optional[st
 
     try:
         from tournaments.serializers.matches import _validate_tennis_sets_and_compute_score
+
         home_sets, away_sets = _validate_tennis_sets_and_compute_score(match.tennis_sets, cfg=cfg)
-    except Exception as e:
-        detail = getattr(e, "detail", None)
+    except Exception as exc:
+        detail = getattr(exc, "detail", None)
         if detail is not None:
             return _stringify_validation_detail(detail)
-        return str(e)
+        return str(exc)
 
-    hs = int(match.home_score or 0)
-    aws = int(match.away_score or 0)
+    home_score = int(match.home_score or 0)
+    away_score = int(match.away_score or 0)
 
-    if hs != home_sets or aws != away_sets:
+    if home_score != home_sets or away_score != away_sets:
         return "Niespójność danych: wynik setów nie zgadza się z tennis_sets. Zapisz wynik ponownie."
 
     return None
 
 
 def _tennis_winner_id_from_sets(match: Match) -> Optional[int]:
-    hs = int(match.home_score or 0)
-    aws = int(match.away_score or 0)
-    if hs == aws:
+    home_score = int(match.home_score or 0)
+    away_score = int(match.away_score or 0)
+
+    if home_score == away_score:
         return None
-    return match.home_team_id if hs > aws else match.away_team_id
+
+    return match.home_team_id if home_score > away_score else match.away_team_id
 
 
 def _is_mixed(tournament: Tournament) -> bool:
@@ -202,6 +203,7 @@ def _knockout_has_started(tournament: Tournament) -> bool:
         tournament=tournament,
         stage__stage_type=Stage.StageType.KNOCKOUT,
     )
+
     if qs.filter(result_entered=True).exists():
         return True
     if qs.exclude(status=Match.Status.SCHEDULED).exists():
@@ -211,6 +213,7 @@ def _knockout_has_started(tournament: Tournament) -> bool:
 
 def _import_advance_from_groups():
     from tournaments.services.advance_from_groups import advance_from_groups
+
     return advance_from_groups
 
 
@@ -233,24 +236,17 @@ def _regenerate_knockout_from_groups_if_safe(tournament: Tournament) -> None:
     advance_from_groups(tournament)
 
 
-# =========================
-# Score <-> incidents (GOAL) sync
-# =========================
-
 def _incident_goal_points(discipline: str, meta: object) -> int:
-    """
-    GOAL punktacja:
-    - koszykówka: meta.points = 1/2/3 (domyślnie 1)
-    - reszta: 1
-    """
+    # W koszykówce GOAL może oznaczać 1, 2 lub 3 punkty.
     if discipline == Tournament.Discipline.BASKETBALL:
-        m = meta if isinstance(meta, dict) else {}
-        raw = m.get("points", 1)
+        data = meta if isinstance(meta, dict) else {}
+        raw = data.get("points", 1)
         try:
-            pts = int(raw or 1)
+            points = int(raw or 1)
         except (TypeError, ValueError):
-            pts = 1
-        return pts if pts in (1, 2, 3) else 1
+            points = 1
+        return points if points in (1, 2, 3) else 1
+
     return 1
 
 
@@ -262,42 +258,34 @@ def _is_goal_based_or_basketball(discipline: str) -> bool:
     )
 
 
-def _incident_scope(match: Match, i: MatchIncident) -> str:
-    """
-    Określa bucket wyniku, do którego liczy się dany GOAL:
-    - preferujemy meta.scope ("EXTRA_TIME")
-    - fallback na period ET/ET1/ET2
-    """
-    m = i.meta if isinstance(getattr(i, "meta", None), dict) else {}
-    s = str(m.get("scope") or "").strip().upper()
-    if s == "EXTRA_TIME":
+def _incident_scope(match: Match, incident: MatchIncident) -> str:
+    # Scope rozdziela wynik podstawowy od dogrywki.
+    data = incident.meta if isinstance(getattr(incident, "meta", None), dict) else {}
+    scope = str(data.get("scope") or "").strip().upper()
+    if scope == "EXTRA_TIME":
         return "EXTRA_TIME"
 
-    p = str(getattr(i, "period", None) or "").strip().upper()
-    if p in {"ET", "ET1", "ET2"}:
+    period = str(getattr(incident, "period", None) or "").strip().upper()
+    if period in {"ET", "ET1", "ET2"}:
         return "EXTRA_TIME"
 
     return "REGULAR"
 
 
 def _points_to_basketball_chunks(diff: int) -> List[int]:
-    """Rozbij różnicę punktów na listę 3/2/1 (greedy)."""
     left = max(0, int(diff))
     out: List[int] = []
-    for p in (3, 2, 1):
-        while left >= p:
-            out.append(p)
-            left -= p
+
+    for points in (3, 2, 1):
+        while left >= points:
+            out.append(points)
+            left -= points
+
     return out
 
 
 def _clock_minute_payload(match: Match) -> Tuple[str, Optional[int], Optional[str]]:
-    """
-    Jeśli zegar ma jakiekolwiek dane (uruchomiony / wstrzymany / zatrzymany z elapsed),
-    to nowe incydenty mogą dostać minutę z zegara.
-
-    Zwraca: (time_source, minute, minute_raw)
-    """
+    # Nowe incydenty korzystają z minuty z zegara, jeśli zegar ma dane.
     state = str(getattr(match, "clock_state", "") or "")
     elapsed = int(getattr(match, "clock_elapsed_seconds", 0) or 0)
     started_at = getattr(match, "clock_started_at", None)
@@ -317,10 +305,12 @@ def _clock_minute_payload(match: Match) -> Tuple[str, Optional[int], Optional[st
                 total += max(0, int((now - started_at).total_seconds()))
             except Exception:
                 pass
+
         if total < 0:
             total = 0
         if total > _MAX_MATCH_SECONDS:
             total = _MAX_MATCH_SECONDS
+
         minute = int(math.ceil(total / 60.0)) if total > 0 else 0
 
     return ("CLOCK", int(minute), str(int(minute)))
@@ -343,26 +333,13 @@ def _apply_manual_result_via_goal_incidents_or_409(
     force: bool,
     created_by_id: Optional[int] = None,
 ) -> Optional[Response]:
-    """
-    Wynik liczbowy (szybki/ręczny) jest źródłem prawdy.
+    # Wynik liczbowy pozostaje źródłem prawdy, a GOAL są synchronizowane do wyniku.
+    tournament = match.tournament
+    discipline = tournament.discipline
 
-    Synchronizujemy incydenty GOAL tak, aby:
-      - suma punktów GOAL w scope REGULAR == home_score / away_score
-      - suma punktów GOAL w scope EXTRA_TIME == home_extra_time_score / away_extra_time_score (gdy dogrywka)
-
-    Zasady:
-      - dodajemy brakujące GOAL (jeśli zegar ma dane -> dodajemy minutę z zegara),
-      - usuwamy nadmiarowe GOAL zawsze od najwyższego id,
-      - jeśli jakiekolwiek usunięcie jest potrzebne i force==False -> 409 + informacja ile incydentów zniknie.
-
-    Wszystkie incydenty GOAL traktujemy jednakowo (bez rozróżniania synthetic/real).
-    """
-    t = match.tournament
-    d = t.discipline
-
-    if _is_tennis(t):
+    if _is_tennis(tournament):
         return None
-    if not _is_goal_based_or_basketball(d):
+    if not _is_goal_based_or_basketball(discipline):
         return None
     if not match.home_team_id or not match.away_team_id:
         return None
@@ -384,7 +361,7 @@ def _apply_manual_result_via_goal_incidents_or_409(
     if et_enabled and not getattr(match, "went_to_extra_time", False):
         match.went_to_extra_time = True
         match.save(update_fields=["went_to_extra_time"])
-        ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
+        ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
     if not et_enabled:
         desired_et_home = 0
@@ -412,38 +389,39 @@ def _apply_manual_result_via_goal_incidents_or_409(
         (match.away_team_id, "EXTRA_TIME"): [],
     }
 
-    for inc in qs:
-        if inc.team_id not in (match.home_team_id, match.away_team_id):
+    for incident in qs:
+        if incident.team_id not in (match.home_team_id, match.away_team_id):
             continue
-        scope = _incident_scope(match, inc)
-        key = (inc.team_id, scope)
+        scope = _incident_scope(match, incident)
+        key = (incident.team_id, scope)
         if key in by_key:
-            by_key[key].append(inc)
+            by_key[key].append(incident)
 
-    def _points(inc: MatchIncident) -> int:
-        return int(_incident_goal_points(d, inc.meta))
+    def _points(incident: MatchIncident) -> int:
+        return int(_incident_goal_points(discipline, incident.meta))
 
     current_points: Dict[Tuple[int, str], int] = {}
-    for key, lst in by_key.items():
+    for key, items in by_key.items():
         total = 0
-        for inc in lst:
-            total += _points(inc)
+        for incident in items:
+            total += _points(incident)
         current_points[key] = int(total)
 
     delete_ids: List[int] = []
     remaining_points: Dict[Tuple[int, str], int] = dict(current_points)
 
     for key, desired in desired_map.items():
-        cur = int(remaining_points.get(key, 0))
-        if cur <= int(desired):
+        current = int(remaining_points.get(key, 0))
+        if current <= int(desired):
             continue
 
-        for inc in by_key.get(key, []):  # already ordered by -id
-            if cur <= int(desired):
+        for incident in by_key.get(key, []):
+            if current <= int(desired):
                 break
-            cur -= _points(inc)
-            delete_ids.append(int(inc.id))
-        remaining_points[key] = int(cur)
+            current -= _points(incident)
+            delete_ids.append(int(incident.id))
+
+        remaining_points[key] = int(current)
 
     delete_ids = sorted(set(delete_ids), reverse=True)
     if delete_ids and not force:
@@ -467,31 +445,30 @@ def _apply_manual_result_via_goal_incidents_or_409(
 
     def _period_for_new_goal(scope: str) -> str:
         if str(scope or "REGULAR").upper() == "EXTRA_TIME":
-            return _default_period_for_scope(d, "EXTRA_TIME")
+            return _default_period_for_scope(discipline, "EXTRA_TIME")
         return "NONE"
 
-    def _meta_for_new_goal(scope: str, pts: Optional[int] = None) -> Dict[str, Any]:
-        m: Dict[str, Any] = {}
+    def _meta_for_new_goal(scope: str, points: Optional[int] = None) -> Dict[str, Any]:
+        meta: Dict[str, Any] = {}
         if str(scope).upper() == "EXTRA_TIME":
-            m["scope"] = "EXTRA_TIME"
-        if pts is not None:
-            m["points"] = int(pts)
-        return m
+            meta["scope"] = "EXTRA_TIME"
+        if points is not None:
+            meta["points"] = int(points)
+        return meta
 
     creates: List[MatchIncident] = []
 
     for (team_id, scope), desired in desired_map.items():
         desired = int(desired)
-        cur = int(remaining_points.get((team_id, scope), 0))
-
-        need = desired - cur
+        current = int(remaining_points.get((team_id, scope), 0))
+        need = desired - current
         if need <= 0:
             continue
 
         period = _period_for_new_goal(scope)
 
-        if d == Tournament.Discipline.BASKETBALL:
-            for pts in _points_to_basketball_chunks(need):
+        if discipline == Tournament.Discipline.BASKETBALL:
+            for points in _points_to_basketball_chunks(need):
                 creates.append(
                     MatchIncident(
                         match_id=match.id,
@@ -502,7 +479,7 @@ def _apply_manual_result_via_goal_incidents_or_409(
                         minute=minute,
                         minute_raw=minute_raw,
                         player_id=None,
-                        meta=_meta_for_new_goal(scope, pts=pts),
+                        meta=_meta_for_new_goal(scope, points=points),
                         created_by_id=created_by_id,
                     )
                 )
@@ -530,7 +507,7 @@ def _apply_manual_result_via_goal_incidents_or_409(
 
 
 def _stop_match_clock(match: Match) -> None:
-    """Stops the match clock and persists the accumulated elapsed seconds (capped)."""
+    # Zegar zapisuje skumulowany czas i przechodzi w STOPPED.
     now = timezone.now()
     elapsed = int(getattr(match, "clock_elapsed_seconds", 0) or 0)
 
@@ -553,8 +530,9 @@ def _stop_match_clock(match: Match) -> None:
 
 
 def _continue_match_clock(match: Match) -> None:
-    """Resumes the match clock from the current elapsed seconds."""
+    # Wznowienie działa od zapisanego elapsed_seconds.
     now = timezone.now()
+
     if int(getattr(match, "clock_elapsed_seconds", 0) or 0) >= _MAX_MATCH_SECONDS:
         match.clock_state = Match.ClockState.STOPPED
         match.clock_started_at = None
@@ -564,15 +542,7 @@ def _continue_match_clock(match: Match) -> None:
     match.clock_started_at = now
 
 
-# ============================================================
-# Views
-# ============================================================
-
 class TournamentMatchListView(ListAPIView):
-    """
-    Lista meczów dla panelu (organizator/asystent).
-    NOWA STRATEGIA: asystent ma podgląd także w ORGANIZER_ONLY.
-    """
     serializer_class = MatchSerializer
     permission_classes = [IsAuthenticated]
 
@@ -592,9 +562,6 @@ class TournamentMatchListView(ListAPIView):
 
 
 class TournamentPublicMatchListView(ListAPIView):
-    """
-    Publiczna lista meczów dla widza.
-    """
     serializer_class = MatchSerializer
     permission_classes = [AllowAny]
 
@@ -619,10 +586,6 @@ class TournamentPublicMatchListView(ListAPIView):
 
 
 class MatchScheduleUpdateView(RetrieveUpdateAPIView):
-    """
-    PATCH /api/matches/<id>/
-    Edycja harmonogramu – granularnie (schedule_edit).
-    """
     queryset = Match.objects.all()
     serializer_class = MatchSerializer
     permission_classes = [IsAuthenticated]
@@ -644,7 +607,7 @@ class MatchScheduleUpdateView(RetrieveUpdateAPIView):
             )
 
         allowed_fields = {"scheduled_date", "scheduled_time", "location"}
-        data = {k: v for k, v in request.data.items() if k in allowed_fields}
+        data = {key: value for key, value in request.data.items() if key in allowed_fields}
 
         serializer = self.get_serializer(match, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
@@ -654,10 +617,6 @@ class MatchScheduleUpdateView(RetrieveUpdateAPIView):
 
 
 class MatchResultUpdateView(RetrieveUpdateAPIView):
-    """
-    PATCH /api/matches/<pk>/result/
-    Edycja wyników – granularnie (results_edit).
-    """
     serializer_class = MatchResultUpdateSerializer
     permission_classes = [IsAuthenticated]
 
@@ -712,12 +671,10 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
 
         match = serializer.save()
 
-        # UX: samo wprowadzenie wyniku (nawet 0:0) lub ustawień ET/karne
-        # traktujemy jako rozpoczęcie meczu. Dzięki temu status zmienia się także
-        # bez konieczności dodawania incydentu lub otwierania panelu LIVE.
+        # Dotknięcie wyniku traktuje mecz jako rozpoczęty nawet bez incydentów.
         if match.status == Match.Status.SCHEDULED:
             touched = False
-            for k in (
+            for key in (
                 "home_score",
                 "away_score",
                 "tennis_sets",
@@ -728,15 +685,20 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
                 "home_penalty_score",
                 "away_penalty_score",
             ):
-                if k in (request.data or {}):
+                if key in (request.data or {}):
                     touched = True
                     break
+
             if touched:
                 match.status = Match.Status.IN_PROGRESS
                 match.save(update_fields=["status"])
-                ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
+                ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
-        resp = _apply_manual_result_via_goal_incidents_or_409(match, force=force, created_by_id=request.user.id)
+        resp = _apply_manual_result_via_goal_incidents_or_409(
+            match,
+            force=force,
+            created_by_id=request.user.id,
+        )
         if resp is not None:
             if transaction.get_connection().in_atomic_block:
                 transaction.set_rollback(True)
@@ -754,20 +716,14 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
                 pass
 
             transaction.on_commit(
-
                 lambda: ws_emit_tournament(
-
                     match.tournament_id,
-
                     "matches_changed",
-
                     {"match_id": match.id},
-
                 )
-
             )
-
             return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
+
         if is_knockout_like:
             if cup_matches == 1:
                 if _is_tennis(tournament):
@@ -778,7 +734,7 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
                 if new_winner_id != match.winner_id:
                     match.winner_id = new_winner_id
                     match.save(update_fields=["winner"])
-                    ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
+                    ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
                 _handle_knockout_progression(tournament, stage, old_single_winner_id, new_winner_id)
 
@@ -788,25 +744,16 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
                 _handle_knockout_progression(tournament, stage, old_pair_winner, new_pair_winner)
 
         transaction.on_commit(
-
             lambda: ws_emit_tournament(
-
                 match.tournament_id,
-
                 "matches_changed",
-
                 {"match_id": match.id},
-
             )
-
         )
-
         return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
+
+
 class FinishMatchView(APIView):
-    """
-    POST /api/matches/<pk>/finish/
-    Finish – także traktujemy jako edycję wyników (results_edit).
-    """
     permission_classes = [IsAuthenticated]
 
     @transaction.atomic
@@ -829,7 +776,12 @@ class FinishMatchView(APIView):
             )
 
         force = str(request.query_params.get("force") or "").strip().lower() in {"1", "true", "yes"}
-        resp = _apply_manual_result_via_goal_incidents_or_409(match, force=force, created_by_id=request.user.id)
+
+        resp = _apply_manual_result_via_goal_incidents_or_409(
+            match,
+            force=force,
+            created_by_id=request.user.id,
+        )
         if resp is not None:
             if transaction.get_connection().in_atomic_block:
                 transaction.set_rollback(True)
@@ -839,9 +791,9 @@ class FinishMatchView(APIView):
 
         if stage.stage_type in (Stage.StageType.LEAGUE, Stage.StageType.GROUP):
             if _is_tennis(tournament):
-                err2 = _validate_tennis_match_before_finish(match, cfg)
-                if err2:
-                    return Response({"detail": err2}, status=status.HTTP_400_BAD_REQUEST)
+                err = _validate_tennis_match_before_finish(match, cfg)
+                if err:
+                    return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
             try:
                 MatchResultService.apply_result(match)
@@ -851,7 +803,7 @@ class FinishMatchView(APIView):
             match.status = Match.Status.FINISHED
             _stop_match_clock(match)
             match.save(update_fields=["status", "clock_state", "clock_started_at", "clock_elapsed_seconds"])
-            ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
+            ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
             try:
                 _regenerate_knockout_from_groups_if_safe(tournament)
@@ -859,20 +811,14 @@ class FinishMatchView(APIView):
                 pass
 
             transaction.on_commit(
-
                 lambda: ws_emit_tournament(
-
                     match.tournament_id,
-
                     "matches_changed",
-
                     {"match_id": match.id},
-
                 )
-
             )
-
             return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
+
         cup_matches = _get_cup_matches(tournament)
         is_knockout_like = stage.stage_type == Stage.StageType.KNOCKOUT or _is_third_place_stage(stage)
 
@@ -889,23 +835,23 @@ class FinishMatchView(APIView):
                         {"detail": "Tenis nie wspiera trybu dwumeczu (cup_matches=2)."},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                err3 = _validate_tennis_match_before_finish(match, cfg)
-                if err3:
-                    return Response({"detail": err3}, status=status.HTTP_400_BAD_REQUEST)
+
+                err = _validate_tennis_match_before_finish(match, cfg)
+                if err:
+                    return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
             if match.home_score is None or match.away_score is None:
                 return Response(
-                    {"detail": "Brak kompletnego wyniku — uzupełnij bramki/punkty."},
+                    {"detail": "Brak kompletnego wyniku - uzupełnij bramki/punkty."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
             if cup_matches == 1:
-                err4 = validate_extra_time_consistency(match) or validate_penalties_consistency(match)
-                if err4 and not _is_tennis(tournament):
-                    return Response({"detail": err4}, status=status.HTTP_400_BAD_REQUEST)
+                err = validate_extra_time_consistency(match) or validate_penalties_consistency(match)
+                if err and not _is_tennis(tournament):
+                    return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
                 winner_id = _tennis_winner_id_from_sets(match) if _is_tennis(tournament) else knockout_winner_id(match)
-
                 if winner_id is None:
                     return Response(
                         {"detail": "Mecz pucharowy musi mieć zwycięzcę."},
@@ -917,9 +863,10 @@ class FinishMatchView(APIView):
                 match.status = Match.Status.FINISHED
                 _stop_match_clock(match)
                 match.save(update_fields=["winner", "status", "clock_state", "clock_started_at", "clock_elapsed_seconds"])
-                ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
+                ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
                 _handle_knockout_progression(tournament, stage, old_winner_id, winner_id)
+
                 transaction.on_commit(
                     lambda: ws_emit_tournament(
                         match.tournament_id,
@@ -928,14 +875,15 @@ class FinishMatchView(APIView):
                     )
                 )
                 return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
-            elif cup_matches == 2:
+
+            if cup_matches == 2:
                 old_pair_winner = _pair_winner_id(_get_pair_matches(stage, match))
 
                 if match.status != Match.Status.FINISHED:
                     match.status = Match.Status.FINISHED
                     _stop_match_clock(match)
                     match.save(update_fields=["status", "clock_state", "clock_started_at", "clock_elapsed_seconds"])
-                    ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
+                    ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
                 _sync_two_leg_pair_winner_if_possible(stage, tournament, match)
 
@@ -945,7 +893,7 @@ class FinishMatchView(APIView):
                     if not new_pair_winner:
                         match.status = Match.Status.SCHEDULED
                         match.save(update_fields=["status"])
-                        ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
+                        ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
                         return Response(
                             {"detail": "Dwumecz musi być rozstrzygnięty."},
                             status=status.HTTP_400_BAD_REQUEST,
@@ -954,6 +902,7 @@ class FinishMatchView(APIView):
                     new_pair_winner = None
 
                 _handle_knockout_progression(tournament, stage, old_pair_winner, new_pair_winner)
+
                 transaction.on_commit(
                     lambda: ws_emit_tournament(
                         match.tournament_id,
@@ -962,14 +911,11 @@ class FinishMatchView(APIView):
                     )
                 )
                 return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
+
         return Response({"detail": "Nieobsługiwany typ etapu."}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ContinueMatchView(APIView):
-    """
-    POST /api/matches/<pk>/continue/
-    Cofnięcie meczu z Zakończony -> W trakcie + wznowienie zegara od miejsca zatrzymania.
-    """
     permission_classes = [IsAuthenticated]
 
     @transaction.atomic
@@ -992,7 +938,7 @@ class ContinueMatchView(APIView):
 
         if match.status != Match.Status.FINISHED:
             return Response(
-                {"detail": "Mecz nie jest zakończony — nie ma czego kontynuować."},
+                {"detail": "Mecz nie jest zakończony - nie ma czego kontynuować."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1000,17 +946,12 @@ class ContinueMatchView(APIView):
         _continue_match_clock(match)
 
         match.save(update_fields=["status", "clock_state", "clock_started_at"])
-        ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
+        ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
         return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
 
-class SetScheduledMatchView(APIView):
-    """
-    POST /api/matches/<pk>/set-scheduled/
-    Ustawia status meczu na „Zaplanowany” i resetuje zegar (bez ruszania wyniku/incydentów).
 
-    Użyteczne do korekt organizacyjnych (np. pomyłkowo rozpoczęty lub zakończony mecz).
-    """
+class SetScheduledMatchView(APIView):
     permission_classes = [IsAuthenticated]
 
     @transaction.atomic
@@ -1025,18 +966,13 @@ class SetScheduledMatchView(APIView):
         )
         tournament = match.tournament
 
-        # Bezpieczeństwo domenowe: cofnięcie do „Zaplanowany” ma sens tylko, gdy
-        # mecz faktycznie nie ma przebiegu (brak incydentów) oraz nie ma wyniku.
-        # W przeciwnym razie użytkownik powinien świadomie usuwać incydenty / wynik.
-        from tournaments.models import MatchIncident  # local import (unikamy cykli)
-
+        # Cofnięcie do SCHEDULED jest dozwolone tylko bez przebiegu i bez wyniku.
         has_incidents = MatchIncident.objects.filter(match_id=match.id).exists()
 
         score_home = int(match.home_score or 0)
         score_away = int(match.away_score or 0)
         has_any_score = (score_home != 0) or (score_away != 0)
 
-        # dodatkowe pola wyniku (dogrywka/kary/tenis)
         if getattr(match, "went_to_extra_time", False):
             has_any_score = True
         if getattr(match, "decided_by_penalties", False):
@@ -1049,7 +985,6 @@ class SetScheduledMatchView(APIView):
             has_any_score = True
         if int(getattr(match, "away_penalty_score", 0) or 0) != 0:
             has_any_score = True
-        # tenis: jakiekolwiek sety oznaczają wynik
         if hasattr(match, "tennis_sets") and match.tennis_sets:
             has_any_score = True
 
@@ -1064,8 +999,7 @@ class SetScheduledMatchView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        # Status to element organizacyjny powiązany z wynikami oraz „live”,
-        # dlatego dopuszczamy users z results_edit lub schedule_edit (organizator ma oba).
+        # Status organizacyjny może zmieniać użytkownik z results_edit albo schedule_edit.
         if not (can_edit_results(request.user, tournament) or can_edit_schedule(request.user, tournament)):
             return Response(
                 {"detail": "Nie masz uprawnień do zmiany statusu meczu. Dostępny jest tylko podgląd."},
@@ -1074,7 +1008,7 @@ class SetScheduledMatchView(APIView):
 
         match.status = Match.Status.SCHEDULED
 
-        # Reset zegara do stanu początkowego.
+        # Zegar wraca do stanu początkowego.
         match.clock_state = Match.ClockState.NOT_STARTED
         match.clock_started_at = None
         match.clock_elapsed_seconds = 0
@@ -1087,6 +1021,6 @@ class SetScheduledMatchView(APIView):
             update_fields.append("clock_added_seconds")
 
         match.save(update_fields=update_fields)
-        ws_emit_tournament(match.tournament_id, 'matches_changed', {'match_id': match.id})
+        ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
         return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)

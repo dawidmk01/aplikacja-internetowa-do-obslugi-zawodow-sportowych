@@ -1,3 +1,6 @@
+# backend/tournaments/views/tournaments.py
+# Plik udostępnia widoki listy, szczegółów i zmian konfiguracji turnieju.
+
 from __future__ import annotations
 
 from django.apps import apps
@@ -12,40 +15,32 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from tournaments.models import Team, Tournament, TournamentMembership, TournamentRegistration
+from tournaments.access import (
+    can_edit_tournament_detail,
+    get_membership,
+    participant_can_view_public_preview,
+    user_is_organizer,
+    user_is_registered_participant,
+)
+from tournaments.models import Team, Tournament
 from tournaments.permissions import IsTournamentOrganizer
 from tournaments.serializers import TournamentSerializer, TournamentMetaUpdateSerializer
 from tournaments.services.match_generation import ensure_matches_generated
 
-# Nowy import zgodnie z poleceniem
-from tournaments.views._helpers import can_edit_tournament_detail
 
-
-# =========================
-# HELPERY MODEL-LOOKUP
-# =========================
 def get_model_any(app_label: str, names: list[str]):
-    for n in names:
+    for name in names:
         try:
-            return apps.get_model(app_label, n)
+            return apps.get_model(app_label, name)
         except LookupError:
             continue
     raise LookupError(f"Nie znaleziono żadnego modelu z listy: {names}")
 
 
-# =========================
-# TENIS: dwa systemy punktacji
-# =========================
 TENIS_POINTS_MODES = ("NONE", "PLT")
 
 
 def normalize_format_config(discipline: str | None, cfg: dict | None) -> dict:
-    """
-    Ujednolica format_config:
-    - zawsze dict
-    - dla tenisa: gwarantuje tennis_points_mode ∈ {NONE, PLT} (domyślnie NONE)
-    - dla innych dyscyplin: usuwa tennis_points_mode
-    """
     disc = (discipline or "").lower()
 
     if cfg is None:
@@ -68,10 +63,6 @@ def normalize_format_config(discipline: str | None, cfg: dict | None) -> dict:
 
 
 def strip_standings_only_keys(discipline: str | None, cfg: dict | None) -> dict:
-    """
-    Zwraca config bez kluczy wpływających WYŁĄCZNIE na standings (bez resetu Stage/Match).
-    Aktualnie: tennis_points_mode.
-    """
     disc = (discipline or "").lower()
     cfg = dict(cfg or {})
     if disc == "tennis":
@@ -80,63 +71,16 @@ def strip_standings_only_keys(discipline: str | None, cfg: dict | None) -> dict:
 
 
 def clear_standings_cache(tournament: Tournament) -> None:
-    """
-    Czyści cache tabel (jeśli takie modele istnieją w projekcie).
-    Bezpieczne: ignoruje brak modeli.
-    """
     for model_name in ("Standing", "LeagueStanding", "TeamStanding"):
         try:
-            M = apps.get_model("tournaments", model_name)
+            model = apps.get_model("tournaments", model_name)
         except LookupError:
             continue
 
-        if any(f.name == "tournament" for f in M._meta.fields):
-            M.objects.filter(tournament=tournament).delete()
+        if any(field.name == "tournament" for field in model._meta.fields):
+            model.objects.filter(tournament=tournament).delete()
 
 
-# =========================
-# UPRAWNIENIA (lokalne helpery)
-# =========================
-def _is_organizer(user, tournament: Tournament) -> bool:
-    return bool(user and user.is_authenticated and tournament.organizer_id == user.id)
-
-
-def _membership(user, tournament: Tournament) -> TournamentMembership | None:
-    if not user or not user.is_authenticated:
-        return None
-    return TournamentMembership.objects.filter(
-        tournament=tournament,
-        user=user,
-        role=TournamentMembership.Role.ASSISTANT,
-    ).first()
-
-
-def _is_participant(user, tournament: Tournament) -> bool:
-    if not user or not user.is_authenticated:
-        return False
-    return TournamentRegistration.objects.filter(tournament=tournament, user=user).exists()
-
-
-def _assistant_can_edit_tournament_meta(user, tournament: Tournament) -> bool:
-    """
-    Docelowo:
-    - w ORGANIZER_ONLY: asystent ma podgląd (meta tylko organizer)
-    - w MANAGER: asystent może edytować meta jeśli ma perm tournament_edit
-    """
-    m = _membership(user, tournament)
-    if not m:
-        return False
-
-    if tournament.entry_mode == Tournament.EntryMode.ORGANIZER_ONLY:
-        return False
-
-    eff = m.effective_permissions()
-    return bool(eff.get(TournamentMembership.PERM_TOURNAMENT_EDIT))
-
-
-# =========================
-# LIST / CREATE
-# =========================
 class TournamentListView(ListCreateAPIView):
     queryset = Tournament.objects.all()
     serializer_class = TournamentSerializer
@@ -146,11 +90,10 @@ class TournamentListView(ListCreateAPIView):
     def perform_create(self, serializer):
         tournament: Tournament = serializer.save(organizer=self.request.user)
 
-        # Normalizacja format_config (ważne dla tenisa: tennis_points_mode default)
+        # Normalizacja ma domknąć domyślne pola konfiguracyjne.
         tournament.format_config = normalize_format_config(tournament.discipline, tournament.format_config or {})
         tournament.save(update_fields=["format_config"])
 
-        # 2 domyślnych uczestników
         name_prefix = (
             "Zawodnik"
             if tournament.competition_type == Tournament.CompetitionType.INDIVIDUAL
@@ -187,15 +130,11 @@ class MyTournamentListView(ListAPIView):
         )
 
 
-# =========================
-# DETAIL
-# =========================
 class TournamentDetailView(RetrieveUpdateAPIView):
     queryset = Tournament.objects.all()
     serializer_class = TournamentSerializer
 
     def get_permissions(self):
-        # GET ma AllowAny, ale retrieve() i tak sprawdzi warunki widoczności
         if self.request.method in ("GET", "HEAD", "OPTIONS"):
             return [AllowAny()]
         return [IsAuthenticated(), IsTournamentOrganizer()]
@@ -203,24 +142,19 @@ class TournamentDetailView(RetrieveUpdateAPIView):
     def retrieve(self, request, *args, **kwargs):
         tournament = self.get_object()
         user = request.user if request.user.is_authenticated else None
-
         serializer = self.get_serializer(tournament, context={"request": request})
 
-        # 1) Organizer zawsze widzi
-        if _is_organizer(user, tournament):
+        if user_is_organizer(user, tournament):
             return Response(serializer.data)
 
-        # 2) Asystent -> PODGLĄD zawsze (nie blokujemy strony)
-        if _membership(user, tournament):
+        if get_membership(user, tournament):
             return Response(serializer.data)
 
-        # 3) Zarejestrowany uczestnik -> podgląd TYLKO gdy opublikowany lub włączony preview dla uczestników
-        if _is_participant(user, tournament):
-            if tournament.is_published or getattr(tournament, "participants_public_preview_enabled", False):
+        if user_is_registered_participant(user, tournament):
+            if participant_can_view_public_preview(tournament):
                 return Response(serializer.data)
             raise PermissionDenied("Podgląd dla uczestników jest wyłączony. Poczekaj na publikację turnieju.")
 
-        # 4) Public: tylko jeśli opublikowany + ewentualny access_code
         if tournament.is_published:
             if tournament.access_code:
                 provided_code = request.query_params.get("code")
@@ -231,27 +165,12 @@ class TournamentDetailView(RetrieveUpdateAPIView):
         raise PermissionDenied("Brak dostępu do tego turnieju.")
 
 
-# =========================
-# META (SCHEDULE + DESCRIPTION)
-# =========================
 class TournamentMetaUpdateView(APIView):
-    """
-    Edycja metadanych turnieju (harmonogram + opis).
-
-    Endpoint:
-      PATCH /api/tournaments/<id>/meta/
-
-    Uprawnienia:
-    - organizer zawsze
-    - asystent: tylko gdy entry_mode=MANAGER i ma perm: tournament_edit
-    """
-
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, pk: int, *args, **kwargs):
         tournament = get_object_or_404(Tournament, pk=pk)
 
-        # ZMIANA: użycie can_edit_tournament_detail zamiast starej logiki
         if not can_edit_tournament_detail(request.user, tournament):
             return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -267,11 +186,7 @@ class TournamentMetaUpdateView(APIView):
         return Response(TournamentSerializer(tournament, context={"request": request}).data)
 
 
-# =========================
-# ARCHIVE / UNARCHIVE
-# =========================
 class ArchiveTournamentView(APIView):
-    """Przeniesienie turnieju do archiwum: Status -> FINISHED oraz cofnięcie publikacji."""
     permission_classes = [IsAuthenticated, IsTournamentOrganizer]
 
     def post(self, request, pk):
@@ -288,7 +203,6 @@ class ArchiveTournamentView(APIView):
 
 
 class UnarchiveTournamentView(APIView):
-    """Przywrócenie turnieju z archiwum: FINISHED -> CONFIGURED"""
     permission_classes = [IsAuthenticated, IsTournamentOrganizer]
 
     def post(self, request, pk):
@@ -303,24 +217,11 @@ class UnarchiveTournamentView(APIView):
         return Response({"detail": "Turniej został przywrócony z archiwum."}, status=status.HTTP_200_OK)
 
 
-# =========================
-# CHANGE DISCIPLINE
-# =========================
 class ChangeDisciplineSerializer(serializers.Serializer):
     discipline = serializers.ChoiceField(choices=Tournament.Discipline.choices, required=True)
 
 
 class ChangeDisciplineView(APIView):
-    """
-    TEAM -> TEAM:
-      - czyści wyniki + standings
-      - zostawia konfigurację i nazwy
-
-    TEAM <-> INDIVIDUAL:
-      - FULL RESET: usuwa etapy/mecze/uczestników i resetuje setup.
-
-    Uprawnienia: tylko organizer.
-    """
     permission_classes = [IsAuthenticated, IsTournamentOrganizer]
 
     @transaction.atomic
@@ -354,14 +255,14 @@ class ChangeDisciplineView(APIView):
         new_comp_type = Tournament.infer_default_competition_type(new_discipline)
         comp_type_changed = new_comp_type != tournament.competition_type
 
-        MatchModel = get_model_any("tournaments", ["Match"])
-        StageModel = get_model_any("tournaments", ["Stage"])
-        TeamModel = get_model_any("tournaments", ["Team"])
+        match_model = get_model_any("tournaments", ["Match"])
+        stage_model = get_model_any("tournaments", ["Stage"])
+        team_model = get_model_any("tournaments", ["Team"])
 
         if comp_type_changed:
-            MatchModel.objects.filter(tournament=tournament).delete()
-            StageModel.objects.filter(tournament=tournament).delete()
-            TeamModel.objects.filter(tournament=tournament).delete()
+            match_model.objects.filter(tournament=tournament).delete()
+            stage_model.objects.filter(tournament=tournament).delete()
+            team_model.objects.filter(tournament=tournament).delete()
 
             tournament.discipline = new_discipline
             tournament.competition_type = new_comp_type
@@ -371,8 +272,8 @@ class ChangeDisciplineView(APIView):
             tournament.save(update_fields=["discipline", "competition_type", "tournament_format", "format_config", "status"])
 
             name_prefix = "Zawodnik" if new_comp_type == Tournament.CompetitionType.INDIVIDUAL else "Drużyna"
-            TeamModel.objects.bulk_create(
-                [TeamModel(tournament=tournament, name=f"{name_prefix} {i}", is_active=True) for i in range(1, 3)]
+            team_model.objects.bulk_create(
+                [team_model(tournament=tournament, name=f"{name_prefix} {i}", is_active=True) for i in range(1, 3)]
             )
 
             return Response(
@@ -391,7 +292,7 @@ class ChangeDisciplineView(APIView):
         tournament.competition_type = new_comp_type
         tournament.format_config = normalize_format_config(new_discipline, tournament.format_config or {})
 
-        MatchModel.objects.filter(tournament=tournament).update(
+        match_model.objects.filter(tournament=tournament).update(
             home_score=0,
             away_score=0,
             tennis_sets=None,
@@ -402,7 +303,7 @@ class ChangeDisciplineView(APIView):
             home_penalty_score=None,
             away_penalty_score=None,
             winner=None,
-            status=MatchModel.Status.SCHEDULED,
+            status=match_model.Status.SCHEDULED,
             result_entered=False,
         )
 
@@ -423,9 +324,6 @@ class ChangeDisciplineView(APIView):
         )
 
 
-# =========================
-# CHANGE SETUP
-# =========================
 class ChangeSetupSerializer(serializers.Serializer):
     tournament_format = serializers.ChoiceField(choices=Tournament.TournamentFormat.choices)
     format_config = serializers.JSONField(required=False)
@@ -445,13 +343,6 @@ class ChangeSetupSerializer(serializers.Serializer):
 
 
 class ChangeSetupView(APIView):
-    """
-    - zmiana FORMAT lub struktury config -> reset Stage/Match
-    - zmiana tennis_points_mode (tenis) -> bez resetu Stage/Match, tylko czyszczenie cache standings
-    - dry_run=true zwraca requires_reset / reset_needed
-
-    Uprawnienia: tylko organizer.
-    """
     permission_classes = [IsAuthenticated, IsTournamentOrganizer]
 
     @transaction.atomic
@@ -480,10 +371,10 @@ class ChangeSetupView(APIView):
 
         requires_reset = fmt_changed or structure_changed
 
-        StageModel = get_model_any("tournaments", ["Stage"])
-        MatchModel = get_model_any("tournaments", ["Match"])
+        stage_model = get_model_any("tournaments", ["Stage"])
+        match_model = get_model_any("tournaments", ["Match"])
 
-        reset_needed = StageModel.objects.filter(tournament=tournament).exists() or MatchModel.objects.filter(tournament=tournament).exists()
+        reset_needed = stage_model.objects.filter(tournament=tournament).exists() or match_model.objects.filter(tournament=tournament).exists()
 
         if dry_run:
             return Response(
@@ -499,8 +390,8 @@ class ChangeSetupView(APIView):
         reset_performed = False
 
         if changed and requires_reset and reset_needed:
-            StageModel.objects.filter(tournament=tournament).delete()
-            MatchModel.objects.filter(tournament=tournament).delete()
+            stage_model.objects.filter(tournament=tournament).delete()
+            match_model.objects.filter(tournament=tournament).delete()
             reset_performed = True
             clear_standings_cache(tournament)
 

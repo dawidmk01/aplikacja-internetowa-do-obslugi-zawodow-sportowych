@@ -1,3 +1,6 @@
+# backend/tournaments/views/assistants.py
+# Plik udostępnia endpointy listy asystentów i zarządzania ich uprawnieniami.
+
 from __future__ import annotations
 
 from django.db import transaction
@@ -10,37 +13,33 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from ..models import Tournament, TournamentMembership
-from ..permissions import IsTournamentOrganizer
+from ..permissions import CanAccessAssistantPermissions, CanManageAssistants, CanViewTournament
 from ..realtime import ws_emit_tournament, ws_emit_user
-from ..serializers import (
-    AddAssistantSerializer,
-    TournamentAssistantSerializer,
-)
+from ..serializers import AddAssistantSerializer, TournamentAssistantSerializer
 from ..serializers.assistants import AssistantPermissionsSerializer
-from ._helpers import user_can_view_tournament
+
+
+def _get_permission_tournament(view, pk: int) -> Tournament:
+    tournament = getattr(view, "_permission_tournament", None)
+    if tournament is not None:
+        return tournament
+    return get_object_or_404(Tournament, pk=pk)
 
 
 class TournamentAssistantListView(ListAPIView):
     serializer_class = TournamentAssistantSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, CanViewTournament]
 
     def get_queryset(self):
-        tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
-
-        # Podgląd listy: organizer + asystent (membership) + participant (jeśli ma view).
-        # Jeśli chcesz tylko organizer: zmień na IsTournamentOrganizer.
-        if not user_can_view_tournament(self.request.user, tournament):
-            return TournamentMembership.objects.none()
-
+        tournament = _get_permission_tournament(self, self.kwargs["pk"])
         return tournament.memberships.filter(role=TournamentMembership.Role.ASSISTANT)
 
 
 class AddAssistantView(APIView):
-    permission_classes = [IsAuthenticated, IsTournamentOrganizer]
+    permission_classes = [IsAuthenticated, CanManageAssistants]
 
     def post(self, request, pk):
-        tournament = get_object_or_404(Tournament, pk=pk)
-        self.check_object_permissions(request, tournament)
+        tournament = _get_permission_tournament(self, pk)
 
         serializer = AddAssistantSerializer(data=request.data, context={"tournament": tournament})
         serializer.is_valid(raise_exception=True)
@@ -59,12 +58,14 @@ class AddAssistantView(APIView):
             role=TournamentMembership.Role.ASSISTANT,
             defaults={"permissions": {}},
         )
+
         if not created:
             return Response(
                 {"detail": "Ten użytkownik jest już asystentem w tym turnieju."},
                 status=status.HTTP_409_CONFLICT,
             )
 
+        # Zmiana trafia do kanału turnieju i do kanału użytkownika.
         transaction.on_commit(
             lambda: ws_emit_tournament(
                 tournament.id,
@@ -92,17 +93,29 @@ class AddAssistantView(APIView):
 
 
 class RemoveAssistantView(APIView):
-    permission_classes = [IsAuthenticated, IsTournamentOrganizer]
+    permission_classes = [IsAuthenticated, CanManageAssistants]
 
+    @transaction.atomic
     def delete(self, request, pk, user_id):
-        tournament = get_object_or_404(Tournament, pk=pk)
-        self.check_object_permissions(request, tournament)
+        tournament = _get_permission_tournament(self, pk)
 
-        TournamentMembership.objects.filter(
-            tournament=tournament,
-            user_id=user_id,
-            role=TournamentMembership.Role.ASSISTANT,
-        ).delete()
+        membership = (
+            TournamentMembership.objects.select_for_update()
+            .filter(
+                tournament=tournament,
+                user_id=user_id,
+                role=TournamentMembership.Role.ASSISTANT,
+            )
+            .first()
+        )
+
+        if not membership:
+            return Response(
+                {"detail": "Nie znaleziono asystenta."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        membership.delete()
 
         transaction.on_commit(
             lambda: ws_emit_tournament(
@@ -131,72 +144,66 @@ class RemoveAssistantView(APIView):
 
 
 class AssistantPermissionsView(APIView):
-    """
-    GET  /api/tournaments/<pk>/assistants/<user_id>/permissions/
-      -> { raw: {...}, effective: {...} }
-
-    PATCH /api/tournaments/<pk>/assistants/<user_id>/permissions/
-      body: { teams_edit?: bool, schedule_edit?: bool, ... , roster_edit?: bool, name_change_approve?: bool }
-      -> { raw: {...}, effective: {...} }
-
-    Zasady:
-    - Organizer: może GET/PATCH dla dowolnego asystenta
-    - Asystent: może GET wyłącznie swoje uprawnienia (żeby nie podglądał cudzych)
-    - PATCH: tylko organizer
-    """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, CanAccessAssistantPermissions]
 
     def get(self, request, pk: int, user_id: int):
-        tournament = get_object_or_404(Tournament, pk=pk)
+        tournament = _get_permission_tournament(self, pk)
 
-        if tournament.organizer_id != request.user.id:
-            if request.user.id != user_id:
-                return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
-
-        m = TournamentMembership.objects.filter(
+        membership = TournamentMembership.objects.filter(
             tournament=tournament,
             user_id=user_id,
             role=TournamentMembership.Role.ASSISTANT,
         ).first()
-        if not m:
-            return Response({"detail": "Nie znaleziono asystenta."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not membership:
+            return Response(
+                {"detail": "Nie znaleziono asystenta."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         return Response(
             {
-                "raw": m.permissions or {},
-                "effective": m.effective_permissions(),
+                "raw": membership.permissions or {},
+                "effective": membership.effective_permissions(),
             },
             status=status.HTTP_200_OK,
         )
 
     def patch(self, request, pk: int, user_id: int):
-        tournament = get_object_or_404(Tournament, pk=pk)
+        tournament = _get_permission_tournament(self, pk)
 
-        if tournament.organizer_id != request.user.id:
-            return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
-
-        m = TournamentMembership.objects.filter(
-            tournament=tournament,
-            user_id=user_id,
-            role=TournamentMembership.Role.ASSISTANT,
-        ).first()
-        if not m:
-            return Response({"detail": "Nie znaleziono asystenta."}, status=status.HTTP_404_NOT_FOUND)
-
-        ser = AssistantPermissionsSerializer(data=request.data, partial=True)
-        ser.is_valid(raise_exception=True)
+        serializer = AssistantPermissionsSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
 
         allowed_keys = set(AssistantPermissionsSerializer.allowed_keys())
 
-        raw = dict(m.permissions or {})
-        raw = {k: bool(v) for k, v in raw.items() if k in allowed_keys}
+        with transaction.atomic():
+            membership = (
+                TournamentMembership.objects.select_for_update()
+                .filter(
+                    tournament=tournament,
+                    user_id=user_id,
+                    role=TournamentMembership.Role.ASSISTANT,
+                )
+                .first()
+            )
 
-        for k, v in ser.validated_data.items():
-            if k in allowed_keys:
-                raw[k] = bool(v)
+            if not membership:
+                return Response(
+                    {"detail": "Nie znaleziono asystenta."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
-        m.permissions = raw
-        m.save(update_fields=["permissions"])
+            # Zapisywany jest tylko jawny, dozwolony zestaw kluczy.
+            raw = dict(membership.permissions or {})
+            raw = {k: bool(v) for k, v in raw.items() if k in allowed_keys}
+
+            for key, value in serializer.validated_data.items():
+                if key in allowed_keys:
+                    raw[key] = bool(value)
+
+            membership.permissions = raw
+            membership.save(update_fields=["permissions"])
 
         transaction.on_commit(
             lambda: ws_emit_tournament(
@@ -209,10 +216,22 @@ class AssistantPermissionsView(APIView):
             )
         )
 
+        transaction.on_commit(
+            lambda: ws_emit_user(
+                int(user_id),
+                {
+                    "v": 1,
+                    "type": "membership.changed",
+                    "tournamentId": tournament.id,
+                    "action": "assistant_permissions_updated",
+                },
+            )
+        )
+
         return Response(
             {
-                "raw": m.permissions or {},
-                "effective": m.effective_permissions(),
+                "raw": membership.permissions or {},
+                "effective": membership.effective_permissions(),
             },
             status=status.HTTP_200_OK,
         )

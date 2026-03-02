@@ -1,5 +1,5 @@
 # backend/users/views.py
-# Plik udostępnia endpointy konta użytkownika, rejestracji, resetu hasła i wylogowania.
+# Plik udostępnia endpointy konta użytkownika, logowania, odświeżania sesji, resetu hasła i wylogowania.
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -8,11 +8,13 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import PasswordResetToken
@@ -33,6 +35,39 @@ def first_password_error(exc: DjangoValidationError) -> str:
     return "Hasło nie spełnia wymagań bezpieczeństwa."
 
 
+def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
+    response.set_cookie(
+        key=settings.AUTH_REFRESH_COOKIE_NAME,
+        value=refresh_token,
+        httponly=settings.AUTH_REFRESH_COOKIE_HTTPONLY,
+        secure=settings.AUTH_REFRESH_COOKIE_SECURE,
+        samesite=settings.AUTH_REFRESH_COOKIE_SAMESITE,
+        path=settings.AUTH_REFRESH_COOKIE_PATH,
+        domain=settings.AUTH_REFRESH_COOKIE_DOMAIN,
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=settings.AUTH_REFRESH_COOKIE_NAME,
+        path=settings.AUTH_REFRESH_COOKIE_PATH,
+        domain=settings.AUTH_REFRESH_COOKIE_DOMAIN,
+        samesite=settings.AUTH_REFRESH_COOKIE_SAMESITE,
+    )
+
+
+def _get_refresh_from_request(request) -> str | None:
+    cookie_value = request.COOKIES.get(settings.AUTH_REFRESH_COOKIE_NAME)
+    if cookie_value:
+        return str(cookie_value).strip()
+
+    body_value = request.data.get("refresh")
+    if body_value:
+        return str(body_value).strip()
+
+    return None
+
+
 class MeView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -46,6 +81,80 @@ class MeView(APIView):
                 "is_staff": user.is_staff,
             }
         )
+
+
+class LoginView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = TokenObtainPairSerializer(data=request.data)
+
+        if not serializer.is_valid():
+            return Response(
+                {"detail": "Nieprawidłowy login lub hasło."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        access = serializer.validated_data.get("access")
+        refresh = serializer.validated_data.get("refresh")
+
+        if not access or not refresh:
+            return Response(
+                {"detail": "Nie udało się utworzyć sesji."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        response = Response({"access": access}, status=status.HTTP_200_OK)
+        _set_refresh_cookie(response, refresh)
+        return response
+
+
+class RefreshView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        refresh = _get_refresh_from_request(request)
+        if not refresh:
+            response = Response(
+                {"detail": "Sesja wygasła lub token odświeżania jest nieobecny."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+            _clear_refresh_cookie(response)
+            return response
+
+        serializer = TokenRefreshSerializer(data={"refresh": refresh})
+
+        # Blacklist, wygaśnięcie lub zły refresh mają zwracać kontrolowane 401.
+        try:
+            serializer.is_valid(raise_exception=True)
+        except (TokenError, ValidationError):
+            response = Response(
+                {"detail": "Sesja wygasła lub token odświeżania jest nieprawidłowy."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+            _clear_refresh_cookie(response)
+            return response
+
+        access = serializer.validated_data.get("access")
+        rotated_refresh = serializer.validated_data.get("refresh")
+
+        if not access:
+            response = Response(
+                {"detail": "Nie udało się odświeżyć sesji."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+            _clear_refresh_cookie(response)
+            return response
+
+        response = Response({"access": access}, status=status.HTTP_200_OK)
+
+        # Rotacja cookie utrzymuje refresh wyłącznie po stronie przeglądarki.
+        if rotated_refresh:
+            _set_refresh_cookie(response, rotated_refresh)
+        else:
+            _set_refresh_cookie(response, refresh)
+
+        return response
 
 
 class RegisterView(APIView):
@@ -215,24 +324,19 @@ class LogoutView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        refresh = request.data.get("refresh")
+        refresh = _get_refresh_from_request(request)
 
-        if not refresh:
-            return Response(
-                {"detail": "Token odświeżania jest wymagany."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # Logout jest idempotentny i zawsze czyści cookie.
+        if refresh:
+            try:
+                token = RefreshToken(refresh)
+                token.blacklist()
+            except Exception:
+                pass
 
-        try:
-            token = RefreshToken(refresh)
-            token.blacklist()
-        except TokenError:
-            return Response(
-                {"detail": "Token odświeżania jest nieprawidłowy lub wygasł."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        return Response(
+        response = Response(
             {"detail": "Wylogowano."},
             status=status.HTTP_200_OK,
         )
+        _clear_refresh_cookie(response)
+        return response

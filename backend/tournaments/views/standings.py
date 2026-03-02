@@ -1,3 +1,6 @@
+# backend/tournaments/views/standings.py
+# Plik udostępnia dane tabeli i drabinki dla widoku klasyfikacji turnieju.
+
 from __future__ import annotations
 
 from django.shortcuts import get_object_or_404
@@ -7,7 +10,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from tournaments.models import Tournament, Stage
+from tournaments.models import Stage, Tournament
 from tournaments.services.standings.compute import compute_stage_standings
 from tournaments.services.standings.knockout_bracket import get_knockout_bracket
 from tournaments.services.standings.types import StandingRow
@@ -16,21 +19,7 @@ from tournaments.views._helpers import public_access_or_403
 
 
 class TournamentStandingsView(APIView):
-    """
-    GET /api/tournaments/:id/standings/
-
-    Zwraca dane do widoku wyników w zależności od formatu:
-    - LEAGUE: klucz 'table' (jedna lista)
-    - MIXED:  klucz 'groups' (lista obiektów {group_id, group_name, table}) + 'bracket'
-    - CUP:    klucz 'bracket'
-
-    Dodatkowo zwraca:
-    - meta.discipline
-    - meta.table_schema (np. "DEFAULT" / "TENNIS")
-    - meta.tennis_points_mode (np. "PLT" / "NONE") jeśli dyscyplina tennis
-    """
-
-    permission_classes = [AllowAny]  # kontrola dostępu w public_access_or_403
+    permission_classes = [AllowAny]
 
     def get(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
@@ -49,24 +38,17 @@ class TournamentStandingsView(APIView):
             }
         }
 
-        # meta: tenis_points_mode (frontend to wykorzystuje)
+        # Frontend używa trybu punktacji tenisa do wyboru kolumn i opisów.
         if discipline == "tennis":
             cfg = tournament.format_config or {}
-            mode = (cfg.get("tennis_points_mode") or "NONE")
-            response_data["meta"]["tennis_points_mode"] = mode
+            response_data["meta"]["tennis_points_mode"] = cfg.get("tennis_points_mode") or "NONE"
 
-        # =====================================================
-        # 1) FORMAT LIGA (pojedyncza tabela)
-        # =====================================================
         if fmt == Tournament.TournamentFormat.LEAGUE:
             stage = tournament.stages.filter(stage_type=Stage.StageType.LEAGUE).first()
             if stage:
                 table = compute_stage_standings(tournament, stage)
-                response_data["table"] = [self._serialize_row(r, discipline) for r in table]
+                response_data["table"] = [self._serialize_row(row, discipline) for row in table]
 
-        # =====================================================
-        # 2) FORMAT MIXED (grupy – wiele tabel)
-        # =====================================================
         elif fmt == Tournament.TournamentFormat.MIXED:
             stage = tournament.stages.filter(stage_type=Stage.StageType.GROUP).first()
             if stage:
@@ -79,15 +61,13 @@ class TournamentStandingsView(APIView):
                         {
                             "group_id": group.id,
                             "group_name": group.name,
-                            "table": [self._serialize_row(r, discipline) for r in table],
+                            "table": [self._serialize_row(row, discipline) for row in table],
                         }
                     )
 
                 response_data["groups"] = groups_payload
 
-        # =====================================================
-        # 3) FORMAT CUP oraz MIXED (drabinka)
-        # =====================================================
+        # Drabinka jest zwracana dla CUP oraz części pucharowej MIXED.
         if fmt in (Tournament.TournamentFormat.CUP, Tournament.TournamentFormat.MIXED):
             bracket_data = get_knockout_bracket(tournament)
             if bracket_data and bracket_data.get("rounds"):
@@ -97,14 +77,6 @@ class TournamentStandingsView(APIView):
 
     @staticmethod
     def _serialize_row(row: StandingRow, discipline: str) -> dict:
-        """
-        DEFAULT:
-          - kompatybilna tabela (goals_for/goals_against itd.)
-
-        TENIS:
-          - zwraca tenisowe pola: sets_for/sets_against, games_for/games_against
-          - zostawia też legacy goals_* jako aliasy (dla kompatybilności)
-        """
         base = {
             "team_id": row.team_id,
             "team_name": row.team_name,
@@ -113,27 +85,15 @@ class TournamentStandingsView(APIView):
             "draws": row.draws,
             "losses": row.losses,
             "points": row.points,
+            "goals_for": row.goals_for,
+            "goals_against": row.goals_against,
+            "goal_difference": row.goal_difference,
+            "games_for": getattr(row, "games_for", 0),
+            "games_against": getattr(row, "games_against", 0),
+            "games_difference": getattr(row, "games_difference", 0),
         }
 
-        # Legacy / default (wspólne API)
-        base.update(
-            {
-                "goals_for": row.goals_for,
-                "goals_against": row.goals_against,
-                "goal_difference": row.goal_difference,
-            }
-        )
-
-        # games_* (jeśli istnieją)
-        base.update(
-            {
-                "games_for": getattr(row, "games_for", 0),
-                "games_against": getattr(row, "games_against", 0),
-                "games_difference": getattr(row, "games_difference", 0),
-            }
-        )
-
-        # TENIS: docelowe nazwy kolumn
+        # Tenis dostaje docelowe aliasy sets_* przy zachowaniu kompatybilności legacy.
         if discipline == "tennis":
             base.update(
                 {
