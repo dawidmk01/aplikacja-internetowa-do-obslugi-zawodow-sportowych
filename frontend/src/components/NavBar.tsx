@@ -1,6 +1,9 @@
+// frontend/src/components/NavBar.tsx
+// Plik renderuje główny pasek nawigacji aplikacji wraz z obsługą stanu sesji i menu mobilnego.
+
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { LogOut, Menu, Plus, Search, Trophy, X } from "lucide-react";
 
@@ -46,6 +49,7 @@ function DesktopNavLink({
 
 export default function NavBar({ username, onLogout }: Props) {
   const location = useLocation();
+  const navigate = useNavigate();
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
@@ -100,6 +104,15 @@ export default function NavBar({ username, onLogout }: Props) {
   useEffect(() => {
     if (mobileMenuOpen) setMobileMenuOpen(false);
   }, [location.pathname]);
+
+  const handleAccountClick = () => {
+    if (!username) {
+      navigate("/login");
+      return;
+    }
+
+    navigate("/account");
+  };
 
   return (
     <>
@@ -162,17 +175,31 @@ export default function NavBar({ username, onLogout }: Props) {
               </>
             ) : (
               <div className="flex items-center gap-3">
-                <div className="hidden items-center gap-3 rounded-full border border-white/10 bg-white/5 py-1.5 pl-2 pr-4 backdrop-blur-md sm:flex">
+                <button
+                  type="button"
+                  onClick={handleAccountClick}
+                  className={cn(
+                    "hidden items-center gap-3 rounded-full border border-white/10 bg-white/5 py-1.5 pl-2 pr-4 backdrop-blur-md sm:flex",
+                    "transition-colors",
+                    isActive("/account")
+                      ? "border-white/15 bg-white/10 text-white shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
+                      : "hover:border-indigo-500/40 hover:bg-indigo-500/10",
+                    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+                  )}
+                  title="Moje konto"
+                  aria-label="Moje konto"
+                >
                   <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-tr from-indigo-500 to-violet-500 shadow-inner">
                     <span className="text-xs font-bold text-white">
                       {username.slice(0, 1).toUpperCase()}
                     </span>
                   </div>
-                  <div className="flex flex-col">
+
+                  <div className="flex flex-col text-left">
                     <span className="mb-0.5 text-xs leading-none text-slate-400">Witaj,</span>
                     <span className="text-sm font-semibold leading-none text-white">{username}</span>
                   </div>
-                </div>
+                </button>
 
                 <button
                   type="button"
@@ -219,6 +246,27 @@ export default function NavBar({ username, onLogout }: Props) {
             className="fixed left-0 right-0 z-40 overflow-hidden border-b border-white/10 bg-slate-950/90 backdrop-blur-2xl md:hidden"
           >
             <div className="space-y-2 p-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  navigate("/account");
+                }}
+                className={cn(
+                  "flex w-full items-center justify-between rounded-xl px-4 py-3 text-base font-medium transition",
+                  "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
+                  isActive("/account")
+                    ? "bg-white/10 text-white border border-white/10"
+                    : "text-slate-300 hover:bg-white/5 hover:text-white"
+                )}
+                aria-current={isActive("/account") ? "page" : undefined}
+              >
+                <span>Moje konto</span>
+                {isActive("/account") ? (
+                  <div className="h-2 w-2 rounded-full bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.7)]" />
+                ) : null}
+              </button>
+
               {authedLinks.map((l) => {
                 const active = isActive(l.to);
 

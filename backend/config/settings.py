@@ -140,6 +140,7 @@ REST_FRAMEWORK = {
 }
 
 PASSWORD_RESET_TOKEN_HOURS = env_int("PASSWORD_RESET_TOKEN_HOURS", 1)
+ACCOUNT_CHANGE_TOKEN_HOURS = env_int("ACCOUNT_CHANGE_TOKEN_HOURS", 1)
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=env_int("DJANGO_ACCESS_TOKEN_MINUTES", 15)),
@@ -149,7 +150,6 @@ SIMPLE_JWT = {
     "UPDATE_LAST_LOGIN": True,
 }
 
-# Refresh token jest trzymany tylko w cookie HttpOnly.
 AUTH_REFRESH_COOKIE_NAME = env_str("AUTH_REFRESH_COOKIE_NAME", "refresh_token")
 AUTH_REFRESH_COOKIE_PATH = env_str("AUTH_REFRESH_COOKIE_PATH", "/api/auth/")
 AUTH_REFRESH_COOKIE_DOMAIN = env_str("AUTH_REFRESH_COOKIE_DOMAIN", "") or None
@@ -190,6 +190,11 @@ DEFAULT_FROM_EMAIL = env_str("DEFAULT_FROM_EMAIL", "noreply@turnieje.local")
 FRONTEND_RESET_URL = env_str(
     "FRONTEND_RESET_URL",
     "http://localhost:5173/reset-password",
+)
+
+FRONTEND_ACCOUNT_CONFIRM_URL = env_str(
+    "FRONTEND_ACCOUNT_CONFIRM_URL",
+    "http://localhost:5173/account",
 )
 
 X_FRAME_OPTIONS = "DENY"

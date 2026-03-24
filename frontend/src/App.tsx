@@ -13,6 +13,7 @@ import ProtectedRoute from "./ProtectedRoute";
 import { TournamentFlowGuardProvider } from "./flow/TournamentFlowGuardContext";
 import TournamentLayout from "./layouts/TournamentLayout";
 
+import Account from "./pages/Account";
 import FindTournament from "./pages/FindTournament";
 import ForgotPassword from "./pages/ForgotPassword";
 import Home from "./pages/Home";
@@ -116,6 +117,15 @@ export default function App() {
                 element={
                   <ProtectedRoute>
                     <MyTournaments />
+                  </ProtectedRoute>
+                }
+              />
+
+              <Route
+                path="/account"
+                element={
+                  <ProtectedRoute>
+                    <Account />
                   </ProtectedRoute>
                 }
               />
