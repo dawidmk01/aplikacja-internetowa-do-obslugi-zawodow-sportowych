@@ -8,7 +8,6 @@ import {
   Download,
   Info,
   Link as LinkIcon,
-  PlayCircle,
   QrCode,
   Send,
   Settings,
@@ -85,7 +84,7 @@ export type AssistantPermissionsPayload = {
   name_change_approve?: boolean;
 };
 
-export type TabKey = "overview" | "access" | "join" | "assistants" | "share" | "permissions" | "dev";
+export type TabKey = "overview" | "access" | "join" | "assistants" | "share" | "permissions";
 
 export type TabConfig = {
   key: TabKey;
@@ -104,7 +103,6 @@ const TABS: TabConfig[] = [
   { key: "assistants", label: "Asystenci", icon: <Shield className="h-4 w-4" />, manageOnly: true },
   { key: "share", label: "Udostępnianie", icon: <QrCode className="h-4 w-4" />, manageOnly: true },
   { key: "permissions", label: "Twoje uprawnienia", icon: <Shield className="h-4 w-4" />, manageOnly: true },
-  { key: "dev", label: "Narzędzia", icon: <PlayCircle className="h-4 w-4" />, organizerOnly: true },
 ];
 
 function formatRoleLabel(role: Tournament["my_role"]): string {
@@ -290,7 +288,6 @@ type Props = {
   onRemoveAssistant: (userId: number) => void;
   onUpdateAssistantDraft: (userId: number, patch: Partial<Required<AssistantPermissionsPayload>>) => void;
 
-  onGenerateTournament: () => void;
 };
 
 export function TournamentDetailTabs(props: Props) {
@@ -335,7 +332,6 @@ export function TournamentDetailTabs(props: Props) {
     onSaveAssistantPerms,
     onRemoveAssistant,
     onUpdateAssistantDraft,
-    onGenerateTournament,
   } = props;
 
   const basePublicUrl = useMemo(() => new URL(`/tournaments/${tournament.id}`, window.location.origin).toString(), [tournament.id]);
@@ -933,33 +929,6 @@ export function TournamentDetailTabs(props: Props) {
     </div>
   );
 
-  const DevTab = () => (
-    <div className="space-y-4">
-      <Card className="p-5">
-        <div className="text-base font-extrabold text-slate-100">Narzędzia</div>
-        <div className="mt-1 text-sm text-slate-300/90 break-words">Operacje pomocnicze dla etapu developmentu.</div>
-
-        <Card className="mt-5 bg-white/[0.04] p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm font-extrabold text-slate-100">Generowanie rozgrywek</div>
-              <div className="mt-1 text-xs text-slate-300/80">Dostępne tylko gdy status = DRAFT.</div>
-            </div>
-
-            <Button
-              type="button"
-              variant="primary"
-              leftIcon={<PlayCircle className="h-4 w-4" />}
-              onClick={onGenerateTournament}
-              disabled={tournament.status !== "DRAFT"}
-            >
-              Generuj
-            </Button>
-          </div>
-        </Card>
-      </Card>
-    </div>
-  );
 
   const Content = () => {
     if (activeTab === "overview") return <OverviewTab />;
@@ -968,7 +937,6 @@ export function TournamentDetailTabs(props: Props) {
     if (activeTab === "assistants") return <AssistantsTab />;
     if (activeTab === "share") return <ShareTab />;
     if (activeTab === "permissions") return <PermissionsTab />;
-    if (activeTab === "dev") return <DevTab />;
     return <OverviewTab />;
   };
 

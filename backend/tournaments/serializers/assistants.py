@@ -1,3 +1,6 @@
+# backend/tournaments/serializers/assistants.py
+# Plik definiuje serializery odpowiedzialne za listę asystentów i ich uprawnienia.
+
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
@@ -28,8 +31,10 @@ class AddAssistantSerializer(serializers.Serializer):
     def validate_email(self, value):
         try:
             return User.objects.get(email=value)
-        except User.DoesNotExist:
-            raise serializers.ValidationError("Użytkownik o podanym adresie e-mail nie istnieje.")
+        except User.DoesNotExist as exc:
+            raise serializers.ValidationError(
+                "Użytkownik o podanym adresie e-mail nie istnieje."
+            ) from exc
 
     def validate(self, attrs):
         tournament = self.context["tournament"]
@@ -39,19 +44,15 @@ class AddAssistantSerializer(serializers.Serializer):
             raise serializers.ValidationError("Organizator nie może dodać samego siebie.")
 
         if TournamentMembership.objects.filter(tournament=tournament, user=user).exists():
-            raise serializers.ValidationError("Użytkownik jest już asystentem w tym turnieju.")
+            raise serializers.ValidationError(
+                "Użytkownik jest już asystentem w tym turnieju."
+            )
 
         attrs["user"] = user
         return attrs
 
 
 class AssistantPermissionsSerializer(serializers.Serializer):
-    """
-    Granularne uprawnienia per-asystent.
-    Kontrakt dla frontu:
-      - teams_edit, roster_edit, schedule_edit, results_edit, bracket_edit, tournament_edit, name_change_approve
-    """
-
     teams_edit = serializers.BooleanField(required=False)
     roster_edit = serializers.BooleanField(required=False)
     schedule_edit = serializers.BooleanField(required=False)
@@ -60,7 +61,7 @@ class AssistantPermissionsSerializer(serializers.Serializer):
     tournament_edit = serializers.BooleanField(required=False)
     name_change_approve = serializers.BooleanField(required=False)
 
-    # organizer-only (mogą być zwrócone w effective, ale nie powinny być zapisywane)
+    # Te pola mogą być zwracane w effective_permissions, ale nie powinny być zapisywane.
     publish = serializers.BooleanField(required=False)
     archive = serializers.BooleanField(required=False)
     manage_assistants = serializers.BooleanField(required=False)

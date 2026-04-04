@@ -1,14 +1,12 @@
 # backend/tournaments/serializers/teams.py
+# Plik definiuje serializery odpowiedzialne za odczyt i edycję jednostek startowych turnieju.
+
 from rest_framework import serializers
 
 from tournaments.models import Team
 
 
 class TeamSerializer(serializers.ModelSerializer):
-    """
-    Serializer jednostki startowej turnieju (drużyna / zawodnik).
-    """
-
     players_count = serializers.SerializerMethodField()
 
     class Meta:
@@ -30,19 +28,8 @@ class TeamSerializer(serializers.ModelSerializer):
         )
 
     def get_players_count(self, obj: Team) -> int:
-        """
-        Liczba aktywnych zawodników w składzie drużyny.
-
-        Uwaga wydajnościowa:
-        - Jeżeli w widoku użyjesz .prefetch_related("players"), to obj.players będzie w cache.
-        - Jeżeli nie, Django wykona COUNT per rekord (N+1).
-        Dlatego w TournamentTeamListView docelowo dopniemy prefetch.
-        """
-        try:
-            # gdy prefetch był wykonany, to będzie to QuerySet w cache
-            return obj.players.filter(is_active=True).count()
-        except Exception:
-            return 0
+        # Widok może użyć prefetch_related("players"), ale serializer działa też bez prefetchu.
+        return obj.players.filter(is_active=True).count()
 
     def validate_name(self, value: str) -> str:
         if not value or not value.strip():

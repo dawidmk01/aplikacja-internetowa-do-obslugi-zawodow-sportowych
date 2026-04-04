@@ -1,9 +1,12 @@
+// frontend/src/pages/TournamentStandings.tsx
+// Plik renderuje klasyfikację turnieju i rozdziela prezentację tabel klasycznych, customowych oraz drabinki.
+
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { motion } from "framer-motion";
-import { Brackets, LayoutGrid, Table2, Trophy } from "lucide-react";
+import { Brackets, Gauge, LayoutGrid, Table2, TimerReset, Trophy } from "lucide-react";
 
 import { apiFetch, apiGet } from "../api";
 import { cn } from "../lib/cn";
@@ -12,57 +15,21 @@ import { displayGroupName, isByeMatch } from "../flow/stagePresentation";
 import { Card } from "../ui/Card";
 import { InlineAlert } from "../ui/InlineAlert";
 
-type Tournament = {
-  id: number;
-  name: string;
-  discipline?: string;
-  tournament_format: "LEAGUE" | "CUP" | "MIXED";
-  format_config?: Record<string, any>;
-};
+import type {
+  CustomBetterResult,
+  CustomResultValueKind,
+  MatchDTO,
+  TournamentDTO,
+  TournamentResultConfigDTO,
+  TournamentStandingsResponseDTO,
+  StandingsRowDTO,
+} from "../types/results";
 
-type MatchDto = {
-  id: number;
-  stage_type: "LEAGUE" | "GROUP" | "KNOCKOUT" | "THIRD_PLACE";
-  stage_id: number;
-  stage_order: number;
-  round_number: number | null;
-  group_name?: string | null;
+type Tournament = TournamentDTO;
 
-  home_team_id: number;
-  away_team_id: number;
-  home_team_name: string;
-  away_team_name: string;
+type MatchDto = MatchDTO;
 
-  home_score: number | null;
-  away_score: number | null;
-
-  winner_id: number | null;
-  status: "SCHEDULED" | "IN_PROGRESS" | "FINISHED";
-};
-
-type StandingRow = {
-  team_id: number;
-  team_name: string;
-
-  played: number;
-  wins: number;
-  draws: number;
-  losses: number;
-  points: number;
-
-  goals_for: number;
-  goals_against: number;
-  goal_difference: number;
-
-  games_for?: number;
-  games_against?: number;
-  games_difference?: number;
-
-  sets_for?: number;
-  sets_against?: number;
-  sets_diff?: number;
-  games_diff?: number;
-};
+type StandingRow = StandingsRowDTO;
 
 type FormResult = "W" | "D" | "L";
 
@@ -92,8 +59,8 @@ type BracketDuelItem = {
   penalties_leg2_home?: number | null;
   penalties_leg2_away?: number | null;
 
-  tennis_sets_leg1?: any | null;
-  tennis_sets_leg2?: any | null;
+  tennis_sets_leg1?: unknown[] | null;
+  tennis_sets_leg2?: unknown[] | null;
 };
 
 type BracketRound = {
@@ -113,11 +80,7 @@ type GroupStanding = {
   table: StandingRow[];
 };
 
-type StandingsMeta = {
-  discipline?: string;
-  table_schema?: string;
-  tennis_points_mode?: string;
-};
+type StandingsMeta = TournamentStandingsResponseDTO["meta"];
 
 type StandingsResponse = {
   meta?: StandingsMeta;
@@ -161,36 +124,39 @@ function last5Form(teamId: number, matches: MatchDto[]): FormResult[] {
     });
 }
 
-function formatTennisSets(tennisSets: any): string | null {
+function formatTennisSets(tennisSets: unknown): string | null {
   if (!Array.isArray(tennisSets) || tennisSets.length === 0) return null;
 
   const parts: string[] = [];
   for (const s of tennisSets) {
     if (!s || typeof s !== "object") continue;
 
-    const hg = Number(s.home_games);
-    const ag = Number(s.away_games);
-    if (!Number.isFinite(hg) || !Number.isFinite(ag)) continue;
+    const homeGames = Number((s as { home_games?: unknown }).home_games);
+    const awayGames = Number((s as { away_games?: unknown }).away_games);
+    if (!Number.isFinite(homeGames) || !Number.isFinite(awayGames)) continue;
 
-    const ht = s.home_tiebreak;
-    const at = s.away_tiebreak;
+    const homeTb = (s as { home_tiebreak?: unknown }).home_tiebreak;
+    const awayTb = (s as { away_tiebreak?: unknown }).away_tiebreak;
 
-    if (Number.isFinite(Number(ht)) && Number.isFinite(Number(at))) {
-      parts.push(`${hg}-${ag}(${Number(ht)}-${Number(at)})`);
+    if (Number.isFinite(Number(homeTb)) && Number.isFinite(Number(awayTb))) {
+      parts.push(`${homeGames}-${awayGames}(${Number(homeTb)}-${Number(awayTb)})`);
     } else {
-      parts.push(`${hg}-${ag}`);
+      parts.push(`${homeGames}-${awayGames}`);
     }
   }
 
   return parts.length ? parts.join(", ") : null;
 }
 
-function formatPenalties(ph: number | null | undefined, pa: number | null | undefined): string | null {
-  if (ph == null || pa == null) return null;
-  return `k. ${ph}:${pa}`;
+function formatPenalties(
+  home: number | null | undefined,
+  away: number | null | undefined
+): string | null {
+  if (home == null || away == null) return null;
+  return `k. ${home}:${away}`;
 }
 
-function safeNum(v: any, fallback = 0): number {
+function safeNum(v: unknown, fallback = 0): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
 }
@@ -199,21 +165,158 @@ function getTennisPointsMode(
   tournament: Tournament | null,
   standings: StandingsResponse | null
 ): "PLT" | "NONE" {
-  const tMode = (tournament?.format_config?.tennis_points_mode ?? "").toString().toUpperCase();
+  const tMode = (tournament?.format_config?.tennis_points_mode ?? "")
+    .toString()
+    .toUpperCase();
   if (tMode === "PLT") return "PLT";
   if (tMode === "NONE") return "NONE";
 
-  const sMode = (standings?.meta?.tennis_points_mode ?? "").toString().toUpperCase();
+  const sMode = (standings?.meta?.tennis_points_mode ?? "")
+    .toString()
+    .toUpperCase();
   if (sMode === "PLT") return "PLT";
   if (sMode === "NONE") return "NONE";
 
   return "NONE";
 }
 
-function normalizeMatchList(raw: any): MatchDto[] {
+function normalizeMatchList(raw: unknown): MatchDto[] {
   if (Array.isArray(raw)) return raw as MatchDto[];
-  if (Array.isArray(raw?.results)) return raw.results as MatchDto[];
+  if (Array.isArray((raw as { results?: unknown[] } | null)?.results)) {
+    return (raw as { results: MatchDto[] }).results;
+  }
   return [];
+}
+
+function getResultConfig(
+  tournament: Tournament | null,
+  standings: StandingsResponse | null
+): TournamentResultConfigDTO {
+  if (standings?.meta?.result_config) return standings.meta.result_config;
+  if (tournament?.result_config) return tournament.result_config;
+  return {};
+}
+
+function getCustomMode(standings: StandingsResponse | null): string {
+  const direct = String(standings?.meta?.custom_mode ?? "").toUpperCase();
+  if (direct) return direct;
+
+  const schema = String(standings?.meta?.table_schema ?? "").toUpperCase();
+  if (schema === "CUSTOM_POINTS") return "HEAD_TO_HEAD_POINTS";
+  if (schema === "CUSTOM_MEASURED_HEAD_TO_HEAD") return "HEAD_TO_HEAD_MEASURED";
+  if (schema === "CUSTOM_MEASURED_MASS_START") return "MASS_START_MEASURED";
+  return "";
+}
+
+function getCustomValueKind(
+  config: TournamentResultConfigDTO,
+  customMode: string,
+  row?: StandingRow | null
+): CustomResultValueKind | "" {
+  const rowValueKind = String(row?.custom_value_kind ?? "").toUpperCase();
+  if (rowValueKind === "NUMBER" || rowValueKind === "TIME" || rowValueKind === "PLACE") {
+    return rowValueKind;
+  }
+
+  if (customMode === "HEAD_TO_HEAD_MEASURED") {
+    const measured = String(config.measured_value_kind ?? config.value_kind ?? "").toUpperCase();
+    if (measured === "NUMBER" || measured === "TIME" || measured === "PLACE") return measured;
+  }
+
+  if (customMode === "MASS_START_MEASURED") {
+    const massStart = String(config.mass_start_value_kind ?? config.value_kind ?? "").toUpperCase();
+    if (massStart === "NUMBER" || massStart === "TIME" || massStart === "PLACE") return massStart;
+  }
+
+  const fallback = String(config.value_kind ?? "").toUpperCase();
+  if (fallback === "NUMBER" || fallback === "TIME" || fallback === "PLACE") return fallback;
+  return "";
+}
+
+function formatCustomTimeValue(valueMs: number, config: TournamentResultConfigDTO): string {
+  const totalMs = Math.max(0, Number(valueMs) || 0);
+  const totalSeconds = Math.floor(totalMs / 1000);
+  const ms = totalMs % 1000;
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  const hundredths = Math.floor(ms / 10);
+  const format = String(config.time_format ?? "MM:SS.hh");
+
+  if (format === "HH:MM:SS") return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  if (format === "MM:SS") return `${String(totalMinutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  if (format === "SS.hh") return `${totalSeconds}.${String(hundredths).padStart(2, "0")}`;
+  return `${String(totalMinutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(hundredths).padStart(2, "0")}`;
+}
+
+function formatCustomResultDisplay(
+  row: StandingRow,
+  config: TournamentResultConfigDTO,
+  customMode: string
+): string {
+  const fromBackend = String(row.custom_result_display ?? "").trim();
+  if (fromBackend) return fromBackend;
+
+  const unitLabel = String(config.unit_label ?? config.unit ?? "").trim();
+  const valueKind = getCustomValueKind(config, customMode, row);
+
+  if (valueKind === "TIME" && row.custom_result_time_ms != null) {
+    return formatCustomTimeValue(row.custom_result_time_ms, config);
+  }
+
+  if (valueKind === "PLACE" && row.custom_result_place != null) {
+    return String(row.custom_result_place);
+  }
+
+  if (row.custom_result_numeric != null) {
+    return unitLabel
+      ? `${row.custom_result_numeric} ${unitLabel}`
+      : String(row.custom_result_numeric);
+  }
+
+  return "-";
+}
+
+function getCustomRankingDescription(
+  config: TournamentResultConfigDTO,
+  customMode: string
+): string {
+  if (customMode === "HEAD_TO_HEAD_POINTS") {
+    return "Klasyfikacja jest liczona jak tabela punktowa i zachowuje układ tabeli meczowej.";
+  }
+
+  const valueKind = getCustomValueKind(config, customMode, null);
+  const better = String(config.better_result ?? "").toUpperCase() as CustomBetterResult | "";
+  const unitLabel = String(config.unit_label ?? config.unit ?? "").trim();
+
+  if (valueKind === "TIME") {
+    const format = String(config.time_format ?? "MM:SS.hh");
+    return `Ranking według czasu. Lepszy jest wynik niższy. Format prezentacji: ${format}.`;
+  }
+
+  if (valueKind === "PLACE") {
+    return "Ranking według miejsca. Lepsza jest wartość niższa.";
+  }
+
+  if (valueKind === "NUMBER") {
+    const direction =
+      better === "LOWER" ? "Lepszy jest wynik niższy." : "Lepszy jest wynik wyższy.";
+    const decimals =
+      typeof config.decimal_places === "number" ? config.decimal_places : 0;
+    const unitInfo = unitLabel ? ` Jednostka: ${unitLabel}.` : "";
+    return `Ranking według wartości liczbowej. ${direction}${unitInfo} Dokładność: ${decimals} miejsce po przecinku.`;
+  }
+
+  return "Ranking niestandardowy.";
+}
+
+function getCustomModeBadgeLabel(customMode: string, valueKind: CustomResultValueKind | ""): string {
+  if (customMode === "HEAD_TO_HEAD_POINTS") return "Tabela punktowa";
+  if (valueKind === "TIME") return "Ranking czasowy";
+  if (valueKind === "PLACE") return "Ranking miejsc";
+  if (valueKind === "NUMBER") return "Ranking liczbowy";
+  return "Ranking custom";
 }
 
 // ===== Strona: tabela i drabinka =====
@@ -254,7 +357,7 @@ export default function TournamentStandings() {
 
         if (!cancelled) {
           if (sRes.ok) {
-            const data = await sRes.json();
+            const data = (await sRes.json()) as StandingsResponse;
             setStandings(data);
           } else {
             setStandings(null);
@@ -267,8 +370,10 @@ export default function TournamentStandings() {
             setMatches([]);
           }
         }
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message || "Wystąpił błąd");
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Wystąpił błąd");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -285,9 +390,17 @@ export default function TournamentStandings() {
     const tournamentDiscipline = (tournament?.discipline ?? "").toLowerCase();
     const metaSchema = (standings?.meta?.table_schema ?? "").toUpperCase();
     const metaDiscipline = (standings?.meta?.discipline ?? "").toLowerCase();
+    const customMode = getCustomMode(standings);
 
     const discipline = (metaDiscipline || tournamentDiscipline || "").toLowerCase();
     const isTennis = metaSchema === "TENNIS" || discipline === "tennis";
+    const isCustom = metaSchema.startsWith("CUSTOM") || String(standings?.meta?.result_mode ?? "").toUpperCase() === "CUSTOM";
+    const isCustomMeasured =
+      customMode === "HEAD_TO_HEAD_MEASURED" ||
+      customMode === "MASS_START_MEASURED" ||
+      metaSchema === "CUSTOM_MEASURED_HEAD_TO_HEAD" ||
+      metaSchema === "CUSTOM_MEASURED_MASS_START";
+    const isMassStartMeasured = customMode === "MASS_START_MEASURED" || metaSchema === "CUSTOM_MEASURED_MASS_START";
 
     const tennisPointsMode = getTennisPointsMode(tournament, standings);
     const showTennisPoints = isTennis && tennisPointsMode === "PLT";
@@ -303,6 +416,9 @@ export default function TournamentStandings() {
     return {
       discipline,
       isTennis,
+      isCustom,
+      isCustomMeasured,
+      isMassStartMeasured,
       showTennisPoints,
       isCup: !!isCup,
       isMixed: !!isMixed,
@@ -311,6 +427,27 @@ export default function TournamentStandings() {
       hasTableData,
       hasBracketData,
     };
+  }, [standings, tournament]);
+
+  const customResultConfig = useMemo(
+    () => getResultConfig(tournament, standings),
+    [standings, tournament]
+  );
+
+  const customMode = useMemo(() => getCustomMode(standings), [standings]);
+  const customValueKind = useMemo(
+    () => getCustomValueKind(customResultConfig, customMode, null),
+    [customMode, customResultConfig]
+  );
+
+  const customDisciplineLabel = useMemo(() => {
+    const fromMeta = String(standings?.meta?.custom_discipline_name ?? "").trim();
+    if (fromMeta) return fromMeta;
+
+    const fromTournament = String(tournament?.custom_discipline_name ?? "").trim();
+    if (fromTournament) return fromTournament;
+
+    return "Dyscyplina niestandardowa";
   }, [standings, tournament]);
 
   if (loading) {
@@ -345,6 +482,9 @@ export default function TournamentStandings() {
   const {
     discipline,
     isTennis,
+    isCustom,
+    isCustomMeasured,
+    isMassStartMeasured,
     showTennisPoints,
     isCup,
     isMixed,
@@ -356,6 +496,7 @@ export default function TournamentStandings() {
 
   const showTabs = isMixed || (hasTableData && hasBracketData);
   const showTableEmpty = !isCup && tab === "TABLE" && !hasGroups && !hasLeagueTable;
+  const showMassStartInfo = isMassStartMeasured && !hasTableData && tab === "TABLE";
 
   return (
     <div className="mx-auto w-full max-w-[1400px] px-4 pb-24">
@@ -363,6 +504,36 @@ export default function TournamentStandings() {
         <div className="text-sm text-slate-300">Tabela i drabinka</div>
         <h1 className="mt-1 text-2xl font-semibold text-white">{tournament.name}</h1>
       </div>
+
+      {isCustomMeasured ? (
+        <Card className="relative mb-5 overflow-hidden p-5 sm:p-6">
+          <div className="pointer-events-none absolute inset-0">
+            <div className="absolute -top-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-indigo-500/10 blur-3xl" />
+            <div className="absolute -bottom-24 left-1/2 h-48 w-[28rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
+          </div>
+
+          <div className="relative flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <div className="text-xs text-slate-400">Klasyfikacja niestandardowa</div>
+              <div className="mt-1 text-lg font-semibold text-slate-100">
+                {customDisciplineLabel}
+              </div>
+              <div className="mt-3 text-sm text-slate-300">
+                {getCustomRankingDescription(customResultConfig, customMode)}
+              </div>
+            </div>
+
+            <div className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-200">
+              {customValueKind === "TIME" ? (
+                <TimerReset className="h-4 w-4 text-slate-200" />
+              ) : (
+                <Gauge className="h-4 w-4 text-slate-200" />
+              )}
+              {getCustomModeBadgeLabel(customMode, customValueKind)}
+            </div>
+          </div>
+        </Card>
+      ) : null}
 
       {showTabs ? (
         <div className="mb-5 flex flex-wrap gap-2" role="tablist" aria-label="Widok tabeli i drabinki">
@@ -425,7 +596,9 @@ export default function TournamentStandings() {
                           rows={g.table}
                           matchesForForm={groupMatches}
                           isTennis={isTennis}
+                          isCustomMeasured={isCustomMeasured}
                           showTennisPoints={showTennisPoints}
+                          customResultConfig={customResultConfig}
                         />
                       </div>
                     </Card>
@@ -441,18 +614,28 @@ export default function TournamentStandings() {
 
                 <div className="relative">
                   <div className="mb-3">
-                    <div className="text-xs text-slate-400">Tabela</div>
-                    <div className="mt-1 text-lg font-semibold text-slate-100">Klasyfikacja</div>
+                    <div className="text-xs text-slate-400">
+                      {isCustom ? "Ranking" : "Tabela"}
+                    </div>
+                    <div className="mt-1 text-lg font-semibold text-slate-100">
+                      {isCustom ? "Klasyfikacja" : "Klasyfikacja"}
+                    </div>
                   </div>
 
                   <StandingsTable
                     rows={standings!.table!}
                     matchesForForm={matches.filter((m) => m.stage_type === "LEAGUE")}
                     isTennis={isTennis}
+                    isCustomMeasured={isCustomMeasured}
                     showTennisPoints={showTennisPoints}
+                    customResultConfig={customResultConfig}
                   />
                 </div>
               </Card>
+            ) : showMassStartInfo ? (
+              <InlineAlert variant="info">
+                Ranking etapowy dla trybu MASS_START jest prezentowany po stronie rezultatów etapowych.
+              </InlineAlert>
             ) : showTableEmpty ? (
               <InlineAlert variant="info">Brak danych tabeli.</InlineAlert>
             ) : null}
@@ -508,7 +691,7 @@ export default function TournamentStandings() {
   );
 }
 
-// ===== UI helpers (lokalne) =====
+// ===== UI helpers =====
 
 function SegmentButton({
   id,
@@ -600,18 +783,25 @@ function StandingsTable({
   rows,
   matchesForForm,
   isTennis,
+  isCustomMeasured,
   showTennisPoints,
+  customResultConfig,
 }: {
   rows: StandingRow[];
   matchesForForm: MatchDto[];
   isTennis: boolean;
+  isCustomMeasured: boolean;
   showTennisPoints: boolean;
+  customResultConfig: TournamentResultConfigDTO;
 }) {
-  const minW = isTennis
-    ? showTennisPoints
-      ? "min-w-[950px]"
-      : "min-w-[900px]"
-    : "min-w-[640px]";
+  const customMode = String(rows[0]?.custom_mode ?? "").toUpperCase();
+  const minW = isCustomMeasured
+    ? "min-w-[700px]"
+    : isTennis
+      ? showTennisPoints
+        ? "min-w-[950px]"
+        : "min-w-[900px]"
+      : "min-w-[640px]";
 
   return (
     <div
@@ -623,7 +813,15 @@ function StandingsTable({
       <div className="max-h-[540px] overflow-auto">
         <table className={cn("w-full border-separate border-spacing-0", minW)}>
           <thead>
-            {isTennis ? (
+            {isCustomMeasured ? (
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
+                <ThSticky>#</ThSticky>
+                <ThSticky>Uczestnik</ThSticky>
+                <ThSticky>Wynik</ThSticky>
+                <ThSticky>Typ</ThSticky>
+                <ThSticky className="pr-3">Status</ThSticky>
+              </tr>
+            ) : isTennis ? (
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
                 <ThSticky>#</ThSticky>
                 <ThSticky>Zawodnik</ThSticky>
@@ -666,14 +864,62 @@ function StandingsTable({
                 "hover:bg-white/[0.04] transition"
               );
 
+              if (isCustomMeasured) {
+                const position = r.rank ?? i + 1;
+                const valueKind = getCustomValueKind(customResultConfig, customMode, r);
+                const hasResult =
+                  r.custom_result_display != null ||
+                  r.custom_result_numeric != null ||
+                  r.custom_result_time_ms != null ||
+                  r.custom_result_place != null;
+                const resultLabel = formatCustomResultDisplay(r, customResultConfig, customMode);
+                const kindLabel =
+                  valueKind === "TIME"
+                    ? "Czas"
+                    : valueKind === "PLACE"
+                      ? "Miejsce"
+                      : "Liczba";
+
+                return (
+                  <tr key={r.team_id} className={rowClass}>
+                    <td className="py-3 pl-3 pr-3 text-slate-300">{position}</td>
+                    <td className="py-3 pr-3 font-semibold">
+                      <span className="block max-w-[360px] truncate">{r.team_name}</span>
+                    </td>
+                    <td className="py-3 pr-3">
+                      <span className="font-semibold text-sky-200">{resultLabel}</span>
+                    </td>
+                    <td className="py-3 pr-3 text-slate-200">{kindLabel}</td>
+                    <td className="py-3 pr-3">
+                      <span
+                        className={cn(
+                          "inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold",
+                          hasResult
+                            ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-100"
+                            : "border-white/10 bg-white/[0.04] text-slate-300"
+                        )}
+                      >
+                        {hasResult ? "Wynik zapisany" : "Brak wyniku"}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              }
+
               if (isTennis) {
                 const setsFor = safeNum(r.sets_for, safeNum(r.goals_for, 0));
                 const setsAgainst = safeNum(r.sets_against, safeNum(r.goals_against, 0));
-                const setsDiff = safeNum(r.sets_diff, safeNum(r.goal_difference, setsFor - setsAgainst));
+                const setsDiff = safeNum(
+                  r.sets_diff,
+                  safeNum(r.goal_difference, setsFor - setsAgainst)
+                );
 
                 const gamesFor = safeNum(r.games_for, 0);
                 const gamesAgainst = safeNum(r.games_against, 0);
-                const gamesDiff = safeNum(r.games_diff, safeNum(r.games_difference, gamesFor - gamesAgainst));
+                const gamesDiff = safeNum(
+                  r.games_diff,
+                  safeNum(r.games_difference, gamesFor - gamesAgainst)
+                );
 
                 return (
                   <tr key={r.team_id} className={rowClass}>
@@ -771,23 +1017,37 @@ function FormDots({ form }: { form: FormResult[] }) {
 // ===== Drabinka =====
 
 function StatusPill({ status }: { status: BracketDuelItem["status"] }) {
-  const label = status === "IN_PROGRESS" ? "Na żywo" : status === "FINISHED" ? "Zakończony" : "Zaplanowany";
+  const label =
+    status === "IN_PROGRESS"
+      ? "Na żywo"
+      : status === "FINISHED"
+        ? "Zakończony"
+        : "Zaplanowany";
   return (
     <span
       className={cn(
         "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] font-semibold",
-        status === "IN_PROGRESS" && "border-emerald-400/30 bg-emerald-500/10 text-emerald-200",
+        status === "IN_PROGRESS" &&
+          "border-emerald-400/30 bg-emerald-500/10 text-emerald-200",
         status === "FINISHED" && "border-white/10 bg-white/5 text-slate-200",
         status === "SCHEDULED" && "border-white/10 bg-white/5 text-slate-300"
       )}
     >
-      {status === "IN_PROGRESS" ? <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-300" /> : null}
+      {status === "IN_PROGRESS" ? (
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-300" />
+      ) : null}
       {label}
     </span>
   );
 }
 
-function StandardBracketView({ data, discipline }: { data: BracketData; discipline: string }) {
+function StandardBracketView({
+  data,
+  discipline,
+}: {
+  data: BracketData;
+  discipline: string;
+}) {
   const { rounds, third_place } = data;
 
   return (
@@ -809,7 +1069,11 @@ function StandardBracketView({ data, discipline }: { data: BracketData; discipli
                 Mecz o 3. miejsce
               </div>
               <div className="flex justify-center">
-                <BracketMatchCard item={third_place} isThirdPlace discipline={discipline} />
+                <BracketMatchCard
+                  item={third_place}
+                  isThirdPlace
+                  discipline={discipline}
+                />
               </div>
             </div>
           ) : null}
@@ -819,7 +1083,13 @@ function StandardBracketView({ data, discipline }: { data: BracketData; discipli
   );
 }
 
-function CenteredBracketView({ data, discipline }: { data: BracketData; discipline: string }) {
+function CenteredBracketView({
+  data,
+  discipline,
+}: {
+  data: BracketData;
+  discipline: string;
+}) {
   const { rounds, third_place } = data;
   if (rounds.length === 0) return null;
 
@@ -839,7 +1109,11 @@ function CenteredBracketView({ data, discipline }: { data: BracketData; discipli
               const leftItems = round.items.slice(0, half);
               return (
                 <div key={`L-${round.round_number}`} className="snap-start">
-                  <RoundColumn label={round.label} items={leftItems} discipline={discipline} />
+                  <RoundColumn
+                    label={round.label}
+                    items={leftItems}
+                    discipline={discipline}
+                  />
                 </div>
               );
             })}
@@ -852,7 +1126,12 @@ function CenteredBracketView({ data, discipline }: { data: BracketData; discipli
               </div>
             </div>
 
-            <RoundColumn label={finalRound.label} items={finalRound.items} highlight discipline={discipline} />
+            <RoundColumn
+              label={finalRound.label}
+              items={finalRound.items}
+              highlight
+              discipline={discipline}
+            />
 
             {third_place ? (
               <div className="mt-8 opacity-90">
@@ -860,7 +1139,11 @@ function CenteredBracketView({ data, discipline }: { data: BracketData; discipli
                   Mecz o 3. miejsce
                 </div>
                 <div className="flex justify-center">
-                  <BracketMatchCard item={third_place} isThirdPlace discipline={discipline} />
+                  <BracketMatchCard
+                    item={third_place}
+                    isThirdPlace
+                    discipline={discipline}
+                  />
                 </div>
               </div>
             ) : null}
@@ -873,7 +1156,11 @@ function CenteredBracketView({ data, discipline }: { data: BracketData; discipli
               if (rightItems.length === 0) return null;
               return (
                 <div key={`R-${round.round_number}`} className="snap-start">
-                  <RoundColumn label={round.label} items={rightItems} discipline={discipline} />
+                  <RoundColumn
+                    label={round.label}
+                    items={rightItems}
+                    discipline={discipline}
+                  />
                 </div>
               );
             })}
@@ -931,21 +1218,27 @@ function BracketMatchCard({
   const homeWin = item.winner_id !== null && item.winner_id === item.home_team_id;
   const awayWin = item.winner_id !== null && item.winner_id === item.away_team_id;
 
-  const aggHome = item.is_two_legged
+  const aggregateHome = item.is_two_legged
     ? item.aggregate_home ?? (item.score_leg1_home ?? 0) + (item.score_leg2_home ?? 0)
     : null;
-  const aggAway = item.is_two_legged
+  const aggregateAway = item.is_two_legged
     ? item.aggregate_away ?? (item.score_leg1_away ?? 0) + (item.score_leg2_away ?? 0)
     : null;
 
   const canShowDetails = item.status !== "SCHEDULED";
 
-  const tennisLeg1 = isTennis && canShowDetails ? formatTennisSets(item.tennis_sets_leg1) : null;
-  const tennisLeg2 = isTennis && canShowDetails ? formatTennisSets(item.tennis_sets_leg2) : null;
+  const tennisLeg1 =
+    isTennis && canShowDetails ? formatTennisSets(item.tennis_sets_leg1) : null;
+  const tennisLeg2 =
+    isTennis && canShowDetails ? formatTennisSets(item.tennis_sets_leg2) : null;
 
-  const pensLeg2 = !isTennis ? formatPenalties(item.penalties_leg2_home ?? null, item.penalties_leg2_away ?? null) : null;
-  const pensLeg1 = !isTennis ? formatPenalties(item.penalties_leg1_home ?? null, item.penalties_leg1_away ?? null) : null;
-  const pensText = pensLeg2 || pensLeg1;
+  const penaltiesLeg2 = !isTennis
+    ? formatPenalties(item.penalties_leg2_home ?? null, item.penalties_leg2_away ?? null)
+    : null;
+  const penaltiesLeg1 = !isTennis
+    ? formatPenalties(item.penalties_leg1_home ?? null, item.penalties_leg1_away ?? null)
+    : null;
+  const penaltiesText = penaltiesLeg2 || penaltiesLeg1;
 
   return (
     <div
@@ -967,34 +1260,53 @@ function BracketMatchCard({
       </div>
 
       <div className="flex items-center justify-between gap-3">
-        <div className={cn("min-w-0 text-sm", homeWin ? "font-semibold text-slate-100" : "text-slate-200")}>
+        <div
+          className={cn(
+            "min-w-0 text-sm",
+            homeWin ? "font-semibold text-slate-100" : "text-slate-200"
+          )}
+        >
           <span className="block truncate">{item.home_team_name || "TBD"}</span>
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
           <ScoreBox score={item.score_leg1_home} isAgg={false} />
-          {item.is_two_legged ? <ScoreBox score={item.score_leg2_home} isAgg={false} /> : null}
-          {item.is_two_legged ? <ScoreBox score={aggHome} isAgg highlight={homeWin} /> : null}
+          {item.is_two_legged ? (
+            <ScoreBox score={item.score_leg2_home} isAgg={false} />
+          ) : null}
+          {item.is_two_legged ? (
+            <ScoreBox score={aggregateHome} isAgg highlight={homeWin} />
+          ) : null}
         </div>
       </div>
 
       <div className="mt-2 flex items-center justify-between gap-3">
-        <div className={cn("min-w-0 text-sm", awayWin ? "font-semibold text-slate-100" : "text-slate-200")}>
+        <div
+          className={cn(
+            "min-w-0 text-sm",
+            awayWin ? "font-semibold text-slate-100" : "text-slate-200"
+          )}
+        >
           <span className="block truncate">{item.away_team_name || "TBD"}</span>
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
           <ScoreBox score={item.score_leg1_away} isAgg={false} />
-          {item.is_two_legged ? <ScoreBox score={item.score_leg2_away} isAgg={false} /> : null}
-          {item.is_two_legged ? <ScoreBox score={aggAway} isAgg highlight={awayWin} /> : null}
+          {item.is_two_legged ? (
+            <ScoreBox score={item.score_leg2_away} isAgg={false} />
+          ) : null}
+          {item.is_two_legged ? (
+            <ScoreBox score={aggregateAway} isAgg highlight={awayWin} />
+          ) : null}
         </div>
       </div>
 
-      {tennisLeg1 || tennisLeg2 || pensText ? (
+      {tennisLeg1 || tennisLeg2 || penaltiesText ? (
         <div className="mt-3 space-y-1 text-xs text-slate-300">
           {tennisLeg1 && !item.is_two_legged ? (
             <div>
-              <span className="font-semibold text-slate-200">Sety (gemy):</span> {tennisLeg1}
+              <span className="font-semibold text-slate-200">Sety (gemy):</span>{" "}
+              {tennisLeg1}
             </div>
           ) : null}
 
@@ -1005,9 +1317,10 @@ function BracketMatchCard({
             </div>
           ) : null}
 
-          {pensText ? (
+          {penaltiesText ? (
             <div>
-              <span className="font-semibold text-slate-200">Karne:</span> {pensText}
+              <span className="font-semibold text-slate-200">Karne:</span>{" "}
+              {penaltiesText}
             </div>
           ) : null}
         </div>

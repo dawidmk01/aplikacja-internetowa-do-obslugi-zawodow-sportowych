@@ -21,6 +21,17 @@ import {
   ConfirmModal,
   StructureCard,
   SummaryCard,
+  getDefaultResultConfig,
+  type CompetitionModel,
+  type CompetitionType,
+  type CustomAggregationMode,
+  type CustomBetterResult,
+  type CustomHeadToHeadMode,
+  type CustomMassStartValueKind,
+  type CustomMeasuredValueKind,
+  type CustomStageConfig,
+  type CustomTimeFormat,
+  type CustomUnitPreset,
   type Discipline,
   type HandballKnockoutTiebreak,
   type HandballPointsMode,
@@ -29,6 +40,7 @@ import {
   type TennisBestOf,
   type TennisPointsMode,
   type TournamentFormat,
+  type TournamentResultConfig,
 } from "./_components/TournamentBasicsSetupView";
 
 type TournamentDTO = {
@@ -96,6 +108,233 @@ function pickFirstError(payload: any): string | null {
   return null;
 }
 
+
+
+type BackendCustomStageConfig = {
+  id?: string;
+  name?: string;
+  groups_count?: number | null;
+  participants_count?: number | null;
+  advance_count?: number | null;
+  rounds_count?: number | null;
+  aggregation_mode?: CustomAggregationMode | null;
+};
+
+const RESULT_CONFIG_KEY_MAP = {
+  headToHeadMode: "head_to_head_mode",
+  customMatchSeriesMode: "custom_match_series_mode",
+  groupResolutionMode: "group_resolution_mode",
+  knockoutResolutionMode: "knockout_resolution_mode",
+  allowDraw: "allow_draw",
+  allowOvertime: "allow_overtime",
+  allowShootout: "allow_shootout",
+  pointsWin: "points_win",
+  pointsDraw: "points_draw",
+  pointsLoss: "points_loss",
+  pointsOvertimeWin: "points_overtime_win",
+  pointsOvertimeLoss: "points_overtime_loss",
+  pointsShootoutWin: "points_shootout_win",
+  pointsShootoutLoss: "points_shootout_loss",
+  legsCount: "legs_count",
+  bestOf: "best_of",
+  roundsCount: "rounds_count",
+  aggregationMode: "aggregation_mode",
+  measuredValueKind: "measured_value_kind",
+  measuredUnitPreset: "measured_unit_preset",
+  measuredUnitCustomLabel: "measured_unit_custom_label",
+  measuredBetterResult: "measured_better_result",
+  measuredDecimalPlaces: "measured_decimal_places",
+  measuredTimeFormat: "measured_time_format",
+  measuredAllowTies: "measured_allow_ties",
+  massStartValueKind: "mass_start_value_kind",
+  massStartUnitPreset: "mass_start_unit_preset",
+  massStartUnitCustomLabel: "mass_start_unit_custom_label",
+  massStartBetterResult: "mass_start_better_result",
+  massStartDecimalPlaces: "mass_start_decimal_places",
+  massStartTimeFormat: "mass_start_time_format",
+  massStartAllowTies: "mass_start_allow_ties",
+  massStartRoundsCount: "mass_start_rounds_count",
+  massStartAggregationMode: "mass_start_aggregation_mode",
+} as const;
+
+function getActiveCustomStagesCount(stages: CustomStageConfig[]): 1 | 2 | 3 {
+  const stage3 = stages[2];
+  if (stage3?.participantsCount != null) return 3;
+
+  const stage2 = stages[1];
+  if (stage2?.participantsCount != null) return 2;
+
+  return 1;
+}
+
+function serializeCustomStage(stage: CustomStageConfig) {
+  return {
+    id: stage.id,
+    name: stage.name,
+    groups_count: stage.groupsCount,
+    participants_count: stage.participantsCount,
+    advance_count: stage.advanceCount,
+    rounds_count: stage.roundsCount,
+    aggregation_mode: stage.aggregationMode,
+  };
+}
+
+function serializeCustomResultConfig(config: TournamentResultConfig) {
+  const payload: Record<string, any> = {
+    competition_model: config.competition_model,
+  };
+
+  for (const [frontendKey, backendKey] of Object.entries(RESULT_CONFIG_KEY_MAP)) {
+    const value = (config as any)[frontendKey];
+    if (value !== undefined) {
+      payload[backendKey] = value;
+    }
+  }
+
+  if (config.competition_model === "MASS_START") {
+    payload.custom_mode = "MASS_START_MEASURED";
+    payload.value_kind = config.massStartValueKind;
+    payload.unit_preset = config.massStartUnitPreset;
+    payload.unit = config.massStartUnitCustomLabel || "";
+    payload.unit_label = config.massStartUnitCustomLabel || "";
+    payload.better_result = config.massStartBetterResult;
+    payload.decimal_places =
+      config.massStartValueKind === "TIME" || config.massStartValueKind === "PLACE"
+        ? null
+        : config.massStartDecimalPlaces;
+    payload.time_format = config.massStartValueKind === "TIME" ? config.massStartTimeFormat : null;
+    payload.allow_ties = config.massStartAllowTies;
+    payload.rounds_count = config.massStartRoundsCount;
+    payload.aggregation_mode = config.massStartAggregationMode;
+    payload.stages = Array.isArray(config.stages)
+      ? config.stages.slice(0, getActiveCustomStagesCount(config.stages)).map(serializeCustomStage)
+      : [];
+
+    return payload;
+  }
+
+  payload.stages = [];
+  return payload;
+}
+
+function deserializeCustomResultConfig(rawConfig: any, participants: number): TournamentResultConfig {
+  const defaults = getDefaultResultConfig();
+  const safeParticipants = Math.max(2, Math.trunc(participants));
+  const raw = rawConfig && typeof rawConfig === "object" ? rawConfig : {};
+
+  const mapped: Record<string, any> = {
+    ...defaults,
+    competition_model: raw.competition_model ?? defaults.competition_model,
+  };
+
+  for (const [frontendKey, backendKey] of Object.entries(RESULT_CONFIG_KEY_MAP)) {
+    if (raw[backendKey] !== undefined) {
+      mapped[frontendKey] = raw[backendKey];
+    }
+  }
+
+  if (mapped.competition_model === "MASS_START") {
+    mapped.massStartValueKind = raw.value_kind ?? raw.mass_start_value_kind ?? defaults.massStartValueKind;
+    mapped.massStartUnitPreset = raw.unit_preset ?? raw.mass_start_unit_preset ?? defaults.massStartUnitPreset;
+    mapped.massStartUnitCustomLabel =
+      raw.unit_label ?? raw.unit ?? raw.mass_start_unit_custom_label ?? defaults.massStartUnitCustomLabel;
+    mapped.massStartBetterResult = raw.better_result ?? raw.mass_start_better_result ?? defaults.massStartBetterResult;
+    mapped.massStartDecimalPlaces = raw.decimal_places ?? raw.mass_start_decimal_places ?? defaults.massStartDecimalPlaces;
+    mapped.massStartTimeFormat = raw.time_format ?? raw.mass_start_time_format ?? defaults.massStartTimeFormat;
+    mapped.massStartAllowTies = raw.allow_ties ?? raw.mass_start_allow_ties ?? defaults.massStartAllowTies;
+    mapped.massStartRoundsCount = raw.rounds_count ?? raw.mass_start_rounds_count ?? defaults.massStartRoundsCount;
+    mapped.massStartAggregationMode =
+      raw.aggregation_mode ?? raw.mass_start_aggregation_mode ?? defaults.massStartAggregationMode;
+  }
+
+  const baseStages = createDefaultStages(safeParticipants);
+  const incomingStages: BackendCustomStageConfig[] = Array.isArray(raw.stages) ? raw.stages.slice(0, 3) : [];
+  const activeStagesCount = Math.max(1, Math.min(3, incomingStages.length || 1));
+
+  let previousAdvance: number | null = safeParticipants;
+  mapped.stages = baseStages.map((baseStage, index) => {
+    const rawStage = incomingStages[index];
+
+    if (!rawStage) {
+      return {
+        ...baseStage,
+        participantsCount: index === 0 ? safeParticipants : null,
+        advanceCount: null,
+        contributesToFinalRanking: index === activeStagesCount - 1,
+      } satisfies CustomStageConfig;
+    }
+
+    const rawParticipantsCount = rawStage.participants_count;
+    const participantsCount =
+      rawParticipantsCount === null || rawParticipantsCount === undefined
+        ? index === 0
+          ? safeParticipants
+          : previousAdvance
+        : Math.max(1, Math.trunc(rawParticipantsCount));
+
+    const advanceCount =
+      rawStage.advance_count === null || rawStage.advance_count === undefined
+        ? null
+        : Math.max(1, Math.trunc(rawStage.advance_count));
+
+    previousAdvance = advanceCount ?? participantsCount ?? previousAdvance;
+
+    return {
+      ...baseStage,
+      id: typeof rawStage.id === "string" ? rawStage.id : baseStage.id,
+      name: typeof rawStage.name === "string" && rawStage.name.trim() ? rawStage.name : baseStage.name,
+      groupsCount: Number.isFinite(rawStage.groups_count as number)
+        ? Math.max(1, Math.trunc(rawStage.groups_count as number))
+        : baseStage.groupsCount,
+      participantsCount,
+      advanceCount,
+      roundsCount: Number.isFinite(rawStage.rounds_count as number)
+        ? Math.max(1, Math.trunc(rawStage.rounds_count as number))
+        : baseStage.roundsCount,
+      aggregationMode: (rawStage.aggregation_mode as CustomAggregationMode | undefined) ?? baseStage.aggregationMode,
+      contributesToFinalRanking: index === activeStagesCount - 1,
+    } satisfies CustomStageConfig;
+  });
+
+  return mapped as TournamentResultConfig;
+}
+function createDefaultStages(participants: number): CustomStageConfig[] {
+  const safeParticipants = Math.max(2, Math.trunc(participants));
+
+  return [
+    {
+      id: "stage-1",
+      name: "Kwalifikacje",
+      groupsCount: 1,
+      participantsCount: safeParticipants,
+      advanceCount: null,
+      roundsCount: 1,
+      aggregationMode: "BEST",
+      contributesToFinalRanking: false,
+    },
+    {
+      id: "stage-2",
+      name: "Półfinał",
+      groupsCount: 1,
+      participantsCount: null,
+      advanceCount: null,
+      roundsCount: 1,
+      aggregationMode: "BEST",
+      contributesToFinalRanking: false,
+    },
+    {
+      id: "stage-3",
+      name: "Finał",
+      groupsCount: 1,
+      participantsCount: null,
+      advanceCount: null,
+      roundsCount: 1,
+      aggregationMode: "BEST",
+      contributesToFinalRanking: true,
+    },
+  ];
+}
+
 // Zapis jest etapowy, aby backend mógł wykryć potrzebę resetu i utrzymać spójność danych.
 export default function TournamentBasicsSetup() {
   const { id } = useParams<{ id: string }>();
@@ -118,16 +357,19 @@ export default function TournamentBasicsSetup() {
   const [confirmCancelLabel, setConfirmCancelLabel] = useState<string>("Anuluj");
   const confirmResolverRef = useRef<((value: boolean) => void) | null>(null);
 
-  const askConfirm = useCallback((opts: { title?: string; message: string; confirmLabel?: string; cancelLabel?: string }) => {
-    setConfirmTitle(opts.title ?? "Potwierdzenie");
-    setConfirmMessage(opts.message);
-    setConfirmConfirmLabel(opts.confirmLabel ?? "Kontynuuj");
-    setConfirmCancelLabel(opts.cancelLabel ?? "Anuluj");
-    setConfirmOpen(true);
-    return new Promise<boolean>((resolve) => {
-      confirmResolverRef.current = resolve;
-    });
-  }, []);
+  const askConfirm = useCallback(
+    (opts: { title?: string; message: string; confirmLabel?: string; cancelLabel?: string }) => {
+      setConfirmTitle(opts.title ?? "Potwierdzenie");
+      setConfirmMessage(opts.message);
+      setConfirmConfirmLabel(opts.confirmLabel ?? "Kontynuuj");
+      setConfirmCancelLabel(opts.cancelLabel ?? "Anuluj");
+      setConfirmOpen(true);
+      return new Promise<boolean>((resolve) => {
+        confirmResolverRef.current = resolve;
+      });
+    },
+    []
+  );
 
   const resolveConfirm = useCallback((value: boolean) => {
     setConfirmOpen(false);
@@ -162,7 +404,8 @@ export default function TournamentBasicsSetup() {
 
   const [hbTableDrawMode, setHbTableDrawMode] = useState<HandballTableDrawMode>("ALLOW_DRAW");
   const [hbPointsMode, setHbPointsMode] = useState<HandballPointsMode>("2_1_0");
-  const [hbKnockoutTiebreak, setHbKnockoutTiebreak] = useState<HandballKnockoutTiebreak>("OVERTIME_PENALTIES");
+  const [hbKnockoutTiebreak, setHbKnockoutTiebreak] =
+    useState<HandballKnockoutTiebreak>("OVERTIME_PENALTIES");
 
   const [cupMatches, setCupMatches] = useState<1 | 2>(1);
   const [finalMatches, setFinalMatches] = useState<1 | 2>(1);
@@ -172,8 +415,21 @@ export default function TournamentBasicsSetup() {
   const [tennisBestOf, setTennisBestOf] = useState<TennisBestOf>(3);
   const [tennisPointsMode, setTennisPointsMode] = useState<TennisPointsMode>("NONE");
 
+  // ===== Lokalny stan pod nowy formularz custom (UI-only w tym etapie) =====
+  const [competitionType, setCompetitionType] = useState<CompetitionType>("INDIVIDUAL");
+  const [competitionModel, setCompetitionModel] = useState<CompetitionModel>("MASS_START");
+  const [customDisciplineName, setCustomDisciplineName] = useState("");
+  const [resultConfig, setResultConfig] = useState<TournamentResultConfig>(() => {
+    const config = getDefaultResultConfig();
+    return {
+      ...config,
+      stages: createDefaultStages(8),
+    };
+  });
+
   const isHandball = discipline === "handball";
   const isTennis = discipline === "tennis";
+  const isCustomDiscipline = discipline === "custom";
 
   useEffect(() => {
     const flash = (location.state as any)?.flashError as string | undefined;
@@ -195,6 +451,35 @@ export default function TournamentBasicsSetup() {
     if (finalMatches !== 1) setFinalMatches(1);
     if (thirdPlaceMatches !== 1) setThirdPlaceMatches(1);
   }, [isTennis, cupMatches, finalMatches, thirdPlaceMatches]);
+
+  useEffect(() => {
+    if (!isCustomDiscipline) return;
+    setResultConfig((prev) => ({
+      ...prev,
+      competition_model: competitionModel,
+    }));
+  }, [competitionModel, isCustomDiscipline]);
+
+  useEffect(() => {
+    if (!isCustomDiscipline || competitionModel !== "MASS_START") return;
+
+    setResultConfig((prev) => {
+      const stages = prev.stages.map((stage, index) => {
+        if (index === 0) {
+          return {
+            ...stage,
+            participantsCount: participants,
+          };
+        }
+        return stage;
+      });
+
+      return {
+        ...prev,
+        stages,
+      };
+    });
+  }, [participants, isCustomDiscipline, competitionModel]);
 
   const maxGroupsForMin2PerGroup = useMemo(() => {
     return Math.max(1, Math.floor(Math.max(2, participants) / 2));
@@ -274,6 +559,12 @@ export default function TournamentBasicsSetup() {
         setParticipants(currentCount);
         initialParticipantsRef.current = currentCount;
 
+        // Dla etapu wizualnego ustawiamy sensowne domyślne dane custom po załadowaniu.
+        setResultConfig((prev) => ({
+          ...prev,
+          stages: createDefaultStages(currentCount),
+        }));
+
         const cfg = t.format_config || {};
 
         setLeagueMatches(cfg.league_matches === 2 ? 2 : 1);
@@ -302,6 +593,15 @@ export default function TournamentBasicsSetup() {
         setTennisBestOf(cfg.tennis_best_of === 5 ? 5 : 3);
         const tpm = (cfg.tennis_points_mode ?? "NONE").toString().toUpperCase();
         setTennisPointsMode(tpm === "PLT" ? "PLT" : "NONE");
+
+        if (t.discipline === "custom") {
+          setCompetitionType((t.competition_type as CompetitionType) ?? "INDIVIDUAL");
+          setCompetitionModel((t.competition_model as CompetitionModel) ?? "MASS_START");
+          setCustomDisciplineName(t.custom_discipline_name ?? "");
+
+          const incoming = t.result_config && typeof t.result_config === "object" ? t.result_config : {};
+          setResultConfig(deserializeCustomResultConfig(incoming, currentCount));
+        }
       } catch {
         toast.error("Brak połączenia z serwerem. Spróbuj ponownie.", { title: "Sieć" });
       } finally {
@@ -314,6 +614,16 @@ export default function TournamentBasicsSetup() {
 
   const preview: MatchesPreview = useMemo(() => {
     const p = clampInt(participants, 2, 10_000);
+
+    if (isCustomDiscipline && competitionModel === "MASS_START") {
+      return {
+        total: 0,
+        groupTotal: 0,
+        koTotal: 0,
+        groups: resultConfig.stages[0]?.groupsCount ?? 1,
+        advancing: resultConfig.stages[0]?.advanceCount ?? 0,
+      };
+    }
 
     if (format === "LEAGUE") {
       const matches = ((p * (p - 1)) / 2) * leagueMatches;
@@ -356,6 +666,9 @@ export default function TournamentBasicsSetup() {
     groupsCount,
     groupMatches,
     advanceFromGroup,
+    isCustomDiscipline,
+    competitionModel,
+    resultConfig.stages,
   ]);
 
   const validateLocalBeforeSave = (): string | null => {
@@ -364,14 +677,43 @@ export default function TournamentBasicsSetup() {
 
     const p = clampInt(participants, 2, 10_000);
 
+    if (isCustomDiscipline) {
+      if (!customDisciplineName.trim()) {
+        return "Dla dyscypliny niestandardowej podaj własną nazwę.";
+      }
+
+      if (competitionModel === "MASS_START") {
+        const visibleStages = resultConfig.stages.slice(0, 3);
+
+        for (let index = 0; index < visibleStages.length; index += 1) {
+          const stage = visibleStages[index];
+
+          if (!stage.name.trim()) {
+            return `Uzupełnij nazwę dla etapu ${index + 1}.`;
+          }
+
+          if (stage.groupsCount < 1) {
+            return `Etap ${index + 1} musi mieć co najmniej 1 grupę.`;
+          }
+
+          if (index === 0 && (!stage.participantsCount || stage.participantsCount < 1)) {
+            return "Pierwszy etap w trybie 'wszyscy razem' musi mieć liczbę uczestników.";
+          }
+        }
+      }
+
+      return null;
+    }
+
     if (format === "MIXED") {
       const gMax = Math.max(1, Math.floor(p / 2));
       const g = clampInt(groupsCount, 1, gMax);
       const sizes = splitIntoGroups(p, g);
       const minSize = sizes.length ? Math.min(...sizes) : 2;
 
-      if (minSize < 2)
+      if (minSize < 2) {
         return "W grupach + puchar każda grupa musi mieć co najmniej 2 uczestników (zmniejsz liczbę grup).";
+      }
 
       const adv = clampInt(advanceFromGroup, 1, minSize);
       if (adv !== advanceFromGroup) {
@@ -533,22 +875,38 @@ export default function TournamentBasicsSetup() {
 
           if (!ok) {
             setDiscipline(initialDiscipline);
-          } else {
-            const res = await apiFetch(`/api/tournaments/${tournamentId}/change-discipline/`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ discipline }),
-              toastOnError: false,
-            } as any);
-
-            if (!res.ok) {
-              const data = await res.json().catch(() => ({}));
-              const msg = pickFirstError(data) || "Nie udało się zmienić dyscypliny.";
-              setInlineError(msg);
-              throw new Error(msg);
-            }
-            setInitialDiscipline(discipline);
+            throw new Error("Anulowano zmianę dyscypliny.");
           }
+
+          const changePayload: Record<string, any> =
+            discipline === "custom"
+              ? {
+                  discipline,
+                  custom_discipline_name: customDisciplineName.trim(),
+                  competition_type: competitionType,
+                  competition_model: competitionModel,
+                  result_mode: "CUSTOM",
+                  result_config: serializeCustomResultConfig(resultConfig),
+                }
+              : {
+                  discipline,
+                };
+
+          const res = await apiFetch(`/api/tournaments/${tournamentId}/change-discipline/`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(changePayload),
+            toastOnError: false,
+          } as any);
+
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            const msg = pickFirstError(data) || "Nie udało się zmienić dyscypliny.";
+            setInlineError(msg);
+            throw new Error(msg);
+          }
+
+          setInitialDiscipline(discipline);
         }
 
         const patch: Record<string, any> = {};
@@ -575,53 +933,85 @@ export default function TournamentBasicsSetup() {
         }
       }
 
-      const format_config = buildFormatConfig();
+      if (isCustomDiscipline) {
+        const payload: Record<string, any> = {
+          custom_discipline_name: customDisciplineName.trim(),
+          competition_type: competitionType,
+          competition_model: competitionModel,
+          tournament_format: format,
+          result_mode: "CUSTOM",
+          result_config: serializeCustomResultConfig(resultConfig),
+          format_config: buildFormatConfig(),
+        };
 
-      const dry = await apiFetch(`/api/tournaments/${tournamentId}/setup/?dry_run=true`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tournament_format: format, format_config }),
-        toastOnError: false,
-      } as any);
+        if (isCreateMode) {
+          payload.discipline = discipline;
+        }
 
-      if (!dry.ok) {
-        const data = await dry.json().catch(() => ({}));
-        const msg = pickFirstError(data) || "Błąd walidacji konfiguracji.";
-        setInlineError(msg);
-        throw new Error(msg);
-      }
+        const res = await apiFetch(`/api/tournaments/${tournamentId}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          toastOnError: false,
+        } as any);
 
-      const dryData = await dry.json().catch(() => ({}));
-      const resetNeeded = Boolean((dryData as any)?.reset_needed);
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          const msg = pickFirstError(data) || "Błąd zapisu konfiguracji custom.";
+          setInlineError(msg);
+          throw new Error(msg);
+        }
 
-      if (!isCreateMode && resetNeeded) {
-        const ok = await askConfirm({
-          title: "Zmiana konfiguracji",
-          message: "Zmiana konfiguracji usunie istniejące mecze. Kontynuować?",
-          confirmLabel: "Kontynuuj",
-          cancelLabel: "Anuluj",
-        });
-        if (!ok) throw new Error("Anulowano zapis konfiguracji.");
-      }
+        setInitialDiscipline(discipline);
+      } else {
+        const format_config = buildFormatConfig();
 
-      const res = await apiFetch(`/api/tournaments/${tournamentId}/setup/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tournament_format: format, format_config }),
-        toastOnError: false,
-      } as any);
+        const dry = await apiFetch(`/api/tournaments/${tournamentId}/setup/?dry_run=true`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tournament_format: format, format_config }),
+          toastOnError: false,
+        } as any);
 
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        const msg = pickFirstError(data) || "Błąd zapisu konfiguracji.";
-        setInlineError(msg);
-        throw new Error(msg);
+        if (!dry.ok) {
+          const data = await dry.json().catch(() => ({}));
+          const msg = pickFirstError(data) || "Błąd walidacji konfiguracji.";
+          setInlineError(msg);
+          throw new Error(msg);
+        }
+
+        const dryData = await dry.json().catch(() => ({}));
+        const resetNeeded = Boolean((dryData as any)?.reset_needed);
+
+        if (!isCreateMode && resetNeeded) {
+          const ok = await askConfirm({
+            title: "Zmiana konfiguracji",
+            message: "Zmiana konfiguracji usunie istniejące mecze. Kontynuować?",
+            confirmLabel: "Kontynuuj",
+            cancelLabel: "Anuluj",
+          });
+          if (!ok) throw new Error("Anulowano zapis konfiguracji.");
+        }
+
+        const res = await apiFetch(`/api/tournaments/${tournamentId}/setup/`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tournament_format: format, format_config }),
+          toastOnError: false,
+        } as any);
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          const msg = pickFirstError(data) || "Błąd zapisu konfiguracji.";
+          setInlineError(msg);
+          throw new Error(msg);
+        }
       }
 
       const safeParticipants = clampInt(participants, 2, 10_000);
       const participantsChanged = safeParticipants !== initialParticipantsRef.current;
 
-      if (!isCreateMode && participantsChanged && !resetNeeded) {
+      if (!isCreateMode && participantsChanged && !isCustomDiscipline) {
         const ok = await askConfirm({
           title: "Zmiana uczestników",
           message: "Zmiana liczby uczestników spowoduje reset rozgrywek. Kontynuować?",
@@ -698,8 +1088,15 @@ export default function TournamentBasicsSetup() {
     tennisBestOf,
     tennisPointsMode,
     isTennis,
+    isCustomDiscipline,
+    customDisciplineName,
+    competitionType,
+    competitionModel,
+    resultConfig,
+    buildFormatConfig,
     navigate,
     askConfirm,
+    validateLocalBeforeSave,
   ]);
 
   const goNext = useCallback(async () => {
@@ -729,41 +1126,54 @@ export default function TournamentBasicsSetup() {
   const showLeagueOrGroupConfig = format === "LEAGUE" || format === "MIXED";
   const showKnockoutConfig = format === "CUP" || format === "MIXED";
 
+  const clearInlineError = useCallback(() => {
+    if (inlineError) setInlineError(null);
+  }, [inlineError]);
+
   const onNameChange = useCallback(
     (v: string) => {
       setName(v);
       markDirty();
-      if (inlineError) setInlineError(null);
+      clearInlineError();
     },
-    [inlineError, markDirty]
+    [clearInlineError, markDirty]
   );
 
   const onDescriptionChange = useCallback(
     (v: string) => {
       setDescription(v);
       markDirty();
-      if (inlineError) setInlineError(null);
+      clearInlineError();
     },
-    [inlineError, markDirty]
+    [clearInlineError, markDirty]
   );
 
   const onDisciplineChange = useCallback(
     (v: Discipline) => {
       setDiscipline(v);
+      if (v !== "custom") {
+        setCompetitionType("INDIVIDUAL");
+        setCompetitionModel("MASS_START");
+        setCustomDisciplineName("");
+        setResultConfig({
+          ...getDefaultResultConfig(),
+          stages: createDefaultStages(participants),
+        });
+      }
       markDirty();
-      if (inlineError) setInlineError(null);
+      clearInlineError();
     },
-    [inlineError, markDirty]
+    [clearInlineError, markDirty, participants]
   );
 
   const onFormatChange = useCallback(
     (v: TournamentFormat) => {
       setFormat(v);
       markDirty();
-      if (inlineError) setInlineError(null);
+      clearInlineError();
       if (v !== "CUP") setThirdPlace(false);
     },
-    [inlineError, markDirty]
+    [clearInlineError, markDirty]
   );
 
   const onParticipantsChange = useCallback(
@@ -771,13 +1181,34 @@ export default function TournamentBasicsSetup() {
       const p = clampInt(Number(raw), 2, 10_000);
       setParticipants(p);
       markDirty();
-      if (inlineError) setInlineError(null);
-      if (format === "MIXED") {
+      clearInlineError();
+      if (!isCustomDiscipline && format === "MIXED") {
         const gMax = Math.max(1, Math.floor(p / 2));
         setGroupsCount((prev) => clampInt(prev, 1, gMax));
       }
     },
-    [format, inlineError, markDirty]
+    [format, isCustomDiscipline, clearInlineError, markDirty]
+  );
+
+  const patchResultConfig = useCallback(
+    (patch: Partial<TournamentResultConfig>) => {
+      setResultConfig((prev) => ({ ...prev, ...patch }));
+      markDirty();
+      clearInlineError();
+    },
+    [clearInlineError, markDirty]
+  );
+
+  const updateStage = useCallback(
+    (stageId: string, patch: Partial<CustomStageConfig>) => {
+      setResultConfig((prev) => ({
+        ...prev,
+        stages: prev.stages.map((stage) => (stage.id === stageId ? { ...stage, ...patch } : stage)),
+      }));
+      markDirty();
+      clearInlineError();
+    },
+    [clearInlineError, markDirty]
   );
 
   if (loading) {
@@ -881,6 +1312,10 @@ export default function TournamentBasicsSetup() {
             advanceOptions={advanceOptions}
             showLeagueOrGroupConfig={showLeagueOrGroupConfig}
             showKnockoutConfig={showKnockoutConfig}
+            competitionType={competitionType}
+            competitionModel={competitionModel}
+            customDisciplineName={customDisciplineName}
+            resultConfig={resultConfig}
             onSave={async () => {
               try {
                 setInlineError(null);
@@ -895,68 +1330,185 @@ export default function TournamentBasicsSetup() {
             onLeagueMatchesChange={(v) => {
               setLeagueMatches(v);
               markDirty();
-              if (inlineError) setInlineError(null);
+              clearInlineError();
             }}
             onGroupsCountChange={(raw) => {
               setGroupsCount(clampInt(Number(raw), 1, maxGroupsForMin2PerGroup));
               markDirty();
-              if (inlineError) setInlineError(null);
+              clearInlineError();
             }}
             onGroupMatchesChange={(v) => {
               setGroupMatches(v);
               markDirty();
-              if (inlineError) setInlineError(null);
+              clearInlineError();
             }}
             onAdvanceFromGroupChange={(v) => {
               setAdvanceFromGroup(v);
               markDirty();
-              if (inlineError) setInlineError(null);
+              clearInlineError();
             }}
             onHbTableDrawModeChange={(v) => {
               setHbTableDrawMode(v);
               markDirty();
-              if (inlineError) setInlineError(null);
+              clearInlineError();
             }}
             onHbPointsModeChange={(v) => {
               setHbPointsMode(v);
               markDirty();
-              if (inlineError) setInlineError(null);
+              clearInlineError();
             }}
             onHbKnockoutTiebreakChange={(v) => {
               setHbKnockoutTiebreak(v);
               markDirty();
-              if (inlineError) setInlineError(null);
+              clearInlineError();
             }}
             onCupMatchesChange={(v) => {
               setCupMatches(v);
               markDirty();
-              if (inlineError) setInlineError(null);
+              clearInlineError();
             }}
             onFinalMatchesChange={(v) => {
               setFinalMatches(v);
               markDirty();
-              if (inlineError) setInlineError(null);
+              clearInlineError();
             }}
             onThirdPlaceChange={(v) => {
               setThirdPlace(v);
               markDirty();
-              if (inlineError) setInlineError(null);
+              clearInlineError();
             }}
             onThirdPlaceMatchesChange={(v) => {
               setThirdPlaceMatches(v);
               markDirty();
-              if (inlineError) setInlineError(null);
+              clearInlineError();
             }}
             onTennisBestOfChange={(v) => {
               setTennisBestOf(v);
               markDirty();
-              if (inlineError) setInlineError(null);
+              clearInlineError();
             }}
             onTennisPointsModeChange={(v) => {
               setTennisPointsMode(v);
               markDirty();
-              if (inlineError) setInlineError(null);
+              clearInlineError();
             }}
+            onCompetitionTypeChange={(v) => {
+              setCompetitionType(v);
+              markDirty();
+              clearInlineError();
+            }}
+            onCompetitionModelChange={(v) => {
+              setCompetitionModel(v);
+              patchResultConfig({ competition_model: v });
+            }}
+            onCustomDisciplineNameChange={(v) => {
+              setCustomDisciplineName(v);
+              markDirty();
+              clearInlineError();
+            }}
+            onHeadToHeadModeChange={(v: CustomHeadToHeadMode) => {
+              patchResultConfig({ headToHeadMode: v });
+            }}
+            onCustomMatchSeriesModeChange={(v) => {
+              patchResultConfig({ customMatchSeriesMode: v });
+            }}
+            onCustomGroupResolutionModeChange={(v) => {
+              patchResultConfig({ groupResolutionMode: v });
+            }}
+            onCustomKnockoutResolutionModeChange={(v) => {
+              patchResultConfig({ knockoutResolutionMode: v });
+            }}
+            onAllowDrawChange={(v) => {
+              patchResultConfig({ allowDraw: v });
+            }}
+            onAllowOvertimeChange={(v) => {
+              patchResultConfig({ allowOvertime: v });
+            }}
+            onAllowShootoutChange={(v) => {
+              patchResultConfig({ allowShootout: v });
+            }}
+            onPointsWinChange={(v) => {
+              patchResultConfig({ pointsWin: v ?? 0 });
+            }}
+            onPointsDrawChange={(v) => {
+              patchResultConfig({ pointsDraw: v ?? 0 });
+            }}
+            onPointsLossChange={(v) => {
+              patchResultConfig({ pointsLoss: v ?? 0 });
+            }}
+            onPointsOvertimeWinChange={(v) => {
+              patchResultConfig({ pointsOvertimeWin: v ?? 0 });
+            }}
+            onPointsOvertimeLossChange={(v) => {
+              patchResultConfig({ pointsOvertimeLoss: v ?? 0 });
+            }}
+            onPointsShootoutWinChange={(v) => {
+              patchResultConfig({ pointsShootoutWin: v ?? 0 });
+            }}
+            onPointsShootoutLossChange={(v) => {
+              patchResultConfig({ pointsShootoutLoss: v ?? 0 });
+            }}
+            onLegsCountChange={(v) => {
+              patchResultConfig({ legsCount: v });
+            }}
+            onBestOfChange={(v) => {
+              patchResultConfig({ bestOf: v });
+            }}
+            onHeadToHeadRoundsCountChange={(v) => {
+              patchResultConfig({ roundsCount: v ?? 1 });
+            }}
+            onHeadToHeadAggregationModeChange={(v: CustomAggregationMode) => {
+              patchResultConfig({ aggregationMode: v });
+            }}
+            onMeasuredValueKindChange={(v: CustomMeasuredValueKind) => {
+              patchResultConfig({ measuredValueKind: v });
+            }}
+            onMeasuredUnitPresetChange={(v: CustomUnitPreset) => {
+              patchResultConfig({ measuredUnitPreset: v });
+            }}
+            onMeasuredUnitCustomLabelChange={(v) => {
+              patchResultConfig({ measuredUnitCustomLabel: v });
+            }}
+            onMeasuredBetterResultChange={(v: CustomBetterResult) => {
+              patchResultConfig({ measuredBetterResult: v });
+            }}
+            onMeasuredDecimalPlacesChange={(v) => {
+              patchResultConfig({ measuredDecimalPlaces: v });
+            }}
+            onMeasuredTimeFormatChange={(v: CustomTimeFormat) => {
+              patchResultConfig({ measuredTimeFormat: v });
+            }}
+            onMeasuredAllowTiesChange={(v) => {
+              patchResultConfig({ measuredAllowTies: v });
+            }}
+            onMassStartValueKindChange={(v: CustomMassStartValueKind) => {
+              patchResultConfig({ massStartValueKind: v });
+            }}
+            onMassStartUnitPresetChange={(v: CustomUnitPreset) => {
+              patchResultConfig({ massStartUnitPreset: v });
+            }}
+            onMassStartUnitCustomLabelChange={(v) => {
+              patchResultConfig({ massStartUnitCustomLabel: v });
+            }}
+            onMassStartBetterResultChange={(v: CustomBetterResult) => {
+              patchResultConfig({ massStartBetterResult: v });
+            }}
+            onMassStartDecimalPlacesChange={(v) => {
+              patchResultConfig({ massStartDecimalPlaces: v });
+            }}
+            onMassStartTimeFormatChange={(v: CustomTimeFormat) => {
+              patchResultConfig({ massStartTimeFormat: v });
+            }}
+            onMassStartAllowTiesChange={(v) => {
+              patchResultConfig({ massStartAllowTies: v });
+            }}
+            onMassStartRoundsCountChange={(v) => {
+              patchResultConfig({ massStartRoundsCount: v ?? 1 });
+            }}
+            onMassStartAggregationModeChange={(v: CustomAggregationMode) => {
+              patchResultConfig({ massStartAggregationMode: v });
+            }}
+            onStageChange={updateStage}
           />
 
           {isCreateMode && (
@@ -984,6 +1536,10 @@ export default function TournamentBasicsSetup() {
             participants={participants}
             preview={preview}
             isAssistantReadOnly={isAssistantReadOnly}
+            competitionType={competitionType}
+            competitionModel={competitionModel}
+            customDisciplineName={customDisciplineName}
+            resultConfig={resultConfig}
           />
         </div>
       </div>

@@ -103,6 +103,19 @@ function hasRosterFeature(tournament: TournamentDTO | null): boolean {
   return (tournament?.competition_type ?? "TEAM") === "TEAM";
 }
 
+function getEntityLabels(tournament: TournamentDTO | null) {
+  const isIndividual = tournament?.competition_type === "INDIVIDUAL";
+
+  return {
+    singular: isIndividual ? "zawodnik" : "drużyna",
+    singularCapitalized: isIndividual ? "Zawodnik" : "Drużyna",
+    plural: isIndividual ? "zawodnicy" : "drużyny",
+    pluralCapitalized: isIndividual ? "Zawodnicy" : "Drużyny",
+    ownerLabel: isIndividual ? "Twój wpis" : "Twoja drużyna",
+    queueItemLabel: isIndividual ? "Uczestnik" : "Drużyna",
+  };
+}
+
 function getRoleAndPerms(t: TournamentDTO | null): { role: MyRole; perms: MyPermissions | null } {
   const role: MyRole = t?.my_role ?? null;
   const perms = (t?.my_permissions as MyPermissions | undefined) ?? null;
@@ -733,7 +746,9 @@ export default function TournamentTeams() {
   if (loading) return <div className="px-4 py-8 text-slate-200/80">Ładowanie...</div>;
   if (!tournament) return <div className="px-4 py-8 text-rose-300">Brak danych turnieju.</div>;
 
-  const titleLabel = tournament?.competition_type === "INDIVIDUAL" ? "Zawodnicy" : "Drużyny";
+  const entityLabels = getEntityLabels(tournament);
+  const titleLabel = entityLabels.pluralCapitalized;
+  const nameInputPlaceholderLabel = entityLabels.singularCapitalized;
   const canUndoNow = !playersLoading && (undoStacksRef.current[getActiveTeamId()]?.length ?? 0) > 0;
 
   return (
@@ -831,7 +846,7 @@ export default function TournamentTeams() {
                   <div key={r.id} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="text-sm font-semibold text-slate-100">Team #{r.team_id}</div>
+                        <div className="text-sm font-semibold text-slate-100">{entityLabels.queueItemLabel} #{r.team_id}</div>
                         <div className="mt-1 text-xs text-slate-300 break-words">
                           <div>
                             <span className="text-slate-400">Było:</span> {r.old_name}
@@ -892,7 +907,7 @@ export default function TournamentTeams() {
                 <div className="flex flex-wrap items-center gap-2">
                   {canEditRosterAsManager ? (
                     <>
-                      <div className="text-sm text-slate-300">Drużyna:</div>
+                      <div className="text-sm text-slate-300">{entityLabels.singularCapitalized}:</div>
                       <Select<number>
                         value={selectedTeamId ?? (teamOptions[0]?.value ?? 0)}
                         onChange={(nextId) => {
@@ -904,7 +919,7 @@ export default function TournamentTeams() {
                         }}
                         options={teamOptions}
                         disabled={playersLoading || teamOptions.length === 0}
-                        ariaLabel="Wybierz drużynę"
+                        ariaLabel={`Wybierz ${entityLabels.singular}`}
                         className=""
                         buttonClassName="rounded-2xl border border-white/10 bg-white/[0.06] px-3 py-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10"
                         menuClassName="rounded-2xl"
@@ -922,7 +937,7 @@ export default function TournamentTeams() {
                     </>
                   ) : (
                     <>
-                      <div className="text-sm text-slate-300">Twoja drużyna</div>
+                      <div className="text-sm text-slate-300">{entityLabels.ownerLabel}</div>
 
                       <Button variant="ghost" disabled={!canUndoNow} onClick={undoLastRosterChange}>
                         Cofnij
@@ -1009,7 +1024,7 @@ export default function TournamentTeams() {
           <div className="text-sm text-slate-300 italic">Brak aktywnych uczestników - ustaw liczbę miejsc (+), aby utworzyć listę.</div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {teams.map((team) => {
+            {teams.map((team, index) => {
               const expanded = Boolean(expandedTeams[team.id]);
               const preview = teamPlayersPreview[team.id] ?? null;
               const previewLoading = Boolean(teamPlayersPreviewLoading[team.id]);
@@ -1032,6 +1047,7 @@ export default function TournamentTeams() {
                       <Input
                         value={draft}
                         disabled={busy || !canEditTeams}
+                        placeholder={`${nameInputPlaceholderLabel} ${index + 1}`}
                         onChange={(e) => {
                           const v = e.target.value;
                           setTeams((prev) => prev.map((t) => (t.id === team.id ? { ...t, name: v } : t)));

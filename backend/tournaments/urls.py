@@ -1,114 +1,91 @@
 # backend/tournaments/urls.py
+# Plik definiuje routing endpointów API dla turniejów, meczów, wyników i widoków live.
 
 from django.urls import path
 
 from .views import (
-    # tournaments
-    TournamentListView,
-    TournamentDetailView,
-    TournamentMetaUpdateView,
-    MyTournamentListView,
+    AddAssistantView,
+    AdvanceFromGroupsView,
+    AdvanceMassStartStageView,
     ArchiveTournamentView,
-    UnarchiveTournamentView,
+    AssistantPermissionsView,
     ChangeDisciplineView,
     ChangeSetupView,
-
-    # assistants
-    TournamentAssistantListView,
-    AddAssistantView,
-    RemoveAssistantView,
-    AssistantPermissionsView,
-
-    # teams
-    TournamentTeamSetupView,
-    TournamentTeamListView,
-    TournamentTeamUpdateView,
-
-    # roster (players)
-    TournamentTeamPlayersView,
-    TournamentMyTeamPlayersView,
-
-    # team name change requests (QUEUE)
-    TournamentTeamNameChangeRequestListView,
-    TournamentTeamNameChangeRequestCreateView,
-    TournamentTeamNameChangeRequestApproveView,
-    TournamentTeamNameChangeRequestRejectView,
-
-    # matches
-    TournamentMatchListView,
-    TournamentPublicMatchListView,
-    MatchScheduleUpdateView,
-    MatchResultUpdateView,
-    FinishMatchView,
     ContinueMatchView,
+    FinishMatchView,
+    MatchClockGetView,
+    MatchClockPauseView,
+    MatchClockResumeView,
+    MatchClockSetAddedSecondsView,
+    MatchClockSetPeriodView,
+    MatchClockStartView,
+    MatchClockStopView,
+    MatchCommentaryDetailView,
+    MatchCommentaryListCreateView,
+    MatchCustomResultUpdateView,
+    MatchIncidentDeleteView,
+    MatchIncidentListCreateView,
+    MatchIncidentRecomputeScoreView,
+    MatchResultUpdateView,
+    MatchScheduleUpdateView,
+    MyTournamentListView,
+    RemoveAssistantView,
     SetScheduledMatchView,
-
-    # standings
-    TournamentStandingsView,
-
-    # registrations (join toggle + code)
-    TournamentRegistrationVerifyView,
+    TournamentAssistantListView,
+    TournamentCommentaryPhraseDetailView,
+    TournamentCommentaryPhraseListCreateView,
+    TournamentDetailView,
+    TournamentListView,
+    TournamentMassStartResultListCreateView,
+    TournamentMatchListView,
+    TournamentMetaUpdateView,
+    TournamentMyTeamPlayersView,
+    TournamentPublicMatchListView,
     TournamentRegistrationJoinView,
     TournamentRegistrationMeView,
     TournamentRegistrationMyMatchesView,
-
-    # =========================
-    # NEW: incidents + match clock
-    # =========================
-    MatchIncidentListCreateView,
-    MatchIncidentDeleteView,
-    MatchIncidentRecomputeScoreView,
-
-    MatchClockGetView,
-    MatchClockStartView,
-    MatchClockPauseView,
-    MatchClockResumeView,
-    MatchClockStopView,
-    MatchClockSetPeriodView,
-    MatchClockSetAddedSecondsView,
-
-    # =========================
-    # NEW: commentary + phrase dictionary
-    # =========================
-    MatchCommentaryListCreateView,
-    MatchCommentaryDetailView,
-    TournamentCommentaryPhraseListCreateView,
-    TournamentCommentaryPhraseDetailView,
+    TournamentRegistrationVerifyView,
+    TournamentStandingsView,
+    TournamentTeamListView,
+    TournamentTeamNameChangeRequestApproveView,
+    TournamentTeamNameChangeRequestCreateView,
+    TournamentTeamNameChangeRequestListView,
+    TournamentTeamNameChangeRequestRejectView,
+    TournamentTeamPlayersView,
+    TournamentTeamSetupView,
+    TournamentTeamUpdateView,
+    UnarchiveTournamentView,
 )
+from .views.mass_start_results import TournamentPublicMassStartResultListView
 
 urlpatterns = [
-    # --- TOURNAMENTS ---
     path("tournaments/", TournamentListView.as_view()),
     path("tournaments/my/", MyTournamentListView.as_view()),
     path("tournaments/<int:pk>/", TournamentDetailView.as_view()),
     path("tournaments/<int:pk>/meta/", TournamentMetaUpdateView.as_view()),
     path("tournaments/<int:pk>/archive/", ArchiveTournamentView.as_view()),
     path("tournaments/<int:pk>/unarchive/", UnarchiveTournamentView.as_view()),
-
-    # kanoniczne
     path("tournaments/<int:pk>/discipline/", ChangeDisciplineView.as_view()),
     path("tournaments/<int:pk>/setup/", ChangeSetupView.as_view()),
-
-    # aliasy (jak masz w systemie)
     path("tournaments/<int:pk>/change-discipline/", ChangeDisciplineView.as_view()),
     path("tournaments/<int:pk>/change-setup/", ChangeSetupView.as_view()),
-
-    # --- ASSISTANTS ---
+    path("tournaments/<int:pk>/advance-from-groups/", AdvanceFromGroupsView.as_view()),
+    path("tournaments/<int:pk>/advance-mass-start-stage/", AdvanceMassStartStageView.as_view()),
     path("tournaments/<int:pk>/assistants/", TournamentAssistantListView.as_view()),
     path("tournaments/<int:pk>/assistants/add/", AddAssistantView.as_view()),
     path("tournaments/<int:pk>/assistants/<int:user_id>/remove/", RemoveAssistantView.as_view()),
-    path("tournaments/<int:pk>/assistants/<int:user_id>/permissions/", AssistantPermissionsView.as_view()),
-
-    # --- TEAMS ---
+    path(
+        "tournaments/<int:pk>/assistants/<int:user_id>/permissions/",
+        AssistantPermissionsView.as_view(),
+    ),
     path("tournaments/<int:pk>/teams/setup/", TournamentTeamSetupView.as_view()),
     path("tournaments/<int:pk>/teams/", TournamentTeamListView.as_view()),
     path("tournaments/<int:pk>/teams/<int:team_id>/", TournamentTeamUpdateView.as_view()),
-
-    # --- TEAM PLAYERS (ROSTER) ---
-    path("tournaments/<int:pk>/teams/<int:team_id>/players/", TournamentTeamPlayersView.as_view()),
+    path(
+        "tournaments/<int:pk>/teams/<int:team_id>/players/",
+        TournamentTeamPlayersView.as_view(),
+    ),
     path("tournaments/<int:pk>/my-team/players/", TournamentMyTeamPlayersView.as_view()),
-
-    # --- TEAM NAME CHANGE REQUESTS (QUEUE) ---
     path(
         "tournaments/<int:pk>/teams/name-change-requests/",
         TournamentTeamNameChangeRequestListView.as_view(),
@@ -125,36 +102,43 @@ urlpatterns = [
         "tournaments/<int:pk>/teams/name-change-requests/<int:request_id>/reject/",
         TournamentTeamNameChangeRequestRejectView.as_view(),
     ),
-
-    # --- MATCHES ---
     path("tournaments/<int:pk>/matches/", TournamentMatchListView.as_view()),
+    path("tournaments/<int:pk>/mass-start-results/", TournamentMassStartResultListCreateView.as_view()),
+    path(
+        "tournaments/<int:pk>/public/mass-start-results/",
+        TournamentPublicMassStartResultListView.as_view(),
+    ),
     path("tournaments/<int:pk>/public/matches/", TournamentPublicMatchListView.as_view()),
     path("matches/<int:pk>/", MatchScheduleUpdateView.as_view()),
     path("matches/<int:pk>/result/", MatchResultUpdateView.as_view()),
+    path("matches/<int:pk>/custom-result/", MatchCustomResultUpdateView.as_view()),
     path("matches/<int:pk>/finish/", FinishMatchView.as_view()),
     path("matches/<int:pk>/continue/", ContinueMatchView.as_view()),
     path("matches/<int:pk>/set-scheduled/", SetScheduledMatchView.as_view()),
-
-    # --- STANDINGS ---
     path("tournaments/<int:pk>/standings/", TournamentStandingsView.as_view()),
     path("tournaments/<int:pk>/public/standings/", TournamentStandingsView.as_view()),
-
-    # --- REGISTRATIONS (join toggle + code) ---
-    path("tournaments/<int:pk>/registrations/verify/", TournamentRegistrationVerifyView.as_view()),
-    path("tournaments/<int:pk>/registrations/join/", TournamentRegistrationJoinView.as_view()),
-    path("tournaments/<int:pk>/registrations/me/", TournamentRegistrationMeView.as_view()),
-    path("tournaments/<int:pk>/registrations/my/matches/", TournamentRegistrationMyMatchesView.as_view()),
-
-    # =========================================================
-    # NEW: INCYDENTY MECZOWE (timeline + live)
-    # =========================================================
+    path(
+        "tournaments/<int:pk>/registrations/verify/",
+        TournamentRegistrationVerifyView.as_view(),
+    ),
+    path(
+        "tournaments/<int:pk>/registrations/join/",
+        TournamentRegistrationJoinView.as_view(),
+    ),
+    path(
+        "tournaments/<int:pk>/registrations/me/",
+        TournamentRegistrationMeView.as_view(),
+    ),
+    path(
+        "tournaments/<int:pk>/registrations/my/matches/",
+        TournamentRegistrationMyMatchesView.as_view(),
+    ),
     path("matches/<int:match_id>/incidents/", MatchIncidentListCreateView.as_view()),
-    path("matches/<int:match_id>/incidents/recompute-score/", MatchIncidentRecomputeScoreView.as_view()),
+    path(
+        "matches/<int:match_id>/incidents/recompute-score/",
+        MatchIncidentRecomputeScoreView.as_view(),
+    ),
     path("incidents/<int:incident_id>/", MatchIncidentDeleteView.as_view()),
-
-    # =========================================================
-    # NEW: ZEGAR MECZU
-    # =========================================================
     path("matches/<int:match_id>/clock/", MatchClockGetView.as_view()),
     path("matches/<int:match_id>/clock/start/", MatchClockStartView.as_view()),
     path("matches/<int:match_id>/clock/pause/", MatchClockPauseView.as_view()),
@@ -162,13 +146,14 @@ urlpatterns = [
     path("matches/<int:match_id>/clock/stop/", MatchClockStopView.as_view()),
     path("matches/<int:match_id>/clock/period/", MatchClockSetPeriodView.as_view()),
     path("matches/<int:match_id>/clock/added/", MatchClockSetAddedSecondsView.as_view()),
-
-    # =========================================================
-    # NEW: KOMENTARZE MECZOWE (relacja live) + SŁOWNIK FRAZ
-    # =========================================================
     path("matches/<int:match_id>/commentary/", MatchCommentaryListCreateView.as_view()),
     path("commentary/<int:commentary_id>/", MatchCommentaryDetailView.as_view()),
-
-    path("tournaments/<int:pk>/commentary-phrases/", TournamentCommentaryPhraseListCreateView.as_view()),
-    path("commentary-phrases/<int:phrase_id>/", TournamentCommentaryPhraseDetailView.as_view()),
+    path(
+        "tournaments/<int:pk>/commentary-phrases/",
+        TournamentCommentaryPhraseListCreateView.as_view(),
+    ),
+    path(
+        "commentary-phrases/<int:phrase_id>/",
+        TournamentCommentaryPhraseDetailView.as_view(),
+    ),
 ]

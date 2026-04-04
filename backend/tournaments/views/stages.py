@@ -1,5 +1,5 @@
 # backend/tournaments/views/stages.py
-# Plik udostępnia operacje etapów turnieju, w tym awans z grup do fazy pucharowej.
+# Plik udostępnia operacje etapów turnieju, w tym awans z grup do fazy pucharowej i generowanie kolejnego etapu MASS_START.
 
 from django.conf import settings
 from django.db import transaction
@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 from tournaments.access import user_can_manage_tournament
 from tournaments.models import Tournament
 from tournaments.services.advance_from_groups import advance_from_groups_to_knockout
+from tournaments.services.advance_mass_start_stage import advance_mass_start_stage
 
 
 class AdvanceFromGroupsView(APIView):
@@ -22,7 +23,6 @@ class AdvanceFromGroupsView(APIView):
     def post(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
 
-        # Zarządzanie etapami wymaga uprawnienia organizer/a lub właściwego asystenta.
         if not user_can_manage_tournament(request.user, tournament):
             return Response(
                 {"detail": "Brak uprawnień do zarządzania tym turniejem."},
@@ -37,7 +37,6 @@ class AdvanceFromGroupsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except Exception as exc:
-            # W debug zwracany jest szczegół ułatwiający diagnozę.
             if getattr(settings, "DEBUG", False):
                 return Response(
                     {"detail": f"Advance-from-groups error: {type(exc).__name__}: {exc}"},
@@ -52,6 +51,47 @@ class AdvanceFromGroupsView(APIView):
         return Response(
             {
                 "detail": "Faza pucharowa została wygenerowana pomyślnie.",
+                "stage_id": stage.id,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class AdvanceMassStartStageView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, pk: int):
+        tournament = get_object_or_404(Tournament, pk=pk)
+
+        if not user_can_manage_tournament(request.user, tournament):
+            return Response(
+                {"detail": "Brak uprawnień do zarządzania tym turniejem."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            stage = advance_mass_start_stage(tournament)
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception as exc:
+            if getattr(settings, "DEBUG", False):
+                return Response(
+                    {"detail": f"Advance-mass-start-stage error: {type(exc).__name__}: {exc}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            return Response(
+                {"detail": "Wystąpił błąd podczas generowania kolejnego etapu MASS_START."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "detail": "Kolejny etap MASS_START został wygenerowany pomyślnie.",
                 "stage_id": stage.id,
             },
             status=status.HTTP_201_CREATED,

@@ -1,12 +1,32 @@
 // frontend/src/components/PublicMatchRow.tsx
-// Komponent renderuje publiczny wiersz meczu z opcjonalnym rozwijaniem incydentów i relacji live.
+// Komponent renderuje publiczny wiersz pozycji z opcjonalnym rozwijaniem szczegółów dla klasycznych meczów i trybu custom.
 
 import type { KeyboardEvent } from "react";
 import { useMemo } from "react";
 
 import { cn } from "../lib/cn";
 
-import type { CommentaryEntryPublicDTO, IncidentPublicDTO, MatchPublicDTO } from "./PublicMatchesPanel";
+import type {
+  CommentaryEntryPublicDTO,
+  IncidentPublicDTO,
+  MatchPublicDTO,
+} from "./PublicMatchesPanel";
+
+type ResultMode = "SCORE" | "CUSTOM";
+type CustomResultValueKind = "NUMBER" | "TIME";
+
+type MatchCustomResultDTO = {
+  id: number;
+  team_id: number;
+  team_name: string;
+  value_kind: CustomResultValueKind;
+  numeric_value?: string | null;
+  time_ms?: number | null;
+  display_value: string;
+  rank?: number | null;
+  is_active: boolean;
+  sort_value?: string | number | null;
+};
 
 function toMinute(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -111,6 +131,38 @@ function statusBadgeClasses(status?: MatchPublicDTO["status"]): string {
   return "border-white/10 bg-white/5 text-slate-300";
 }
 
+function usesCustomResults(match: MatchPublicDTO): boolean {
+  return String((match as MatchPublicDTO & { result_mode?: ResultMode }).result_mode ?? "SCORE").toUpperCase() === "CUSTOM"
+    || Boolean((match as MatchPublicDTO & { uses_custom_results?: boolean }).uses_custom_results);
+}
+
+function getCustomResults(match: MatchPublicDTO): MatchCustomResultDTO[] {
+  const raw = (match as MatchPublicDTO & { custom_results?: MatchCustomResultDTO[] }).custom_results;
+  return Array.isArray(raw) ? raw.filter(Boolean) : [];
+}
+
+function customResultSummary(result: MatchCustomResultDTO | null | undefined): string {
+  if (!result) return "-";
+  const display = String(result.display_value ?? "").trim();
+  if (display) return display;
+  if (result.numeric_value != null) return String(result.numeric_value);
+  if (result.time_ms != null) return `${result.time_ms} ms`;
+  return "-";
+}
+
+function bestCustomResult(match: MatchPublicDTO): MatchCustomResultDTO | null {
+  const list = getCustomResults(match)
+    .filter((item) => item.is_active !== false)
+    .sort((a, b) => {
+      const ar = typeof a.rank === "number" ? a.rank : Number.MAX_SAFE_INTEGER;
+      const br = typeof b.rank === "number" ? b.rank : Number.MAX_SAFE_INTEGER;
+      if (ar !== br) return ar - br;
+      return a.id - b.id;
+    });
+
+  return list[0] ?? null;
+}
+
 type Props = {
   sectionId: string;
   match: MatchPublicDTO;
@@ -144,10 +196,28 @@ export default function PublicMatchRow({
   const timeLabel = formatTimeShort(match.scheduled_time);
   const locationLabel = (match.location ?? "").trim();
 
-  const hasScore = typeof match.home_score === "number" && typeof match.away_score === "number";
-  const scoreLabel = hasScore ? `${match.home_score} : ${match.away_score}` : "-";
+  const customMode = usesCustomResults(match);
+  const customResults = getCustomResults(match);
+  const leadingCustomResult = bestCustomResult(match);
 
-  const isClickable = Boolean(onMatchClick) && (match.status === "IN_PROGRESS" || match.status === "FINISHED");
+  const hasScore =
+    typeof match.home_score === "number" && typeof match.away_score === "number";
+
+  const scoreLabel = customMode
+    ? customResultSummary(leadingCustomResult)
+    : hasScore
+      ? `${match.home_score} : ${match.away_score}`
+      : "-";
+
+  const scoreCaption = customMode
+    ? leadingCustomResult?.rank
+      ? `Najlepszy wynik - miejsce ${leadingCustomResult.rank}`
+      : "Najlepszy zapisany wynik"
+    : "Wynik";
+
+  const isClickable =
+    Boolean(onMatchClick) && (match.status === "IN_PROGRESS" || match.status === "FINISHED");
+
   const isSelected =
     selectedMatchId != null &&
     selectedSection != null &&
@@ -225,7 +295,10 @@ export default function PublicMatchRow({
 
       <div className="shrink-0 text-right">
         <div className="flex items-center justify-end gap-2">
-          <div className="text-sm font-semibold text-slate-100">{scoreLabel}</div>
+          <div className="text-right">
+            <div className="text-sm font-semibold text-slate-100">{scoreLabel}</div>
+            <div className="mt-0.5 text-[11px] text-slate-400">{scoreCaption}</div>
+          </div>
 
           <span className={cn("rounded-full border px-2 py-1 text-xs", statusBadgeClasses(match.status))}>
             {statusPl(match.status)}
@@ -265,47 +338,120 @@ export default function PublicMatchRow({
 
       {isSelected && isClickable ? (
         <div id={detailsId} className="mt-3 border-t border-white/10 pt-3">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Incydenty</div>
-
-              {incidentsError ? <div className="mb-2 text-sm text-rose-300">{incidentsError}</div> : null}
-
-              {incidentsBusy && sortedIncidents.length === 0 ? (
-                <div className="text-sm text-slate-300">Ładowanie incydentów...</div>
-              ) : sortedIncidents.length === 0 ? (
-                <div className="text-sm text-slate-300">Brak incydentów.</div>
-              ) : (
-                <div className="space-y-1">
-                  {sortedIncidents.map((incident) => (
-                    <div key={incident.id} className="text-sm text-slate-200">
-                      {formatIncidentLine(incident)}
-                    </div>
-                  ))}
+          {customMode ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  Rezultaty uczestników
                 </div>
-              )}
-            </div>
 
-            <div>
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Relacja live</div>
+                {customResults.length === 0 ? (
+                  <div className="text-sm text-slate-300">Brak zapisanych rezultatów.</div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {customResults
+                      .filter((item) => item.is_active !== false)
+                      .sort((a, b) => {
+                        const ar = typeof a.rank === "number" ? a.rank : Number.MAX_SAFE_INTEGER;
+                        const br = typeof b.rank === "number" ? b.rank : Number.MAX_SAFE_INTEGER;
+                        if (ar !== br) return ar - br;
+                        return a.id - b.id;
+                      })
+                      .map((result) => (
+                        <div
+                          key={result.id}
+                          className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-semibold text-slate-100">
+                              {result.team_name}
+                            </div>
+                            <div className="mt-0.5 text-xs text-slate-400">
+                              {String(result.value_kind ?? "").toUpperCase() === "TIME"
+                                ? "Czas"
+                                : "Wynik liczbowy"}
+                            </div>
+                          </div>
 
-              {commentaryError ? <div className="mb-2 text-sm text-rose-300">{commentaryError}</div> : null}
+                          <div className="shrink-0 text-right">
+                            <div className="text-sm font-semibold text-slate-100">
+                              {customResultSummary(result)}
+                            </div>
+                            <div className="mt-0.5 text-xs text-slate-400">
+                              {typeof result.rank === "number" ? `Miejsce ${result.rank}` : "Bez pozycji"}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
 
-              {commentaryBusy && sortedCommentary.length === 0 ? (
-                <div className="text-sm text-slate-300">Ładowanie relacji...</div>
-              ) : sortedCommentary.length === 0 ? (
-                <div className="text-sm text-slate-300">Brak komentarzy.</div>
-              ) : (
-                <div className="space-y-1">
-                  {sortedCommentary.map((entry) => (
-                    <div key={entry.id} className="whitespace-pre-wrap text-sm text-slate-200">
-                      {formatCommentaryLine(entry)}
-                    </div>
-                  ))}
+              <div>
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  Relacja / komentarz
                 </div>
-              )}
+
+                {commentaryError ? <div className="mb-2 text-sm text-rose-300">{commentaryError}</div> : null}
+
+                {commentaryBusy && sortedCommentary.length === 0 ? (
+                  <div className="text-sm text-slate-300">Ładowanie relacji...</div>
+                ) : sortedCommentary.length === 0 ? (
+                  <div className="text-sm text-slate-300">Brak komentarzy.</div>
+                ) : (
+                  <div className="space-y-1">
+                    {sortedCommentary.map((entry) => (
+                      <div key={entry.id} className="whitespace-pre-wrap text-sm text-slate-200">
+                        {formatCommentaryLine(entry)}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Incydenty</div>
+
+                {incidentsError ? <div className="mb-2 text-sm text-rose-300">{incidentsError}</div> : null}
+
+                {incidentsBusy && sortedIncidents.length === 0 ? (
+                  <div className="text-sm text-slate-300">Ładowanie incydentów...</div>
+                ) : sortedIncidents.length === 0 ? (
+                  <div className="text-sm text-slate-300">Brak incydentów.</div>
+                ) : (
+                  <div className="space-y-1">
+                    {sortedIncidents.map((incident) => (
+                      <div key={incident.id} className="text-sm text-slate-200">
+                        {formatIncidentLine(incident)}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Relacja live</div>
+
+                {commentaryError ? <div className="mb-2 text-sm text-rose-300">{commentaryError}</div> : null}
+
+                {commentaryBusy && sortedCommentary.length === 0 ? (
+                  <div className="text-sm text-slate-300">Ładowanie relacji...</div>
+                ) : sortedCommentary.length === 0 ? (
+                  <div className="text-sm text-slate-300">Brak komentarzy.</div>
+                ) : (
+                  <div className="space-y-1">
+                    {sortedCommentary.map((entry) => (
+                      <div key={entry.id} className="whitespace-pre-wrap text-sm text-slate-200">
+                        {formatCommentaryLine(entry)}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       ) : null}
     </div>

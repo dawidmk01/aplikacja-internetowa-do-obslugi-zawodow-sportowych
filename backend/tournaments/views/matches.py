@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.db import transaction
@@ -20,7 +21,6 @@ from rest_framework.views import APIView
 from tournaments.access import (
     can_edit_results,
     can_edit_schedule,
-    user_can_view_tournament,
     user_is_assistant,
 )
 from tournaments.services.match_outcome import (
@@ -30,9 +30,14 @@ from tournaments.services.match_outcome import (
 )
 from tournaments.services.match_result import MatchResultService
 
-from ..models import Match, MatchIncident, Stage, Tournament
+from ..models import Match, MatchCustomResult, MatchIncident, Stage, Tournament
 from ..realtime import ws_emit_tournament
-from ..serializers import MatchResultUpdateSerializer, MatchSerializer
+from ..serializers import (
+    MatchCustomResultSerializer,
+    MatchCustomResultUpdateSerializer,
+    MatchResultUpdateSerializer,
+    MatchSerializer,
+)
 from ._helpers import (
     _get_cup_matches,
     _sync_two_leg_pair_winner_if_possible,
@@ -41,7 +46,6 @@ from ._helpers import (
     public_access_or_403,
 )
 
-# Limit zabezpiecza automatyczne liczenie minut z zegara.
 _MAX_MATCH_SECONDS = 3 * 60 * 60
 
 
@@ -57,8 +61,44 @@ def _is_tennis(tournament: Tournament) -> bool:
     return (getattr(tournament, "discipline", "") or "").lower() == "tennis"
 
 
+def _is_custom_result_mode(tournament: Tournament) -> bool:
+    return getattr(tournament, "result_mode", Tournament.ResultMode.SCORE) == Tournament.ResultMode.CUSTOM
+
+
+def _custom_result_config(tournament: Tournament) -> dict:
+    try:
+        return tournament.get_result_config()
+    except Exception:
+        cfg = getattr(tournament, "result_config", None)
+        return cfg if isinstance(cfg, dict) else {}
+
+
+def _is_custom_head_to_head_points_table(tournament: Tournament) -> bool:
+    if not _is_custom_result_mode(tournament):
+        return False
+
+    cfg = _custom_result_config(tournament)
+    head_mode = str(
+        cfg.get("head_to_head_mode")
+        or cfg.get("headToHeadMode")
+        or cfg.get(Tournament.RESULTCFG_CUSTOM_MODE_KEY)
+        or ""
+    ).upper()
+    competition_model = str(getattr(tournament, "competition_model", "") or "").upper()
+
+    return (
+        competition_model == str(Tournament.CompetitionModel.HEAD_TO_HEAD).upper()
+        and head_mode in {"POINTS_TABLE", "HEAD_TO_HEAD_POINTS"}
+    )
+
+
+def _uses_custom_result_rows(tournament: Tournament) -> bool:
+    if not _is_custom_result_mode(tournament):
+        return False
+    return not _is_custom_head_to_head_points_table(tournament)
+
+
 def _get_pair_matches(stage: Stage, match: Match) -> List[Match]:
-    # Helper zwraca oba mecze tego samego dwumeczu.
     if not match.home_team_id or not match.away_team_id:
         return [match]
 
@@ -87,15 +127,14 @@ def _get_pair_matches(stage: Stage, match: Match) -> List[Match]:
 
 
 def _pair_is_complete_two_leg(group: List[Match]) -> bool:
-    return len(group) == 2 and all(m.status == Match.Status.FINISHED for m in group)
+    return len(group) == 2 and all(match.status == Match.Status.FINISHED for match in group)
 
 
 def _pair_winner_id(group: List[Match]) -> Optional[int]:
-    # Zwycięzca pary jest zwracany tylko, gdy oba rekordy wskazują ten sam wynik.
     if not group:
         return None
 
-    ids = {m.winner_id for m in group}
+    ids = {match.winner_id for match in group}
     if None in ids:
         return None
     if len(ids) == 1:
@@ -109,7 +148,6 @@ def _handle_knockout_progression(
     old_winner_id: Optional[int],
     new_winner_id: Optional[int],
 ) -> None:
-    # Progresja dotyczy tylko głównego drzewa KO.
     if stage.stage_type != Stage.StageType.KNOCKOUT:
         return
 
@@ -130,13 +168,13 @@ def _stringify_validation_detail(detail: object) -> str:
     if isinstance(detail, str):
         return detail
     if isinstance(detail, list):
-        return "; ".join(str(x) for x in detail)
+        return "; ".join(str(item) for item in detail)
     if isinstance(detail, dict):
         for key in ("non_field_errors", "tennis_sets", "detail"):
             value = detail.get(key)
             if value:
                 if isinstance(value, list):
-                    return "; ".join(str(x) for x in value)
+                    return "; ".join(str(item) for item in value)
                 return str(value)
         return "; ".join(f"{key}: {value}" for key, value in detail.items())
     return str(detail)
@@ -237,7 +275,6 @@ def _regenerate_knockout_from_groups_if_safe(tournament: Tournament) -> None:
 
 
 def _incident_goal_points(discipline: str, meta: object) -> int:
-    # W koszykówce GOAL może oznaczać 1, 2 lub 3 punkty.
     if discipline == Tournament.Discipline.BASKETBALL:
         data = meta if isinstance(meta, dict) else {}
         raw = data.get("points", 1)
@@ -259,7 +296,6 @@ def _is_goal_based_or_basketball(discipline: str) -> bool:
 
 
 def _incident_scope(match: Match, incident: MatchIncident) -> str:
-    # Scope rozdziela wynik podstawowy od dogrywki.
     data = incident.meta if isinstance(getattr(incident, "meta", None), dict) else {}
     scope = str(data.get("scope") or "").strip().upper()
     if scope == "EXTRA_TIME":
@@ -285,7 +321,6 @@ def _points_to_basketball_chunks(diff: int) -> List[int]:
 
 
 def _clock_minute_payload(match: Match) -> Tuple[str, Optional[int], Optional[str]]:
-    # Nowe incydenty korzystają z minuty z zegara, jeśli zegar ma dane.
     state = str(getattr(match, "clock_state", "") or "")
     elapsed = int(getattr(match, "clock_elapsed_seconds", 0) or 0)
     started_at = getattr(match, "clock_started_at", None)
@@ -324,6 +359,70 @@ def _default_period_for_scope(discipline: str, scope: str) -> str:
     return "NONE"
 
 
+def _custom_sort_value(result: MatchCustomResult):
+    if result.value_kind == MatchCustomResult.ValueKind.TIME:
+        return int(result.time_ms or 0)
+    if result.numeric_value is None:
+        return Decimal("0")
+    return Decimal(result.numeric_value)
+
+
+def _recalculate_custom_match_ranks(match: Match) -> Optional[int]:
+    tournament = match.tournament
+    if not tournament.uses_custom_results():
+        return None
+
+    results = list(
+        match.custom_results.select_related("team")
+        .filter(is_active=True)
+        .order_by("id")
+    )
+
+    if not results:
+        if match.result_entered:
+            match.result_entered = False
+            match.winner = None
+            match.save(update_fields=["result_entered", "winner"])
+        return None
+
+    lower_is_better = tournament.custom_result_lower_is_better()
+    allow_ties = tournament.get_result_config().get(Tournament.RESULTCFG_ALLOW_TIES_KEY, True)
+
+    ordered = sorted(
+        results,
+        key=lambda item: (_custom_sort_value(item), item.id),
+        reverse=not lower_is_better,
+    )
+
+    previous_value = None
+    previous_rank = None
+    winner_id = None
+
+    for index, result in enumerate(ordered, start=1):
+        current_value = _custom_sort_value(result)
+        if allow_ties and previous_value is not None and current_value == previous_value:
+            rank = previous_rank
+        else:
+            rank = index
+
+        if result.rank != rank:
+            result.rank = rank
+            result.save(update_fields=["rank", "updated_at"])
+
+        if rank == 1 and winner_id is None:
+            winner_id = result.team_id
+
+        previous_value = current_value
+        previous_rank = rank
+
+    if not match.result_entered or match.winner_id != winner_id:
+        match.result_entered = True
+        match.winner_id = winner_id
+        match.save(update_fields=["result_entered", "winner"])
+
+    return winner_id
+
+
 SCORE_SYNC_CONFIRM_REQUIRED = "SCORE_SYNC_CONFIRM_REQUIRED"
 
 
@@ -333,9 +432,14 @@ def _apply_manual_result_via_goal_incidents_or_409(
     force: bool,
     created_by_id: Optional[int] = None,
 ) -> Optional[Response]:
-    # Wynik liczbowy pozostaje źródłem prawdy, a GOAL są synchronizowane do wyniku.
     tournament = match.tournament
     discipline = tournament.discipline
+
+    if _uses_custom_result_rows(tournament):
+        return Response(
+            {"detail": "Dla customowego wyniku mierzalnego użyj endpointu zapisu rezultatu."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     if _is_tennis(tournament):
         return None
@@ -344,12 +448,7 @@ def _apply_manual_result_via_goal_incidents_or_409(
     if not match.home_team_id or not match.away_team_id:
         return None
 
-    match = (
-        Match.objects
-        .select_related("tournament")
-        .select_for_update()
-        .get(pk=match.pk)
-    )
+    match = Match.objects.select_related("tournament").select_for_update().get(pk=match.pk)
 
     desired_regular_home = int(match.home_score or 0)
     desired_regular_away = int(match.away_score or 0)
@@ -357,7 +456,9 @@ def _apply_manual_result_via_goal_incidents_or_409(
     desired_et_home = int(getattr(match, "home_extra_time_score", 0) or 0)
     desired_et_away = int(getattr(match, "away_extra_time_score", 0) or 0)
 
-    et_enabled = bool(getattr(match, "went_to_extra_time", False)) or (desired_et_home > 0 or desired_et_away > 0)
+    et_enabled = bool(getattr(match, "went_to_extra_time", False)) or (
+        desired_et_home > 0 or desired_et_away > 0
+    )
     if et_enabled and not getattr(match, "went_to_extra_time", False):
         match.went_to_extra_time = True
         match.save(update_fields=["went_to_extra_time"])
@@ -375,8 +476,7 @@ def _apply_manual_result_via_goal_incidents_or_409(
     }
 
     qs = (
-        MatchIncident.objects
-        .select_for_update()
+        MatchIncident.objects.select_for_update()
         .filter(match_id=match.id, kind="GOAL")
         .only("id", "team_id", "meta", "period")
         .order_by("-id")
@@ -507,7 +607,6 @@ def _apply_manual_result_via_goal_incidents_or_409(
 
 
 def _stop_match_clock(match: Match) -> None:
-    # Zegar zapisuje skumulowany czas i przechodzi w STOPPED.
     now = timezone.now()
     elapsed = int(getattr(match, "clock_elapsed_seconds", 0) or 0)
 
@@ -530,7 +629,6 @@ def _stop_match_clock(match: Match) -> None:
 
 
 def _continue_match_clock(match: Match) -> None:
-    # Wznowienie działa od zapisanego elapsed_seconds.
     now = timezone.now()
 
     if int(getattr(match, "clock_elapsed_seconds", 0) or 0) >= _MAX_MATCH_SECONDS:
@@ -556,7 +654,8 @@ class TournamentMatchListView(ListAPIView):
 
         return (
             Match.objects.filter(tournament=tournament)
-            .select_related("home_team", "away_team", "stage")
+            .select_related("home_team", "away_team", "stage", "winner")
+            .prefetch_related("custom_results__team")
             .order_by("stage__order", "round_number", "id")
         )
 
@@ -573,7 +672,8 @@ class TournamentPublicMatchListView(ListAPIView):
 
         return (
             Match.objects.filter(tournament=tournament)
-            .select_related("home_team", "away_team", "stage")
+            .select_related("home_team", "away_team", "stage", "winner")
+            .prefetch_related("custom_results__team")
             .order_by("stage__order", "round_number", "id")
         )
 
@@ -616,6 +716,82 @@ class MatchScheduleUpdateView(RetrieveUpdateAPIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+class MatchCustomResultUpdateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, *args, **kwargs):
+        match_id = kwargs.get("pk") or kwargs.get("id")
+        if not match_id:
+            return Response({"detail": "Brak identyfikatora meczu."}, status=status.HTTP_400_BAD_REQUEST)
+
+        match = get_object_or_404(
+            Match.objects.select_related("stage", "tournament", "home_team", "away_team").select_for_update(),
+            pk=match_id,
+        )
+        tournament = match.tournament
+        stage = match.stage
+
+        if not _is_custom_result_mode(tournament):
+            return Response(
+                {"detail": "Ten endpoint jest dostępny tylko dla trybu CUSTOM."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if _is_custom_head_to_head_points_table(tournament):
+            return Response(
+                {"detail": "Dla customowego systemu punktowego użyj standardowego endpointu zapisu wyniku meczu."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not can_edit_results(request.user, tournament):
+            return Response(
+                {"detail": "Nie masz uprawnień do edycji wyników. Dostępny jest tylko podgląd."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = MatchCustomResultUpdateSerializer(
+            data=request.data,
+            context={"match": match, "user": request.user},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        winner_id = _recalculate_custom_match_ranks(match)
+
+        if match.status == Match.Status.SCHEDULED:
+            match.status = Match.Status.IN_PROGRESS
+            match.save(update_fields=["status"])
+
+        if stage.stage_type in (Stage.StageType.LEAGUE, Stage.StageType.GROUP):
+            try:
+                MatchResultService.apply_result(match)
+            except Exception:
+                pass
+
+            try:
+                _regenerate_knockout_from_groups_if_safe(tournament)
+            except Exception:
+                pass
+
+        elif stage.stage_type == Stage.StageType.KNOCKOUT or _is_third_place_stage(stage):
+            if winner_id is not None and winner_id != match.winner_id:
+                match.winner_id = winner_id
+                match.save(update_fields=["winner"])
+
+        ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
+
+        response_payload = {
+            "detail": "Wynik niestandardowy zapisany.",
+            "match": MatchSerializer(match).data,
+            "custom_results": MatchCustomResultSerializer(
+                match.custom_results.select_related("team").filter(is_active=True).order_by("rank", "id"),
+                many=True,
+            ).data,
+        }
+        return Response(response_payload, status=status.HTTP_200_OK)
+
+
 class MatchResultUpdateView(RetrieveUpdateAPIView):
     serializer_class = MatchResultUpdateSerializer
     permission_classes = [IsAuthenticated]
@@ -633,14 +809,15 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
     @transaction.atomic
     def update(self, request, *args, **kwargs):
         match = self.get_object()
-        match = (
-            Match.objects
-            .select_related("stage", "tournament")
-            .select_for_update()
-            .get(pk=match.pk)
-        )
+        match = Match.objects.select_related("stage", "tournament").select_for_update().get(pk=match.pk)
 
         tournament = match.tournament
+
+        if _is_custom_result_mode(tournament):
+            return Response(
+                {"detail": "Dla trybu CUSTOM użyj endpointu zapisu rezultatu."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if not can_edit_results(request.user, tournament):
             return Response(
@@ -671,7 +848,6 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
 
         match = serializer.save()
 
-        # Dotknięcie wyniku traktuje mecz jako rozpoczęty nawet bez incydentów.
         if match.status == Match.Status.SCHEDULED:
             touched = False
             for key in (
@@ -775,6 +951,55 @@ class FinishMatchView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        if _uses_custom_result_rows(tournament):
+            winner_id = _recalculate_custom_match_ranks(match)
+            if not match.result_entered:
+                return Response(
+                    {"detail": "Nie można zakończyć meczu custom bez zapisania wyników."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if stage.stage_type == Stage.StageType.KNOCKOUT and winner_id is None:
+                return Response(
+                    {"detail": "Mecz pucharowy musi mieć zwycięzcę."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            old_winner_id = match.winner_id
+            match.status = Match.Status.FINISHED
+            _stop_match_clock(match)
+            match.save(
+                update_fields=[
+                    "status",
+                    "clock_state",
+                    "clock_started_at",
+                    "clock_elapsed_seconds",
+                ]
+            )
+
+            if stage.stage_type in (Stage.StageType.LEAGUE, Stage.StageType.GROUP):
+                try:
+                    MatchResultService.apply_result(match)
+                except Exception:
+                    pass
+
+                try:
+                    _regenerate_knockout_from_groups_if_safe(tournament)
+                except Exception:
+                    pass
+
+            elif stage.stage_type == Stage.StageType.KNOCKOUT or _is_third_place_stage(stage):
+                _handle_knockout_progression(tournament, stage, old_winner_id, winner_id)
+
+            transaction.on_commit(
+                lambda: ws_emit_tournament(
+                    match.tournament_id,
+                    "matches_changed",
+                    {"match_id": match.id},
+                )
+            )
+            return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
+
         force = str(request.query_params.get("force") or "").strip().lower() in {"1", "true", "yes"}
 
         resp = _apply_manual_result_via_goal_incidents_or_409(
@@ -802,7 +1027,9 @@ class FinishMatchView(APIView):
 
             match.status = Match.Status.FINISHED
             _stop_match_clock(match)
-            match.save(update_fields=["status", "clock_state", "clock_started_at", "clock_elapsed_seconds"])
+            match.save(
+                update_fields=["status", "clock_state", "clock_started_at", "clock_elapsed_seconds"]
+            )
             ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
             try:
@@ -851,7 +1078,11 @@ class FinishMatchView(APIView):
                 if err and not _is_tennis(tournament):
                     return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
-                winner_id = _tennis_winner_id_from_sets(match) if _is_tennis(tournament) else knockout_winner_id(match)
+                winner_id = (
+                    _tennis_winner_id_from_sets(match)
+                    if _is_tennis(tournament)
+                    else knockout_winner_id(match)
+                )
                 if winner_id is None:
                     return Response(
                         {"detail": "Mecz pucharowy musi mieć zwycięzcę."},
@@ -862,7 +1093,15 @@ class FinishMatchView(APIView):
                 match.winner_id = winner_id
                 match.status = Match.Status.FINISHED
                 _stop_match_clock(match)
-                match.save(update_fields=["winner", "status", "clock_state", "clock_started_at", "clock_elapsed_seconds"])
+                match.save(
+                    update_fields=[
+                        "winner",
+                        "status",
+                        "clock_state",
+                        "clock_started_at",
+                        "clock_elapsed_seconds",
+                    ]
+                )
                 ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
                 _handle_knockout_progression(tournament, stage, old_winner_id, winner_id)
@@ -882,7 +1121,14 @@ class FinishMatchView(APIView):
                 if match.status != Match.Status.FINISHED:
                     match.status = Match.Status.FINISHED
                     _stop_match_clock(match)
-                    match.save(update_fields=["status", "clock_state", "clock_started_at", "clock_elapsed_seconds"])
+                    match.save(
+                        update_fields=[
+                            "status",
+                            "clock_state",
+                            "clock_started_at",
+                            "clock_elapsed_seconds",
+                        ]
+                    )
                     ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
                 _sync_two_leg_pair_winner_if_possible(stage, tournament, match)
@@ -930,6 +1176,12 @@ class ContinueMatchView(APIView):
         )
         tournament = match.tournament
 
+        if _uses_custom_result_rows(tournament):
+            return Response(
+                {"detail": "Kontynuacja jest dostępna po zapisaniu wyniku także dla trybu CUSTOM."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if not can_edit_results(request.user, tournament):
             return Response(
                 {"detail": "Nie masz uprawnień do kontynuowania meczu. Dostępny jest tylko podgląd."},
@@ -966,7 +1218,49 @@ class SetScheduledMatchView(APIView):
         )
         tournament = match.tournament
 
-        # Cofnięcie do SCHEDULED jest dozwolone tylko bez przebiegu i bez wyniku.
+        if _uses_custom_result_rows(tournament):
+            has_custom_results = match.custom_results.filter(is_active=True).exists()
+            if has_custom_results:
+                return Response(
+                    {
+                        "detail": "Nie można ustawić meczu jako zaplanowany: najpierw usuń zapisane wyniki custom.",
+                        "code": "CANNOT_SET_SCHEDULED_WITH_CUSTOM_RESULTS",
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            if not (can_edit_results(request.user, tournament) or can_edit_schedule(request.user, tournament)):
+                return Response(
+                    {"detail": "Nie masz uprawnień do zmiany statusu meczu. Dostępny jest tylko podgląd."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            match.status = Match.Status.SCHEDULED
+            match.result_entered = False
+            match.winner = None
+            match.clock_state = Match.ClockState.NOT_STARTED
+            match.clock_started_at = None
+            match.clock_elapsed_seconds = 0
+            if hasattr(match, "clock_added_seconds"):
+                match.clock_added_seconds = 0
+            match.clock_period = Match.ClockPeriod.NONE
+
+            update_fields = [
+                "status",
+                "result_entered",
+                "winner",
+                "clock_state",
+                "clock_started_at",
+                "clock_elapsed_seconds",
+                "clock_period",
+            ]
+            if hasattr(match, "clock_added_seconds"):
+                update_fields.append("clock_added_seconds")
+
+            match.save(update_fields=update_fields)
+            ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
+            return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
+
         has_incidents = MatchIncident.objects.filter(match_id=match.id).exists()
 
         score_home = int(match.home_score or 0)
@@ -999,7 +1293,6 @@ class SetScheduledMatchView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        # Status organizacyjny może zmieniać użytkownik z results_edit albo schedule_edit.
         if not (can_edit_results(request.user, tournament) or can_edit_schedule(request.user, tournament)):
             return Response(
                 {"detail": "Nie masz uprawnień do zmiany statusu meczu. Dostępny jest tylko podgląd."},
@@ -1007,8 +1300,6 @@ class SetScheduledMatchView(APIView):
             )
 
         match.status = Match.Status.SCHEDULED
-
-        # Zegar wraca do stanu początkowego.
         match.clock_state = Match.ClockState.NOT_STARTED
         match.clock_started_at = None
         match.clock_elapsed_seconds = 0
@@ -1016,7 +1307,13 @@ class SetScheduledMatchView(APIView):
             match.clock_added_seconds = 0
         match.clock_period = Match.ClockPeriod.NONE
 
-        update_fields = ["status", "clock_state", "clock_started_at", "clock_elapsed_seconds", "clock_period"]
+        update_fields = [
+            "status",
+            "clock_state",
+            "clock_started_at",
+            "clock_elapsed_seconds",
+            "clock_period",
+        ]
         if hasattr(match, "clock_added_seconds"):
             update_fields.append("clock_added_seconds")
 

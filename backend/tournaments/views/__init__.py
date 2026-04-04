@@ -18,6 +18,9 @@ from .incidents import (
     MatchIncidentListCreateView,
     MatchIncidentRecomputeScoreView,
 )
+from .mass_start_results import (
+    TournamentMassStartResultListCreateView,
+)
 from .match_clock import (
     MatchClockGetView,
     MatchClockPauseView,
@@ -31,6 +34,7 @@ from .match_clock import (
 from .matches import (
     ContinueMatchView,
     FinishMatchView,
+    MatchCustomResultUpdateView,
     MatchResultUpdateView,
     MatchScheduleUpdateView,
     SetScheduledMatchView,
@@ -45,6 +49,7 @@ from .registrations import (
 )
 from .stages import (
     AdvanceFromGroupsView,
+    AdvanceMassStartStageView,
 )
 from .standings import (
     TournamentStandingsView,
@@ -67,6 +72,62 @@ from .tournaments import (
     MyTournamentListView,
     TournamentDetailView,
     TournamentListView,
+    TournamentMetaUpdateSerializer,
     TournamentMetaUpdateView,
     UnarchiveTournamentView,
 )
+
+__all__ = [
+    "AddAssistantView",
+    "AdvanceFromGroupsView",
+    "AdvanceMassStartStageView",
+    "ArchiveTournamentView",
+    "AssistantPermissionsView",
+    "ChangeDisciplineView",
+    "ChangeSetupView",
+    "ContinueMatchView",
+    "FinishMatchView",
+    "MatchClockGetView",
+    "MatchClockPauseView",
+    "MatchClockResetPeriodView",
+    "MatchClockResumeView",
+    "MatchClockSetAddedSecondsView",
+    "MatchClockSetPeriodView",
+    "MatchClockStartView",
+    "MatchClockStopView",
+    "MatchCommentaryDetailView",
+    "MatchCommentaryListCreateView",
+    "MatchCustomResultUpdateView",
+    "MatchIncidentDeleteView",
+    "MatchIncidentListCreateView",
+    "MatchIncidentRecomputeScoreView",
+    "MatchResultUpdateView",
+    "MatchScheduleUpdateView",
+    "MyTournamentListView",
+    "RemoveAssistantView",
+    "SetScheduledMatchView",
+    "TournamentAssistantListView",
+    "TournamentCommentaryPhraseDetailView",
+    "TournamentCommentaryPhraseListCreateView",
+    "TournamentDetailView",
+    "TournamentListView",
+    "TournamentMassStartResultListCreateView",
+    "TournamentMatchListView",
+    "TournamentMetaUpdateView",
+    "TournamentMyTeamPlayersView",
+    "TournamentPublicMatchListView",
+    "TournamentRegistrationJoinView",
+    "TournamentRegistrationMeView",
+    "TournamentRegistrationMyMatchesView",
+    "TournamentRegistrationVerifyView",
+    "TournamentStandingsView",
+    "TournamentTeamListView",
+    "TournamentTeamNameChangeRequestApproveView",
+    "TournamentTeamNameChangeRequestCreateView",
+    "TournamentTeamNameChangeRequestListView",
+    "TournamentTeamNameChangeRequestRejectView",
+    "TournamentTeamPlayersView",
+    "TournamentTeamSetupView",
+    "TournamentTeamUpdateView",
+    "UnarchiveTournamentView",
+]

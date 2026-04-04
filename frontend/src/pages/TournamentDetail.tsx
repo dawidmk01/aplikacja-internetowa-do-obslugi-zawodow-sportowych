@@ -638,22 +638,6 @@ export default function TournamentDetail() {
     }
   }, [allowJoinByCodeDraft, applyPatchedTournament, joinCodeDraft, participantsPreviewDraft, renameRequiresApprovalDraft, tournament]);
 
-  const generateTournament = useCallback(async () => {
-    if (!tournament) return;
-
-    try {
-      const res = await apiFetch(`/api/tournaments/${tournament.id}/generate/`, { toastOnError: false, method: "POST" });
-      if (!res.ok) throw new Error((await readDetail(res)) || "Nie udało się wygenerować rozgrywek.");
-
-      await res.json().catch(() => null);
-      await fetchTournament();
-
-      toast.success("Rozgrywki wygenerowane.");
-    } catch (e: any) {
-      toast.error(e?.message ?? "Błąd generowania rozgrywek.", { title: "Narzędzia" });
-    }
-  }, [fetchTournament, tournament]);
-
   if (needsCode) {
     return (
       <div className="mx-auto w-full max-w-xl px-4 py-8">
@@ -751,7 +735,6 @@ export default function TournamentDetail() {
         onSaveAssistantPerms={saveAssistantPerms}
         onRemoveAssistant={removeAssistant}
         onUpdateAssistantDraft={updateAssistantDraft}
-        onGenerateTournament={generateTournament}
       />
     </div>
   );
