@@ -1,5 +1,5 @@
 # backend/tournaments/serializers/incidents.py
-# Plik definiuje serializery odpowiedzialne za odczyt i zapis incydentów meczowych.
+# Plik definiuje serializery odpowiedzialne za odczyt i zapis incydentów meczowych z walidacją spójności dywizji.
 
 from __future__ import annotations
 
@@ -32,7 +32,6 @@ def _allowed_kinds_for_discipline(discipline: str) -> set[str]:
         }
 
     if discipline == Tournament.Discipline.TENNIS:
-        # Punkty w gemach są obsługiwane osobnym mechanizmem, nie przez timeline incydentów.
         return {
             k.TENNIS_CODE_VIOLATION,
             k.TIMEOUT,
@@ -45,7 +44,6 @@ def _allowed_kinds_for_discipline(discipline: str) -> set[str]:
         }
 
     if discipline == Tournament.Discipline.BASKETBALL:
-        # Scoring 1/2/3 pkt może wymagać później osobnego rozszerzenia meta dla GOAL.
         return {
             k.FOUL,
             k.SUBSTITUTION,
@@ -55,7 +53,6 @@ def _allowed_kinds_for_discipline(discipline: str) -> set[str]:
     if discipline == Tournament.Discipline.WRESTLING:
         return {k.TIMEOUT}
 
-    # Fallback pozostawia minimalny, bezpieczny zestaw zamiast pełnego odblokowania incydentów.
     return {k.TIMEOUT}
 
 
@@ -76,6 +73,8 @@ def _parse_minute_raw(minute_raw: str) -> Optional[int]:
 
 class MatchIncidentSerializer(serializers.ModelSerializer):
     team_name = serializers.CharField(source="team.name", read_only=True)
+    division_id = serializers.IntegerField(source="match.stage.division.id", read_only=True, allow_null=True)
+    division_name = serializers.CharField(source="match.stage.division.name", read_only=True, allow_null=True)
     player_name = serializers.SerializerMethodField()
     player_in_name = serializers.SerializerMethodField()
     player_out_name = serializers.SerializerMethodField()
@@ -87,6 +86,8 @@ class MatchIncidentSerializer(serializers.ModelSerializer):
             "match",
             "team",
             "team_name",
+            "division_id",
+            "division_name",
             "kind",
             "period",
             "time_source",
@@ -102,7 +103,7 @@ class MatchIncidentSerializer(serializers.ModelSerializer):
             "created_by",
             "created_at",
         ]
-        read_only_fields = ["id", "created_by", "created_at", "match"]
+        read_only_fields = ["id", "created_by", "created_at", "match", "division_id", "division_name"]
 
     def get_player_name(self, obj: MatchIncident) -> Optional[str]:
         return obj.player.display_name if obj.player_id else None
@@ -131,6 +132,7 @@ class MatchIncidentCreateSerializer(serializers.Serializer):
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         match: Match = self.context["match"]
         discipline = match.tournament.discipline
+        match_division_id = getattr(match.stage, "division_id", None)
 
         team_id = int(attrs["team"])
         kind = attrs["kind"]
@@ -185,7 +187,16 @@ class MatchIncidentCreateSerializer(serializers.Serializer):
                 {"player": "Ten typ incydentu wymaga wskazania zawodnika."}
             )
 
-        team = Team.objects.get(pk=team_id)
+        try:
+            team = Team.objects.select_related("division").get(pk=team_id)
+        except Team.DoesNotExist as exc:
+            raise serializers.ValidationError({"team": "Nie znaleziono drużyny."}) from exc
+
+        if team.tournament_id != match.tournament_id:
+            raise serializers.ValidationError({"team": "Wybrana drużyna nie należy do tego turnieju."})
+
+        if match_division_id is not None and team.division_id != match_division_id:
+            raise serializers.ValidationError({"team": "Wybrana drużyna nie należy do dywizji tego meczu."})
 
         def _ensure_player(pid: Optional[int], field: str) -> Optional[TeamPlayer]:
             if not pid:

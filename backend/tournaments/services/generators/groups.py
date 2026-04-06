@@ -1,33 +1,77 @@
-"""
-Generator fazy grupowej turnieju (format MIXED).
-
-Kluczowe zasady po poprawce:
-- faza grupowa NIE używa BYE jako drużyny technicznej,
-  bo przy nieparzystej liczbie drużyn po prostu ktoś pauzuje w kolejce;
-- liczba grup ma wynikać z cfg.groups_count (stała, jeśli tak ustawisz w UI),
-  a nie z teams_per_group.
-"""
+# backend/tournaments/services/generators/groups.py
+# Plik generuje fazę grupową turnieju w formacie mieszanym dla aktywnej dywizji.
 
 from __future__ import annotations
 
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
+
 from django.db import transaction
 
-from tournaments.models import Tournament, Stage, Group, Match, Team
-
+from tournaments.models import Division, Group, Match, Stage, Team, Tournament
 
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
 
 
-@transaction.atomic
-def generate_group_stage(tournament: Tournament) -> Stage:
-    _validate_tournament(tournament)
+def _resolve_division(tournament: Tournament, division: Division | None = None) -> Division | None:
+    if division is None:
+        return tournament.get_default_division()
 
-    teams = _get_active_teams(tournament)  # ✅ bez BYE
-    cfg = tournament.format_config or {}
+    if division.tournament_id != tournament.id:
+        raise ValueError("Wskazana dywizja nie należy do tego turnieju.")
+
+    return division
+
+
+def _runtime_status(
+    tournament: Tournament,
+    division: Division | None,
+) -> str:
+    return division.status if division is not None else tournament.status
+
+
+def _runtime_tournament_format(
+    tournament: Tournament,
+    division: Division | None,
+) -> str:
+    return division.tournament_format if division is not None else tournament.tournament_format
+
+
+def _runtime_format_config(
+    tournament: Tournament,
+    division: Division | None,
+) -> dict:
+    if division is not None:
+        return dict(division.format_config or {})
+    return dict(tournament.format_config or {})
+
+
+def _promote_after_generation(
+    tournament: Tournament,
+    division: Division | None,
+) -> None:
+    if division is not None and division.status == Tournament.Status.DRAFT:
+        division.status = Tournament.Status.CONFIGURED
+        division.save(update_fields=["status"])
+
+    if tournament.status == Tournament.Status.DRAFT:
+        tournament.status = Tournament.Status.CONFIGURED
+        tournament.save(update_fields=["status"])
+
+
+@transaction.atomic
+def generate_group_stage(
+    tournament: Tournament,
+    division: Division | None = None,
+) -> Stage:
+    division = _resolve_division(tournament, division)
+
+    _validate_tournament(tournament, division)
+
+    teams = _get_active_teams(tournament, division)
+    cfg = _runtime_format_config(tournament, division)
 
     groups_count = int(cfg.get("groups_count", 2))
-    group_matches = int(cfg.get("group_matches", 1))  # 1 lub 2
+    group_matches = int(cfg.get("group_matches", 1))
 
     if groups_count < 1:
         raise ValueError("Liczba grup (groups_count) musi być >= 1.")
@@ -35,7 +79,7 @@ def generate_group_stage(tournament: Tournament) -> Stage:
     if group_matches not in (1, 2):
         raise ValueError("group_matches musi wynosić 1 albo 2.")
 
-    # ✅ każda grupa musi mieć min. 2 zespoły
+    # Każda grupa musi mieć minimalną obsadę pozwalającą wygenerować mecze.
     if len(teams) < 2 * groups_count:
         raise ValueError(
             f"Za mało uczestników ({len(teams)}) na {groups_count} grup. "
@@ -44,6 +88,7 @@ def generate_group_stage(tournament: Tournament) -> Stage:
 
     stage = Stage.objects.create(
         tournament=tournament,
+        division=division,
         stage_type=Stage.StageType.GROUP,
         order=1,
     )
@@ -56,6 +101,7 @@ def generate_group_stage(tournament: Tournament) -> Stage:
         schedule = _round_robin_schedule(group_teams)
         current_round = 1
 
+        # Rewanż odwraca gospodarza w obrębie tej samej siatki kolejek.
         for leg in range(group_matches):
             for round_pairs in schedule:
                 for home, away in round_pairs:
@@ -79,48 +125,47 @@ def generate_group_stage(tournament: Tournament) -> Stage:
         raise ValueError("Generator fazy grupowej nie utworzył żadnych meczów.")
 
     Match.objects.bulk_create(matches)
-
-    tournament.status = Tournament.Status.CONFIGURED
-    tournament.save(update_fields=["status"])
+    _promote_after_generation(tournament, division)
 
     return stage
 
 
-def _validate_tournament(tournament: Tournament) -> None:
-    if tournament.status != Tournament.Status.DRAFT:
-        raise ValueError("Fazę grupową można generować tylko dla turnieju w statusie DRAFT.")
+def _validate_tournament(
+    tournament: Tournament,
+    division: Division | None,
+) -> None:
+    if _runtime_status(tournament, division) != Tournament.Status.DRAFT:
+        raise ValueError("Fazę grupową można generować tylko dla dywizji w statusie DRAFT.")
 
-    if tournament.tournament_format != Tournament.TournamentFormat.MIXED:
+    if _runtime_tournament_format(tournament, division) != Tournament.TournamentFormat.MIXED:
         raise ValueError("Generator fazy grupowej obsługuje wyłącznie format MIXED.")
 
 
-def _get_active_teams(tournament: Tournament) -> List[Team]:
-    teams = list(
-        tournament.teams
-        .filter(is_active=True)
-        .exclude(name=BYE_TEAM_NAME)
-        .order_by("id")
-    )
+def _get_active_teams(
+    tournament: Tournament,
+    division: Division | None,
+) -> List[Team]:
+    teams_qs = tournament.teams.filter(is_active=True).exclude(name=BYE_TEAM_NAME)
+    if division is not None:
+        teams_qs = teams_qs.filter(division=division)
+
+    teams = list(teams_qs.order_by("id"))
     if len(teams) < 2:
         raise ValueError("Faza grupowa wymaga co najmniej 2 aktywnych uczestników.")
     return teams
 
 
 def _split_into_groups(stage: Stage, teams: List[Team], groups_count: int) -> List[tuple[Group, List[Team]]]:
-    """
-    Tworzy DOKŁADNIE groups_count grup i rozkłada zespoły możliwie równo.
-    Przykład: 13 zespołów / 2 grupy => 7 i 6.
-    """
     groups: list[tuple[Group, List[Team]]] = []
 
     n = len(teams)
-    base = n // groups_count
-    extra = n % groups_count  # pierwsze "extra" grup dostaną +1
+    base_size = n // groups_count
+    extra = n % groups_count
 
     idx = 0
     for i in range(groups_count):
-        size = base + (1 if i < extra else 0)
-        group_teams = teams[idx: idx + size]
+        size = base_size + (1 if i < extra else 0)
+        group_teams = teams[idx : idx + size]
         idx += size
 
         group = Group.objects.create(stage=stage, name=f"Grupa {i + 1}")
@@ -130,13 +175,9 @@ def _split_into_groups(stage: Stage, teams: List[Team], groups_count: int) -> Li
 
 
 def _round_robin_schedule(teams: List[Team]) -> List[List[Tuple[Team, Team]]]:
-    """
-    Round-robin bez BYE jako drużyny.
-    Jeśli nieparzysta liczba zespołów -> w danej kolejce ktoś pauzuje (None),
-    ale NIE tworzymy meczu technicznego.
-    """
     arr: List[Optional[Team]] = list(teams)
 
+    # Pauza wynika z nieparzystej liczby zespołów, ale nie tworzy BYE jako drużyny.
     if len(arr) % 2 == 1:
         arr.append(None)
 
@@ -150,14 +191,14 @@ def _round_robin_schedule(teams: List[Team]) -> List[List[Tuple[Team, Team]]]:
         round_matches: list[tuple[Team, Team]] = []
 
         for i in range(half):
-            t1 = arr[i]
-            t2 = arr[n - 1 - i]
-            if t1 is not None and t2 is not None:
-                round_matches.append((t1, t2))
+            team_one = arr[i]
+            team_two = arr[n - 1 - i]
+            if team_one is not None and team_two is not None:
+                round_matches.append((team_one, team_two))
 
         schedule.append(round_matches)
 
-        # algorytm kołowy
+        # Rotacja kołowa utrzymuje poprawny rozkład par we wszystkich kolejkach.
         arr = [arr[0]] + [arr[-1]] + arr[1:-1]
 
     return schedule

@@ -3,12 +3,15 @@
 
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 
 import { motion } from "framer-motion";
 import { Brackets, Gauge, LayoutGrid, Table2, TimerReset, Trophy } from "lucide-react";
 
 import { apiFetch, apiGet } from "../api";
+import DivisionSwitcher, {
+  type DivisionSwitcherItem,
+} from "../components/DivisionSwitcher";
 import { cn } from "../lib/cn";
 import { displayGroupName, isByeMatch } from "../flow/stagePresentation";
 
@@ -88,6 +91,25 @@ type StandingsResponse = {
   groups?: GroupStanding[];
   bracket?: BracketData;
 };
+
+type DivisionStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
+
+type DivisionSummaryDTO = DivisionSwitcherItem & {
+  status?: DivisionStatus;
+};
+
+function parseDivisionId(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) return null;
+  return parsed;
+}
+
+function withDivisionQuery(url: string, divisionId: number | null | undefined) {
+  if (!divisionId) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}division_id=${divisionId}`;
+}
 
 function normalizeGroupKey(name: string | null | undefined): string {
   const s = (name ?? "").trim().toLowerCase();
@@ -323,8 +345,25 @@ function getCustomModeBadgeLabel(customMode: string, valueKind: CustomResultValu
 
 export default function TournamentStandings() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const searchParamsKey = searchParams.toString();
+
+  const requestedDivisionId = useMemo(() => {
+    const current = new URLSearchParams(searchParamsKey);
+    return (
+      parseDivisionId(current.get("division_id")) ??
+      parseDivisionId(current.get("active_division_id"))
+    );
+  }, [searchParamsKey]);
 
   const [tournament, setTournament] = useState<Tournament | null>(null);
+  const [divisions, setDivisions] = useState<DivisionSummaryDTO[]>([]);
+  const [activeDivisionId, setActiveDivisionId] = useState<number | null>(requestedDivisionId);
+  const [activeDivisionName, setActiveDivisionName] = useState<string | null>(null);
+
+  const effectiveDivisionId = requestedDivisionId ?? activeDivisionId;
+
   const [matches, setMatches] = useState<MatchDto[]>([]);
   const [standings, setStandings] = useState<StandingsResponse | null>(null);
 
@@ -344,15 +383,36 @@ export default function TournamentStandings() {
       setError(null);
 
       try {
-        const t = await apiGet<Tournament>(`/api/tournaments/${id}/`);
+        const t = await apiGet<Tournament>(
+          withDivisionQuery(`/api/tournaments/${id}/`, effectiveDivisionId)
+        );
         if (cancelled) return;
 
         setTournament(t);
+        setDivisions(
+          Array.isArray((t as any).divisions) ? ((t as any).divisions as DivisionSummaryDTO[]) : []
+        );
+        setActiveDivisionId((t as any).active_division_id ?? effectiveDivisionId ?? null);
+        setActiveDivisionName((t as any).active_division_name ?? null);
+
+        if (
+          !requestedDivisionId &&
+          (t as any).active_division_id &&
+          Array.isArray((t as any).divisions) &&
+          ((t as any).divisions as DivisionSummaryDTO[]).length > 1
+        ) {
+          const next = new URLSearchParams(searchParamsKey);
+          next.set("division_id", String((t as any).active_division_id));
+          setSearchParams(next, { replace: true });
+        }
+
         if (t.tournament_format === "CUP") setTab("BRACKET");
 
+        const resolvedDivisionId = (t as any).active_division_id ?? effectiveDivisionId ?? null;
+
         const [sRes, mRes] = await Promise.all([
-          apiFetch(`/api/tournaments/${id}/standings/`),
-          apiFetch(`/api/tournaments/${id}/matches/`),
+          apiFetch(withDivisionQuery(`/api/tournaments/${id}/standings/`, resolvedDivisionId)),
+          apiFetch(withDivisionQuery(`/api/tournaments/${id}/matches/`, resolvedDivisionId)),
         ]);
 
         if (!cancelled) {
@@ -384,7 +444,7 @@ export default function TournamentStandings() {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [effectiveDivisionId, id, requestedDivisionId, searchParamsKey, setSearchParams]);
 
   const derived = useMemo(() => {
     const tournamentDiscipline = (tournament?.discipline ?? "").toLowerCase();
@@ -450,6 +510,14 @@ export default function TournamentStandings() {
     return "Dyscyplina niestandardowa";
   }, [standings, tournament]);
 
+
+  const handleDivisionSwitch = (nextDivisionId: number) => {
+    if (nextDivisionId === effectiveDivisionId) return;
+    const next = new URLSearchParams(searchParamsKey);
+    next.set("division_id", String(nextDivisionId));
+    setSearchParams(next, { replace: false });
+  };
+
   if (loading) {
     return (
       <div className="mx-auto w-full max-w-[1400px] px-4 pb-24">
@@ -500,9 +568,23 @@ export default function TournamentStandings() {
 
   return (
     <div className="mx-auto w-full max-w-[1400px] px-4 pb-24">
-      <div className="mb-5">
-        <div className="text-sm text-slate-300">Tabela i drabinka</div>
-        <h1 className="mt-1 text-2xl font-semibold text-white">{tournament.name}</h1>
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm text-slate-300">Tabela i drabinka</div>
+          <h1 className="mt-1 text-2xl font-semibold text-white">{tournament.name}</h1>
+          {activeDivisionName ? (
+            <div className="mt-1 text-sm text-slate-400">
+              Aktywna dywizja: <span className="text-slate-200">{activeDivisionName}</span>
+            </div>
+          ) : null}
+        </div>
+
+        <DivisionSwitcher
+          divisions={divisions}
+          activeDivisionId={effectiveDivisionId}
+          onChange={handleDivisionSwitch}
+          disabled={loading}
+        />
       </div>
 
       {isCustomMeasured ? (

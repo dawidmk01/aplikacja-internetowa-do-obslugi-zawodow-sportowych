@@ -1,5 +1,5 @@
 # backend/tournaments/views/tournaments.py
-# Plik udostępnia widoki listy, szczegółów i zmian konfiguracji turnieju.
+# Plik udostępnia widoki listy, szczegółów i zmian konfiguracji turnieju z obsługą aktywnej dywizji.
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from tournaments.access import (
     user_is_organizer,
     user_is_registered_participant,
 )
-from tournaments.models import Stage, StageMassStartEntry, StageMassStartResult, Team, Tournament
+from tournaments.models import Division, Stage, StageMassStartEntry, StageMassStartResult, Team, Tournament
 from tournaments.permissions import IsTournamentOrganizer
 from tournaments.serializers import TournamentMetaUpdateSerializer, TournamentSerializer
 from tournaments.services.match_generation import ensure_matches_generated
@@ -40,6 +40,32 @@ def get_model_any(app_label: str, names: list[str]):
         except LookupError:
             continue
     raise LookupError(f"Nie znaleziono żadnego modelu z listy: {names}")
+
+
+def _resolve_division_from_request(request, tournament: Tournament) -> Division | None:
+    raw_id = (
+        request.query_params.get("division_id")
+        or request.query_params.get("active_division_id")
+        or request.query_params.get("division")
+    )
+    raw_slug = (
+        request.query_params.get("division_slug")
+        or request.query_params.get("active_division_slug")
+    )
+
+    divisions_qs = tournament.divisions.all().order_by("order", "id")
+
+    if raw_id:
+        try:
+            division_id = int(raw_id)
+        except (TypeError, ValueError):
+            return None
+        return divisions_qs.filter(pk=division_id).first()
+
+    if raw_slug:
+        return divisions_qs.filter(slug=str(raw_slug).strip()).first()
+
+    return tournament.get_default_division()
 
 
 def normalize_format_config(discipline: str | None, cfg: dict | None) -> dict:
@@ -88,20 +114,43 @@ def strip_standings_only_keys(discipline: str | None, cfg: dict | None) -> dict:
     return cfg
 
 
-def clear_standings_cache(tournament: Tournament) -> None:
+def clear_standings_cache(
+    tournament: Tournament,
+    *,
+    division: Division | None = None,
+) -> None:
     for model_name in ("Standing", "LeagueStanding", "TeamStanding"):
         try:
             model = apps.get_model("tournaments", model_name)
         except LookupError:
             continue
 
-        if any(field.name == "tournament" for field in model._meta.fields):
-            model.objects.filter(tournament=tournament).delete()
+        field_names = {field.name for field in model._meta.fields}
+        filters: dict = {}
+
+        if "tournament" in field_names:
+            filters["tournament"] = tournament
+        elif "stage" in field_names:
+            filters["stage__tournament"] = tournament
+        else:
+            continue
+
+        # Jeżeli model klasyfikacji wspiera dywizje, czyszczenie pozostaje lokalne dla aktywnej dywizji.
+        if division is not None:
+            if "division" in field_names:
+                filters["division"] = division
+            elif "stage" in field_names:
+                filters["stage__division"] = division
+
+        model.objects.filter(**filters).delete()
 
 
-def reset_match_results(match_model, tournament: Tournament) -> None:
-    # Reset utrzymuje strukturę rozgrywek, ale usuwa wynik i stan pochodny meczu.
-    match_model.objects.filter(tournament=tournament).update(
+def reset_match_results(match_model, tournament: Tournament, *, division: Division | None = None) -> None:
+    qs = match_model.objects.filter(tournament=tournament)
+    if division is not None:
+        qs = qs.filter(stage__division=division)
+
+    qs.update(
         home_score=0,
         away_score=0,
         tennis_sets=None,
@@ -118,28 +167,19 @@ def reset_match_results(match_model, tournament: Tournament) -> None:
     )
 
 
-def get_default_slot_prefix(tournament: Tournament) -> str:
-    if tournament.competition_type == Tournament.CompetitionType.INDIVIDUAL:
-        return "Zawodnik"
-    return "Drużyna"
-
-
-def get_default_slot_prefix_for_competition_type_change(
-    competition_type: str | None,
-) -> str:
+def get_default_slot_prefix_for_competition_type(competition_type: str | None) -> str:
     if competition_type == Tournament.CompetitionType.INDIVIDUAL:
         return "Zawodnik"
     return "Drużyna"
 
 
-def rename_default_team_names_for_competition_type_change(
+def rename_default_team_names_for_division_competition_type_change(
     tournament: Tournament,
+    division: Division,
     previous_competition_type: str | None,
 ) -> None:
-    previous_prefix = get_default_slot_prefix_for_competition_type_change(
-        previous_competition_type
-    )
-    current_prefix = get_default_slot_prefix(tournament)
+    previous_prefix = get_default_slot_prefix_for_competition_type(previous_competition_type)
+    current_prefix = get_default_slot_prefix_for_competition_type(division.competition_type)
 
     if previous_prefix == current_prefix:
         return
@@ -148,7 +188,7 @@ def rename_default_team_names_for_competition_type_change(
     team_model = get_model_any("tournaments", ["Team"])
 
     to_update = []
-    for team in team_model.objects.filter(tournament=tournament).order_by("id"):
+    for team in team_model.objects.filter(tournament=tournament, division=division).order_by("id"):
         normalized_name = str(team.name or "").strip()
         match = pattern.match(normalized_name)
         if not match:
@@ -180,11 +220,11 @@ def _default_mass_start_stage_status(index: int) -> str:
 
 def _sync_mass_start_stage_entries(
     tournament: Tournament,
+    division: Division,
     stage,
     groups: list,
     cfg: dict,
 ) -> None:
-    # Obsada pierwszego etapu może być odświeżana tylko do momentu rozpoczęcia rywalizacji.
     if stage.order != 1:
         return
 
@@ -196,7 +236,7 @@ def _sync_mass_start_stage_entries(
         return
 
     active_team_ids = list(
-        Team.objects.filter(tournament=tournament, is_active=True)
+        Team.objects.filter(tournament=tournament, division=division, is_active=True)
         .order_by("id")
         .values_list("id", flat=True)
     )
@@ -254,20 +294,21 @@ def _sync_mass_start_stage_entries(
     StageMassStartEntry.objects.filter(stage=stage).exclude(id__in=keep_entry_ids).delete()
 
 
-def sync_custom_mass_start_structure(tournament: Tournament) -> None:
+def sync_custom_mass_start_structure_for_division(tournament: Tournament, division: Division) -> None:
     stage_model = get_model_any("tournaments", ["Stage"])
     group_model = get_model_any("tournaments", ["Group"])
     match_model = get_model_any("tournaments", ["Match"])
 
     is_custom_mass_start = (
         tournament.discipline == Tournament.Discipline.CUSTOM
-        and tournament.result_mode == Tournament.ResultMode.CUSTOM
-        and tournament.competition_model == Tournament.CompetitionModel.MASS_START
+        and division.result_mode == Tournament.ResultMode.CUSTOM
+        and division.competition_model == Tournament.CompetitionModel.MASS_START
     )
 
     existing_mass_stages = list(
         stage_model.objects.filter(
             tournament=tournament,
+            division=division,
             stage_type=stage_model.StageType.MASS_START,
         ).order_by("order", "id")
     )
@@ -279,10 +320,9 @@ def sync_custom_mass_start_structure(tournament: Tournament) -> None:
             stage_model.objects.filter(id__in=[stage.id for stage in existing_mass_stages]).delete()
         return
 
-    stage_cfgs = list(tournament.get_mass_start_stages() or [])
+    stage_cfgs = list(division.get_mass_start_stages() or [])
 
-    # Tryb „wszyscy razem” nie korzysta z meczów par, więc pozostała struktura jest czyszczona.
-    stale_stages = stage_model.objects.filter(tournament=tournament).exclude(
+    stale_stages = stage_model.objects.filter(tournament=tournament, division=division).exclude(
         stage_type=stage_model.StageType.MASS_START
     )
     if stale_stages.exists():
@@ -291,6 +331,7 @@ def sync_custom_mass_start_structure(tournament: Tournament) -> None:
 
     match_model.objects.filter(
         tournament=tournament,
+        stage__division=division,
         stage__stage_type=stage_model.StageType.MASS_START,
     ).delete()
 
@@ -303,12 +344,14 @@ def sync_custom_mass_start_structure(tournament: Tournament) -> None:
         if stage is None:
             stage = stage_model(
                 tournament=tournament,
+                division=division,
                 stage_type=stage_model.StageType.MASS_START,
                 order=index,
                 status=_default_mass_start_stage_status(index),
             )
 
         stage.stage_type = stage_model.StageType.MASS_START
+        stage.division = division
         stage.order = index
 
         if is_new_stage:
@@ -343,6 +386,7 @@ def sync_custom_mass_start_structure(tournament: Tournament) -> None:
 
         _sync_mass_start_stage_entries(
             tournament=tournament,
+            division=division,
             stage=stage,
             groups=stage_groups,
             cfg=cfg,
@@ -351,12 +395,22 @@ def sync_custom_mass_start_structure(tournament: Tournament) -> None:
     if active_stage_ids:
         stale_mass_stages = stage_model.objects.filter(
             tournament=tournament,
+            division=division,
             stage_type=stage_model.StageType.MASS_START,
         ).exclude(id__in=active_stage_ids)
         if stale_mass_stages.exists():
             match_model.objects.filter(tournament=tournament, stage__in=stale_mass_stages).delete()
             StageMassStartEntry.objects.filter(stage__in=stale_mass_stages).delete()
             stale_mass_stages.delete()
+
+
+def sync_custom_mass_start_structure(tournament: Tournament, *, division: Division | None = None) -> None:
+    if division is not None:
+        sync_custom_mass_start_structure_for_division(tournament, division)
+        return
+
+    for current_division in tournament.divisions.all().order_by("order", "id"):
+        sync_custom_mass_start_structure_for_division(tournament, current_division)
 
 
 class TournamentListView(ListCreateAPIView):
@@ -367,6 +421,7 @@ class TournamentListView(ListCreateAPIView):
     @transaction.atomic
     def perform_create(self, serializer):
         tournament: Tournament = serializer.save(organizer=self.request.user)
+        division = tournament.get_default_division()
 
         tournament.format_config = normalize_format_config(
             tournament.discipline,
@@ -378,16 +433,21 @@ class TournamentListView(ListCreateAPIView):
         )
         tournament.save(update_fields=["format_config", "result_config"])
 
-        name_prefix = get_default_slot_prefix(tournament)
+        competition_type = division.competition_type if division else tournament.competition_type
+        name_prefix = get_default_slot_prefix_for_competition_type(competition_type)
         Team.objects.bulk_create(
             [
-                Team(tournament=tournament, name=f"{name_prefix} 1", is_active=True),
-                Team(tournament=tournament, name=f"{name_prefix} 2", is_active=True),
+                Team(tournament=tournament, division=division, name=f"{name_prefix} 1", is_active=True),
+                Team(tournament=tournament, division=division, name=f"{name_prefix} 2", is_active=True),
             ]
         )
 
-        sync_custom_mass_start_structure(tournament)
-        ensure_matches_generated(tournament)
+        sync_custom_mass_start_structure(tournament, division=division)
+        ensure_matches_generated(tournament, division=division)
+
+        if division is not None:
+            division.status = Tournament.Status.CONFIGURED
+            division.save(update_fields=["status"])
 
         tournament.status = Tournament.Status.CONFIGURED
         tournament.save(update_fields=["status"])
@@ -409,32 +469,48 @@ class MyTournamentListView(ListAPIView):
             .order_by("-created_at")
         )
 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        return context
+
 
 class TournamentDetailView(RetrieveUpdateAPIView):
     queryset = Tournament.objects.all()
     serializer_class = TournamentSerializer
 
     def _ensure_mass_start_structure(self, tournament: Tournament) -> None:
+        division = _resolve_division_from_request(self.request, tournament)
+        if division is None:
+            return
+
         if not (
             tournament.discipline == Tournament.Discipline.CUSTOM
-            and tournament.result_mode == Tournament.ResultMode.CUSTOM
-            and tournament.competition_model == Tournament.CompetitionModel.MASS_START
+            and division.result_mode == Tournament.ResultMode.CUSTOM
+            and division.competition_model == Tournament.CompetitionModel.MASS_START
         ):
             return
 
-        # Odczyt szczegółów ma oddawać aktualną strukturę grup i obsady etapu.
-        sync_custom_mass_start_structure(tournament)
+        sync_custom_mass_start_structure(tournament, division=division)
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        return context
 
     def perform_update(self, serializer):
-        previous_competition_type = (
-            serializer.instance.competition_type if serializer.instance else None
-        )
-        tournament: Tournament = serializer.save()
+        tournament = serializer.instance
+        division = _resolve_division_from_request(self.request, tournament)
+        previous_competition_type = division.competition_type if division else tournament.competition_type
+
+        tournament = serializer.save()
         self._ensure_mass_start_structure(tournament)
-        rename_default_team_names_for_competition_type_change(
-            tournament,
-            previous_competition_type,
-        )
+
+        if division is not None:
+            division.refresh_from_db()
+            rename_default_team_names_for_division_competition_type_change(
+                tournament,
+                division,
+                previous_competition_type,
+            )
 
     def get_permissions(self):
         if self.request.method in ("GET", "HEAD", "OPTIONS"):
@@ -508,6 +584,8 @@ class ArchiveTournamentView(APIView):
         tournament.is_published = False
         tournament.save(update_fields=["status", "is_published"])
 
+        tournament.divisions.update(status=Tournament.Status.FINISHED)
+
         return Response(
             {"detail": "Turniej został zarchiwizowany."},
             status=status.HTTP_200_OK,
@@ -529,6 +607,8 @@ class UnarchiveTournamentView(APIView):
 
         tournament.status = Tournament.Status.CONFIGURED
         tournament.save(update_fields=["status"])
+
+        tournament.divisions.filter(is_archived=False).update(status=Tournament.Status.CONFIGURED)
 
         return Response(
             {"detail": "Turniej został przywrócony z archiwum."},
@@ -676,12 +756,15 @@ class ChangeDisciplineView(APIView):
             )
 
         allowed_formats = Tournament.allowed_formats_for_discipline(new_discipline)
-        if tournament.tournament_format and tournament.tournament_format not in allowed_formats:
+        incompatible_divisions = tournament.divisions.exclude(
+            tournament_format__in=allowed_formats
+        )
+        if incompatible_divisions.exists():
             return Response(
                 {
                     "detail": (
-                        "Zmiana dyscypliny wymaga większego resetu, ponieważ aktualny format "
-                        "nie jest dostępny dla nowej dyscypliny."
+                        "Zmiana dyscypliny wymaga większego resetu, ponieważ co najmniej jedna dywizja "
+                        "ma format niedostępny dla nowej dyscypliny."
                     ),
                     "reset_level": "FORMAT_INCOMPATIBLE",
                     "next_step": "setup",
@@ -724,13 +807,39 @@ class ChangeDisciplineView(APIView):
                 ]
             )
 
-            name_prefix = get_default_slot_prefix(tournament)
-            team_model.objects.bulk_create(
-                [
-                    team_model(tournament=tournament, name=f"{name_prefix} 1", is_active=True),
-                    team_model(tournament=tournament, name=f"{name_prefix} 2", is_active=True),
-                ]
-            )
+            for division in tournament.divisions.all().order_by("order", "id"):
+                division.competition_type = new_comp_type
+                division.competition_model = new_comp_model
+                division.result_mode = new_result_mode
+                division.result_config = dict(new_result_config or {})
+                division.tournament_format = Tournament.TournamentFormat.LEAGUE
+                division.format_config = {}
+                division.status = Tournament.Status.DRAFT
+                division.save()
+
+            placeholder_teams = []
+            divisions_for_reset = list(tournament.divisions.all().order_by("order", "id"))
+            for current_division in divisions_for_reset:
+                name_prefix = get_default_slot_prefix_for_competition_type(current_division.competition_type)
+                placeholder_teams.extend(
+                    [
+                        team_model(
+                            tournament=tournament,
+                            division=current_division,
+                            name=f"{name_prefix} 1",
+                            is_active=True,
+                        ),
+                        team_model(
+                            tournament=tournament,
+                            division=current_division,
+                            name=f"{name_prefix} 2",
+                            is_active=True,
+                        ),
+                    ]
+                )
+
+            if placeholder_teams:
+                team_model.objects.bulk_create(placeholder_teams)
 
             sync_custom_mass_start_structure(tournament)
 
@@ -775,6 +884,17 @@ class ChangeDisciplineView(APIView):
                 "status",
             ]
         )
+
+        for division in tournament.divisions.all().order_by("order", "id"):
+            division.competition_type = new_comp_type
+            division.competition_model = new_comp_model
+            division.result_mode = new_result_mode
+            division.result_config = dict(new_result_config or {})
+            division.format_config = normalize_format_config(new_discipline, division.format_config or {})
+            if division.status == Tournament.Status.FINISHED:
+                division.status = Tournament.Status.CONFIGURED
+            division.save()
+
         sync_custom_mass_start_structure(tournament)
 
         return Response(
@@ -815,6 +935,13 @@ class ChangeSetupView(APIView):
         tournament: Tournament = get_object_or_404(Tournament, pk=pk)
         self.check_object_permissions(request, tournament)
 
+        division = _resolve_division_from_request(request, tournament)
+        if division is None:
+            return Response(
+                {"detail": "Nie znaleziono aktywnej dywizji dla tej operacji."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         serializer = ChangeSetupSerializer(
             data=request.data,
             context={"tournament": tournament},
@@ -830,10 +957,10 @@ class ChangeSetupView(APIView):
             "yes",
         )
 
-        old_cfg = normalize_format_config(tournament.discipline, tournament.format_config or {})
+        old_cfg = normalize_format_config(tournament.discipline, division.format_config or {})
         new_cfg = normalize_format_config(tournament.discipline, new_cfg)
 
-        fmt_changed = tournament.tournament_format != new_format
+        fmt_changed = division.tournament_format != new_format
         cfg_changed = old_cfg != new_cfg
         changed = fmt_changed or cfg_changed
 
@@ -847,14 +974,15 @@ class ChangeSetupView(APIView):
         match_model = get_model_any("tournaments", ["Match"])
 
         reset_needed = (
-            stage_model.objects.filter(tournament=tournament).exists()
-            or match_model.objects.filter(tournament=tournament).exists()
-            or StageMassStartEntry.objects.filter(stage__tournament=tournament).exists()
+            stage_model.objects.filter(tournament=tournament, division=division).exists()
+            or match_model.objects.filter(tournament=tournament, stage__division=division).exists()
+            or StageMassStartEntry.objects.filter(stage__tournament=tournament, stage__division=division).exists()
         )
 
         if dry_run:
             return Response(
                 {
+                    "division_id": division.id,
                     "changed": changed,
                     "requires_reset": bool(requires_reset and changed),
                     "reset_needed": bool(reset_needed and requires_reset and changed),
@@ -866,30 +994,43 @@ class ChangeSetupView(APIView):
         reset_performed = False
 
         if changed and requires_reset and reset_needed:
-            match_model.objects.filter(tournament=tournament).delete()
-            StageMassStartEntry.objects.filter(stage__tournament=tournament).delete()
-            stage_model.objects.filter(tournament=tournament).delete()
+            match_model.objects.filter(tournament=tournament, stage__division=division).delete()
+            StageMassStartEntry.objects.filter(stage__tournament=tournament, stage__division=division).delete()
+            stage_model.objects.filter(tournament=tournament, division=division).delete()
             reset_performed = True
-            clear_standings_cache(tournament)
+            clear_standings_cache(tournament, division=division)
 
         if changed and (not reset_performed) and cfg_changed:
-            clear_standings_cache(tournament)
+            clear_standings_cache(tournament, division=division)
 
         if changed:
-            tournament.tournament_format = new_format
-            tournament.format_config = new_cfg
+            previous_competition_type = division.competition_type
 
-            if tournament.status == Tournament.Status.FINISHED:
-                tournament.status = Tournament.Status.CONFIGURED
+            division.tournament_format = new_format
+            division.format_config = new_cfg
+
+            if division.status == Tournament.Status.FINISHED:
+                division.status = Tournament.Status.CONFIGURED
             elif reset_performed:
-                tournament.status = Tournament.Status.DRAFT
+                division.status = Tournament.Status.DRAFT
 
-            tournament.save(update_fields=["tournament_format", "format_config", "status"])
-            sync_custom_mass_start_structure(tournament)
+            division.save(update_fields=["tournament_format", "format_config", "status"])
+            sync_custom_mass_start_structure(tournament, division=division)
+            rename_default_team_names_for_division_competition_type_change(
+                tournament,
+                division,
+                previous_competition_type,
+            )
+
+            if division.is_default:
+                tournament.tournament_format = division.tournament_format
+                tournament.format_config = dict(division.format_config or {})
+                tournament.save(update_fields=["tournament_format", "format_config"])
 
         return Response(
             {
-                "detail": "Konfiguracja zapisana.",
+                "detail": "Konfiguracja dywizji zapisana.",
+                "division_id": division.id,
                 "changed": changed,
                 "requires_reset": bool(requires_reset and changed),
                 "reset_performed": reset_performed,

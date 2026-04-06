@@ -1,3 +1,6 @@
+// frontend/src/pages/MyTournaments.tsx
+// Strona prezentuje listę turniejów użytkownika oraz obsługuje filtrowanie, publikację i archiwum.
+
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -133,6 +136,35 @@ function normalizePL(s: string) {
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+}
+
+
+function isHtmlErrorMessage(value: string) {
+  return (
+    /^<!doctype html/i.test(value) ||
+    /<html[\s>]/i.test(value) ||
+    /<head[\s>]/i.test(value) ||
+    /<title>/i.test(value)
+  );
+}
+
+function sanitizeApiErrorMessage(error: unknown, fallback: string) {
+  const raw =
+    typeof error === "string"
+      ? error
+      : typeof (error as any)?.message === "string"
+      ? (error as any).message
+      : "";
+
+  const trimmed = raw.trim();
+  if (!trimmed) return fallback;
+
+  // Odrzucenie technicznej odpowiedzi HTML utrzymuje komunikat czytelny dla użytkownika.
+  if (isHtmlErrorMessage(trimmed)) {
+    return fallback;
+  }
+
+  return trimmed;
 }
 
 async function copyToClipboard(text: string) {
@@ -322,7 +354,10 @@ export default function MyTournaments() {
       const data = await apiGet<Tournament[]>("/api/tournaments/my/");
       setItems(Array.isArray(data) ? data : []);
     } catch (e: any) {
-      const msg = e?.message || "Nie udało się pobrać listy turniejów.";
+      const msg = sanitizeApiErrorMessage(
+        e,
+        "Nie udało się wczytać listy turniejów. Spróbuj ponownie."
+      );
       setError(msg);
       toast.error(msg, { title: "System" });
     } finally {

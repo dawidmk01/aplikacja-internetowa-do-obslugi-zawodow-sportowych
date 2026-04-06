@@ -1,5 +1,5 @@
 # backend/tournaments/urls.py
-# Plik definiuje routing endpointów API dla turniejów, meczów, wyników i widoków live.
+# Plik definiuje routing endpointów API dla turniejów, meczów, wyników, dywizji i widoków live.
 
 from django.urls import path
 
@@ -56,7 +56,9 @@ from .views import (
     TournamentTeamUpdateView,
     UnarchiveTournamentView,
 )
+from .views.divisions import TournamentDivisionDetailView, TournamentDivisionListCreateView
 from .views.mass_start_results import TournamentPublicMassStartResultListView
+
 
 urlpatterns = [
     path("tournaments/", TournamentListView.as_view()),
@@ -71,6 +73,8 @@ urlpatterns = [
     path("tournaments/<int:pk>/change-setup/", ChangeSetupView.as_view()),
     path("tournaments/<int:pk>/advance-from-groups/", AdvanceFromGroupsView.as_view()),
     path("tournaments/<int:pk>/advance-mass-start-stage/", AdvanceMassStartStageView.as_view()),
+    path("tournaments/<int:pk>/divisions/", TournamentDivisionListCreateView.as_view()),
+    path("tournaments/<int:pk>/divisions/<int:division_id>/", TournamentDivisionDetailView.as_view()),
     path("tournaments/<int:pk>/assistants/", TournamentAssistantListView.as_view()),
     path("tournaments/<int:pk>/assistants/add/", AddAssistantView.as_view()),
     path("tournaments/<int:pk>/assistants/<int:user_id>/remove/", RemoveAssistantView.as_view()),

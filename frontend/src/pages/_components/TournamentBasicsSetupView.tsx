@@ -129,6 +129,15 @@ export type MatchesPreview = {
   advancing: number;
 };
 
+export type StructureDivisionItem = {
+  id: number;
+  name: string;
+  order: number;
+  isDefault?: boolean;
+  isActive?: boolean;
+  statusLabel?: string;
+};
+
 type ThirdPlaceSelectValue = "NONE" | "ONE_MATCH" | "TWO_MATCHES";
 
 type CustomMatchSeriesMode =
@@ -635,6 +644,272 @@ function getStructureValidationMessages(params: {
   return Array.from(new Set(messages));
 }
 
+function FormatCopyBar({
+  disableForm,
+  canEditDivisions,
+  copyDivisionOptions,
+  copySourceDivisionId,
+  onCopySourceDivisionChange,
+  onCopyFormatFromDivision,
+}: {
+  disableForm: boolean;
+  canEditDivisions: boolean;
+  copyDivisionOptions: SelectOption<number>[];
+  copySourceDivisionId: number | null;
+  onCopySourceDivisionChange?: (divisionId: number) => void;
+  onCopyFormatFromDivision?: () => void;
+}) {
+  if (!canEditDivisions || copyDivisionOptions.length === 0) {
+    return null;
+  }
+
+  const selectedValue = copySourceDivisionId ?? copyDivisionOptions[0]?.value ?? null;
+  if (selectedValue == null) {
+    return null;
+  }
+
+  return (
+    <div className="mb-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
+        <div className="space-y-2">
+          <div className="text-xs font-semibold text-slate-300">Kopiuj ustawienia formatu z dywizji</div>
+          <Select<number>
+            value={selectedValue}
+            disabled={disableForm}
+            onChange={(value) => onCopySourceDivisionChange?.(value)}
+            options={copyDivisionOptions}
+            ariaLabel="Kopiuj ustawienia formatu z dywizji"
+          />
+        </div>
+
+        <div className="flex items-end">
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={disableForm}
+            onClick={onCopyFormatFromDivision}
+          >
+            Kopiuj ustawienia
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-2 text-xs text-slate-400">
+        Skopiowane zostaną ustawienia formatu aktywnej dywizji. Po skopiowaniu nadal możesz je edytować ręcznie.
+      </div>
+    </div>
+  );
+}
+
+function DivisionSection({
+  showSection,
+  disableForm,
+  canEditDivisions,
+  participants,
+  onParticipantsChange,
+  activeDivisionName,
+  activeDivisionStatusLabel,
+  visibleDivisions,
+  showDivisionTiles,
+  newDivisionName,
+  divisionActionLoading,
+  editingDivisionId,
+  editingDivisionName,
+  onNewDivisionNameChange,
+  onCreateDivision,
+  onDivisionSwitch,
+  onStartDivisionRename,
+  onEditingDivisionNameChange,
+  onCancelDivisionRename,
+  onSaveDivisionRename,
+  onArchiveDivision,
+}: {
+  showSection: boolean;
+  disableForm: boolean;
+  canEditDivisions: boolean;
+  participants: number;
+  onParticipantsChange: (v: number) => void;
+  activeDivisionName?: string | null;
+  activeDivisionStatusLabel?: string | null;
+  visibleDivisions: StructureDivisionItem[];
+  showDivisionTiles: boolean;
+  newDivisionName: string;
+  divisionActionLoading: boolean;
+  editingDivisionId: number | null;
+  editingDivisionName: string;
+  onNewDivisionNameChange?: (value: string) => void;
+  onCreateDivision?: () => void;
+  onDivisionSwitch?: (divisionId: number) => void;
+  onStartDivisionRename?: (divisionId: number, currentName: string) => void;
+  onEditingDivisionNameChange?: (value: string) => void;
+  onCancelDivisionRename?: () => void;
+  onSaveDivisionRename?: (divisionId: number) => void;
+  onArchiveDivision?: (divisionId: number) => void;
+}) {
+  if (!showSection) {
+    return null;
+  }
+
+  const activeDivision = visibleDivisions.find((division) => division.isActive);
+
+  return (
+    <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+      <div className="flex items-center gap-2">
+        <Layers3 className="h-4 w-4 text-white/80" />
+        <div className="text-sm font-semibold text-white">Dywizje</div>
+      </div>
+
+      <div className="mt-1 text-sm text-slate-300">
+        Nazwa i opis turnieju pozostają globalne. Dywizje rozdzielają konfigurację rozgrywek oraz liczbę uczestników.
+      </div>
+
+      {canEditDivisions && (
+        <div className="mt-4 rounded-2xl border border-white/10 bg-black/10 p-4">
+          <div className="text-xs font-semibold text-slate-300">Dodaj dywizję</div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+            <Input
+              value={newDivisionName}
+              disabled={disableForm}
+              onChange={(e) => onNewDivisionNameChange?.(e.target.value)}
+              placeholder="Np. Kwalifikacje kobiet"
+            />
+            <Button
+              type="button"
+              disabled={disableForm || !newDivisionName.trim()}
+              onClick={onCreateDivision}
+            >
+              {divisionActionLoading ? "Trwa..." : "Dodaj dywizję"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {showDivisionTiles ? (
+        <div className="mt-4 flex flex-wrap gap-3">
+          {visibleDivisions.map((division) => {
+            const isEditing = editingDivisionId === division.id;
+            const isActive = Boolean(division.isActive);
+
+            return (
+              <div
+                key={division.id}
+                className={cn(
+                  "min-w-[240px] rounded-2xl border p-3 transition",
+                  isActive
+                    ? "border-cyan-400/40 bg-cyan-400/10 shadow-[0_0_0_1px_rgba(34,211,238,0.08)]"
+                    : "border-white/10 bg-black/10"
+                )}
+              >
+                {isEditing ? (
+                  <div className="space-y-3">
+                    <Input
+                      value={editingDivisionName}
+                      disabled={disableForm}
+                      onChange={(e) => onEditingDivisionNameChange?.(e.target.value)}
+                    />
+
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        disabled={disableForm}
+                        onClick={onCancelDivisionRename}
+                      >
+                        Anuluj
+                      </Button>
+                      <Button
+                        type="button"
+                        disabled={disableForm || !editingDivisionName.trim()}
+                        onClick={() => onSaveDivisionRename?.(division.id)}
+                      >
+                        Zapisz nazwę
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      disabled={disableForm}
+                      onClick={() => onDivisionSwitch?.(division.id)}
+                      className="block w-full text-left"
+                    >
+                      <div className={cn("text-sm font-semibold", isActive ? "text-cyan-100" : "text-white")}>
+                        {division.name}
+                      </div>
+                      <div className={cn("mt-1 text-xs", isActive ? "text-cyan-200/80" : "text-slate-400")}>
+                        {division.statusLabel ?? "-"}
+                        {division.isDefault ? " - podstawowa" : ""}
+                      </div>
+                    </button>
+
+                    {canEditDivisions && (
+                      <div className="mt-3 flex justify-end gap-2">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          disabled={disableForm}
+                          onClick={() => onStartDivisionRename?.(division.id, division.name)}
+                        >
+                          Zmień nazwę
+                        </Button>
+
+                        {!division.isDefault && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            disabled={disableForm}
+                            onClick={() => onArchiveDivision?.(division.id)}
+                          >
+                            Archiwizuj
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="mt-4">
+          <InlineAlert variant="info" title="Aktywna dywizja">
+            {activeDivisionName ?? "Aktywna dywizja"}
+            {activeDivisionStatusLabel ? ` - ${activeDivisionStatusLabel}` : ""}
+            {" - utwórz kolejną dywizję, aby rozdzielić konfigurację i uczestników."}
+          </InlineAlert>
+        </div>
+      )}
+
+      <div
+        className={cn(
+          "mt-4 rounded-2xl border p-4 transition",
+          activeDivision
+            ? "border-cyan-400/40 bg-cyan-400/10 shadow-[0_0_0_1px_rgba(34,211,238,0.08)]"
+            : "border-white/10 bg-black/10"
+        )}
+      >
+        <div className="text-xs font-semibold text-slate-300">Liczba uczestników wybranej dywizji</div>
+        <div className="mt-3 max-w-xs space-y-2">
+          <Input
+            type="number"
+            min={2}
+            max={10000}
+            disabled={disableForm}
+            value={participants}
+            onChange={(e) => onParticipantsChange(Number(e.target.value))}
+          />
+          <div className={cn("text-xs", activeDivision ? "text-cyan-200/80" : "text-slate-400")}>
+            {activeDivisionName ?? "Aktywna dywizja"}
+            {activeDivisionStatusLabel ? ` - ${activeDivisionStatusLabel}` : ""}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StatRow({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
@@ -1001,7 +1276,7 @@ export function BasicsCard({
   );
 }
 
-// Karta struktury utrzymuje dotychczasowe sporty bez zmian i rozwija tylko dyscyplinę niestandardową.
+// Karta struktury renderuje parametry ogólne, dywizje i parametry formatu bez zmiany istniejących reguł sportów.
 export function StructureCard({
   isTournamentCreated,
   disableForm,
@@ -1009,6 +1284,28 @@ export function StructureCard({
   discipline,
   format,
   participants,
+  showDivisionSection = false,
+  activeDivisionName = null,
+  activeDivisionStatusLabel = null,
+  visibleDivisions = [],
+  showDivisionTiles = false,
+  canEditDivisions = false,
+  newDivisionName = "",
+  divisionActionLoading = false,
+  editingDivisionId = null,
+  editingDivisionName = "",
+  copyDivisionOptions = [],
+  copySourceDivisionId = null,
+  onNewDivisionNameChange,
+  onCreateDivision,
+  onDivisionSwitch,
+  onStartDivisionRename,
+  onEditingDivisionNameChange,
+  onCancelDivisionRename,
+  onSaveDivisionRename,
+  onArchiveDivision,
+  onCopySourceDivisionChange,
+  onCopyFormatFromDivision,
   leagueMatches,
   groupsCount,
   groupMatches,
@@ -1097,6 +1394,30 @@ export function StructureCard({
   discipline: Discipline;
   format: TournamentFormat;
   participants: number;
+
+  showDivisionSection?: boolean;
+  activeDivisionName?: string | null;
+  activeDivisionStatusLabel?: string | null;
+  visibleDivisions?: StructureDivisionItem[];
+  showDivisionTiles?: boolean;
+  canEditDivisions?: boolean;
+  newDivisionName?: string;
+  divisionActionLoading?: boolean;
+  editingDivisionId?: number | null;
+  editingDivisionName?: string;
+  copyDivisionOptions?: SelectOption<number>[];
+  copySourceDivisionId?: number | null;
+
+  onNewDivisionNameChange?: (v: string) => void;
+  onCreateDivision?: () => void;
+  onDivisionSwitch?: (divisionId: number) => void;
+  onStartDivisionRename?: (divisionId: number, currentName: string) => void;
+  onEditingDivisionNameChange?: (v: string) => void;
+  onCancelDivisionRename?: () => void;
+  onSaveDivisionRename?: (divisionId: number) => void;
+  onArchiveDivision?: (divisionId: number) => void;
+  onCopySourceDivisionChange?: (divisionId: number) => void;
+  onCopyFormatFromDivision?: () => void;
 
   leagueMatches: 1 | 2;
   groupsCount: number;
@@ -1372,7 +1693,7 @@ export function StructureCard({
       )}
 
       <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-        <div className="text-xs font-semibold text-slate-300">Parametry ogólne</div>
+        <div className="text-sm font-semibold text-white">Parametry ogólne</div>
 
         <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <div className="space-y-2">
@@ -1399,17 +1720,6 @@ export function StructureCard({
                 />
               </div>
 
-              <div className="space-y-2">
-                <div className="text-xs font-semibold text-slate-300">Liczba uczestników</div>
-                <Input
-                  type="number"
-                  min={2}
-                  max={10000}
-                  disabled={disableForm}
-                  value={participants}
-                  onChange={(e) => onParticipantsChange(Number(e.target.value))}
-                />
-              </div>
             </>
           )}
 
@@ -1460,27 +1770,51 @@ export function StructureCard({
                 </div>
               )}
 
-              <div className="space-y-2">
-                <div className="text-xs font-semibold text-slate-300">Liczba uczestników</div>
-                <Input
-                  type="number"
-                  min={2}
-                  max={10000}
-                  disabled={disableForm}
-                  value={participants}
-                  onChange={(e) => onParticipantsChange(Number(e.target.value))}
-                />
-              </div>
             </>
           )}
         </div>
       </div>
+
+      <DivisionSection
+        showSection={showDivisionSection}
+        disableForm={disableForm}
+        canEditDivisions={canEditDivisions}
+        participants={participants}
+        onParticipantsChange={onParticipantsChange}
+        activeDivisionName={activeDivisionName}
+        activeDivisionStatusLabel={activeDivisionStatusLabel}
+        visibleDivisions={visibleDivisions}
+        showDivisionTiles={showDivisionTiles}
+        newDivisionName={newDivisionName}
+        divisionActionLoading={divisionActionLoading}
+        editingDivisionId={editingDivisionId}
+        editingDivisionName={editingDivisionName}
+        onNewDivisionNameChange={onNewDivisionNameChange}
+        onCreateDivision={onCreateDivision}
+        onDivisionSwitch={onDivisionSwitch}
+        onStartDivisionRename={onStartDivisionRename}
+        onEditingDivisionNameChange={onEditingDivisionNameChange}
+        onCancelDivisionRename={onCancelDivisionRename}
+        onSaveDivisionRename={onSaveDivisionRename}
+        onArchiveDivision={onArchiveDivision}
+      />
 
       {isCustomDiscipline && (
         <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
           <div className="flex items-center gap-2">
             <Gauge className="h-4 w-4 text-white/80" />
             <div className="text-sm font-semibold text-white">Format wyniku</div>
+          </div>
+
+          <div className="mt-4">
+            <FormatCopyBar
+              disableForm={disableForm}
+              canEditDivisions={canEditDivisions}
+              copyDivisionOptions={copyDivisionOptions}
+              copySourceDivisionId={copySourceDivisionId}
+              onCopySourceDivisionChange={onCopySourceDivisionChange}
+              onCopyFormatFromDivision={onCopyFormatFromDivision}
+            />
           </div>
 
           {isHeadToHead && (
@@ -2083,6 +2417,17 @@ export function StructureCard({
           <div className="flex items-center gap-2">
             <Gauge className="h-4 w-4 text-white/80" />
             <div className="text-sm font-semibold text-white">Parametry formatu</div>
+          </div>
+
+          <div className="mt-4">
+            <FormatCopyBar
+              disableForm={disableForm}
+              canEditDivisions={canEditDivisions}
+              copyDivisionOptions={copyDivisionOptions}
+              copySourceDivisionId={copySourceDivisionId}
+              onCopySourceDivisionChange={onCopySourceDivisionChange}
+              onCopyFormatFromDivision={onCopyFormatFromDivision}
+            />
           </div>
 
           <div className="mt-4 space-y-4">

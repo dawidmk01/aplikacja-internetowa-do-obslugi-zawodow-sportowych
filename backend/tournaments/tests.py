@@ -1,3 +1,4 @@
-from django.test import TestCase
+# backend/tournaments/tests.py
+# Plik stanowi miejsce dla testów aplikacji turniejowej.
 
-# Create your tests here.
+from django.test import TestCase

@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from .models import Tournament, TournamentMembership, TournamentRegistration
 
+
 STRICT_EXPLICIT_KEYS: set[str] = {
     TournamentMembership.PERM_ROSTER_EDIT,
     TournamentMembership.PERM_NAME_CHANGE_APPROVE,

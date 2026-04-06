@@ -1,5 +1,5 @@
 # backend/tournaments/views/incidents.py
-# Plik obsługuje odczyt, tworzenie, edycję i usuwanie incydentów meczowych.
+# Plik obsługuje odczyt, tworzenie, edycję i usuwanie incydentów meczowych z walidacją spójności dywizji.
 
 from __future__ import annotations
 
@@ -14,24 +14,25 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from tournaments.access import can_edit_results
-from tournaments.models import Match, MatchIncident, TeamPlayer, Tournament
+from tournaments.models import Match, MatchIncident, TeamPlayer, Team, Tournament
 
 from ..realtime import ws_emit_tournament
 
 
 def _require_can_manage_incidents(user, match: Match) -> None:
-    # Incydenty są traktowane jako część live/results.
     if can_edit_results(user, match.tournament):
         return
     raise PermissionError("Brak uprawnień do rejestrowania incydentów.")
 
 
+def _match_division_id(match: Match):
+    return getattr(match.stage, "division_id", None)
+
+
 def _kind_display(kind: str, discipline: str) -> str:
-    # Opis jest jawnie mapowany, aby nie polegać na label z choices.
     if discipline == Tournament.Discipline.BASKETBALL:
         mapping = {"GOAL": "Punkt", "FOUL": "Faul", "TIMEOUT": "Timeout"}
         return mapping.get(kind, kind)
-
     if discipline == Tournament.Discipline.HANDBALL:
         mapping = {
             "GOAL": "Bramka",
@@ -41,7 +42,6 @@ def _kind_display(kind: str, discipline: str) -> str:
             "SUBSTITUTION": "Zmiana",
         }
         return mapping.get(kind, kind)
-
     if discipline == Tournament.Discipline.TENNIS:
         mapping = {
             "TENNIS_POINT": "Punkt",
@@ -49,7 +49,6 @@ def _kind_display(kind: str, discipline: str) -> str:
             "TIMEOUT": "Przerwa/timeout",
         }
         return mapping.get(kind, kind)
-
     mapping = {
         "GOAL": "Bramka",
         "YELLOW_CARD": "Żółta kartka",
@@ -64,16 +63,12 @@ def _kind_display(kind: str, discipline: str) -> str:
 def _allowed_kinds_for_discipline(discipline: str) -> set[str]:
     if discipline == Tournament.Discipline.FOOTBALL:
         return {"GOAL", "YELLOW_CARD", "RED_CARD", "FOUL", "SUBSTITUTION", "TIMEOUT"}
-
     if discipline == Tournament.Discipline.HANDBALL:
         return {"GOAL", "FOUL", "TIMEOUT", "HANDBALL_TWO_MINUTES", "SUBSTITUTION"}
-
     if discipline == Tournament.Discipline.BASKETBALL:
         return {"GOAL", "FOUL", "TIMEOUT"}
-
     if discipline == Tournament.Discipline.TENNIS:
         return {"TENNIS_POINT", "TENNIS_CODE_VIOLATION", "TIMEOUT"}
-
     return {"GOAL", "FOUL", "TIMEOUT"}
 
 
@@ -85,7 +80,6 @@ def _should_timeout_pause_clock(discipline: str) -> bool:
 
 
 def _pause_clock_if_running(match: Match, *, now) -> None:
-    # Timeout w sportach stop-clock zatrzymuje zegar bez osobnego endpointu.
     if match.clock_state != Match.ClockState.RUNNING:
         return
 
@@ -123,16 +117,12 @@ def _default_period_for_scope(discipline: str, scope: str) -> str:
 
 
 def _resolve_scope(match: Match, *, data: dict, meta: dict, period: str | None) -> str:
-    # Scope jest wyliczany z payloadu, meta lub period.
     if "scope" in data and data.get("scope") not in (None, "", "null"):
         return _norm_score_scope(str(data.get("scope")))
-
     if isinstance(meta, dict) and meta.get("scope") not in (None, "", "null"):
         return _norm_score_scope(str(meta.get("scope")))
-
     if _is_extra_time_period(period):
         return SCORE_SCOPE_EXTRA_TIME
-
     return SCORE_SCOPE_REGULAR
 
 
@@ -144,19 +134,15 @@ def _incident_scope(incident_meta: dict) -> str:
 
 
 def _goal_points_for_discipline(discipline: str, meta: dict) -> int:
-    # W koszykówce GOAL może oznaczać 1, 2 lub 3 punkty.
     if discipline == Tournament.Discipline.BASKETBALL:
         raw = meta.get("points", meta.get("_points", 1))
         try:
             points = int(raw or 1)
         except (TypeError, ValueError):
             points = 1
-
         if points not in (1, 2, 3):
             raise ValueError("Koszykówka: meta.points musi być 1, 2 lub 3.")
-
         return points
-
     return 1
 
 
@@ -179,7 +165,6 @@ def _sum_goal_points_for_team_scoped(match_id: int, team_id: int, discipline: st
 
 
 def _recompute_match_score_from_goal_incidents(match: Match) -> None:
-    # Wynik dla sportów GOAL-based jest liczony wyłącznie z incydentów GOAL.
     discipline = match.tournament.discipline
     if discipline == Tournament.Discipline.TENNIS:
         return
@@ -223,6 +208,7 @@ def _serialize_incident(incident: MatchIncident) -> dict:
     return {
         "id": incident.id,
         "match_id": incident.match_id,
+        "division_id": getattr(incident.match.stage, "division_id", None),
         "team_id": incident.team_id,
         "kind": incident.kind,
         "kind_display": _kind_display(incident.kind, discipline),
@@ -245,7 +231,6 @@ def _serialize_incident(incident: MatchIncident) -> dict:
 def _parse_int(value, field: str, allow_none: bool = True) -> int | None:
     if value is None or value == "":
         return None if allow_none else 0
-
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -257,22 +242,51 @@ def _team_must_be_in_match(match: Match, team_id: int) -> None:
         raise ValueError("team_id musi być jedną z drużyn tego meczu (home/away).")
 
 
+def _team_must_be_in_match_division(match: Match, team_id: int) -> None:
+    match_division_id = _match_division_id(match)
+    if match_division_id is None:
+        return
+
+    team = Team.objects.filter(pk=team_id).only("division_id").first()
+    if not team or team.division_id != match_division_id:
+        raise ValueError("Drużyna nie należy do dywizji tego meczu.")
+
+
 def _player_must_belong_to_team(player: TeamPlayer, team_id: int) -> None:
     if player.team_id != team_id:
         raise ValueError("Zawodnik nie należy do wskazanej drużyny.")
+
+
+def _ws_emit_match_payload(match: Match) -> dict:
+    return {
+        "v": 1,
+        "type": "matches.changed",
+        "tournamentId": match.tournament_id,
+        "matchId": match.id,
+        "divisionId": _match_division_id(match),
+    }
+
+
+def _ws_emit_incidents_payload(match: Match) -> dict:
+    return {
+        "v": 1,
+        "type": "incidents.changed",
+        "tournamentId": match.tournament_id,
+        "matchId": match.id,
+        "divisionId": _match_division_id(match),
+    }
 
 
 class MatchIncidentListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get_permissions(self):
-        # Publiczny odczyt jest dozwolony, zapis pozostaje prywatny.
         if self.request.method in ("GET", "HEAD", "OPTIONS"):
             return [AllowAny()]
         return [IsAuthenticated()]
 
     def get(self, request, match_id: int):
-        match = get_object_or_404(Match.objects.select_related("tournament"), pk=match_id)
+        match = get_object_or_404(Match.objects.select_related("tournament", "stage"), pk=match_id)
 
         can_manage = False
         if request.user and getattr(request.user, "is_authenticated", False):
@@ -294,9 +308,8 @@ class MatchIncidentListCreateView(APIView):
                 if provided != access_code:
                     return Response({"detail": "Nieprawidłowy kod dostępu."}, status=status.HTTP_403_FORBIDDEN)
 
-        # Incydenty bez czasu są wyżej, potem minute DESC, potem id DESC.
         qs = (
-            MatchIncident.objects.select_related("match__tournament", "player", "player_in", "player_out")
+            MatchIncident.objects.select_related("match__tournament", "match__stage", "player", "player_in", "player_out")
             .filter(match_id=match_id)
             .annotate(
                 _no_minute=Case(
@@ -313,7 +326,7 @@ class MatchIncidentListCreateView(APIView):
     def post(self, request, match_id: int):
         with transaction.atomic():
             match = get_object_or_404(
-                Match.objects.select_related("tournament").select_for_update(),
+                Match.objects.select_related("tournament", "stage").select_for_update(),
                 pk=match_id,
             )
 
@@ -332,12 +345,7 @@ class MatchIncidentListCreateView(APIView):
             allowed_kinds = _allowed_kinds_for_discipline(discipline)
             if kind not in allowed_kinds:
                 return Response(
-                    {
-                        "detail": (
-                            f"kind '{kind}' nie jest dozwolony dla dyscypliny {discipline}. "
-                            f"Dozwolone: {sorted(list(allowed_kinds))}"
-                        )
-                    },
+                    {"detail": f"kind '{kind}' nie jest dozwolony dla dyscypliny {discipline}. Dozwolone: {sorted(list(allowed_kinds))}"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -345,6 +353,7 @@ class MatchIncidentListCreateView(APIView):
                 team_id = _parse_int(data.get("team_id"), "team_id", allow_none=False)
                 assert team_id is not None
                 _team_must_be_in_match(match, team_id)
+                _team_must_be_in_match_division(match, team_id)
 
                 time_source = (data.get("time_source") or MatchIncident.TimeSource.CLOCK).strip()
                 if time_source not in (MatchIncident.TimeSource.CLOCK, MatchIncident.TimeSource.MANUAL):
@@ -434,17 +443,11 @@ class MatchIncidentListCreateView(APIView):
 
                 _recompute_match_score_from_goal_incidents(match)
 
-            ws_emit_tournament(
-                match.tournament_id,
-                {"v": 1, "type": "incidents.changed", "tournamentId": match.tournament_id, "matchId": match.id},
-            )
-            ws_emit_tournament(
-                match.tournament_id,
-                {"v": 1, "type": "matches.changed", "tournamentId": match.tournament_id, "matchId": match.id},
-            )
+            ws_emit_tournament(match.tournament_id, _ws_emit_incidents_payload(match))
+            ws_emit_tournament(match.tournament_id, _ws_emit_match_payload(match))
 
             incident = (
-                MatchIncident.objects.select_related("match__tournament", "player", "player_in", "player_out")
+                MatchIncident.objects.select_related("match__tournament", "match__stage", "player", "player_in", "player_out")
                 .get(pk=incident.id)
             )
             return Response(_serialize_incident(incident), status=status.HTTP_201_CREATED)
@@ -454,13 +457,12 @@ class MatchIncidentDeleteView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, incident_id: int):
-        # Aktualizacja nie zmienia match_id, team_id ani kind.
         with transaction.atomic():
             incident = get_object_or_404(
-                MatchIncident.objects.select_related("match__tournament").select_for_update(),
+                MatchIncident.objects.select_related("match__tournament", "match__stage").select_for_update(),
                 pk=incident_id,
             )
-            match = Match.objects.select_related("tournament").select_for_update().get(pk=incident.match_id)
+            match = Match.objects.select_related("tournament", "stage").select_for_update().get(pk=incident.match_id)
 
             try:
                 _require_can_manage_incidents(request.user, match)
@@ -516,10 +518,7 @@ class MatchIncidentDeleteView(APIView):
                     if not player:
                         return Response({"detail": "Nie znaleziono zawodnika schodzącego."}, status=status.HTTP_400_BAD_REQUEST)
                     if player.team_id != incident.team_id:
-                        return Response(
-                            {"detail": "Zawodnik schodzący nie należy do tej drużyny."},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
+                        return Response({"detail": "Zawodnik schodzący nie należy do tej drużyny."}, status=status.HTTP_400_BAD_REQUEST)
 
                     incident.player_out_id = player_id
 
@@ -537,10 +536,7 @@ class MatchIncidentDeleteView(APIView):
                     if not player:
                         return Response({"detail": "Nie znaleziono zawodnika wchodzącego."}, status=status.HTTP_400_BAD_REQUEST)
                     if player.team_id != incident.team_id:
-                        return Response(
-                            {"detail": "Zawodnik wchodzący nie należy do tej drużyny."},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
+                        return Response({"detail": "Zawodnik wchodzący nie należy do tej drużyny."}, status=status.HTTP_400_BAD_REQUEST)
 
                     incident.player_in_id = player_id
 
@@ -567,10 +563,7 @@ class MatchIncidentDeleteView(APIView):
 
             if "points" in data and incident.kind == "GOAL":
                 if discipline != Tournament.Discipline.BASKETBALL:
-                    return Response(
-                        {"detail": "Pole points jest dozwolone tylko dla koszykówki."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+                    return Response({"detail": "Pole points jest dozwolone tylko dla koszykówki."}, status=status.HTTP_400_BAD_REQUEST)
 
                 try:
                     points = int(data.get("points"))
@@ -590,10 +583,7 @@ class MatchIncidentDeleteView(APIView):
 
             if incident.kind == MatchIncident.Kind.SUBSTITUTION:
                 if not incident.player_in_id or not incident.player_out_id:
-                    return Response(
-                        {"detail": "Zmiana wymaga zawodnika schodzącego i wchodzącego."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+                    return Response({"detail": "Zmiana wymaga zawodnika schodzącego i wchodzącego."}, status=status.HTTP_400_BAD_REQUEST)
             else:
                 incident.player_in_id = None
                 incident.player_out_id = None
@@ -609,17 +599,11 @@ class MatchIncidentDeleteView(APIView):
 
                 _recompute_match_score_from_goal_incidents(match)
 
-            ws_emit_tournament(
-                match.tournament_id,
-                {"v": 1, "type": "incidents.changed", "tournamentId": match.tournament_id, "matchId": match.id},
-            )
-            ws_emit_tournament(
-                match.tournament_id,
-                {"v": 1, "type": "matches.changed", "tournamentId": match.tournament_id, "matchId": match.id},
-            )
+            ws_emit_tournament(match.tournament_id, _ws_emit_incidents_payload(match))
+            ws_emit_tournament(match.tournament_id, _ws_emit_match_payload(match))
 
             incident = (
-                MatchIncident.objects.select_related("match__tournament", "player", "player_in", "player_out")
+                MatchIncident.objects.select_related("match__tournament", "match__stage", "player", "player_in", "player_out")
                 .get(pk=incident.id)
             )
             return Response(_serialize_incident(incident), status=status.HTTP_200_OK)
@@ -627,10 +611,10 @@ class MatchIncidentDeleteView(APIView):
     def delete(self, request, incident_id: int):
         with transaction.atomic():
             incident = get_object_or_404(
-                MatchIncident.objects.select_related("match__tournament").select_for_update(),
+                MatchIncident.objects.select_related("match__tournament", "match__stage").select_for_update(),
                 pk=incident_id,
             )
-            match = Match.objects.select_related("tournament").select_for_update().get(pk=incident.match_id)
+            match = Match.objects.select_related("tournament", "stage").select_for_update().get(pk=incident.match_id)
 
             try:
                 _require_can_manage_incidents(request.user, match)
@@ -645,14 +629,8 @@ class MatchIncidentDeleteView(APIView):
             if was_goal:
                 _recompute_match_score_from_goal_incidents(match)
 
-            ws_emit_tournament(
-                match.tournament_id,
-                {"v": 1, "type": "incidents.changed", "tournamentId": match.tournament_id, "matchId": match.id},
-            )
-            ws_emit_tournament(
-                match.tournament_id,
-                {"v": 1, "type": "matches.changed", "tournamentId": match.tournament_id, "matchId": match.id},
-            )
+            ws_emit_tournament(match.tournament_id, _ws_emit_incidents_payload(match))
+            ws_emit_tournament(match.tournament_id, _ws_emit_match_payload(match))
 
             return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -663,7 +641,7 @@ class MatchIncidentRecomputeScoreView(APIView):
     def post(self, request, match_id: int):
         with transaction.atomic():
             match = get_object_or_404(
-                Match.objects.select_related("tournament").select_for_update(),
+                Match.objects.select_related("tournament", "stage").select_for_update(),
                 pk=match_id,
             )
 
@@ -705,6 +683,7 @@ class MatchIncidentRecomputeScoreView(APIView):
             return Response(
                 {
                     "match_id": match.id,
+                    "division_id": _match_division_id(match),
                     "home_score": int(match.home_score or 0),
                     "away_score": int(match.away_score or 0),
                     "home_extra_time_score": int(getattr(match, "home_extra_time_score", 0) or 0),

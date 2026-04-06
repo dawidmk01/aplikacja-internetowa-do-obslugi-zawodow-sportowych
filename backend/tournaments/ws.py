@@ -1,10 +1,11 @@
-from __future__ import annotations
+# backend/tournaments/ws.py
+# Plik definiuje nazwy grup Channels używane przez komunikację websocket.
 
-# Kontrakt: nazwy grup Channels muszą być ASCII i mieć < 100 znaków.
+from __future__ import annotations
 
 
 def tournament_group_name(tournament_id: int) -> str:
-    # Uwaga: nie używamy ':' - jest niedozwolony w nazwie grupy.
+    # Format bez ":" utrzymuje zgodność z ograniczeniami nazw grup Channels.
     return f"tournament.{int(tournament_id)}"
 
 
@@ -12,6 +13,5 @@ def user_group_name(user_id: int) -> str:
     return f"user.{int(user_id)}"
 
 
-# Alias wstecznej kompatybilności - starsze importy używały me_group_name.
 def me_group_name(user_id: int) -> str:
     return user_group_name(user_id)

@@ -16,38 +16,35 @@ class StandingRow:
     draws: int = 0
     losses: int = 0
 
-    # Pole jest używane przez reguły piłkarskie PZPN.
+    # Pole obsługuje kryterium zwycięstw wyjazdowych w regułach piłkarskich.
     away_wins: int = 0
 
-    # Pola są używane w klasyfikacji piłki ręcznej i customowego rozstrzygnięcia rzutami.
+    # Pola obsługują rozstrzygnięcia po karnych w regułach ręcznej i części trybów custom.
     penalty_wins: int = 0
     penalty_losses: int = 0
 
-    # goals_*:
-    # - football/handball/basketball: bramki/punkty
-    # - tennis: sety
-    # - custom HEAD_TO_HEAD punktowy: wynik bazowy meczu
+    # Pola przechowują główny bilans wyniku meczu lub seta zależnie od dyscypliny.
     goals_for: int = 0
     goals_against: int = 0
     goal_difference: int = 0
 
-    # Pola są używane wyłącznie w klasyfikacji tenisa.
+    # Pola służą wyłącznie do dodatkowych kryteriów tenisowych opartych o gemy.
     games_for: int = 0
     games_against: int = 0
     games_difference: int = 0
 
     points: int = 0
 
-    # Pole przechowuje końcową pozycję po sortowaniu klasyfikacji.
+    # Pole przechowuje końcową pozycję po zakończeniu procesu sortowania.
     rank: int | None = None
 
-    # Flaga rozróżnia ranking custom od klasycznej tabeli meczowej.
+    # Flaga rozróżnia klasyczną tabelę meczową od rankingu custom.
     is_custom_result: bool = False
 
     # Pole doprecyzowuje wariant rankingu custom zwracany do UI.
     custom_mode: str | None = None
 
-    # Pole wskazuje, czy wynik custom jest czasem, liczbą czy miejscem.
+    # Pole wskazuje typ wyniku custom zwracanego do UI.
     custom_value_kind: str | None = None
 
     # Pole przechowuje wartość liczbową dla rankingu NUMBER.

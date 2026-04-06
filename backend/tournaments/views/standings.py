@@ -1,7 +1,10 @@
+
 # backend/tournaments/views/standings.py
-# Plik udostępnia dane klasyfikacji i drabinki dla widoku panelowego oraz publicznego.
+# Plik udostępnia dane klasyfikacji i drabinki dla widoku panelowego oraz publicznego w kontekście aktywnej dywizji.
 
 from __future__ import annotations
+
+import copy
 
 from django.shortcuts import get_object_or_404
 
@@ -10,11 +13,55 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from tournaments.models import Stage, Tournament
+from tournaments.models import Division, Stage, Tournament
 from tournaments.services.standings.compute import compute_stage_standings
 from tournaments.services.standings.knockout_bracket import get_knockout_bracket
 from tournaments.services.standings.types import StandingRow
 from tournaments.views._helpers import public_access_or_403
+
+
+def _resolve_division_from_request(request, tournament: Tournament) -> Division | None:
+    raw_id = (
+        request.query_params.get("division_id")
+        or request.query_params.get("active_division_id")
+        or request.query_params.get("division")
+    )
+    raw_slug = (
+        request.query_params.get("division_slug")
+        or request.query_params.get("active_division_slug")
+    )
+
+    divisions_qs = tournament.divisions.all().order_by("order", "id")
+
+    if raw_id:
+        try:
+            division_id = int(raw_id)
+        except (TypeError, ValueError):
+            return None
+        return divisions_qs.filter(pk=division_id).first()
+
+    if raw_slug:
+        return divisions_qs.filter(slug=str(raw_slug).strip()).first()
+
+    return tournament.get_default_division()
+
+
+def _competition_context(tournament: Tournament, division: Division | None):
+    return division or tournament
+
+
+def _runtime_tournament_for_division(tournament: Tournament, division: Division | None) -> Tournament:
+    if division is None:
+        return tournament
+
+    runtime = copy.copy(tournament)
+    runtime.competition_type = division.competition_type
+    runtime.competition_model = division.competition_model
+    runtime.tournament_format = division.tournament_format
+    runtime.result_mode = division.result_mode
+    runtime.result_config = dict(division.result_config or {})
+    runtime.format_config = dict(division.format_config or {})
+    return runtime
 
 
 class TournamentStandingsView(APIView):
@@ -27,17 +74,22 @@ class TournamentStandingsView(APIView):
         if denied is not None:
             return denied
 
-        discipline = (getattr(tournament, "discipline", "") or "").lower()
-        result_mode = getattr(tournament, "result_mode", Tournament.ResultMode.SCORE)
-        competition_model = getattr(tournament, "competition_model", None)
-        tournament_format = tournament.tournament_format
+        division = _resolve_division_from_request(request, tournament)
+        context_obj = _competition_context(tournament, division)
+        runtime_tournament = _runtime_tournament_for_division(tournament, division)
 
-        result_config = dict(getattr(tournament, "result_config", None) or {})
-        format_config = dict(getattr(tournament, "format_config", None) or {})
+        discipline = (getattr(tournament, "discipline", "") or "").lower()
+        result_mode = getattr(context_obj, "result_mode", Tournament.ResultMode.SCORE)
+        competition_model = getattr(context_obj, "competition_model", None)
+        tournament_format = context_obj.tournament_format
+
+        result_config = dict(getattr(context_obj, "result_config", None) or {})
+        format_config = dict(getattr(context_obj, "format_config", None) or {})
 
         response_data: dict = {
             "meta": self._build_meta(
                 tournament=tournament,
+                division=division,
                 discipline=discipline,
                 result_mode=result_mode,
                 competition_model=competition_model,
@@ -47,11 +99,15 @@ class TournamentStandingsView(APIView):
             )
         }
 
+        stages_qs = tournament.stages.all()
+        if division is not None:
+            stages_qs = stages_qs.filter(division=division)
+
         if tournament_format == Tournament.TournamentFormat.LEAGUE:
-            stage = tournament.stages.filter(stage_type=Stage.StageType.LEAGUE).first()
+            stage = stages_qs.filter(stage_type=Stage.StageType.LEAGUE).first()
             if stage:
                 response_data["table"] = self._serialize_stage_table(
-                    tournament=tournament,
+                    tournament=runtime_tournament,
                     stage=stage,
                     discipline=discipline,
                     result_mode=result_mode,
@@ -60,7 +116,7 @@ class TournamentStandingsView(APIView):
                 )
 
         elif tournament_format == Tournament.TournamentFormat.MIXED:
-            stage = tournament.stages.filter(stage_type=Stage.StageType.GROUP).first()
+            stage = stages_qs.filter(stage_type=Stage.StageType.GROUP).first()
             if stage:
                 groups_payload = []
 
@@ -70,7 +126,7 @@ class TournamentStandingsView(APIView):
                             "group_id": group.id,
                             "group_name": group.name,
                             "table": self._serialize_stage_table(
-                                tournament=tournament,
+                                tournament=runtime_tournament,
                                 stage=stage,
                                 group=group,
                                 discipline=discipline,
@@ -87,7 +143,7 @@ class TournamentStandingsView(APIView):
             Tournament.TournamentFormat.CUP,
             Tournament.TournamentFormat.MIXED,
         ):
-            bracket_data = get_knockout_bracket(tournament)
+            bracket_data = get_knockout_bracket(runtime_tournament)
             if bracket_data and bracket_data.get("rounds"):
                 response_data["bracket"] = bracket_data
 
@@ -98,6 +154,7 @@ class TournamentStandingsView(APIView):
         cls,
         *,
         tournament: Tournament,
+        division: Division | None,
         discipline: str,
         result_mode: str,
         competition_model: str | None,
@@ -106,8 +163,10 @@ class TournamentStandingsView(APIView):
         format_config: dict,
     ) -> dict:
         meta = {
+            "division_id": division.id if division else None,
+            "division_name": division.name if division else None,
             "discipline": discipline,
-            "competition_type": tournament.competition_type,
+            "competition_type": tournament.competition_type if division is None else division.competition_type,
             "competition_model": competition_model,
             "tournament_format": tournament_format,
             "result_mode": result_mode,

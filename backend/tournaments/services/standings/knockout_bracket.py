@@ -1,96 +1,110 @@
+# backend/tournaments/services/standings/knockout_bracket.py
+# Plik buduje strukturę drabinki pucharowej zwracaną do warstwy prezentacji dla aktywnej dywizji.
+
+from __future__ import annotations
+
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
-from tournaments.models import Match, Stage, Tournament
-from tournaments.services.match_outcome import team_goals_in_match, penalty_winner_id
+from tournaments.models import Division, Match, Stage, Tournament
+from tournaments.services.match_outcome import penalty_winner_id, team_goals_in_match
 
 
-def get_knockout_bracket(tournament: Tournament) -> Dict[str, Any]:
-    """
-    Zwraca strukturę drabinki KO.
-    Grupuje dwumecze (mecze między tymi samymi drużynami w tej samej rundzie) w jeden obiekt.
-    Obsługa:
-    - dwumecz + agregat (reg+dogrywka, bez karnych)
-    - karne jako tiebreak (w rewanżu)
-    - 3. miejsce (osobno)
-    - tenis: zwraca też gemy/tie-break (tennis_sets)
-    """
+def _resolve_division(tournament: Tournament, division: Division | None = None) -> Division | None:
+    if division is None:
+        getter = getattr(tournament, "get_default_division", None)
+        if callable(getter):
+            return getter()
+        return None
+
+    if division.tournament_id != tournament.id:
+        raise ValueError("Wskazana dywizja nie należy do tego turnieju.")
+
+    return division
+
+
+def get_knockout_bracket(
+    tournament: Tournament,
+    division: Division | None = None,
+) -> Dict[str, Any]:
+    division = _resolve_division(tournament, division)
     discipline = (getattr(tournament, "discipline", "") or "").lower()
 
+    matches_qs = Match.objects.filter(
+        stage__tournament=tournament,
+        stage__stage_type__in=[Stage.StageType.KNOCKOUT, Stage.StageType.THIRD_PLACE],
+    )
+    if division is not None:
+        matches_qs = matches_qs.filter(stage__division=division)
+
     matches = (
-        Match.objects
-        .filter(
-            stage__tournament=tournament,
-            stage__stage_type__in=[Stage.StageType.KNOCKOUT, Stage.StageType.THIRD_PLACE],
-        )
-        .select_related("home_team", "away_team", "stage")
+        matches_qs
+        .select_related("home_team", "away_team", "stage", "stage__division")
         .order_by("stage__order", "round_number", "id")
     )
 
     if not matches:
         return {"rounds": [], "third_place": None}
 
-    # 1) Rozdzielamy główną drabinkę od 3. miejsca
     main_bracket_matches: list[Match] = []
     third_place_matches: list[Match] = []
 
     def is_third_place(stage_type) -> bool:
         return stage_type == Stage.StageType.THIRD_PLACE
 
-    for m in matches:
-        if is_third_place(m.stage.stage_type):
-            third_place_matches.append(m)
+    # Osobne potraktowanie meczu o 3. miejsce upraszcza dalsze grupowanie.
+    for match in matches:
+        if is_third_place(match.stage.stage_type):
+            third_place_matches.append(match)
         else:
-            main_bracket_matches.append(m)
+            main_bracket_matches.append(match)
 
-    tp_item = None
+    third_place_item = None
     if third_place_matches:
-        tp_item = _create_duel_item(third_place_matches, discipline=discipline)
+        third_place_item = _create_duel_item(third_place_matches, discipline=discipline)
 
     if not main_bracket_matches:
-        return {"rounds": [], "third_place": tp_item}
+        return {"rounds": [], "third_place": third_place_item}
 
-    # 2) Grupowanie meczów w dule (1 lub 2 mecze) w obrębie rundy
     grouped_duels = defaultdict(list)
 
-    for m in main_bracket_matches:
-        r_num = m.round_number or 1
+    # Grupowanie scala pojedyncze mecze i dwumecze w logiczne pary rundy.
+    for match in main_bracket_matches:
+        round_number = match.round_number or 1
 
-        if m.home_team_id and m.away_team_id:
-            teams_key = frozenset([m.home_team_id, m.away_team_id])
+        if match.home_team_id and match.away_team_id:
+            teams_key = frozenset([match.home_team_id, match.away_team_id])
         else:
-            teams_key = m.id
+            teams_key = match.id
 
-        full_key = (m.stage.order, r_num, teams_key)
-        grouped_duels[full_key].append(m)
+        full_key = (match.stage.order, round_number, teams_key)
+        grouped_duels[full_key].append(match)
 
-    # 3) Przypisanie do wirtualnych rund
     unique_rounds = set()
-    for (st_order, r_num, _), _ in grouped_duels.items():
-        unique_rounds.add((st_order, r_num))
+    for (stage_order, round_number, _), _matches in grouped_duels.items():
+        unique_rounds.add((stage_order, round_number))
 
     sorted_rounds = sorted(list(unique_rounds))
-    key_to_virtual_round = {key: i + 1 for i, key in enumerate(sorted_rounds)}
+    key_to_virtual_round = {key: index + 1 for index, key in enumerate(sorted_rounds)}
 
     rounds_map = defaultdict(list)
-    sorted_duels_items = sorted(grouped_duels.items(), key=lambda x: x[1][0].id)
+    sorted_duels_items = sorted(grouped_duels.items(), key=lambda item: item[1][0].id)
 
-    for (st_order, r_num, _), duel_matches in sorted_duels_items:
-        v_round = key_to_virtual_round[(st_order, r_num)]
+    for (stage_order, round_number, _), duel_matches in sorted_duels_items:
+        virtual_round = key_to_virtual_round[(stage_order, round_number)]
         duel_item = _create_duel_item(duel_matches, discipline=discipline)
         if duel_item:
-            rounds_map[v_round].append(duel_item)
+            rounds_map[virtual_round].append(duel_item)
 
-    # 4) Budowanie wyniku
     bracket_rounds = []
-    for v_round in sorted(rounds_map.keys()):
-        duels = rounds_map[v_round]
-        label = _label_from_duels_count(len(duels), v_round=v_round)
+    for virtual_round in sorted(rounds_map.keys()):
+        duels = rounds_map[virtual_round]
+        label = _label_from_duels_count(len(duels), v_round=virtual_round)
         bracket_rounds.append(
-            {"round_number": v_round, "label": label, "items": duels}
+            {"round_number": virtual_round, "label": label, "items": duels}
         )
 
-    return {"rounds": bracket_rounds, "third_place": tp_item}
+    return {"rounds": bracket_rounds, "third_place": third_place_item}
 
 
 def _label_from_duels_count(duels_count: int, *, v_round: int) -> str:
@@ -109,30 +123,27 @@ def _label_from_duels_count(duels_count: int, *, v_round: int) -> str:
 
 
 def _format_tennis_sets(tennis_sets: Any) -> Optional[str]:
-    """
-    Przykład: "7:6(7:5), 6:0, 6:0"
-    TB pokazujemy tylko gdy set zakończony 7:6 i mamy punkty TB.
-    """
     if not isinstance(tennis_sets, list) or not tennis_sets:
         return None
 
     parts: list[str] = []
-    for s in tennis_sets:
-        if not isinstance(s, dict):
-            continue
-        hg = s.get("home_games")
-        ag = s.get("away_games")
-        if hg is None or ag is None:
+    for set_item in tennis_sets:
+        if not isinstance(set_item, dict):
             continue
 
-        piece = f"{hg}:{ag}"
+        home_games = set_item.get("home_games")
+        away_games = set_item.get("away_games")
+        if home_games is None or away_games is None:
+            continue
 
-        ht = s.get("home_tiebreak")
-        at = s.get("away_tiebreak")
-        if ht is not None and at is not None and (
-            (hg == 7 and ag == 6) or (hg == 6 and ag == 7)
+        piece = f"{home_games}:{away_games}"
+
+        home_tiebreak = set_item.get("home_tiebreak")
+        away_tiebreak = set_item.get("away_tiebreak")
+        if home_tiebreak is not None and away_tiebreak is not None and (
+            (home_games == 7 and away_games == 6) or (home_games == 6 and away_games == 7)
         ):
-            piece += f"({ht}:{at})"
+            piece += f"({home_tiebreak}:{away_tiebreak})"
 
         parts.append(piece)
 
@@ -140,54 +151,49 @@ def _format_tennis_sets(tennis_sets: Any) -> Optional[str]:
 
 
 def _swap_tennis_sets(tennis_sets: Any) -> Any:
-    """
-    Gdy rewanż ma odwróconych gospodarzy, musimy odwrócić też home/away w tennis_sets.
-    """
+    # Rewanż z odwróconym układem drużyn wymaga odwrócenia perspektywy setów.
     if not isinstance(tennis_sets, list):
         return tennis_sets
+
     swapped = []
-    for s in tennis_sets:
-        if not isinstance(s, dict):
-            swapped.append(s)
+    for set_item in tennis_sets:
+        if not isinstance(set_item, dict):
+            swapped.append(set_item)
             continue
         swapped.append(
             {
-                "home_games": s.get("away_games"),
-                "away_games": s.get("home_games"),
-                "home_tiebreak": s.get("away_tiebreak"),
-                "away_tiebreak": s.get("home_tiebreak"),
+                "home_games": set_item.get("away_games"),
+                "away_games": set_item.get("home_games"),
+                "home_tiebreak": set_item.get("away_tiebreak"),
+                "away_tiebreak": set_item.get("home_tiebreak"),
             }
         )
     return swapped
 
 
-def _leg_payload(m: Match, *, discipline: str) -> Dict[str, Any]:
-    """
-    Zwraca dane 1 meczu (leg) w układzie home/away tego meczu.
-    """
+def _leg_payload(match: Match, *, discipline: str) -> Dict[str, Any]:
+    # Payload lega przenosi komplet danych potrzebnych do widoku pojedynku.
     data: Dict[str, Any] = {
-        "score_home": m.home_score,
-        "score_away": m.away_score,
-        "went_to_extra_time": bool(getattr(m, "went_to_extra_time", False)),
-        "et_home": getattr(m, "home_extra_time_score", None),
-        "et_away": getattr(m, "away_extra_time_score", None),
-        "decided_by_penalties": bool(getattr(m, "decided_by_penalties", False)),
-        "pen_home": getattr(m, "home_penalty_score", None),
-        "pen_away": getattr(m, "away_penalty_score", None),
+        "score_home": match.home_score,
+        "score_away": match.away_score,
+        "went_to_extra_time": bool(getattr(match, "went_to_extra_time", False)),
+        "et_home": getattr(match, "home_extra_time_score", None),
+        "et_away": getattr(match, "away_extra_time_score", None),
+        "decided_by_penalties": bool(getattr(match, "decided_by_penalties", False)),
+        "pen_home": getattr(match, "home_penalty_score", None),
+        "pen_away": getattr(match, "away_penalty_score", None),
     }
 
     if discipline == "tennis":
-        ts = getattr(m, "tennis_sets", None)
-        data["tennis_sets"] = ts
-        data["tennis_sets_display"] = _format_tennis_sets(ts)
+        tennis_sets = getattr(match, "tennis_sets", None)
+        data["tennis_sets"] = tennis_sets
+        data["tennis_sets_display"] = _format_tennis_sets(tennis_sets)
 
     return data
 
 
 def _swap_leg_payload_for_ui(leg: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Odwraca home/away w payloadzie lega (dla UI, gdy rewanż ma odwrócone drużyny).
-    """
+    # Drugi mecz pary musi zostać pokazany w tej samej perspektywie co pierwszy.
     swapped = dict(leg)
     swapped["score_home"], swapped["score_away"] = leg.get("score_away"), leg.get("score_home")
     swapped["et_home"], swapped["et_away"] = leg.get("et_away"), leg.get("et_home")
@@ -201,79 +207,70 @@ def _swap_leg_payload_for_ui(leg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _create_duel_item(matches: List[Match], *, discipline: str) -> Optional[Dict[str, Any]]:
-    """Tworzy obiekt pojedynku zawierający 1 lub 2 mecze."""
     if not matches:
         return None
 
-    matches.sort(key=lambda x: x.id)
+    matches.sort(key=lambda match: match.id)
 
-    m1 = matches[0]
-    m2 = matches[1] if len(matches) > 1 else None
+    first_match = matches[0]
+    second_match = matches[1] if len(matches) > 1 else None
 
-    winner_id = m1.winner_id if not m2 else _resolve_aggregate_winner(matches)
+    winner_id = first_match.winner_id if not second_match else _resolve_aggregate_winner(matches)
 
     base_data: Dict[str, Any] = {
-        "id": m1.id,
-        "status": m2.status if m2 else m1.status,
-        "home_team_id": m1.home_team_id,
-        "away_team_id": m1.away_team_id,
-        "home_team_name": m1.home_team.name if m1.home_team else "TBD",
-        "away_team_name": m1.away_team.name if m1.away_team else "TBD",
+        "id": first_match.id,
+        "status": second_match.status if second_match else first_match.status,
+        "division_id": getattr(first_match.stage, "division_id", None),
+        "home_team_id": first_match.home_team_id,
+        "away_team_id": first_match.away_team_id,
+        "home_team_name": first_match.home_team.name if first_match.home_team else "TBD",
+        "away_team_name": first_match.away_team.name if first_match.away_team else "TBD",
         "winner_id": winner_id,
-        "is_two_legged": True if m2 else False,
+        "is_two_legged": True if second_match else False,
     }
 
-    # LEG1 (zawsze w układzie m1)
-    leg1 = _leg_payload(m1, discipline=discipline)
+    leg1 = _leg_payload(first_match, discipline=discipline)
     base_data["leg1"] = leg1
-
-    # Backward compatible (Twoje dotychczasowe pola)
     base_data["score_leg1_home"] = leg1.get("score_home")
     base_data["score_leg1_away"] = leg1.get("score_away")
-
-    # Dodatki leg1
     base_data["et_leg1_home"] = leg1.get("et_home") if leg1.get("went_to_extra_time") else None
     base_data["et_leg1_away"] = leg1.get("et_away") if leg1.get("went_to_extra_time") else None
     base_data["pen_leg1_home"] = leg1.get("pen_home") if leg1.get("decided_by_penalties") else None
     base_data["pen_leg1_away"] = leg1.get("pen_away") if leg1.get("decided_by_penalties") else None
+
     if discipline == "tennis":
         base_data["tennis_sets_leg1"] = leg1.get("tennis_sets")
         base_data["tennis_sets_leg1_display"] = leg1.get("tennis_sets_display")
 
-    if m2:
-        leg2 = _leg_payload(m2, discipline=discipline)
+    if second_match:
+        leg2 = _leg_payload(second_match, discipline=discipline)
 
-        # Wynik leg2 w ujęciu drużyn z leg1 (dla UI)
-        if m2.home_team_id == m1.away_team_id:
-            # rewanż ma odwróconych gospodarzy -> swap
+        if second_match.home_team_id == first_match.away_team_id:
             leg2_ui = _swap_leg_payload_for_ui(leg2)
         else:
             leg2_ui = leg2
 
         base_data["leg2"] = leg2_ui
-
-        # Backward compatible (Twoje dotychczasowe pola)
         base_data["score_leg2_home"] = leg2_ui.get("score_home")
         base_data["score_leg2_away"] = leg2_ui.get("score_away")
-
-        # Dodatki leg2
         base_data["et_leg2_home"] = leg2_ui.get("et_home") if leg2_ui.get("went_to_extra_time") else None
         base_data["et_leg2_away"] = leg2_ui.get("et_away") if leg2_ui.get("went_to_extra_time") else None
         base_data["pen_leg2_home"] = leg2_ui.get("pen_home") if leg2_ui.get("decided_by_penalties") else None
         base_data["pen_leg2_away"] = leg2_ui.get("pen_away") if leg2_ui.get("decided_by_penalties") else None
+
         if discipline == "tennis":
             base_data["tennis_sets_leg2"] = leg2_ui.get("tennis_sets")
             base_data["tennis_sets_leg2_display"] = leg2_ui.get("tennis_sets_display")
 
-        # agregat (reg+dogrywka) w układzie leg1 home/away
+        # Agregat liczony jest w perspektywie drużyn z pierwszego meczu.
         try:
-            t_home = m1.home_team_id
-            t_away = m1.away_team_id
-            if t_home and t_away:
-                agg_home = sum(team_goals_in_match(m, t_home) for m in matches)
-                agg_away = sum(team_goals_in_match(m, t_away) for m in matches)
-                base_data["aggregate_home"] = agg_home
-                base_data["aggregate_away"] = agg_away
+            home_team_id = first_match.home_team_id
+            away_team_id = first_match.away_team_id
+            if home_team_id and away_team_id:
+                aggregate_home = sum(team_goals_in_match(match, home_team_id) for match in matches)
+                aggregate_away = sum(team_goals_in_match(match, away_team_id) for match in matches)
+                base_data["aggregate_home"] = aggregate_home
+                base_data["aggregate_away"] = aggregate_away
         except Exception:
             pass
 
@@ -281,14 +278,6 @@ def _create_duel_item(matches: List[Match], *, discipline: str) -> Optional[Dict
 
 
 def _resolve_aggregate_winner(matches: List[Match]) -> Optional[int]:
-    """
-    Dla dwumeczu:
-    - Jeśli oba mecze FINISHED:
-        1) jeżeli winner_id na obu i spójny -> zwróć go
-        2) inaczej policz agregat (reg+dogrywka), karne nie wchodzą
-        3) przy remisie agregatu -> karne w rewanżu (mecz o większym ID)
-    - W przeciwnym razie -> None
-    """
     if not matches:
         return None
 
@@ -296,31 +285,32 @@ def _resolve_aggregate_winner(matches: List[Match]) -> Optional[int]:
         return matches[0].winner_id
 
     if len(matches) != 2:
-        # systemowo wspieramy max 2 legi na parę
         return None
 
-    if any(m.status != Match.Status.FINISHED for m in matches):
+    if any(match.status != Match.Status.FINISHED for match in matches):
         return None
 
-    if all(m.winner_id is not None for m in matches):
-        wid = {m.winner_id for m in matches}
-        if len(wid) == 1:
-            return next(iter(wid))
+    # Spójny winner_id na obu meczach ma pierwszeństwo przed liczeniem agregatu.
+    if all(match.winner_id is not None for match in matches):
+        winner_ids = {match.winner_id for match in matches}
+        if len(winner_ids) == 1:
+            return next(iter(winner_ids))
 
     team_ids = {matches[0].home_team_id, matches[0].away_team_id}
     if None in team_ids or len(team_ids) != 2:
         return None
-    t1, t2 = list(team_ids)
+    first_team_id, second_team_id = list(team_ids)
 
-    g1 = sum(team_goals_in_match(m, t1) for m in matches)
-    g2 = sum(team_goals_in_match(m, t2) for m in matches)
+    first_team_goals = sum(team_goals_in_match(match, first_team_id) for match in matches)
+    second_team_goals = sum(team_goals_in_match(match, second_team_id) for match in matches)
 
-    if g1 != g2:
-        return t1 if g1 > g2 else t2
+    if first_team_goals != second_team_goals:
+        return first_team_id if first_team_goals > second_team_goals else second_team_id
 
-    second_leg = max(matches, key=lambda m: m.id)
-    pw = penalty_winner_id(second_leg)
-    if pw is not None:
-        return pw
+    # Przy remisie agregatu decydują karne zapisane na rewanżu.
+    second_leg = max(matches, key=lambda match: match.id)
+    penalty_winner = penalty_winner_id(second_leg)
+    if penalty_winner is not None:
+        return penalty_winner
 
     return None

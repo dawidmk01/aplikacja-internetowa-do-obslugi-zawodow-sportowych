@@ -2,7 +2,7 @@
 // Strona obsługuje konfigurację podstawowych parametrów turnieju przed kolejnymi etapami.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle } from "lucide-react";
 
@@ -43,19 +43,66 @@ import {
   type TournamentResultConfig,
 } from "./_components/TournamentBasicsSetupView";
 
+type DivisionStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
+
+type DivisionSummaryDTO = {
+  id: number;
+  name: string;
+  slug: string;
+  order: number;
+  is_default?: boolean;
+  is_archived?: boolean;
+  status?: DivisionStatus;
+};
+
 type TournamentDTO = {
   id: number;
   name: string;
   description?: string | null;
   discipline: Discipline;
+  custom_discipline_name?: string | null;
+  competition_type?: CompetitionType | null;
+  competition_model?: CompetitionModel | null;
   tournament_format: TournamentFormat;
   format_config: Record<string, any>;
-  status?: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
+  result_mode?: "SCORE" | "CUSTOM" | null;
+  result_config?: Record<string, any>;
+  status?: DivisionStatus;
+  active_division_id?: number | null;
+  active_division_slug?: string | null;
+  active_division_name?: string | null;
+  division_status?: DivisionStatus | null;
+  divisions?: DivisionSummaryDTO[];
   my_role?: "ORGANIZER" | "ASSISTANT" | null;
   my_permissions?: Record<string, boolean>;
 };
 
 type TeamDTO = { id: number; name: string };
+
+function parseDivisionId(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) return null;
+  return parsed;
+}
+
+function withDivisionQuery(url: string, divisionId: number | null | undefined) {
+  if (!divisionId) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}division_id=${divisionId}`;
+}
+
+function withDivisionPayload<T extends Record<string, any>>(payload: T, divisionId: number | null | undefined): T {
+  if (!divisionId) return payload;
+  return { ...payload, division_id: divisionId };
+}
+
+function getDivisionStatusLabel(status: DivisionStatus | null | undefined) {
+  if (status === "RUNNING") return "W trakcie";
+  if (status === "FINISHED") return "Zakończona";
+  if (status === "CONFIGURED") return "Skonfigurowana";
+  return "Szkic";
+}
 
 function clampInt(value: number, min: number, max: number) {
   if (Number.isNaN(value)) return min;
@@ -338,10 +385,18 @@ function createDefaultStages(participants: number): CustomStageConfig[] {
 // Zapis jest etapowy, aby backend mógł wykryć potrzebę resetu i utrzymać spójność danych.
 export default function TournamentBasicsSetup() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const isCreateMode = !id;
 
   const navigate = useNavigate();
   const location = useLocation();
+
+  const requestedDivisionId = useMemo(() => {
+    return (
+      parseDivisionId(searchParams.get("division_id")) ??
+      parseDivisionId(searchParams.get("active_division_id"))
+    );
+  }, [searchParams]);
 
   const { dirty, markDirty, registerSave } = useTournamentFlowGuard();
   const createdIdRef = useRef<string | null>(null);
@@ -378,11 +433,75 @@ export default function TournamentBasicsSetup() {
     if (r) r(value);
   }, []);
 
+
   const [myRole, setMyRole] = useState<"ORGANIZER" | "ASSISTANT" | null>(null);
   const [myPerms, setMyPerms] = useState<Record<string, boolean>>({});
 
+  // ===== Kontekst aktywnej dywizji =====
+  const [divisions, setDivisions] = useState<DivisionSummaryDTO[]>([]);
+  const [activeDivisionId, setActiveDivisionId] = useState<number | null>(requestedDivisionId);
+  const [activeDivisionName, setActiveDivisionName] = useState<string | null>(null);
+  const [activeDivisionStatus, setActiveDivisionStatus] = useState<DivisionStatus | null>(null);
+  const [newDivisionName, setNewDivisionName] = useState("");
+  const [divisionActionLoading, setDivisionActionLoading] = useState(false);
+  const [editingDivisionId, setEditingDivisionId] = useState<number | null>(null);
+  const [editingDivisionName, setEditingDivisionName] = useState("");
+  const [copySourceDivisionId, setCopySourceDivisionId] = useState<number | null>(null);
+
   const canEditTournament = myRole === "ORGANIZER" || Boolean(myPerms?.tournament_edit);
   const isAssistantReadOnly = !isCreateMode && !canEditTournament;
+  const effectiveDivisionId = requestedDivisionId ?? activeDivisionId;
+  const visibleDivisions = useMemo(() => {
+    return divisions
+      .filter((division) => !division.is_archived)
+      .sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
+  }, [divisions]);
+
+  const shouldShowDivisionTiles = visibleDivisions.length > 1;
+  const structureDivisionItems = useMemo(() => {
+    return visibleDivisions.map((division) => ({
+      id: division.id,
+      name: division.name,
+      order: division.order,
+      isDefault: division.is_default,
+      isActive: division.id === effectiveDivisionId,
+      statusLabel: getDivisionStatusLabel(division.status),
+    }));
+  }, [effectiveDivisionId, visibleDivisions]);
+
+  const copyDivisionOptions = useMemo(() => {
+    return visibleDivisions
+      .filter((division) => division.id !== effectiveDivisionId)
+      .map((division) => ({
+        value: division.id,
+        label: division.name,
+        description: getDivisionStatusLabel(division.status),
+      }));
+  }, [effectiveDivisionId, visibleDivisions]);
+
+
+  const handleDivisionSwitch = useCallback(
+    async (nextDivisionId: number) => {
+      if (loading || saving || nextDivisionId === effectiveDivisionId) return;
+
+      if (dirty) {
+        const ok = await askConfirm({
+          title: "Zmiana dywizji",
+          message: "Masz niezapisane zmiany. Po przejściu do innej dywizji bieżący formularz zostanie odświeżony. Kontynuować?",
+          confirmLabel: "Przejdź",
+          cancelLabel: "Zostań",
+        });
+        if (!ok) return;
+      }
+
+      setInlineError(null);
+      const nextSearch = new URLSearchParams(searchParams);
+      nextSearch.set("division_id", String(nextDivisionId));
+      setSearchParams(nextSearch, { replace: false });
+    },
+    [askConfirm, dirty, effectiveDivisionId, loading, saving, searchParams, setSearchParams]
+  );
+
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -461,6 +580,20 @@ export default function TournamentBasicsSetup() {
   }, [competitionModel, isCustomDiscipline]);
 
   useEffect(() => {
+    if (copyDivisionOptions.length === 0) {
+      setCopySourceDivisionId(null);
+      return;
+    }
+
+    setCopySourceDivisionId((prev) => {
+      if (prev != null && copyDivisionOptions.some((option) => option.value === prev)) {
+        return prev;
+      }
+      return copyDivisionOptions[0].value;
+    });
+  }, [copyDivisionOptions]);
+
+  useEffect(() => {
     if (!isCustomDiscipline || competitionModel !== "MASS_START") return;
 
     setResultConfig((prev) => {
@@ -514,58 +647,71 @@ export default function TournamentBasicsSetup() {
     return Array.from({ length: maxOpt }, (_, i) => i + 1);
   }, [format, minGroupSize]);
 
+
   useEffect(() => {
     if (isCreateMode) return;
 
     const load = async () => {
       setLoading(true);
       setInlineError(null);
-      try {
-        const [tRes, teamsRes] = await Promise.all([
-          apiFetch(`/api/tournaments/${id}/`, { toastOnError: false } as any),
-          apiFetch(`/api/tournaments/${id}/teams/`, { toastOnError: false } as any),
-        ]);
 
-        if (!tRes.ok) {
-          const data = await tRes.json().catch(() => ({}));
+      try {
+        const tournamentRes = await apiFetch(
+          withDivisionQuery(`/api/tournaments/${id}/`, requestedDivisionId),
+          { toastOnError: false } as any
+        );
+
+        if (!tournamentRes.ok) {
+          const data = await tournamentRes.json().catch(() => ({}));
           setInlineError(pickFirstError(data) || "Nie udało się pobrać danych turnieju.");
           return;
         }
+
+        const tournament: TournamentDTO = await tournamentRes.json();
+        const resolvedDivisionId = tournament.active_division_id ?? requestedDivisionId ?? null;
+
+        const teamsRes = await apiFetch(
+          withDivisionQuery(`/api/tournaments/${id}/teams/`, resolvedDivisionId),
+          { toastOnError: false } as any
+        );
+
         if (!teamsRes.ok) {
           const data = await teamsRes.json().catch(() => ({}));
           setInlineError(pickFirstError(data) || "Nie udało się pobrać listy uczestników.");
           return;
         }
 
-        const t: TournamentDTO = await tRes.json();
         const teams: TeamDTO[] = await teamsRes.json();
 
-        setMyRole(t.my_role ?? null);
-        setMyPerms(t.my_permissions ?? {});
+        setMyRole(tournament.my_role ?? null);
+        setMyPerms(tournament.my_permissions ?? {});
+        setDivisions(Array.isArray(tournament.divisions) ? tournament.divisions : []);
+        setActiveDivisionId(resolvedDivisionId);
+        setActiveDivisionName(tournament.active_division_name ?? null);
+        setActiveDivisionStatus(tournament.division_status ?? null);
 
-        setName(t.name || "");
-        setInitialName(t.name || "");
+        setName(tournament.name || "");
+        setInitialName(tournament.name || "");
 
-        const desc = (t.description ?? "") as string;
+        const desc = (tournament.description ?? "") as string;
         setDescription(desc);
         setInitialDescription(desc);
 
-        setDiscipline(t.discipline);
-        setInitialDiscipline(t.discipline);
+        setDiscipline(tournament.discipline);
+        setInitialDiscipline(tournament.discipline);
 
-        setFormat(t.tournament_format);
+        setFormat(tournament.tournament_format);
 
         const currentCount = Math.max(2, teams.length);
         setParticipants(currentCount);
         initialParticipantsRef.current = currentCount;
 
-        // Dla etapu wizualnego ustawiamy sensowne domyślne dane custom po załadowaniu.
         setResultConfig((prev) => ({
           ...prev,
           stages: createDefaultStages(currentCount),
         }));
 
-        const cfg = t.format_config || {};
+        const cfg = tournament.format_config || {};
 
         setLeagueMatches(cfg.league_matches === 2 ? 2 : 1);
 
@@ -594,13 +740,31 @@ export default function TournamentBasicsSetup() {
         const tpm = (cfg.tennis_points_mode ?? "NONE").toString().toUpperCase();
         setTennisPointsMode(tpm === "PLT" ? "PLT" : "NONE");
 
-        if (t.discipline === "custom") {
-          setCompetitionType((t.competition_type as CompetitionType) ?? "INDIVIDUAL");
-          setCompetitionModel((t.competition_model as CompetitionModel) ?? "MASS_START");
-          setCustomDisciplineName(t.custom_discipline_name ?? "");
+        if (tournament.discipline === "custom") {
+          setCompetitionType((tournament.competition_type as CompetitionType) ?? "INDIVIDUAL");
+          setCompetitionModel((tournament.competition_model as CompetitionModel) ?? "MASS_START");
+          setCustomDisciplineName(tournament.custom_discipline_name ?? "");
 
-          const incoming = t.result_config && typeof t.result_config === "object" ? t.result_config : {};
+          const incoming =
+            tournament.result_config && typeof tournament.result_config === "object"
+              ? tournament.result_config
+              : {};
           setResultConfig(deserializeCustomResultConfig(incoming, currentCount));
+        } else {
+          setCompetitionType("INDIVIDUAL");
+          setCompetitionModel("MASS_START");
+          setCustomDisciplineName("");
+        }
+
+        if (
+          !requestedDivisionId &&
+          resolvedDivisionId &&
+          Array.isArray(tournament.divisions) &&
+          tournament.divisions.length > 1
+        ) {
+          const nextSearch = new URLSearchParams(searchParams);
+          nextSearch.set("division_id", String(resolvedDivisionId));
+          setSearchParams(nextSearch, { replace: true });
         }
       } catch {
         toast.error("Brak połączenia z serwerem. Spróbuj ponownie.", { title: "Sieć" });
@@ -610,7 +774,7 @@ export default function TournamentBasicsSetup() {
     };
 
     load();
-  }, [id, isCreateMode]);
+  }, [id, isCreateMode, requestedDivisionId, searchParams, setSearchParams]);
 
   const preview: MatchesPreview = useMemo(() => {
     const p = clampInt(participants, 2, 10_000);
@@ -799,7 +963,7 @@ export default function TournamentBasicsSetup() {
     return finalConfig;
   };
 
-  const saveAll = useCallback(async (): Promise<{ tournamentId: number }> => {
+  const saveAll = useCallback(async (): Promise<{ tournamentId: number; divisionId: number | null }> => {
     if (isAssistantReadOnly) {
       const msg = "Tryb podglądu: brak uprawnień do zmiany konfiguracji.";
       setInlineError(msg);
@@ -825,12 +989,13 @@ export default function TournamentBasicsSetup() {
       }
     }
 
-    if (!isCreateMode && !dirty) return { tournamentId: Number(id) };
+    if (!isCreateMode && !dirty) return { tournamentId: Number(id), divisionId: effectiveDivisionId ?? null };
 
     setSaving(true);
     setInlineError(null);
 
     let createdId: number | null = null;
+    let currentDivisionId = effectiveDivisionId;
 
     try {
       const trimmedName = name.trim();
@@ -859,6 +1024,14 @@ export default function TournamentBasicsSetup() {
         const created = await createRes.json();
         createdId = created.id;
         tournamentId = created.id;
+        currentDivisionId = created.active_division_id ?? currentDivisionId ?? null;
+
+        if (Array.isArray(created.divisions)) {
+          setDivisions(created.divisions);
+        }
+        setActiveDivisionId(currentDivisionId);
+        setActiveDivisionName(created.active_division_name ?? null);
+        setActiveDivisionStatus(created.division_status ?? null);
 
         setInitialName(trimmedName);
         setInitialDescription(trimmedDesc);
@@ -892,10 +1065,10 @@ export default function TournamentBasicsSetup() {
                   discipline,
                 };
 
-          const res = await apiFetch(`/api/tournaments/${tournamentId}/change-discipline/`, {
+          const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/change-discipline/`, currentDivisionId), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(changePayload),
+            body: JSON.stringify(withDivisionPayload(changePayload, currentDivisionId)),
             toastOnError: false,
           } as any);
 
@@ -914,10 +1087,10 @@ export default function TournamentBasicsSetup() {
         if (trimmedDesc !== initialDescription) patch.description = trimmedDesc ? trimmedDesc : null;
 
         if (Object.keys(patch).length) {
-          const res = await apiFetch(`/api/tournaments/${tournamentId}/`, {
+          const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/`, currentDivisionId), {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(patch),
+            body: JSON.stringify(withDivisionPayload(patch, currentDivisionId)),
             toastOnError: false,
           } as any);
 
@@ -948,10 +1121,10 @@ export default function TournamentBasicsSetup() {
           payload.discipline = discipline;
         }
 
-        const res = await apiFetch(`/api/tournaments/${tournamentId}/`, {
+        const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/`, currentDivisionId), {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(withDivisionPayload(payload, currentDivisionId)),
           toastOnError: false,
         } as any);
 
@@ -966,10 +1139,10 @@ export default function TournamentBasicsSetup() {
       } else {
         const format_config = buildFormatConfig();
 
-        const dry = await apiFetch(`/api/tournaments/${tournamentId}/setup/?dry_run=true`, {
+        const dry = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/setup/?dry_run=true`, currentDivisionId), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tournament_format: format, format_config }),
+          body: JSON.stringify(withDivisionPayload({ tournament_format: format, format_config }, currentDivisionId)),
           toastOnError: false,
         } as any);
 
@@ -993,10 +1166,10 @@ export default function TournamentBasicsSetup() {
           if (!ok) throw new Error("Anulowano zapis konfiguracji.");
         }
 
-        const res = await apiFetch(`/api/tournaments/${tournamentId}/setup/`, {
+        const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/setup/`, currentDivisionId), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tournament_format: format, format_config }),
+          body: JSON.stringify(withDivisionPayload({ tournament_format: format, format_config }, currentDivisionId)),
           toastOnError: false,
         } as any);
 
@@ -1021,13 +1194,18 @@ export default function TournamentBasicsSetup() {
         if (!ok) throw new Error("Anulowano zmianę liczby uczestników.");
       }
 
-      const teamsRes = await apiFetch(`/api/tournaments/${tournamentId}/teams/setup/`, {
+      const teamsRes = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/teams/setup/`, currentDivisionId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          teams_count: safeParticipants,
-          participants_count: safeParticipants,
-        }),
+        body: JSON.stringify(
+          withDivisionPayload(
+            {
+              teams_count: safeParticipants,
+              participants_count: safeParticipants,
+            },
+            currentDivisionId
+          )
+        ),
         toastOnError: false,
       } as any);
 
@@ -1042,12 +1220,12 @@ export default function TournamentBasicsSetup() {
       createdIdRef.current = String(tournamentId);
 
       if (isCreateMode) {
-        navigate(`/tournaments/${tournamentId}/detail/setup`, { replace: true });
+        navigate(`/tournaments/${tournamentId}/detail/setup${currentDivisionId ? `?division_id=${currentDivisionId}` : ""}`, { replace: true });
       } else {
         toast.success("Zapisano konfigurację.", { title: "Turniej" });
       }
 
-      return { tournamentId };
+      return { tournamentId, divisionId: currentDivisionId ?? null };
     } catch (e: any) {
       const msg = e?.message || "Nie udało się zapisać.";
       if (isCreateMode && createdId) {
@@ -1055,7 +1233,7 @@ export default function TournamentBasicsSetup() {
           replace: true,
           state: { flashError: msg },
         });
-        return { tournamentId: createdId };
+        return { tournamentId: createdId, divisionId: currentDivisionId ?? null };
       }
       throw e;
     } finally {
@@ -1097,12 +1275,287 @@ export default function TournamentBasicsSetup() {
     navigate,
     askConfirm,
     validateLocalBeforeSave,
+    effectiveDivisionId,
+  ]);
+
+  const createDivision = useCallback(async () => {
+    if (isCreateMode || !id || !canEditTournament || divisionActionLoading) return;
+
+    const trimmedName = newDivisionName.trim();
+    if (!trimmedName) {
+      setInlineError("Podaj nazwę nowej dywizji.");
+      return;
+    }
+
+    try {
+      setDivisionActionLoading(true);
+      setInlineError(null);
+
+      if (dirty) {
+        await saveAll();
+      }
+
+      const res = await apiFetch(`/api/tournaments/${id}/divisions/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: trimmedName,
+          source_division_id: effectiveDivisionId ?? undefined,
+        }),
+        toastOnError: false,
+      } as any);
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const msg = pickFirstError(data) || "Nie udało się utworzyć dywizji.";
+        setInlineError(msg);
+        return;
+      }
+
+      const data = await res.json();
+      const division = data?.division;
+      const divisionsPayload = Array.isArray(data?.divisions) ? data.divisions : [];
+
+      setDivisions(divisionsPayload);
+      setNewDivisionName("");
+
+      if (division?.id) {
+        toast.success("Utworzono dywizję.", { title: "Dywizje" });
+        const nextSearch = new URLSearchParams(searchParams);
+        nextSearch.set("division_id", String(division.id));
+        setSearchParams(nextSearch, { replace: false });
+      }
+    } catch {
+      setInlineError("Nie udało się utworzyć dywizji.");
+    } finally {
+      setDivisionActionLoading(false);
+    }
+  }, [
+    canEditTournament,
+    dirty,
+    divisionActionLoading,
+    effectiveDivisionId,
+    id,
+    isCreateMode,
+    newDivisionName,
+    saveAll,
+    searchParams,
+    setSearchParams,
+  ]);
+
+  const archiveDivision = useCallback(
+    async (division: DivisionSummaryDTO) => {
+      if (isCreateMode || !id || !canEditTournament || divisionActionLoading) return;
+
+      const ok = await askConfirm({
+        title: "Archiwizacja dywizji",
+        message: `Czy na pewno chcesz zarchiwizować dywizję "${division.name}"?`,
+        confirmLabel: "Archiwizuj",
+        cancelLabel: "Anuluj",
+      });
+      if (!ok) return;
+
+      try {
+        setDivisionActionLoading(true);
+        setInlineError(null);
+
+        const res = await apiFetch(`/api/tournaments/${id}/divisions/${division.id}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ is_archived: true }),
+          toastOnError: false,
+        } as any);
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          const msg = pickFirstError(data) || "Nie udało się zarchiwizować dywizji.";
+          setInlineError(msg);
+          return;
+        }
+
+        const data = await res.json();
+        const divisionsPayload = Array.isArray(data?.divisions) ? data.divisions : [];
+        const fallbackDivisionId = parseDivisionId(String(data?.fallback_division_id ?? "")) ?? null;
+
+        setDivisions(divisionsPayload);
+
+        if (division.id === effectiveDivisionId && fallbackDivisionId) {
+          const nextSearch = new URLSearchParams(searchParams);
+          nextSearch.set("division_id", String(fallbackDivisionId));
+          setSearchParams(nextSearch, { replace: false });
+        }
+
+        toast.success("Zarchiwizowano dywizję.", { title: "Dywizje" });
+      } catch {
+        setInlineError("Nie udało się zarchiwizować dywizji.");
+      } finally {
+        setDivisionActionLoading(false);
+      }
+    },
+    [
+      askConfirm,
+      canEditTournament,
+      divisionActionLoading,
+      effectiveDivisionId,
+      id,
+      isCreateMode,
+      searchParams,
+      setSearchParams,
+    ]
+  );
+
+  const saveDivisionRename = useCallback(
+    async (division: DivisionSummaryDTO) => {
+      if (isCreateMode || !id || !canEditTournament || divisionActionLoading) return;
+
+      const trimmedName = editingDivisionName.trim();
+      if (!trimmedName) {
+        setInlineError("Nazwa dywizji nie może być pusta.");
+        return;
+      }
+
+      try {
+        setDivisionActionLoading(true);
+        setInlineError(null);
+
+        const res = await apiFetch(`/api/tournaments/${id}/divisions/${division.id}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: trimmedName }),
+          toastOnError: false,
+        } as any);
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          const msg = pickFirstError(data) || "Nie udało się zmienić nazwy dywizji.";
+          setInlineError(msg);
+          return;
+        }
+
+        const data = await res.json();
+        const divisionsPayload = Array.isArray(data?.divisions) ? data.divisions : [];
+
+        setDivisions(divisionsPayload);
+        if (division.id === effectiveDivisionId) {
+          setActiveDivisionName(trimmedName);
+        }
+
+        setEditingDivisionId(null);
+        setEditingDivisionName("");
+        toast.success("Zmieniono nazwę dywizji.", { title: "Dywizje" });
+      } catch {
+        setInlineError("Nie udało się zmienić nazwy dywizji.");
+      } finally {
+        setDivisionActionLoading(false);
+      }
+    },
+    [
+      canEditTournament,
+      divisionActionLoading,
+      editingDivisionName,
+      effectiveDivisionId,
+      id,
+      isCreateMode,
+    ]
+  );
+
+  const copyFormatFromDivision = useCallback(async () => {
+    if (isCreateMode || !id || !canEditTournament || !copySourceDivisionId) return;
+
+    const sourceDivision = visibleDivisions.find((division) => division.id === copySourceDivisionId);
+    const sourceDivisionName = sourceDivision?.name ?? "wybranej dywizji";
+
+    const ok = await askConfirm({
+      title: "Kopiowanie ustawień formatu",
+      message: `Czy na pewno chcesz skopiować ustawienia formatu z dywizji "${sourceDivisionName}"?\n\nBieżące niezapisane ustawienia aktywnej dywizji zostaną zastąpione.`,
+      confirmLabel: "Kopiuj",
+      cancelLabel: "Anuluj",
+    });
+    if (!ok) return;
+
+    try {
+      setDivisionActionLoading(true);
+      setInlineError(null);
+
+      const response = await apiFetch(
+        withDivisionQuery(`/api/tournaments/${id}/`, copySourceDivisionId),
+        { toastOnError: false } as any
+      );
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        const msg = pickFirstError(data) || "Nie udało się skopiować ustawień formatu.";
+        setInlineError(msg);
+        return;
+      }
+
+      const sourceTournament: TournamentDTO = await response.json();
+      const sourceConfig = sourceTournament.format_config || {};
+
+      setFormat(sourceTournament.tournament_format);
+      setLeagueMatches(sourceConfig.league_matches === 2 ? 2 : 1);
+
+      const savedGroups = sourceConfig.groups_count;
+      if (typeof savedGroups === "number" && savedGroups >= 1) {
+        setGroupsCount(savedGroups);
+      } else {
+        setGroupsCount(defaultGroupsCountFor4PerGroup(participants));
+      }
+
+      setGroupMatches(sourceConfig.group_matches === 2 ? 2 : 1);
+
+      const savedAdvance = Number(sourceConfig.advance_from_group ?? 2);
+      setAdvanceFromGroup(Number.isFinite(savedAdvance) ? savedAdvance : 2);
+
+      setCupMatches(sourceConfig.cup_matches === 2 ? 2 : 1);
+      setFinalMatches(sourceConfig.final_matches === 2 ? 2 : 1);
+      setThirdPlace(!!sourceConfig.third_place);
+      setThirdPlaceMatches(sourceConfig.third_place_matches === 2 ? 2 : 1);
+
+      setHbTableDrawMode(sourceConfig.handball_table_draw_mode ?? "ALLOW_DRAW");
+      setHbKnockoutTiebreak(sourceConfig.handball_knockout_tiebreak ?? "OVERTIME_PENALTIES");
+      setHbPointsMode(sourceConfig.handball_points_mode ?? "2_1_0");
+
+      setTennisBestOf(sourceConfig.tennis_best_of === 5 ? 5 : 3);
+      const tennisMode = (sourceConfig.tennis_points_mode ?? "NONE").toString().toUpperCase();
+      setTennisPointsMode(tennisMode === "PLT" ? "PLT" : "NONE");
+
+      if (discipline === "custom") {
+        setCompetitionType((sourceTournament.competition_type as CompetitionType) ?? "INDIVIDUAL");
+        setCompetitionModel((sourceTournament.competition_model as CompetitionModel) ?? "MASS_START");
+        setResultConfig(
+          deserializeCustomResultConfig(
+            sourceTournament.result_config && typeof sourceTournament.result_config === "object"
+              ? sourceTournament.result_config
+              : {},
+            participants
+          )
+        );
+      }
+
+      markDirty();
+      toast.success("Skopiowano ustawienia formatu z wybranej dywizji.", { title: "Dywizje" });
+    } catch {
+      setInlineError("Nie udało się skopiować ustawień formatu.");
+    } finally {
+      setDivisionActionLoading(false);
+    }
+  }, [
+    askConfirm,
+    canEditTournament,
+    copySourceDivisionId,
+    discipline,
+    id,
+    isCreateMode,
+    markDirty,
+    participants,
+    visibleDivisions,
   ]);
 
   const goNext = useCallback(async () => {
     try {
-      const { tournamentId } = await saveAll();
-      navigate(`/tournaments/${tournamentId}/detail`, { replace: true });
+      const { tournamentId, divisionId } = await saveAll();
+      navigate(`/tournaments/${tournamentId}/detail${divisionId ? `?division_id=${divisionId}` : ""}`, { replace: true });
     } catch (e: any) {
       const msg = e?.message || "Nie udało się zapisać.";
       setInlineError(msg);
@@ -1121,7 +1574,7 @@ export default function TournamentBasicsSetup() {
     return () => registerSave(null);
   }, [registerSave, saveAll, isAssistantReadOnly]);
 
-  const disableForm = loading || saving || isAssistantReadOnly;
+  const disableForm = loading || saving || divisionActionLoading || isAssistantReadOnly;
   const isTournamentCreated = !isCreateMode || Boolean(createdIdRef.current);
   const showLeagueOrGroupConfig = format === "LEAGUE" || format === "MIXED";
   const showKnockoutConfig = format === "CUP" || format === "MIXED";
@@ -1245,7 +1698,8 @@ export default function TournamentBasicsSetup() {
         <div className="text-sm leading-relaxed text-slate-300">
           {isCreateMode
             ? "Ustal podstawy i strukturę rozgrywek. W kolejnym kroku uzupełnisz uczestników."
-            : "Zmień parametry rozgrywek. Uwaga: część zmian może wymagać resetu."}
+            : "Zmień parametry rozgrywek aktywnej dywizji. Część zmian może wymagać resetu."}
+          {!isCreateMode && activeDivisionName ? ` Aktywna dywizja: ${activeDivisionName}.` : ""}
         </div>
       </div>
 
@@ -1268,6 +1722,7 @@ export default function TournamentBasicsSetup() {
 
       <div className="grid items-start gap-6 lg:grid-cols-[1.6fr_1fr]">
         <div className="space-y-6">
+
           <BasicsCard
             disableForm={disableForm}
             isCreateMode={isCreateMode}
@@ -1286,6 +1741,8 @@ export default function TournamentBasicsSetup() {
             }}
           />
 
+
+
           <StructureCard
             isTournamentCreated={isTournamentCreated}
             disableForm={disableForm}
@@ -1293,6 +1750,18 @@ export default function TournamentBasicsSetup() {
             discipline={discipline}
             format={format}
             participants={participants}
+            showDivisionSection={!isCreateMode}
+            activeDivisionName={activeDivisionName}
+            activeDivisionStatusLabel={activeDivisionStatus ? getDivisionStatusLabel(activeDivisionStatus) : null}
+            visibleDivisions={structureDivisionItems}
+            showDivisionTiles={shouldShowDivisionTiles}
+            canEditDivisions={canEditTournament}
+            newDivisionName={newDivisionName}
+            divisionActionLoading={divisionActionLoading}
+            editingDivisionId={editingDivisionId}
+            editingDivisionName={editingDivisionName}
+            copyDivisionOptions={copyDivisionOptions}
+            copySourceDivisionId={copySourceDivisionId}
             leagueMatches={leagueMatches}
             groupsCount={groupsCount}
             groupMatches={groupMatches}
@@ -1327,6 +1796,38 @@ export default function TournamentBasicsSetup() {
             onDisciplineChange={onDisciplineChange}
             onFormatChange={onFormatChange}
             onParticipantsChange={onParticipantsChange}
+            onNewDivisionNameChange={setNewDivisionName}
+            onCreateDivision={() => {
+              void createDivision();
+            }}
+            onDivisionSwitch={(divisionId) => {
+              void handleDivisionSwitch(divisionId);
+            }}
+            onStartDivisionRename={(divisionId, currentName) => {
+              setEditingDivisionId(divisionId);
+              setEditingDivisionName(currentName);
+            }}
+            onEditingDivisionNameChange={setEditingDivisionName}
+            onCancelDivisionRename={() => {
+              setEditingDivisionId(null);
+              setEditingDivisionName("");
+            }}
+            onSaveDivisionRename={(divisionId) => {
+              const division = divisions.find((item) => item.id === divisionId);
+              if (division) {
+                void saveDivisionRename(division);
+              }
+            }}
+            onArchiveDivision={(divisionId) => {
+              const division = divisions.find((item) => item.id === divisionId);
+              if (division) {
+                void archiveDivision(division);
+              }
+            }}
+            onCopySourceDivisionChange={setCopySourceDivisionId}
+            onCopyFormatFromDivision={() => {
+              void copyFormatFromDivision();
+            }}
             onLeagueMatchesChange={(v) => {
               setLeagueMatches(v);
               markDirty();

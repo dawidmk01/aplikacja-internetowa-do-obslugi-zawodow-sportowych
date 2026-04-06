@@ -1,5 +1,6 @@
+
 # backend/tournaments/views/mass_start_results.py
-# Plik udostępnia odczyt i zapis wyników etapowych dla trybu MASS_START.
+# Plik udostępnia odczyt i zapis wyników etapowych dla trybu MASS_START w kontekście aktywnej dywizji.
 
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from rest_framework.views import APIView
 
 from tournaments.access import user_is_assistant
 from tournaments.models import (
+    Division,
     Group,
     Stage,
     StageMassStartEntry,
@@ -31,20 +33,53 @@ from tournaments.serializers import (
 from tournaments.views._helpers import public_access_or_403
 
 
-def _tournament_stage_cfgs(tournament: Tournament) -> list[dict]:
-    return list(tournament.get_mass_start_stages() or [])
+def _resolve_division_from_request(request, tournament: Tournament) -> Division | None:
+    raw_id = (
+        request.query_params.get("division_id")
+        or request.query_params.get("active_division_id")
+        or request.query_params.get("division")
+    )
+    raw_slug = (
+        request.query_params.get("division_slug")
+        or request.query_params.get("active_division_slug")
+    )
+
+    divisions_qs = tournament.divisions.all().order_by("order", "id")
+
+    if raw_id:
+        try:
+            division_id = int(raw_id)
+        except (TypeError, ValueError):
+            return None
+        return divisions_qs.filter(pk=division_id).first()
+
+    if raw_slug:
+        return divisions_qs.filter(slug=str(raw_slug).strip()).first()
+
+    return tournament.get_default_division()
 
 
-def _stage_cfg_for_order(tournament: Tournament, order: int) -> dict:
-    cfgs = _tournament_stage_cfgs(tournament)
+def _competition_context(division: Division | None, tournament: Tournament):
+    return division or tournament
+
+
+def _division_stage_cfgs(context_obj) -> list[dict]:
+    if hasattr(context_obj, "get_mass_start_stages"):
+        return list(context_obj.get_mass_start_stages() or [])
+    return []
+
+
+def _stage_cfg_for_order(context_obj, order: int) -> dict:
+    cfgs = _division_stage_cfgs(context_obj)
     if 1 <= order <= len(cfgs):
         cfg = cfgs[order - 1]
         return cfg if isinstance(cfg, dict) else {}
     return {}
 
 
-def _stage_name(stage: Stage, tournament: Tournament) -> str:
-    cfg = _stage_cfg_for_order(tournament, stage.order)
+def _stage_name(stage: Stage) -> str:
+    context_obj = _competition_context(getattr(stage, "division", None), stage.tournament)
+    cfg = _stage_cfg_for_order(context_obj, stage.order)
     raw = str(cfg.get(Tournament.RESULTCFG_STAGE_NAME_KEY) or "").strip()
     return raw or f"Etap {stage.order}"
 
@@ -91,12 +126,12 @@ def _aggregate_round_values(
     return min(only_values) if lower_is_better else max(only_values)
 
 
-def _format_aggregate_display(tournament: Tournament, value) -> str:
+def _format_aggregate_display(context_obj, value) -> str:
     if value is None:
         return "-"
 
-    value_kind = tournament.get_result_value_kind()
-    cfg = tournament.get_result_config()
+    value_kind = context_obj.get_result_value_kind()
+    cfg = context_obj.get_result_config()
 
     if value_kind == Tournament.RESULTCFG_VALUE_KIND_TIME:
         total_ms = int(Decimal(value))
@@ -166,26 +201,26 @@ def _round_results_map(
 
 
 def _compute_group_rankings(
-    tournament: Tournament,
     stage: Stage,
     group: Group | None,
     *,
     persist: bool,
 ) -> dict[int, dict[str, Any]]:
-    stage_cfg = _stage_cfg_for_order(tournament, stage.order)
+    context_obj = _competition_context(getattr(stage, "division", None), stage.tournament)
+    stage_cfg = _stage_cfg_for_order(context_obj, stage.order)
     aggregation_mode = str(
         stage_cfg.get(Tournament.RESULTCFG_STAGE_AGGREGATION_MODE_KEY)
-        or tournament.get_result_config().get(Tournament.RESULTCFG_AGGREGATION_MODE_KEY)
+        or context_obj.get_result_config().get(Tournament.RESULTCFG_AGGREGATION_MODE_KEY)
         or Tournament.RESULTCFG_AGGREGATION_BEST
     ).upper()
 
     lower_is_better = (
-        tournament.result_is_time()
-        or tournament.result_is_place()
-        or tournament.custom_result_lower_is_better()
+        context_obj.result_is_time()
+        or context_obj.result_is_place()
+        or context_obj.custom_result_lower_is_better()
     )
     allow_ties = bool(
-        tournament.get_result_config().get(Tournament.RESULTCFG_ALLOW_TIES_KEY, True)
+        context_obj.get_result_config().get(Tournament.RESULTCFG_ALLOW_TIES_KEY, True)
     )
 
     team_ids = _entry_team_ids_for_group(stage, group)
@@ -225,7 +260,7 @@ def _compute_group_rankings(
                 "results": team_results,
                 "aggregate_value": aggregate_value,
                 "aggregate_display": _format_aggregate_display(
-                    tournament,
+                    context_obj,
                     aggregate_value,
                 ),
             }
@@ -269,16 +304,17 @@ def _compute_group_rankings(
     return payload
 
 
-def _group_payload(tournament: Tournament, stage: Stage, group: Group) -> dict[str, Any]:
+def _group_payload(stage: Stage, group: Group) -> dict[str, Any]:
+    context_obj = _competition_context(getattr(stage, "division", None), stage.tournament)
     team_ids = _entry_team_ids_for_group(stage, group)
-    ranking = _compute_group_rankings(tournament, stage, group, persist=False)
+    ranking = _compute_group_rankings(stage, group, persist=False)
     round_results = _round_results_map(stage, team_ids)
-    stage_cfg = _stage_cfg_for_order(tournament, stage.order)
+    stage_cfg = _stage_cfg_for_order(context_obj, stage.order)
     rounds_count = int(stage_cfg.get(Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY) or 1)
 
     team_lookup = {
         team.id: team.name
-        for team in tournament.teams.filter(id__in=team_ids).order_by("id")
+        for team in stage.tournament.teams.filter(id__in=team_ids).order_by("id")
     }
 
     entries: list[dict[str, Any]] = []
@@ -335,10 +371,13 @@ def _group_payload(tournament: Tournament, stage: Stage, group: Group) -> dict[s
     }
 
 
-def _build_response_payload(tournament: Tournament) -> dict[str, Any]:
+def _build_response_payload(tournament: Tournament, division: Division | None) -> dict[str, Any]:
+    context_obj = _competition_context(division, tournament)
+
     stages = list(
         Stage.objects.filter(
             tournament=tournament,
+            division=division,
             stage_type=Stage.StageType.MASS_START,
             status__in=(Stage.Status.PLANNED, Stage.Status.OPEN, Stage.Status.CLOSED),
         )
@@ -348,18 +387,19 @@ def _build_response_payload(tournament: Tournament) -> dict[str, Any]:
 
     payload_stages: list[dict[str, Any]] = []
     for stage in stages:
-        stage_cfg = _stage_cfg_for_order(tournament, stage.order)
+        stage_cfg = _stage_cfg_for_order(context_obj, stage.order)
         groups = list(stage.groups.all().order_by("id"))
         groups_payload: list[dict[str, Any]] = []
 
         for group in groups:
-            groups_payload.append(_group_payload(tournament, stage, group))
+            groups_payload.append(_group_payload(stage, group))
 
         payload_stages.append(
             {
                 "stage_id": stage.id,
+                "division_id": stage.division_id,
                 "stage_order": stage.order,
-                "stage_name": _stage_name(stage, tournament),
+                "stage_name": _stage_name(stage),
                 "stage_status": stage.status,
                 "groups_count": int(
                     stage_cfg.get(Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY)
@@ -376,7 +416,7 @@ def _build_response_payload(tournament: Tournament) -> dict[str, Any]:
                 ),
                 "aggregation_mode": str(
                     stage_cfg.get(Tournament.RESULTCFG_STAGE_AGGREGATION_MODE_KEY)
-                    or tournament.get_result_config().get(
+                    or context_obj.get_result_config().get(
                         Tournament.RESULTCFG_AGGREGATION_MODE_KEY
                     )
                     or Tournament.RESULTCFG_AGGREGATION_BEST
@@ -387,15 +427,17 @@ def _build_response_payload(tournament: Tournament) -> dict[str, Any]:
 
     return {
         "tournament_id": tournament.id,
-        "competition_model": tournament.competition_model,
-        "value_kind": tournament.get_result_value_kind(),
+        "division_id": division.id if division else None,
+        "division_name": division.name if division else None,
+        "competition_model": context_obj.competition_model,
+        "value_kind": context_obj.get_result_value_kind(),
         "unit_label": str(
-            tournament.get_result_config().get(Tournament.RESULTCFG_UNIT_LABEL_KEY)
-            or tournament.get_result_config().get(Tournament.RESULTCFG_UNIT_KEY)
+            context_obj.get_result_config().get(Tournament.RESULTCFG_UNIT_LABEL_KEY)
+            or context_obj.get_result_config().get(Tournament.RESULTCFG_UNIT_KEY)
             or ""
         ).strip(),
         "allow_ties": bool(
-            tournament.get_result_config().get(Tournament.RESULTCFG_ALLOW_TIES_KEY, True)
+            context_obj.get_result_config().get(Tournament.RESULTCFG_ALLOW_TIES_KEY, True)
         ),
         "stages": payload_stages,
     }
@@ -409,17 +451,18 @@ def _stage_entry_team_ids(stage: Stage) -> list[int]:
     )
 
 
-def _stage_rounds_count(tournament: Tournament, stage: Stage) -> int:
-    stage_cfg = _stage_cfg_for_order(tournament, stage.order)
+def _stage_rounds_count(stage: Stage) -> int:
+    context_obj = _competition_context(getattr(stage, "division", None), stage.tournament)
+    stage_cfg = _stage_cfg_for_order(context_obj, stage.order)
     return int(stage_cfg.get(Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY) or 1)
 
 
-def _stage_has_all_required_results(tournament: Tournament, stage: Stage) -> bool:
+def _stage_has_all_required_results(stage: Stage) -> bool:
     team_ids = _stage_entry_team_ids(stage)
     if not team_ids:
         return False
 
-    expected_count = len(team_ids) * _stage_rounds_count(tournament, stage)
+    expected_count = len(team_ids) * _stage_rounds_count(stage)
     saved_pairs = set(
         StageMassStartResult.objects.filter(
             stage=stage,
@@ -430,11 +473,11 @@ def _stage_has_all_required_results(tournament: Tournament, stage: Stage) -> boo
     return len(saved_pairs) >= expected_count
 
 
-def _close_stage_if_complete(tournament: Tournament, stage: Stage) -> bool:
+def _close_stage_if_complete(stage: Stage) -> bool:
     if stage.status != Stage.Status.OPEN:
         return False
 
-    if not _stage_has_all_required_results(tournament, stage):
+    if not _stage_has_all_required_results(stage):
         return False
 
     stage.status = Stage.Status.CLOSED
@@ -464,13 +507,15 @@ class TournamentMassStartResultListCreateView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        if not tournament.uses_custom_results() or not tournament.uses_mass_start():
+        division = _resolve_division_from_request(request, tournament)
+        context_obj = _competition_context(division, tournament)
+        if not context_obj.uses_custom_results() or not context_obj.uses_mass_start():
             return Response(
-                {"detail": "Turniej nie używa trybu MASS_START."},
+                {"detail": "Aktywna dywizja nie używa trybu MASS_START."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response(_build_response_payload(tournament), status=status.HTTP_200_OK)
+        return Response(_build_response_payload(tournament, division), status=status.HTTP_200_OK)
 
     @transaction.atomic
     def post(self, request, pk: int, *args, **kwargs):
@@ -482,15 +527,17 @@ class TournamentMassStartResultListCreateView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        if not tournament.uses_custom_results() or not tournament.uses_mass_start():
+        division = _resolve_division_from_request(request, tournament)
+        context_obj = _competition_context(division, tournament)
+        if not context_obj.uses_custom_results() or not context_obj.uses_mass_start():
             return Response(
-                {"detail": "Turniej nie używa trybu MASS_START."},
+                {"detail": "Aktywna dywizja nie używa trybu MASS_START."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         serializer = StageMassStartResultWriteSerializer(
             data=request.data,
-            context={"tournament": tournament, "user": request.user},
+            context={"tournament": tournament, "division": division, "user": request.user},
         )
         serializer.is_valid(raise_exception=True)
         result = serializer.save()
@@ -502,10 +549,11 @@ class TournamentMassStartResultListCreateView(APIView):
             )
 
         group = result.group
-        _compute_group_rankings(tournament, result.stage, group, persist=True)
-        stage_closed = _close_stage_if_complete(tournament, result.stage)
+        _compute_group_rankings(result.stage, group, persist=True)
+        stage_closed = _close_stage_if_complete(result.stage)
 
         event_payload = {
+            "division_id": result.stage.division_id,
             "stage_id": result.stage_id,
             "group_id": result.group_id,
         }
@@ -526,7 +574,7 @@ class TournamentMassStartResultListCreateView(APIView):
             {
                 "detail": detail,
                 "result": StageMassStartResultSerializer(result).data,
-                "payload": _build_response_payload(tournament),
+                "payload": _build_response_payload(tournament, result.stage.division),
             },
             status=status.HTTP_200_OK,
         )
@@ -542,10 +590,12 @@ class TournamentPublicMassStartResultListView(APIView):
         if denied is not None:
             return denied
 
-        if not tournament.uses_custom_results() or not tournament.uses_mass_start():
+        division = _resolve_division_from_request(request, tournament)
+        context_obj = _competition_context(division, tournament)
+        if not context_obj.uses_custom_results() or not context_obj.uses_mass_start():
             return Response(
-                {"detail": "Turniej nie używa trybu MASS_START."},
+                {"detail": "Aktywna dywizja nie używa trybu MASS_START."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response(_build_response_payload(tournament), status=status.HTTP_200_OK)
+        return Response(_build_response_payload(tournament, division), status=status.HTTP_200_OK)

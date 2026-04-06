@@ -1,5 +1,5 @@
 # backend/tournaments/serializers/matches.py
-# Plik definiuje serializery odpowiedzialne za odczyt i zapis wyników oraz terminów meczów.
+# Plik definiuje serializery odpowiedzialne za odczyt i zapis wyników oraz terminów meczów w kontekście dywizji meczu.
 
 from __future__ import annotations
 
@@ -19,6 +19,46 @@ def _third_place_value() -> str:
 
 def _is_knockout_like(stage_type: str | None) -> bool:
     return str(stage_type) in (str(Stage.StageType.KNOCKOUT), str(_third_place_value()))
+
+
+def _match_division(match: Match):
+    return getattr(getattr(match, "stage", None), "division", None)
+
+
+def _competition_context_for_match(match: Match) -> dict:
+    division = _match_division(match)
+    tournament = match.tournament
+
+    if division is None:
+        result_mode = getattr(tournament, "result_mode", Tournament.ResultMode.SCORE)
+        result_config = (
+            tournament.get_result_config()
+            if result_mode == Tournament.ResultMode.CUSTOM
+            else {}
+        )
+        return {
+            "result_mode": result_mode,
+            "competition_model": getattr(
+                tournament,
+                "competition_model",
+                Tournament.CompetitionModel.HEAD_TO_HEAD,
+            ),
+            "format_config": dict(getattr(tournament, "format_config", {}) or {}),
+            "result_config": dict(result_config or {}),
+        }
+
+    result_mode = getattr(division, "result_mode", Tournament.ResultMode.SCORE)
+    result_config = division.get_result_config() if result_mode == Tournament.ResultMode.CUSTOM else {}
+    return {
+        "result_mode": result_mode,
+        "competition_model": getattr(
+            division,
+            "competition_model",
+            Tournament.CompetitionModel.HEAD_TO_HEAD,
+        ),
+        "format_config": dict(getattr(division, "format_config", {}) or {}),
+        "result_config": dict(result_config or {}),
+    }
 
 
 def _tennis_target_sets(cfg: dict) -> int:
@@ -264,53 +304,62 @@ def _custom_mode(cfg: dict) -> str | None:
     return str(cfg.get(Tournament.RESULTCFG_CUSTOM_MODE_KEY) or "").upper() or None
 
 
-def _head_to_head_mode(cfg: dict) -> str | None:
-    return str(cfg.get(Tournament.RESULTCFG_HEAD_TO_HEAD_MODE_KEY) or "").upper() or None
+def _match_uses_custom_result_rows(match: Match) -> bool:
+    context = _competition_context_for_match(match)
 
-
-def _match_uses_custom_result_rows(tournament: Tournament) -> bool:
-    if getattr(tournament, "result_mode", Tournament.ResultMode.SCORE) != Tournament.ResultMode.CUSTOM:
+    if context["result_mode"] != Tournament.ResultMode.CUSTOM:
         return False
 
-    if tournament.competition_model != Tournament.CompetitionModel.HEAD_TO_HEAD:
+    if context["competition_model"] != Tournament.CompetitionModel.HEAD_TO_HEAD:
         return False
 
-    cfg = tournament.get_result_config()
+    cfg = context["result_config"]
+    custom_mode = _custom_mode(cfg)
+    value_kind = cfg.get(Tournament.RESULTCFG_VALUE_KIND_KEY)
+
     return (
-        _custom_mode(cfg) == Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS
-        and _head_to_head_mode(cfg) == Tournament.RESULTCFG_HEAD_TO_HEAD_MODE_MEASURED_RESULT
+        custom_mode != Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS
+        and value_kind in (
+            Tournament.RESULTCFG_VALUE_KIND_NUMBER,
+            Tournament.RESULTCFG_VALUE_KIND_TIME,
+            Tournament.RESULTCFG_VALUE_KIND_PLACE,
+        )
     )
 
 
-def _match_uses_custom_points_table(tournament: Tournament) -> bool:
-    if getattr(tournament, "result_mode", Tournament.ResultMode.SCORE) != Tournament.ResultMode.CUSTOM:
+def _match_uses_custom_points_table(match: Match) -> bool:
+    context = _competition_context_for_match(match)
+
+    if context["result_mode"] != Tournament.ResultMode.CUSTOM:
         return False
 
-    if tournament.competition_model != Tournament.CompetitionModel.HEAD_TO_HEAD:
+    if context["competition_model"] != Tournament.CompetitionModel.HEAD_TO_HEAD:
         return False
 
-    cfg = tournament.get_result_config()
-    return (
-        _custom_mode(cfg) == Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS
-        and _head_to_head_mode(cfg) == Tournament.RESULTCFG_HEAD_TO_HEAD_MODE_POINTS_TABLE
-    )
+    return _custom_mode(context["result_config"]) == Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS
 
 
-def _resolution_mode_for_match(match: Match) -> str | None:
-    tournament = match.tournament
-    cfg = tournament.get_result_config()
+def _resolution_mode_for_match(match: Match) -> str:
+    cfg = _competition_context_for_match(match)["result_config"]
     stage_type = getattr(match.stage, "stage_type", None)
 
-    if _is_knockout_like(stage_type):
-        return str(
-            cfg.get(Tournament.RESULTCFG_KNOCKOUT_RESOLUTION_MODE_KEY)
-            or Tournament.RESULTCFG_GROUP_RESOLUTION_OVERTIME_DECIDING_SHOTS
-        ).upper()
+    allow_draw = bool(cfg.get(Tournament.RESULTCFG_ALLOW_DRAW_KEY, True))
+    allow_overtime = bool(cfg.get(Tournament.RESULTCFG_ALLOW_OVERTIME_KEY, False))
+    allow_shootout = bool(cfg.get(Tournament.RESULTCFG_ALLOW_SHOOTOUT_KEY, False))
 
-    return str(
-        cfg.get(Tournament.RESULTCFG_GROUP_RESOLUTION_MODE_KEY)
-        or Tournament.RESULTCFG_GROUP_RESOLUTION_DRAW_ALLOWED
-    ).upper()
+    # Rozstrzygnięcie remisu wynika bezpośrednio z aktualnej konfiguracji dywizji.
+    if _is_knockout_like(stage_type):
+        allow_draw = False
+
+    if allow_draw:
+        return "DRAW_ALLOWED"
+    if allow_overtime and allow_shootout:
+        return "OVERTIME_AND_SHOOTOUT"
+    if allow_overtime:
+        return "OVERTIME_ONLY"
+    if allow_shootout:
+        return "SHOOTOUT_ONLY"
+    return "DRAW_ALLOWED"
 
 
 def _apply_resolution_mode(instance: Match, resolution_mode: str | None) -> None:
@@ -325,7 +374,7 @@ def _apply_resolution_mode(instance: Match, resolution_mode: str | None) -> None
         instance.away_penalty_score = None
         return
 
-    if mode == Tournament.RESULTCFG_GROUP_RESOLUTION_DRAW_ALLOWED:
+    if mode == "DRAW_ALLOWED":
         instance.went_to_extra_time = False
         instance.home_extra_time_score = None
         instance.away_extra_time_score = None
@@ -334,13 +383,13 @@ def _apply_resolution_mode(instance: Match, resolution_mode: str | None) -> None
         instance.away_penalty_score = None
         return
 
-    if mode == Tournament.RESULTCFG_GROUP_RESOLUTION_OVERTIME_ONLY:
+    if mode == "OVERTIME_ONLY":
         instance.decided_by_penalties = False
         instance.home_penalty_score = None
         instance.away_penalty_score = None
         return
 
-    if mode == Tournament.RESULTCFG_GROUP_RESOLUTION_DECIDING_SHOTS_ONLY:
+    if mode == "SHOOTOUT_ONLY":
         instance.went_to_extra_time = False
         instance.home_extra_time_score = None
         instance.away_extra_time_score = None
@@ -385,6 +434,8 @@ class MatchSerializer(serializers.ModelSerializer):
     stage_type = serializers.CharField(source="stage.stage_type", read_only=True)
     stage_id = serializers.IntegerField(source="stage.id", read_only=True)
     stage_order = serializers.IntegerField(source="stage.order", read_only=True)
+    division_id = serializers.IntegerField(source="stage.division.id", read_only=True, allow_null=True)
+    division_name = serializers.CharField(source="stage.division.name", read_only=True, allow_null=True)
 
     group_name = serializers.CharField(source="group.name", read_only=True, allow_null=True)
 
@@ -401,6 +452,8 @@ class MatchSerializer(serializers.ModelSerializer):
             "stage_id",
             "stage_order",
             "stage_type",
+            "division_id",
+            "division_name",
             "group_name",
             "round_number",
             "home_team_id",
@@ -435,10 +488,10 @@ class MatchSerializer(serializers.ModelSerializer):
         )
 
     def get_uses_custom_results(self, obj: Match) -> bool:
-        return _match_uses_custom_result_rows(obj.tournament)
+        return _match_uses_custom_result_rows(obj)
 
     def get_custom_results(self, obj: Match):
-        if not _match_uses_custom_result_rows(obj.tournament):
+        if not _match_uses_custom_result_rows(obj):
             return []
 
         qs = obj.custom_results.select_related("team").filter(is_active=True).order_by("rank", "id")
@@ -460,25 +513,30 @@ class MatchCustomResultUpdateSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         match: Match = self.context["match"]
-        tournament: Tournament = match.tournament
+        context = _competition_context_for_match(match)
 
-        if not tournament.uses_custom_results():
+        if context["result_mode"] != Tournament.ResultMode.CUSTOM:
             raise serializers.ValidationError(
-                {"detail": "Ten mecz nie używa trybu CUSTOM."}
+                {"detail": "Ten mecz nie używa trybu CUSTOM w aktywnej dywizji."}
             )
 
-        if tournament.competition_model != Tournament.CompetitionModel.HEAD_TO_HEAD:
+        if context["competition_model"] != Tournament.CompetitionModel.HEAD_TO_HEAD:
             raise serializers.ValidationError(
                 {"detail": "Ten endpoint obsługuje wyłącznie customowe pojedynki / mecze."}
             )
 
-        if not _match_uses_custom_result_rows(tournament):
-            if _match_uses_custom_points_table(tournament):
+        if not _match_uses_custom_result_rows(match):
+            if _match_uses_custom_points_table(match):
                 raise serializers.ValidationError(
                     {"detail": "Dla customowego systemu punktowego użyj standardowego endpointu zapisu wyniku meczu."}
                 )
             raise serializers.ValidationError(
-                {"detail": "Ten endpoint obsługuje wyłącznie customowy wynik mierzalny w pojedynku."}
+                {
+                    "detail": (
+                        "Aktywna konfiguracja dywizji nie obsługuje osobnych rekordów MatchCustomResult "
+                        "dla tego typu pojedynku."
+                    )
+                }
             )
 
         team_id = attrs["team_id"]
@@ -488,7 +546,7 @@ class MatchCustomResultUpdateSerializer(serializers.Serializer):
                 {"team_id": "Uczestnik musi należeć do tego meczu."}
             )
 
-        cfg = tournament.get_result_config()
+        cfg = context["result_config"]
         value_kind = cfg.get(Tournament.RESULTCFG_VALUE_KIND_KEY)
 
         if value_kind == Tournament.RESULTCFG_VALUE_KIND_TIME:
@@ -523,8 +581,8 @@ class MatchCustomResultUpdateSerializer(serializers.Serializer):
 
     def save(self, **kwargs):
         match: Match = self.context["match"]
-        tournament: Tournament = match.tournament
-        cfg = tournament.get_result_config()
+        context = _competition_context_for_match(match)
+        cfg = context["result_config"]
         value_kind = cfg[Tournament.RESULTCFG_VALUE_KIND_KEY]
         team = match.home_team if match.home_team_id == self.validated_data["team_id"] else match.away_team
 
@@ -550,7 +608,7 @@ class MatchCustomResultUpdateSerializer(serializers.Serializer):
             defaults["time_ms"] = None
             defaults["display_value"] = str(place_value)
         else:
-            decimal_places = int(cfg.get(Tournament.RESULTCFG_DECIMAL_PLACES_KEY, 0))
+            decimal_places = int(cfg.get(Tournament.RESULTCFG_DECIMAL_PLACES_KEY, 0) or 0)
             numeric_value = _parse_numeric_value(self.validated_data["numeric_value"])
             quantized = MatchCustomResult._quantize_numeric(numeric_value, decimal_places)
             defaults["numeric_value"] = quantized
@@ -615,11 +673,12 @@ class MatchResultUpdateSerializer(serializers.ModelSerializer):
         )
 
     def validate(self, attrs):
-        tournament: Tournament = self.instance.tournament
+        match: Match = self.instance
+        context = _competition_context_for_match(match)
 
         if (
-            getattr(tournament, "result_mode", Tournament.ResultMode.SCORE) == Tournament.ResultMode.CUSTOM
-            and not _match_uses_custom_points_table(tournament)
+            context["result_mode"] == Tournament.ResultMode.CUSTOM
+            and not _match_uses_custom_points_table(match)
         ):
             raise serializers.ValidationError(
                 {
@@ -636,8 +695,9 @@ class MatchResultUpdateSerializer(serializers.ModelSerializer):
         stage_type = getattr(instance.stage, "stage_type", None)
         tournament: Tournament = instance.tournament
         discipline = (getattr(tournament, "discipline", "") or "").lower()
-        cfg = tournament.format_config or {}
-        is_custom_points_table = _match_uses_custom_points_table(tournament)
+        context = _competition_context_for_match(instance)
+        cfg = context["format_config"]
+        is_custom_points_table = _match_uses_custom_points_table(instance)
 
         touched_keys = {
             "home_score",

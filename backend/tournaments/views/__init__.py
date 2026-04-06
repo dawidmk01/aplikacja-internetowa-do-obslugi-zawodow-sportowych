@@ -18,9 +18,7 @@ from .incidents import (
     MatchIncidentListCreateView,
     MatchIncidentRecomputeScoreView,
 )
-from .mass_start_results import (
-    TournamentMassStartResultListCreateView,
-)
+from .mass_start_results import TournamentMassStartResultListCreateView
 from .match_clock import (
     MatchClockGetView,
     MatchClockPauseView,
@@ -47,13 +45,8 @@ from .registrations import (
     TournamentRegistrationMyMatchesView,
     TournamentRegistrationVerifyView,
 )
-from .stages import (
-    AdvanceFromGroupsView,
-    AdvanceMassStartStageView,
-)
-from .standings import (
-    TournamentStandingsView,
-)
+from .stages import AdvanceFromGroupsView, AdvanceMassStartStageView
+from .standings import TournamentStandingsView
 from .teams import (
     TournamentMyTeamPlayersView,
     TournamentTeamListView,
@@ -72,7 +65,6 @@ from .tournaments import (
     MyTournamentListView,
     TournamentDetailView,
     TournamentListView,
-    TournamentMetaUpdateSerializer,
     TournamentMetaUpdateView,
     UnarchiveTournamentView,
 )

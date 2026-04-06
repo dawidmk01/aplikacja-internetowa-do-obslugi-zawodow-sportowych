@@ -1,5 +1,5 @@
 # backend/tournaments/views/commentary.py
-# Plik obsługuje odczyt, tworzenie, edycję i usuwanie komentarzy live oraz słowników fraz.
+# Plik obsługuje odczyt, tworzenie, edycję i usuwanie komentarzy live z payloadem realtime rozszerzonym o dywizję.
 
 from __future__ import annotations
 
@@ -20,8 +20,11 @@ from ..realtime import ws_emit_tournament
 from ._helpers import public_access_or_403
 
 
+def _division_id_from_match(match: Match):
+    return getattr(match.stage, "division_id", None)
+
+
 def _require_can_manage_commentary(user, tournament: Tournament) -> None:
-    # Komentarze live są traktowane jako część warstwy wyników/live.
     if can_edit_results(user, tournament):
         return
     raise PermissionError("Brak uprawnień do relacji live.")
@@ -41,6 +44,7 @@ def _serialize_commentary_entry(entry: MatchCommentaryEntry) -> dict:
     return {
         "id": entry.id,
         "match_id": entry.match_id,
+        "division_id": getattr(entry.match.stage, "division_id", None),
         "period": entry.period,
         "time_source": entry.time_source,
         "minute": entry.minute,
@@ -66,25 +70,27 @@ def _serialize_phrase(phrase: TournamentCommentaryPhrase) -> dict:
     }
 
 
+def _ws_payload(match: Match) -> dict:
+    return {"match_id": match.id, "division_id": _division_id_from_match(match)}
+
+
 class MatchCommentaryListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get_permissions(self):
-        # Publiczny odczyt jest dozwolony, zapis pozostaje prywatny.
         if self.request.method in ("GET", "HEAD", "OPTIONS"):
             return [AllowAny()]
         return [IsAuthenticated()]
 
     def get(self, request, match_id: int):
-        match = get_object_or_404(Match.objects.select_related("tournament"), pk=match_id)
+        match = get_object_or_404(Match.objects.select_related("tournament", "stage"), pk=match_id)
 
         denied = public_access_or_403(request, match.tournament)
         if denied is not None:
             return denied
 
-        # Komentarze bez minuty są wyżej, potem sortowanie malejące po minucie i id.
         qs = (
-            MatchCommentaryEntry.objects.select_related("match__tournament")
+            MatchCommentaryEntry.objects.select_related("match__tournament", "match__stage")
             .filter(match_id=match_id)
             .annotate(
                 _no_minute=Case(
@@ -101,7 +107,7 @@ class MatchCommentaryListCreateView(APIView):
     def post(self, request, match_id: int):
         with transaction.atomic():
             match = get_object_or_404(
-                Match.objects.select_related("tournament").select_for_update(),
+                Match.objects.select_related("tournament", "stage").select_for_update(),
                 pk=match_id,
             )
 
@@ -118,10 +124,7 @@ class MatchCommentaryListCreateView(APIView):
 
             time_source = (data.get("time_source") or MatchCommentaryEntry.TimeSource.CLOCK).strip()
             if time_source not in (MatchCommentaryEntry.TimeSource.CLOCK, MatchCommentaryEntry.TimeSource.MANUAL):
-                return Response(
-                    {"detail": "time_source musi być CLOCK albo MANUAL."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                return Response({"detail": "time_source musi być CLOCK albo MANUAL."}, status=status.HTTP_400_BAD_REQUEST)
 
             try:
                 minute = _parse_int(data.get("minute"), "minute", allow_none=True)
@@ -130,7 +133,6 @@ class MatchCommentaryListCreateView(APIView):
 
             minute_raw = (data.get("minute_raw") or "").strip() or None
 
-            # Przy CLOCK minuta może zostać policzona z aktualnego stanu zegara.
             if time_source == MatchCommentaryEntry.TimeSource.CLOCK and minute is None:
                 if match.clock_state == Match.ClockState.NOT_STARTED and int(match.clock_elapsed_seconds or 0) == 0:
                     return Response(
@@ -153,7 +155,7 @@ class MatchCommentaryListCreateView(APIView):
                 created_by=request.user,
             )
 
-            ws_emit_tournament(match.tournament_id, "commentary_changed", {"match_id": match.id})
+            ws_emit_tournament(match.tournament_id, "commentary_changed", _ws_payload(match))
             return Response(_serialize_commentary_entry(entry), status=status.HTTP_201_CREATED)
 
 
@@ -163,7 +165,7 @@ class MatchCommentaryDetailView(APIView):
     def patch(self, request, commentary_id: int):
         with transaction.atomic():
             entry = get_object_or_404(
-                MatchCommentaryEntry.objects.select_related("match__tournament").select_for_update(),
+                MatchCommentaryEntry.objects.select_related("match__tournament", "match__stage").select_for_update(),
                 pk=commentary_id,
             )
 
@@ -185,10 +187,7 @@ class MatchCommentaryDetailView(APIView):
             if "time_source" in data:
                 time_source = (data.get("time_source") or "").strip()
                 if time_source not in (MatchCommentaryEntry.TimeSource.CLOCK, MatchCommentaryEntry.TimeSource.MANUAL):
-                    return Response(
-                        {"detail": "time_source musi być CLOCK albo MANUAL."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+                    return Response({"detail": "time_source musi być CLOCK albo MANUAL."}, status=status.HTTP_400_BAD_REQUEST)
                 entry.time_source = time_source
                 update_fields.append("time_source")
 
@@ -209,14 +208,14 @@ class MatchCommentaryDetailView(APIView):
 
             if update_fields:
                 entry.save(update_fields=update_fields)
-                ws_emit_tournament(entry.match.tournament_id, "commentary_changed", {"match_id": entry.match_id})
+                ws_emit_tournament(entry.match.tournament_id, "commentary_changed", _ws_payload(entry.match))
 
             return Response(_serialize_commentary_entry(entry), status=status.HTTP_200_OK)
 
     def delete(self, request, commentary_id: int):
         with transaction.atomic():
             entry = get_object_or_404(
-                MatchCommentaryEntry.objects.select_related("match__tournament").select_for_update(),
+                MatchCommentaryEntry.objects.select_related("match__tournament", "match__stage").select_for_update(),
                 pk=commentary_id,
             )
 
@@ -227,7 +226,7 @@ class MatchCommentaryDetailView(APIView):
 
             match = entry.match
             entry.delete()
-            ws_emit_tournament(match.tournament_id, "commentary_changed", {"match_id": match.id})
+            ws_emit_tournament(match.tournament_id, "commentary_changed", _ws_payload(match))
 
             return Response({"ok": True}, status=status.HTTP_200_OK)
 

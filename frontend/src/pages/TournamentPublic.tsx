@@ -37,6 +37,9 @@ import type {
 import PublicMassStartStandings from "../components/PublicMassStartStandings";
 import StandingsBracket from "../components/StandingsBracket";
 import TournamentFlowNav from "../components/TournamentFlowNav";
+import DivisionSwitcher, {
+  type DivisionSwitcherItem,
+} from "../components/DivisionSwitcher";
 
 type EntryMode = "MANAGER" | "ORGANIZER_ONLY";
 type ResultMode = "SCORE" | "CUSTOM";
@@ -87,6 +90,9 @@ type TournamentPublicDTO = {
   participants_self_rename_approval_required?: boolean;
 
   my_role?: "ORGANIZER" | "ASSISTANT" | "PARTICIPANT" | null;
+  divisions?: DivisionSwitcherItem[];
+  active_division_id?: number | null;
+  active_division_name?: string | null;
 };
 
 type RegistrationMeDTO = {
@@ -103,6 +109,38 @@ type NameChangeRequestDTO = {
 };
 
 type ViewTab = "MATCHES" | "STANDINGS";
+
+function parseDivisionId(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) return null;
+  return parsed;
+}
+
+function appendQueryParams(
+  url: string,
+  params: Record<string, string | number | boolean | null | undefined>
+): string {
+  const hashIndex = url.indexOf("#");
+  const hash = hashIndex >= 0 ? url.slice(hashIndex) : "";
+  const urlWithoutHash = hashIndex >= 0 ? url.slice(0, hashIndex) : url;
+
+  const queryIndex = urlWithoutHash.indexOf("?");
+  const base = queryIndex >= 0 ? urlWithoutHash.slice(0, queryIndex) : urlWithoutHash;
+  const rawQuery = queryIndex >= 0 ? urlWithoutHash.slice(queryIndex + 1) : "";
+  const search = new URLSearchParams(rawQuery);
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === null || typeof value === "undefined" || value === "") {
+      search.delete(key);
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return `${base}${query ? `?${query}` : ""}${hash}`;
+}
 
 function formatDateRange(start: string | null, end: string | null) {
   if (!start && !end) return null;
@@ -444,9 +482,19 @@ export default function TournamentPublic({
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const tournamentId = id ?? null;
+
+  const searchParamsKey = searchParams.toString();
+
+  const requestedDivisionId = useMemo(() => {
+    const current = new URLSearchParams(searchParamsKey);
+    return (
+      parseDivisionId(current.get("division_id")) ??
+      parseDivisionId(current.get("active_division_id"))
+    );
+  }, [searchParamsKey]);
 
   const urlAccessCode = searchParams.get("code") ?? "";
   const [code, setCode] = useState("");
@@ -462,6 +510,11 @@ export default function TournamentPublic({
     searchParams.get("join_code") ?? searchParams.get("joinCode") ?? "";
 
   const [tournament, setTournament] = useState<TournamentPublicDTO | null>(null);
+  const [divisions, setDivisions] = useState<DivisionSwitcherItem[]>([]);
+  const [activeDivisionId, setActiveDivisionId] = useState<number | null>(requestedDivisionId);
+  const [activeDivisionName, setActiveDivisionName] = useState<string | null>(null);
+  const effectiveDivisionId = requestedDivisionId ?? activeDivisionId;
+
   const [tournamentLoaded, setTournamentLoaded] = useState(false);
   const [matches, setMatches] = useState<MatchPublicDTO[]>([]);
   const [myMatches, setMyMatches] = useState<MatchPublicDTO[]>([]);
@@ -504,10 +557,23 @@ export default function TournamentPublic({
 
   const nextParam = encodeURIComponent(location.pathname + location.search);
 
-  const qs = useMemo(() => {
-    const c = code.trim();
-    return c ? `?code=${encodeURIComponent(c)}` : "";
-  }, [code]);
+  const withPublicContext = useCallback(
+    (url: string) =>
+      appendQueryParams(url, {
+        code: code.trim() || undefined,
+        division_id: effectiveDivisionId ?? undefined,
+      }),
+    [code, effectiveDivisionId]
+  );
+
+  const qs = useMemo(
+    () =>
+      appendQueryParams("", {
+        code: code.trim() || undefined,
+        division_id: effectiveDivisionId ?? undefined,
+      }),
+    [code, effectiveDivisionId]
+  );
 
   const publicMatches = useMemo(
     () => matches.filter((m) => !isByePublic(m)),
@@ -545,6 +611,16 @@ export default function TournamentPublic({
   const customTimeMode = useMemo(
     () => customValueKind === "TIME",
     [customValueKind]
+  );
+
+  const handleDivisionSwitch = useCallback(
+    (nextDivisionId: number) => {
+      if (nextDivisionId === effectiveDivisionId) return;
+      const next = new URLSearchParams(searchParamsKey);
+      next.set("division_id", String(nextDivisionId));
+      setSearchParams(next, { replace: false });
+    },
+    [effectiveDivisionId, searchParamsKey, setSearchParams]
   );
 
   useEffect(() => {
@@ -796,9 +872,14 @@ export default function TournamentPublic({
       return;
     }
     try {
-      const res = await apiFetch(`/api/tournaments/${id}/registrations/my/matches/`, {
-        toastOnError: false,
-      });
+      const res = await apiFetch(
+        appendQueryParams(`/api/tournaments/${id}/registrations/my/matches/`, {
+          division_id: effectiveDivisionId ?? undefined,
+        }),
+        {
+          toastOnError: false,
+        }
+      );
       if (!res.ok) return;
 
       const data = await res.json().catch(() => []);
@@ -807,7 +888,7 @@ export default function TournamentPublic({
     } catch {
       return;
     }
-  }, [id, isCustomMassStartMode, isLogged]);
+  }, [effectiveDivisionId, id, isCustomMassStartMode, isLogged]);
 
   const loadMyPendingNameChange = useCallback(
     async (teamId: number | null) => {
@@ -818,7 +899,11 @@ export default function TournamentPublic({
 
       try {
         const res = await apiFetch(
-          `/api/tournaments/${id}/teams/name-change-requests/?status=PENDING&team_id=${teamId}`,
+          appendQueryParams(`/api/tournaments/${id}/teams/name-change-requests/`, {
+            status: "PENDING",
+            team_id: teamId,
+            division_id: effectiveDivisionId ?? undefined,
+          }),
           { toastOnError: false }
         );
 
@@ -843,7 +928,7 @@ export default function TournamentPublic({
         return;
       }
     },
-    [id]
+    [effectiveDivisionId, id]
   );
 
   const loadTournamentAndMatches = useCallback(async () => {
@@ -853,7 +938,7 @@ export default function TournamentPublic({
       setTournamentLoaded(false);
       setError(null);
 
-      const tRes = await apiFetch(`/api/tournaments/${id}/${qs}`, {
+      const tRes = await apiFetch(withPublicContext(`/api/tournaments/${id}/`), {
         toastOnError: false,
       });
       if (tRes.status === 403) {
@@ -902,6 +987,9 @@ export default function TournamentPublic({
         end_date: tData.end_date ?? null,
         location: tData.location ?? null,
         is_published: tData.is_published,
+        divisions: Array.isArray(tData.divisions) ? (tData.divisions as DivisionSwitcherItem[]) : [],
+        active_division_id: tData.active_division_id ?? null,
+        active_division_name: tData.active_division_name ?? null,
 
         entry_mode: tData.entry_mode,
         competition_type: tData.competition_type,
@@ -950,7 +1038,16 @@ export default function TournamentPublic({
       };
 
       setTournament(t);
+      setDivisions(Array.isArray(t.divisions) ? t.divisions : []);
+      setActiveDivisionId(t.active_division_id ?? effectiveDivisionId ?? null);
+      setActiveDivisionName(t.active_division_name ?? null);
       setTournamentLoaded(true);
+
+      if (!requestedDivisionId && t.active_division_id && (t.divisions?.length ?? 0) > 1) {
+        const next = new URLSearchParams(searchParamsKey);
+        next.set("division_id", String(t.active_division_id));
+        setSearchParams(next, { replace: true });
+      }
 
       const isMassStart =
         String(t.result_mode ?? "SCORE").toUpperCase() === "CUSTOM" &&
@@ -961,9 +1058,17 @@ export default function TournamentPublic({
         return;
       }
 
-      const mRes = await apiFetch(`/api/tournaments/${id}/public/matches/${qs}`, {
-        toastOnError: false,
-      });
+      const resolvedDivisionId = t.active_division_id ?? effectiveDivisionId ?? null;
+
+      const mRes = await apiFetch(
+        appendQueryParams(`/api/tournaments/${id}/public/matches/`, {
+          code: code.trim() || undefined,
+          division_id: resolvedDivisionId ?? undefined,
+        }),
+        {
+          toastOnError: false,
+        }
+      );
       if (mRes.status === 403) {
         const data = await mRes.json().catch(() => null);
         const msg = data?.detail || "Brak dostępu.";
@@ -989,7 +1094,7 @@ export default function TournamentPublic({
       setTournamentLoaded(false);
       setError(msg);
     }
-  }, [id, qs]);
+  }, [code, effectiveDivisionId, id, requestedDivisionId, searchParamsKey, setSearchParams, withPublicContext]);
 
   const loadRegistrationMe = useCallback(async () => {
     if (!id || !isLogged) {
@@ -1007,9 +1112,14 @@ export default function TournamentPublic({
       return;
     }
 
-    const res = await apiFetch(`/api/tournaments/${id}/registrations/me/`, {
-      toastOnError: false,
-    });
+    const res = await apiFetch(
+      appendQueryParams(`/api/tournaments/${id}/registrations/me/`, {
+        division_id: effectiveDivisionId ?? undefined,
+      }),
+      {
+        toastOnError: false,
+      }
+    );
     if (res.status === 404) {
       setRegMe(null);
       setPendingNameReq(null);
@@ -1032,6 +1142,7 @@ export default function TournamentPublic({
       setPendingNameReq(null);
     }
   }, [
+    effectiveDivisionId,
     id,
     isLogged,
     joinFlag,
@@ -1051,7 +1162,12 @@ export default function TournamentPublic({
     if (!id || isCustomMassStartMode) return;
 
     try {
-      const matchesRes = await apiFetch(`/api/tournaments/${id}/public/matches/${qs}`);
+      const matchesRes = await apiFetch(
+        appendQueryParams(`/api/tournaments/${id}/public/matches/`, {
+          code: code.trim() || undefined,
+          division_id: effectiveDivisionId ?? undefined,
+        })
+      );
 
       if (matchesRes.status === 403) {
         setNeedsCode(true);
@@ -1066,7 +1182,7 @@ export default function TournamentPublic({
     } catch {
       // brak
     }
-  }, [id, isCustomMassStartMode, qs]);
+  }, [code, effectiveDivisionId, id, isCustomMassStartMode]);
 
   const requestMatchesReload = useCallback(() => {
     if (wsReloadTimerRef.current) return;
@@ -1137,12 +1253,17 @@ export default function TournamentPublic({
     setRegInfo(null);
 
     try {
-      const res = await apiFetch(`/api/tournaments/${id}/registrations/verify/`, {
-        toastOnError: false,
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: c }),
-      });
+      const res = await apiFetch(
+        appendQueryParams(`/api/tournaments/${id}/registrations/verify/`, {
+          division_id: effectiveDivisionId ?? undefined,
+        }),
+        {
+          toastOnError: false,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: c }),
+        }
+      );
 
       const data = await res.json().catch(() => null);
       if (!res.ok) {
@@ -1180,12 +1301,17 @@ export default function TournamentPublic({
     setRegInfo(null);
 
     try {
-      const res = await apiFetch(`/api/tournaments/${id}/registrations/join/`, {
-        toastOnError: false,
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: c, display_name: dn }),
-      });
+      const res = await apiFetch(
+        appendQueryParams(`/api/tournaments/${id}/registrations/join/`, {
+          division_id: effectiveDivisionId ?? undefined,
+        }),
+        {
+          toastOnError: false,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: c, display_name: dn }),
+        }
+      );
 
       const data = await res.json().catch(() => null);
       if (!res.ok) {
@@ -1216,12 +1342,17 @@ export default function TournamentPublic({
   const renameRegistrationImmediate = async (dn: string) => {
     if (!id) return;
 
-    const res = await apiFetch(`/api/tournaments/${id}/registrations/me/`, {
-      toastOnError: false,
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ display_name: dn }),
-    });
+    const res = await apiFetch(
+      appendQueryParams(`/api/tournaments/${id}/registrations/me/`, {
+        division_id: effectiveDivisionId ?? undefined,
+      }),
+      {
+        toastOnError: false,
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ display_name: dn }),
+      }
+    );
 
     const data = await res.json().catch(() => null);
     if (!res.ok) {
@@ -1241,12 +1372,17 @@ export default function TournamentPublic({
       requested_name: dn,
     };
 
-    const res = await apiFetch(`/api/tournaments/${id}/teams/name-change-requests/`, {
-      toastOnError: false,
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const res = await apiFetch(
+      appendQueryParams(`/api/tournaments/${id}/teams/name-change-requests/`, {
+        division_id: effectiveDivisionId ?? undefined,
+      }),
+      {
+        toastOnError: false,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }
+    );
 
     const data = await res.json().catch(() => null);
     if (!res.ok) {
@@ -1335,10 +1471,25 @@ export default function TournamentPublic({
 
       <section className="grid gap-10 lg:grid-cols-2 lg:items-stretch">
         <div className="flex h-full min-w-0 flex-col">
+          {divisions.length > 1 ? (
+            <div className="mb-4">
+              <DivisionSwitcher
+                divisions={divisions}
+                activeDivisionId={effectiveDivisionId}
+                onChange={handleDivisionSwitch}
+                label="Dywizje"
+              />
+            </div>
+          ) : null}
           <Reveal>
             <h1 className="break-words text-3xl font-semibold tracking-tight text-white sm:text-4xl">
               {tournament?.name ?? "Turniej"}
             </h1>
+            {activeDivisionName ? (
+              <div className="mt-2 text-sm text-slate-400">
+                Aktywna dywizja: <span className="text-slate-200">{activeDivisionName}</span>
+              </div>
+            ) : null}
           </Reveal>
 
           <Reveal delay={0.05}>
@@ -1394,6 +1545,14 @@ export default function TournamentPublic({
                 label="Rola"
                 value={formatRoleLabel(tournament?.my_role ?? null)}
               />
+
+              {activeDivisionName ? (
+                <Pill
+                  icon={<BarChart3 className="h-4 w-4 text-white/90" />}
+                  label="Dywizja"
+                  value={activeDivisionName}
+                />
+              ) : null}
             </div>
           </Reveal>
 
@@ -1923,6 +2082,7 @@ export default function TournamentPublic({
               <PublicMassStartStandings
                 key={`mass-start-${id}-${code.trim()}-${standingsRefreshKey}`}
                 tournamentId={Number(id)}
+                divisionId={effectiveDivisionId ?? undefined}
                 accessCode={code.trim() || undefined}
                 refreshKey={standingsRefreshKey}
                 resultConfig={customResultConfig}
@@ -1931,6 +2091,7 @@ export default function TournamentPublic({
               <StandingsBracket
                 key={`${id}-${code.trim()}-${standingsRefreshKey}`}
                 tournamentId={Number(id)}
+                divisionId={effectiveDivisionId ?? undefined}
                 accessCode={code.trim() || undefined}
               />
             )}

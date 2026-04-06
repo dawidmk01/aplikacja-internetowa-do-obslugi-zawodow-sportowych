@@ -1,5 +1,5 @@
 # backend/tournaments/services/standings/compute.py
-# Plik oblicza klasyfikację etapu na podstawie zakończonych meczów i reguł dyscypliny.
+# Plik oblicza klasyfikację etapu na podstawie wyników meczów i reguł właściwych dla aktywnej dywizji.
 
 from __future__ import annotations
 
@@ -19,12 +19,53 @@ BYE_TEAM_NAME = "__SYSTEM_BYE__"
 TennisPointsMode = Literal["NONE", "PLT"]
 
 
-def _is_custom_result_mode(tournament: Tournament) -> bool:
-    return getattr(tournament, "result_mode", Tournament.ResultMode.SCORE) == Tournament.ResultMode.CUSTOM
+def _stage_context(tournament: Tournament, stage: Stage):
+    # Kontekst etapu pobiera konfigurację dywizji, jeśli etap do niej należy.
+    return getattr(stage, "division", None) or tournament
 
 
-def _get_ruleset(tournament: Tournament) -> StandingsRuleset:
-    discipline = getattr(tournament, "discipline", None)
+def _context_result_mode(context) -> str:
+    return getattr(context, "result_mode", Tournament.ResultMode.SCORE)
+
+
+def _context_format_config(context) -> dict:
+    return dict(getattr(context, "format_config", None) or {})
+
+
+def _context_result_config(context) -> dict:
+    getter = getattr(context, "get_result_config", None)
+    if callable(getter):
+        result = getter() or {}
+        return dict(result)
+    return dict(getattr(context, "result_config", None) or {})
+
+
+def _context_result_value_kind(context) -> str | None:
+    getter = getattr(context, "get_result_value_kind", None)
+    if callable(getter):
+        return getter()
+    return _context_result_config(context).get(Tournament.RESULTCFG_VALUE_KIND_KEY)
+
+
+def _context_custom_result_lower_is_better(context) -> bool:
+    getter = getattr(context, "custom_result_lower_is_better", None)
+    if callable(getter):
+        return bool(getter())
+
+    value_kind = _context_result_value_kind(context)
+    return value_kind in {
+        Tournament.RESULTCFG_VALUE_KIND_TIME,
+        Tournament.RESULTCFG_VALUE_KIND_PLACE,
+    }
+
+
+def _is_custom_result_mode(context) -> bool:
+    return _context_result_mode(context) == Tournament.ResultMode.CUSTOM
+
+
+def _get_ruleset(context) -> StandingsRuleset:
+    # Dobór rulesetu korzysta z konfiguracji etapu lub dywizji zamiast globalnego turnieju.
+    discipline = getattr(context, "discipline", None)
 
     if discipline in (Tournament.Discipline.FOOTBALL, "football", "FOOTBALL"):
         return FootballPZPNRuleset()
@@ -33,39 +74,39 @@ def _get_ruleset(tournament: Tournament) -> StandingsRuleset:
         return HandballSuperligaRuleset()
 
     if discipline in (Tournament.Discipline.TENNIS, "tennis", "TENNIS"):
-        cfg = getattr(tournament, "format_config", None) or {}
+        cfg = _context_format_config(context)
         mode = (cfg.get("tennis_points_mode") or "NONE").upper()
         return TennisRuleset(points_mode="PLT" if mode == "PLT" else "NONE")
 
     return FootballPZPNRuleset()
 
 
-def _custom_head_to_head_mode(tournament: Tournament) -> str:
-    cfg = tournament.get_result_config()
+def _custom_head_to_head_mode(context) -> str:
+    cfg = _context_result_config(context)
     return str(cfg.get("head_to_head_mode") or cfg.get("custom_mode") or "").upper()
 
 
-def _custom_competition_model(tournament: Tournament) -> str:
-    return str(getattr(tournament, "competition_model", "") or "").upper()
+def _custom_competition_model(context) -> str:
+    return str(getattr(context, "competition_model", "") or "").upper()
 
 
-def _uses_custom_points_table(tournament: Tournament) -> bool:
-    if not _is_custom_result_mode(tournament):
+def _uses_custom_points_table(context) -> bool:
+    if not _is_custom_result_mode(context):
         return False
-    if _custom_competition_model(tournament) != Tournament.CompetitionModel.HEAD_TO_HEAD:
+    if _custom_competition_model(context) != Tournament.CompetitionModel.HEAD_TO_HEAD:
         return False
-    mode = _custom_head_to_head_mode(tournament)
+    mode = _custom_head_to_head_mode(context)
     return mode in {"POINTS_TABLE", "HEAD_TO_HEAD_POINTS"}
 
 
-def _uses_custom_measured_ranking(tournament: Tournament) -> bool:
-    if not _is_custom_result_mode(tournament):
+def _uses_custom_measured_ranking(context) -> bool:
+    if not _is_custom_result_mode(context):
         return False
 
-    if _custom_competition_model(tournament) == Tournament.CompetitionModel.MASS_START:
+    if _custom_competition_model(context) == Tournament.CompetitionModel.MASS_START:
         return True
 
-    mode = _custom_head_to_head_mode(tournament)
+    mode = _custom_head_to_head_mode(context)
     return mode in {"MEASURED_RESULT", "MASS_START_MEASURED"}
 
 
@@ -74,22 +115,25 @@ def compute_stage_standings(
     stage: Stage,
     group: Group | None = None,
 ) -> list[StandingRow]:
+    context = _stage_context(tournament, stage)
+
+    # Funkcja buduje wiersze tabeli i deleguje sortowanie do właściwego rulesetu albo trybu custom.
     teams = _get_teams_for_context(tournament, stage, group)
     rows = _initialize_rows(teams)
 
-    if _uses_custom_points_table(tournament):
-        return _compute_custom_points_stage_standings(tournament, stage, group, rows)
+    if _uses_custom_points_table(context):
+        return _compute_custom_points_stage_standings(context, stage, group, rows)
 
-    if _uses_custom_measured_ranking(tournament):
-        return _compute_custom_measured_stage_standings(tournament, stage, group, rows)
+    if _uses_custom_measured_ranking(context):
+        return _compute_custom_measured_stage_standings(context, stage, group, rows)
 
-    ruleset = _get_ruleset(tournament)
+    ruleset = _get_ruleset(context)
 
     finished_matches = list(_get_finished_matches(stage, group))
     all_stage_matches = list(_get_all_matches(stage, group))
 
     for match in finished_matches:
-        _apply_match_result(rows, match, tournament)
+        _apply_match_result(rows, match, context)
 
     for row in rows.values():
         row.goal_difference = row.goals_for - row.goals_against
@@ -99,16 +143,14 @@ def compute_stage_standings(
 
 
 def _compute_custom_points_stage_standings(
-    tournament: Tournament,
+    context,
     stage: Stage,
     group: Group | None,
     rows: dict[int, StandingRow],
 ) -> list[StandingRow]:
-    cfg = tournament.get_result_config()
-    finished_matches = list(_get_finished_matches(stage, group))
-    all_stage_matches = list(_get_all_matches(stage, group))
+    cfg = _context_result_config(context)
 
-    for match in finished_matches:
+    for match in _get_finished_matches(stage, group):
         _apply_custom_points_match_result(rows, match, cfg)
 
     ranked = list(rows.values())
@@ -117,6 +159,7 @@ def _compute_custom_points_stage_standings(
         row.custom_mode = "POINTS_TABLE"
         row.goal_difference = row.goals_for - row.goals_against
 
+    # Ranking punktowy custom korzysta z uproszczonego klucza bez osobnego rulesetu H2H.
     ranked.sort(
         key=lambda row: (
             row.points,
@@ -133,23 +176,21 @@ def _compute_custom_points_stage_standings(
     for index, row in enumerate(ranked, start=1):
         row.rank = index
 
-    # H2H można dopiąć później, jeśli standings rules dla custom będą potrzebne.
-    _ = all_stage_matches
     return ranked
 
 
 def _compute_custom_measured_stage_standings(
-    tournament: Tournament,
+    context,
     stage: Stage,
     group: Group | None,
     rows: dict[int, StandingRow],
 ) -> list[StandingRow]:
-    cfg = tournament.get_result_config()
+    cfg = _context_result_config(context)
     allow_ties = bool(cfg.get(Tournament.RESULTCFG_ALLOW_TIES_KEY, True))
-    lower_is_better = tournament.custom_result_lower_is_better()
+    lower_is_better = _context_custom_result_lower_is_better(context)
     custom_mode = (
         "MASS_START"
-        if _custom_competition_model(tournament) == Tournament.CompetitionModel.MASS_START
+        if _custom_competition_model(context) == Tournament.CompetitionModel.MASS_START
         else "MEASURED_RESULT"
     )
 
@@ -167,7 +208,7 @@ def _compute_custom_measured_stage_standings(
         best_result = best_results_by_team.get(team_id)
         row.is_custom_result = True
         row.custom_mode = custom_mode
-        row.custom_value_kind = tournament.get_result_value_kind()
+        row.custom_value_kind = _context_result_value_kind(context)
 
         if best_result is None:
             row.played = attempts_count_by_team.get(team_id, 0)
@@ -192,6 +233,7 @@ def _compute_custom_measured_stage_standings(
     ranked_rows = [row for row in rows.values() if row.custom_sort_value is not None]
     unranked_rows = [row for row in rows.values() if row.custom_sort_value is None]
 
+    # Ranking mierzalny porządkuje najlepszy wynik na uczestnika i nadaje miejsca z obsługą remisów.
     ranked_rows.sort(
         key=lambda row: (_custom_row_sort_key(row), row.team_name.strip().lower(), row.team_id),
         reverse=not lower_is_better,
@@ -270,20 +312,28 @@ def _get_teams_for_context(
     stage: Stage,
     group: Group | None,
 ) -> list[Team]:
-    if group is None:
-        return list(tournament.teams.exclude(name=BYE_TEAM_NAME).order_by("id"))
+    matches_qs = Match.objects.filter(stage=stage)
+    if group is not None:
+        matches_qs = matches_qs.filter(group=group)
 
-    home_team_ids = set(
-        Match.objects.filter(stage=stage, group=group).values_list("home_team_id", flat=True)
-    )
-    away_team_ids = set(
-        Match.objects.filter(stage=stage, group=group).values_list("away_team_id", flat=True)
-    )
-    team_ids = home_team_ids | away_team_ids
+    # Źródłem prawdy są drużyny z meczów etapu, a fallback ogranicza się do dywizji etapu.
+    if matches_qs.exists():
+        home_team_ids = set(matches_qs.values_list("home_team_id", flat=True))
+        away_team_ids = set(matches_qs.values_list("away_team_id", flat=True))
+        team_ids = home_team_ids | away_team_ids
+        team_ids.discard(None)
+        return list(
+            Team.objects.filter(id__in=team_ids)
+            .exclude(name=BYE_TEAM_NAME)
+            .order_by("id")
+        )
 
-    return list(
-        Team.objects.filter(id__in=team_ids).exclude(name=BYE_TEAM_NAME).order_by("id")
-    )
+    teams_qs = tournament.teams.exclude(name=BYE_TEAM_NAME)
+    division = getattr(stage, "division", None)
+    if division is not None:
+        teams_qs = teams_qs.filter(division=division)
+
+    return list(teams_qs.order_by("id"))
 
 
 def _get_finished_matches(stage: Stage, group: Group | None):
@@ -312,6 +362,7 @@ def _safe_int(value: Any) -> int:
 
 
 def _tennis_games_from_match(match: Match) -> Tuple[int, int]:
+    # Gemy są liczone niezależnie od setów, bo stanowią osobne kryterium tie-breaku.
     sets = getattr(match, "tennis_sets", None)
     if not isinstance(sets, list):
         return (0, 0)
@@ -328,8 +379,8 @@ def _tennis_games_from_match(match: Match) -> Tuple[int, int]:
     return (home_games_sum, away_games_sum)
 
 
-def _tennis_points_mode(tournament: Tournament) -> TennisPointsMode:
-    cfg = getattr(tournament, "format_config", None) or {}
+def _tennis_points_mode(context) -> TennisPointsMode:
+    cfg = _context_format_config(context)
     mode = (cfg.get("tennis_points_mode") or "NONE").upper()
     return "PLT" if mode == "PLT" else "NONE"
 
@@ -346,6 +397,7 @@ def _plt_points_from_sets(match: Match, home_sets: int, away_sets: int) -> Tuple
     home_won = home_sets > away_sets
     loser_sets = min(home_sets, away_sets)
 
+    # Punktacja PLT rozróżnia zwycięstwo bez straty seta i zwycięstwo z oddanym setem.
     if loser_sets == 0:
         return (10, 2) if home_won else (2, 10)
 
@@ -360,11 +412,11 @@ def _custom_points_value(cfg: dict, key: str, default: int = 0) -> int:
 
 
 def _resolve_custom_match_outcome(match: Match) -> tuple[str, int | None]:
-    hs, aws = final_score(match)
+    home_score, away_score = final_score(match)
 
-    if hs > aws:
+    if home_score > away_score:
         return ("REGULATION", match.home_team_id)
-    if hs < aws:
+    if home_score < away_score:
         return ("REGULATION", match.away_team_id)
 
     if (
@@ -396,32 +448,24 @@ def _apply_custom_points_match_result(rows: dict[int, StandingRow], match: Match
     if not home or not away:
         return
 
-    hs, aws = final_score(match)
+    home_score, away_score = final_score(match)
     outcome_type, winner_id = _resolve_custom_match_outcome(match)
 
     home.played += 1
     away.played += 1
 
-    home.goals_for += hs
-    home.goals_against += aws
-    away.goals_for += aws
-    away.goals_against += hs
+    home.goals_for += home_score
+    home.goals_against += away_score
+    away.goals_for += away_score
+    away.goals_against += home_score
 
     points_win = _custom_points_value(cfg, Tournament.RESULTCFG_POINTS_WIN_KEY, 3)
     points_draw = _custom_points_value(cfg, Tournament.RESULTCFG_POINTS_DRAW_KEY, 1)
     points_loss = _custom_points_value(cfg, Tournament.RESULTCFG_POINTS_LOSS_KEY, 0)
-    points_ot_win = _custom_points_value(
-        cfg, Tournament.RESULTCFG_POINTS_OVERTIME_WIN_KEY, points_win
-    )
-    points_ot_loss = _custom_points_value(
-        cfg, Tournament.RESULTCFG_POINTS_OVERTIME_LOSS_KEY, points_loss
-    )
-    points_so_win = _custom_points_value(
-        cfg, Tournament.RESULTCFG_POINTS_SHOOTOUT_WIN_KEY, points_win
-    )
-    points_so_loss = _custom_points_value(
-        cfg, Tournament.RESULTCFG_POINTS_SHOOTOUT_LOSS_KEY, points_loss
-    )
+    points_ot_win = _custom_points_value(cfg, Tournament.RESULTCFG_POINTS_OVERTIME_WIN_KEY, points_win)
+    points_ot_loss = _custom_points_value(cfg, Tournament.RESULTCFG_POINTS_OVERTIME_LOSS_KEY, points_loss)
+    points_so_win = _custom_points_value(cfg, Tournament.RESULTCFG_POINTS_SHOOTOUT_WIN_KEY, points_win)
+    points_so_loss = _custom_points_value(cfg, Tournament.RESULTCFG_POINTS_SHOOTOUT_LOSS_KEY, points_loss)
 
     if outcome_type == "DRAW":
         home.draws += 1
@@ -463,24 +507,24 @@ def _apply_custom_points_match_result(rows: dict[int, StandingRow], match: Match
 def _apply_match_result(
     rows: dict[int, StandingRow],
     match: Match,
-    tournament: Tournament,
+    context,
 ) -> None:
     home = rows.get(match.home_team_id)
     away = rows.get(match.away_team_id)
     if not home or not away:
         return
 
-    hs, aws = final_score(match)
+    home_score, away_score = final_score(match)
 
     home.played += 1
     away.played += 1
 
-    home.goals_for += hs
-    home.goals_against += aws
-    away.goals_for += aws
-    away.goals_against += hs
+    home.goals_for += home_score
+    home.goals_against += away_score
+    away.goals_for += away_score
+    away.goals_against += home_score
 
-    discipline = getattr(tournament, "discipline", None)
+    discipline = getattr(context, "discipline", None)
     is_handball = discipline in (
         Tournament.Discipline.HANDBALL,
         "handball",
@@ -499,10 +543,10 @@ def _apply_match_result(
         away.games_for += away_games
         away.games_against += home_games
 
-        if hs > aws:
+        if home_score > away_score:
             home.wins += 1
             away.losses += 1
-        elif hs < aws:
+        elif home_score < away_score:
             away.wins += 1
             away.away_wins += 1
             home.losses += 1
@@ -511,22 +555,22 @@ def _apply_match_result(
             away.draws += 1
             return
 
-        mode = _tennis_points_mode(tournament)
+        mode = _tennis_points_mode(context)
         if mode == "PLT":
-            points_home, points_away = _plt_points_from_sets(match, hs, aws)
+            points_home, points_away = _plt_points_from_sets(match, home_score, away_score)
             home.points += points_home
             away.points += points_away
 
         return
 
     if not is_handball:
-        if hs > aws:
+        if home_score > away_score:
             home.wins += 1
             away.losses += 1
             home.points += 3
             return
 
-        if hs < aws:
+        if home_score < away_score:
             away.wins += 1
             away.away_wins += 1
             home.losses += 1
@@ -539,19 +583,20 @@ def _apply_match_result(
         away.points += 1
         return
 
-    if hs > aws:
+    if home_score > away_score:
         home.wins += 1
         away.losses += 1
         home.points += 3
         return
 
-    if hs < aws:
+    if home_score < away_score:
         away.wins += 1
         away.away_wins += 1
         home.losses += 1
         away.points += 3
         return
 
+    # Piłka ręczna wspiera model 3-2-1-0 przy remisowym wyniku bramkowym i rozstrzygnięciu karnymi.
     if (
         match.decided_by_penalties
         and match.home_penalty_score is not None

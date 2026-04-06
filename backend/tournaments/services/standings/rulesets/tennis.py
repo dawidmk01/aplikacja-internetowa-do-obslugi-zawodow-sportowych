@@ -1,7 +1,10 @@
+# backend/tournaments/services/standings/rulesets/tennis.py
+# Plik definiuje zasady sortowania tabeli tenisowej dla ligi i grup w warstwie klasyfikacji.
+
 from __future__ import annotations
 
 from itertools import groupby
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Literal
+from typing import Any, Dict, Iterable, List, Literal, Optional, Set, Tuple
 
 from tournaments.models import Match
 from tournaments.services.standings.rulesets.base import StandingsRuleset
@@ -13,31 +16,26 @@ TennisPointsMode = Literal["NONE", "PLT"]
 
 class TennisRuleset(StandingsRuleset):
     """
-    Tenis – kolejność w tabeli dla ligi / grup.
+    Klasa odwzorowuje zasady sortowania tabeli tenisowej.
 
-    Pola (jak w projekcie):
-    - wins / losses: zwycięstwa i porażki
-    - goals_for / goals_against / goal_difference: sety wygrane / przegrane / różnica setów
-    - games_for / games_against / games_difference: gemy wygrane / przegrane / różnica gemów
+    Obsługiwane są dwa tryby głównego kryterium:
+    - NONE - tabela sortowana jest przede wszystkim po liczbie zwycięstw,
+    - PLT - tabela sortowana jest przede wszystkim po punktach ligi tenisowej.
 
-    Dwa tryby punktacji (Tournament.format_config.tennis_points_mode):
-    - "NONE": brak punktów, sortujemy po wins (zwycięstwach)
-    - "PLT": punktacja jak Polska Liga Tenisa (10/8/4/2/0) → sortujemy po points
+    Kolejność tie-breaku po zakończeniu etapu:
+    - dla NONE: H2H wins, różnica setów, sety wygrane, różnica gemów, gemy wygrane,
+    - dla PLT: H2H points, H2H wins, różnica setów, sety wygrane, różnica gemów, gemy wygrane.
 
-    Tie-break (gdy etap zakończony) – H2H w obrębie remisu po kryterium głównym:
-    - "NONE": remis po wins → H2H: wins, set diff, sets for, game diff, games for
-    - "PLT": remis po points → H2H: points, wins, set diff, sets for, game diff, games for
-
-    Potem (overall):
-    - różnica setów
-    - sety wygrane
-    - różnica gemów
-    - gemy wygrane
-    - deterministycznie: nazwa, id
+    Po kryteriach H2H stosowane są dalej kryteria ogólne:
+    - różnica setów,
+    - sety wygrane,
+    - różnica gemów,
+    - gemy wygrane,
+    - nazwa i identyfikator drużyny.
     """
 
     def __init__(self, points_mode: TennisPointsMode = "NONE") -> None:
-        # defensywnie normalizujemy
+        # Normalizacja chroni przed niepoprawnym trybem przekazanym z warstwy wywołującej.
         self.points_mode: TennisPointsMode = "PLT" if points_mode == "PLT" else "NONE"
 
     def sort_rows(
@@ -49,73 +47,73 @@ class TennisRuleset(StandingsRuleset):
         rows_list = list(rows)
 
         mode: TennisPointsMode = self.points_mode
-        use_points = (mode == "PLT")
+        use_points = mode == "PLT"
 
-        # Bazowe sortowanie (overall) – stabilne i deterministyczne
-        def overall_key(r: StandingRow):
-            primary = -(r.points if use_points else r.wins)
-            secondary = -r.wins  # zawsze przydatne jako 2. kryterium (np. PLT)
+        def overall_key(row: StandingRow):
+            # Klucz bazowy buduje kolejność ogólną i stabilne bloki remisowe.
+            primary = -(row.points if use_points else row.wins)
+            secondary = -row.wins
             return (
                 primary,
                 secondary,
-                -r.goal_difference,   # różnica setów
-                -r.goals_for,         # sety wygrane
-                -r.games_difference,  # różnica gemów
-                -r.games_for,         # gemy wygrane
-                r.team_name.lower(),
-                r.team_id,
+                -row.goal_difference,
+                -row.goals_for,
+                -row.games_difference,
+                -row.games_for,
+                row.team_name.lower(),
+                row.team_id,
             )
 
         rows_list.sort(key=overall_key)
 
-        stage_complete = all(m.status == Match.Status.FINISHED for m in all_stage_matches) if all_stage_matches else False
+        stage_complete = all(match.status == Match.Status.FINISHED for match in all_stage_matches) if all_stage_matches else False
         if not stage_complete:
             return rows_list
 
-        # Po zakończeniu etapu: rozstrzygamy remisy H2H w obrębie tego samego kryterium głównego
         result: List[StandingRow] = []
-        primary_group = (lambda r: r.points) if use_points else (lambda r: r.wins)
+        primary_group = (lambda row: row.points) if use_points else (lambda row: row.wins)
 
+        # Remisy rozstrzygane są wyłącznie w obrębie tego samego kryterium głównego.
         for _, block_iter in groupby(rows_list, key=primary_group):
             block = list(block_iter)
             if len(block) == 1:
                 result.extend(block)
                 continue
 
-            tied_ids: Set[int] = {r.team_id for r in block}
+            tied_ids: Set[int] = {row.team_id for row in block}
+            h2h_metrics = _compute_h2h_metrics(tied_ids, finished_matches, mode=mode)
 
-            h2h = _compute_h2h_metrics(tied_ids, finished_matches, mode=mode)
-
-            def h2h_key(r: StandingRow):
-                hp, hw, hsd, hsf, hgd, hgf = h2h.get(r.team_id, (0, 0, 0, 0, 0, 0))
+            def h2h_key(row: StandingRow):
+                h2h_points, h2h_wins, h2h_set_diff, h2h_sets_for, h2h_games_diff, h2h_games_for = h2h_metrics.get(
+                    row.team_id,
+                    (0, 0, 0, 0, 0, 0),
+                )
                 return (
-                    -hp if use_points else 0,  # w NONE nie używamy H2H points
-                    -hw,
-                    -hsd,
-                    -hsf,
-                    -hgd,
-                    -hgf,
-                    *overall_key(r),
+                    -h2h_points if use_points else 0,
+                    -h2h_wins,
+                    -h2h_set_diff,
+                    -h2h_sets_for,
+                    -h2h_games_diff,
+                    -h2h_games_for,
+                    *overall_key(row),
                 )
 
+            # H2H doprecyzowuje kolejność tylko wewnątrz aktualnego bloku remisu.
             block.sort(key=h2h_key)
             result.extend(block)
 
         return result
 
 
-# --- Poniżej helpery zostają, ale _points_mode_from_matches jest już nieużywany. ---
-#     Możesz go usunąć, jeśli chcesz “czyściutki” plik.
-
 def _points_mode_from_matches(matches: List[Match]) -> Optional[TennisPointsMode]:
     """
-    (Legacy) Pobiera format_config.tennis_points_mode z turnieju (z dowolnego meczu),
-    domyślnie "NONE".
-    Nieużywane po przejściu na TennisRuleset(points_mode=...).
+    Funkcja pomocnicza odczytuje tryb punktacji z konfiguracji turnieju.
+
+    Implementacja pozostaje w pliku jako pomocniczy fallback dla starszych ścieżek integracyjnych.
     """
-    for m in matches:
+    for match in matches:
         try:
-            cfg = getattr(getattr(m, "tournament", None), "format_config", None) or {}
+            cfg = getattr(getattr(match, "tournament", None), "format_config", None) or {}
             mode = cfg.get("tennis_points_mode") or "NONE"
             if mode in ("NONE", "PLT"):
                 return mode  # type: ignore[return-value]
@@ -124,60 +122,59 @@ def _points_mode_from_matches(matches: List[Match]) -> Optional[TennisPointsMode
     return None
 
 
-def _safe_int(v: Any) -> int:
+def _safe_int(value: Any) -> int:
+    # Funkcja defensywna utrzymuje stabilność obliczeń przy niepełnych danych wejściowych.
     try:
-        return int(v)
+        return int(value)
     except (TypeError, ValueError):
         return 0
 
 
-def _games_from_match(m: Match) -> Tuple[int, int]:
+def _games_from_match(match: Match) -> Tuple[int, int]:
     """
-    Sumuje gemy z m.tennis_sets.
-    Tie-break nie jest liczony jako gemy.
-    Funkcja defensywna.
+    Funkcja sumuje gemy z tenisowych setów zapisanych w strukturze `tennis_sets`.
+
+    Tie-break nie jest liczony jako gem, dlatego do bilansu trafiają wyłącznie wartości `home_games`
+    i `away_games` zapisane dla każdego seta.
     """
-    sets = getattr(m, "tennis_sets", None)
-    if not isinstance(sets, list):
+    tennis_sets = getattr(match, "tennis_sets", None)
+    if not isinstance(tennis_sets, list):
         return (0, 0)
 
-    hg = 0
-    ag = 0
-    for s in sets:
-        if not isinstance(s, dict):
+    home_games = 0
+    away_games = 0
+
+    for set_item in tennis_sets:
+        if not isinstance(set_item, dict):
             continue
-        hg += _safe_int(s.get("home_games"))
-        ag += _safe_int(s.get("away_games"))
-    return (hg, ag)
+        home_games += _safe_int(set_item.get("home_games"))
+        away_games += _safe_int(set_item.get("away_games"))
+
+    return (home_games, away_games)
 
 
 def _plt_points_from_sets(home_sets: int, away_sets: int, tennis_sets: Any) -> Tuple[int, int]:
     """
-    Punktacja PLT wg przykładu:
-    - wygrana 2:0 -> 10 pkt, przegrana -> 2 pkt
-    - wygrana 2:1 -> 8 pkt,  przegrana -> 4 pkt
-    - walkower -> 0 pkt (brak pewnego sygnału w modelu, więc wykrywamy tylko defensywnie)
+    Funkcja przelicza wynik meczu na punkty w wariancie PLT.
 
-    Uogólnienie dla BO5:
-    - wygrana "do zera" (np. 3:0) traktowana jak straight sets -> 10/2
-    - wygrana z oddanym setem (np. 3:1, 3:2) -> 8/4
+    Model punktacji:
+    - zwycięstwo bez straty seta - 10/2,
+    - zwycięstwo z oddanym setem - 8/4,
+    - brak danych setowych przy wyniku 0:0 traktowany jest defensywnie jako brak klasyfikowalnego wyniku.
     """
-    # Defensywny “walkower”: etap FINISHED bez danych setów i bez wyniku
     if (not tennis_sets) and home_sets == 0 and away_sets == 0:
         return (0, 0)
 
     if home_sets == away_sets:
-        # remis w setach w tenisie nie powinien wystąpić, ale defensywnie:
         return (0, 0)
 
     home_won = home_sets > away_sets
     loser_sets = min(home_sets, away_sets)
 
-    # straight sets: przegrany 0
+    # Rozróżnienie wyniku prostego i wyniku z oddanym setem wpływa na wagę punktową.
     if loser_sets == 0:
         return (10, 2) if home_won else (2, 10)
 
-    # pozostałe: 8/4
     return (8, 4) if home_won else (4, 8)
 
 
@@ -188,60 +185,70 @@ def _compute_h2h_metrics(
     mode: TennisPointsMode,
 ) -> Dict[int, Tuple[int, int, int, int, int, int]]:
     """
-    Zwraca metryki H2H dla każdej drużyny w grupie remisu:
-    (points, wins, set_diff, sets_for, game_diff, games_for)
+    Funkcja oblicza metryki H2H dla bloku drużyn remisujących.
 
-    - sety: m.home_score / m.away_score (w projekcie to sety dla tenisa)
-    - gemy: z m.tennis_sets (opcjonalne; jeśli brak danych to 0)
-    - punkty: tylko w trybie PLT, w NONE = 0
+    Zwracana krotka oznacza kolejno:
+    - punkty H2H,
+    - zwycięstwa H2H,
+    - różnicę setów H2H,
+    - sety wygrane H2H,
+    - różnicę gemów H2H,
+    - gemy wygrane H2H.
     """
     metrics: Dict[int, Tuple[int, int, int, int, int, int]] = {
-        tid: (0, 0, 0, 0, 0, 0) for tid in tied_ids
+        team_id: (0, 0, 0, 0, 0, 0) for team_id in tied_ids
     }
 
     def add(
-        tid: int,
+        team_id: int,
         *,
-        p: int = 0,
-        w: int = 0,
-        sd: int = 0,
-        sf: int = 0,
-        gd: int = 0,
-        gf: int = 0,
+        points: int = 0,
+        wins: int = 0,
+        set_diff: int = 0,
+        sets_for: int = 0,
+        games_diff: int = 0,
+        games_for: int = 0,
     ) -> None:
-        cp, cw, csd, csf, cgd, cgf = metrics.get(tid, (0, 0, 0, 0, 0, 0))
-        metrics[tid] = (cp + p, cw + w, csd + sd, csf + sf, cgd + gd, cgf + gf)
+        current_points, current_wins, current_set_diff, current_sets_for, current_games_diff, current_games_for = metrics.get(
+            team_id,
+            (0, 0, 0, 0, 0, 0),
+        )
+        metrics[team_id] = (
+            current_points + points,
+            current_wins + wins,
+            current_set_diff + set_diff,
+            current_sets_for + sets_for,
+            current_games_diff + games_diff,
+            current_games_for + games_for,
+        )
 
-    use_points = (mode == "PLT")
+    use_points = mode == "PLT"
 
-    for m in finished_matches:
-        if m.home_team_id not in tied_ids or m.away_team_id not in tied_ids:
+    # Analizowane są wyłącznie mecze wewnątrz badanego bloku remisu.
+    for match in finished_matches:
+        if match.home_team_id not in tied_ids or match.away_team_id not in tied_ids:
             continue
 
-        hs = _safe_int(m.home_score)
-        aws = _safe_int(m.away_score)
-        tennis_sets = getattr(m, "tennis_sets", None)
+        home_sets = _safe_int(match.home_score)
+        away_sets = _safe_int(match.away_score)
+        tennis_sets = getattr(match, "tennis_sets", None)
 
-        home_games, away_games = _games_from_match(m)
+        home_games, away_games = _games_from_match(match)
 
-        # sety
-        add(m.home_team_id, sd=(hs - aws), sf=hs)
-        add(m.away_team_id, sd=(aws - hs), sf=aws)
+        add(match.home_team_id, set_diff=home_sets - away_sets, sets_for=home_sets)
+        add(match.away_team_id, set_diff=away_sets - home_sets, sets_for=away_sets)
 
-        # gemy
-        add(m.home_team_id, gd=(home_games - away_games), gf=home_games)
-        add(m.away_team_id, gd=(away_games - home_games), gf=away_games)
+        add(match.home_team_id, games_diff=home_games - away_games, games_for=home_games)
+        add(match.away_team_id, games_diff=away_games - home_games, games_for=away_games)
 
-        # zwycięstwo H2H
-        if hs > aws:
-            add(m.home_team_id, w=1)
-        elif aws > hs:
-            add(m.away_team_id, w=1)
+        if home_sets > away_sets:
+            add(match.home_team_id, wins=1)
+        elif away_sets > home_sets:
+            add(match.away_team_id, wins=1)
 
-        # punkty H2H (PLT)
         if use_points:
-            ph, pa = _plt_points_from_sets(hs, aws, tennis_sets)
-            add(m.home_team_id, p=ph)
-            add(m.away_team_id, p=pa)
+            home_points, away_points = _plt_points_from_sets(home_sets, away_sets, tennis_sets)
+            add(match.home_team_id, points=home_points)
+            add(match.away_team_id, points=away_points)
 
     return metrics

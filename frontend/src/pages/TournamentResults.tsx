@@ -2,14 +2,17 @@
 // Plik renderuje widok wyników turnieju i rozdziela prezentację meczów od rezultatów etapowych MASS_START.
 
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 
 import { Brackets, Calendar, Clock, Gauge, TimerReset } from "lucide-react";
 
 import { apiFetch } from "../api";
-import { useTournamentWs } from "../hooks/useTournamentWs";
-import MatchRow from "../components/MatchRow";
+import DivisionSwitcher, {
+  type DivisionSwitcherItem,
+} from "../components/DivisionSwitcher";
 import MassStartStageCard from "../components/MassStartStageCard";
+import MatchRow from "../components/MatchRow";
+import { useTournamentWs } from "../hooks/useTournamentWs";
 
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
@@ -17,13 +20,13 @@ import { toast } from "../ui/Toast";
 
 import type {
   AdvanceMassStartStageResponseDTO,
+  MassStartEntryDTO,
+  MassStartStageDTO,
   MatchDTO,
+  StageMassStartResultWriteDTO,
   TournamentDTO,
   TournamentMassStartResultsResponseDTO,
   TournamentResultConfigDTO,
-  MassStartEntryDTO,
-  MassStartStageDTO,
-  StageMassStartResultWriteDTO,
 } from "../types/results";
 
 import {
@@ -35,11 +38,28 @@ import {
 
 type ToastKind = "saved" | "success" | "error" | "info";
 type MatchLike = MatchDTO & MatchLikeBase;
+type DivisionStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
+type DivisionSummaryDTO = DivisionSwitcherItem & {
+  status?: DivisionStatus;
+};
 
 type MassStartResultSaveResponseDTO = {
   detail?: string;
   payload?: TournamentMassStartResultsResponseDTO | null;
 };
+
+function parseDivisionId(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) return null;
+  return parsed;
+}
+
+function withDivisionQuery(url: string, divisionId: number | null | undefined) {
+  if (!divisionId) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}division_id=${divisionId}`;
+}
 
 function normalizeMatchList(raw: unknown): MatchLike[] {
   if (Array.isArray(raw)) return raw as MatchLike[];
@@ -138,6 +158,10 @@ function MassStartResultsView({
   savingRows,
   onDraftChange,
   onSaveEntry,
+  divisions,
+  activeDivisionId,
+  activeDivisionName,
+  onDivisionChange,
 }: {
   loading: boolean;
   pageTitle: string;
@@ -150,6 +174,10 @@ function MassStartResultsView({
   savingRows: Record<string, boolean>;
   onDraftChange: (key: string, value: string) => void;
   onSaveEntry: (stage: MassStartStageDTO, groupId: number | null, entry: MassStartEntryDTO) => Promise<void>;
+  divisions: DivisionSummaryDTO[];
+  activeDivisionId: number | null;
+  activeDivisionName: string | null;
+  onDivisionChange: (divisionId: number) => void;
 }) {
   const visibleStages = useMemo(
     () => getVisibleMassStartStages(massStartData?.stages),
@@ -159,9 +187,23 @@ function MassStartResultsView({
   return (
     <div className="w-full py-6">
       <div className="mx-auto w-full max-w-7xl px-4 sm:px-6">
-        <div className="mb-6">
-          <div className="text-2xl font-extrabold text-white">{pageTitle}</div>
-          <div className="mt-1 text-sm text-slate-300">{pageDescription}</div>
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <div className="text-2xl font-extrabold text-white">{pageTitle}</div>
+            <div className="mt-1 text-sm text-slate-300">{pageDescription}</div>
+            {activeDivisionName ? (
+              <div className="mt-1 text-sm text-slate-400">
+                Aktywna dywizja: <span className="text-slate-200">{activeDivisionName}</span>
+              </div>
+            ) : null}
+          </div>
+
+          <DivisionSwitcher
+            divisions={divisions}
+            activeDivisionId={activeDivisionId}
+            onChange={onDivisionChange}
+            disabled={loading}
+          />
         </div>
 
         {customModeCard}
@@ -193,11 +235,25 @@ function MassStartResultsView({
 
 export default function TournamentResults() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
+
   const tournamentId = id ?? "";
+  const requestedDivisionId = useMemo(() => {
+    return (
+      parseDivisionId(searchParams.get("division_id")) ??
+      parseDivisionId(searchParams.get("active_division_id"))
+    );
+  }, [searchParams]);
 
   const mountedRef = useRef(true);
 
   const [tournament, setTournament] = useState<TournamentDTO | null>(null);
+  const [divisions, setDivisions] = useState<DivisionSummaryDTO[]>([]);
+  const [activeDivisionId, setActiveDivisionId] = useState<number | null>(requestedDivisionId);
+  const [activeDivisionName, setActiveDivisionName] = useState<string | null>(null);
+
+  const effectiveDivisionId = requestedDivisionId ?? activeDivisionId;
+
   const [matches, setMatches] = useState<MatchLike[]>([]);
   const [massStartData, setMassStartData] = useState<TournamentMassStartResultsResponseDTO | null>(null);
   const [loading, setLoading] = useState(true);
@@ -230,19 +286,35 @@ export default function TournamentResults() {
     if (mountedRef.current) setLoading(true);
 
     try {
-      const tRes = await apiFetch(`/api/tournaments/${tournamentId}/`);
+      const tRes = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/`, effectiveDivisionId));
       if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
 
       const tData = (await tRes.json()) as TournamentDTO;
       if (!mountedRef.current) return;
+
       setTournament(tData);
+      setDivisions(Array.isArray((tData as any).divisions) ? ((tData as any).divisions as DivisionSummaryDTO[]) : []);
+      setActiveDivisionId((tData as any).active_division_id ?? effectiveDivisionId ?? null);
+      setActiveDivisionName((tData as any).active_division_name ?? null);
+
+      const resolvedDivisionId = (tData as any).active_division_id ?? effectiveDivisionId ?? null;
+      if (
+        !requestedDivisionId &&
+        resolvedDivisionId &&
+        Array.isArray((tData as any).divisions) &&
+        ((tData as any).divisions as DivisionSummaryDTO[]).length > 1
+      ) {
+        const nextSearch = new URLSearchParams(window.location.search);
+        nextSearch.set("division_id", String(resolvedDivisionId));
+        setSearchParams(nextSearch, { replace: true });
+      }
 
       const competitionModel = getCompetitionModel(tData);
-      const usesCustomResults = String(tData.result_mode ?? "SCORE").toUpperCase() === "CUSTOM";
+      const usesCustomResults = String((tData as any).result_mode ?? "SCORE").toUpperCase() === "CUSTOM";
       const isMassStart = usesCustomResults && competitionModel === "MASS_START";
 
       if (isMassStart) {
-        const res = await apiFetch(`/api/tournaments/${tournamentId}/mass-start-results/`, {
+        const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/mass-start-results/`, resolvedDivisionId), {
           toastOnError: false,
         } as any);
         const data = await res.json().catch(() => null);
@@ -254,7 +326,7 @@ export default function TournamentResults() {
         setMassStartData(data as TournamentMassStartResultsResponseDTO);
         setMatches([]);
       } else {
-        const mRes = await apiFetch(`/api/tournaments/${tournamentId}/matches/`);
+        const mRes = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/matches/`, resolvedDivisionId));
         if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
 
         const raw = await mRes.json();
@@ -269,7 +341,7 @@ export default function TournamentResults() {
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [pushToast, tournamentId]);
+  }, [effectiveDivisionId, pushToast, requestedDivisionId, setSearchParams, tournamentId]);
 
   useEffect(() => {
     if (!tournamentId) return;
@@ -297,6 +369,7 @@ export default function TournamentResults() {
   }, [massStartData]);
 
   useTournamentWs({
+    tournamentId,
     enabled: Boolean(tournamentId),
     onEvent: ({ event }) => {
       const normalized = String(event).replaceAll(".", "_");
@@ -313,15 +386,15 @@ export default function TournamentResults() {
     },
   });
 
-  const tournamentFormat = useMemo(() => String(tournament?.tournament_format ?? ""), [tournament]);
+  const tournamentFormat = useMemo(() => String((tournament as any)?.tournament_format ?? ""), [tournament]);
 
   const canManageTournament = useMemo(() => {
-    const role = String(tournament?.my_role ?? "");
+    const role = String((tournament as any)?.my_role ?? "");
     return role === "ORGANIZER" || role === "ASSISTANT";
   }, [tournament]);
 
   const usesCustomResults = useMemo(
-    () => String(tournament?.result_mode ?? "SCORE").toUpperCase() === "CUSTOM",
+    () => String((tournament as any)?.result_mode ?? "SCORE").toUpperCase() === "CUSTOM",
     [tournament]
   );
 
@@ -338,7 +411,7 @@ export default function TournamentResults() {
   const customResultConfig = useMemo(() => getResultConfig(tournament), [tournament]);
 
   const customDisciplineLabel = useMemo(() => {
-    const customName = String(tournament?.custom_discipline_name ?? "").trim();
+    const customName = String((tournament as any)?.custom_discipline_name ?? "").trim();
     return customName || "Dyscyplina niestandardowa";
   }, [tournament]);
 
@@ -370,7 +443,7 @@ export default function TournamentResults() {
 
     setAdvanceBusy(true);
     try {
-      const res = await apiFetch(`/api/tournaments/${tournamentId}/advance-from-groups/`, {
+      const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/advance-from-groups/`, effectiveDivisionId), {
         method: "POST",
       });
       if (!res.ok) {
@@ -385,14 +458,14 @@ export default function TournamentResults() {
     } finally {
       setAdvanceBusy(false);
     }
-  }, [pushToast, reloadAll, tournamentId]);
+  }, [effectiveDivisionId, pushToast, reloadAll, tournamentId]);
 
   const advanceMassStartStage = useCallback(async () => {
     if (!tournamentId) return false;
 
     setAdvanceBusy(true);
     try {
-      const res = await apiFetch(`/api/tournaments/${tournamentId}/advance-mass-start-stage/`, {
+      const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/advance-mass-start-stage/`, effectiveDivisionId), {
         method: "POST",
         toastOnError: false,
       } as any);
@@ -417,7 +490,7 @@ export default function TournamentResults() {
     } finally {
       setAdvanceBusy(false);
     }
-  }, [pushToast, tournamentId]);
+  }, [effectiveDivisionId, pushToast, tournamentId]);
 
   const stageAdvanceCard = useMemo(() => {
     if (!showAdvanceFromGroups) return null;
@@ -571,7 +644,7 @@ export default function TournamentResults() {
         let latestPayload: TournamentMassStartResultsResponseDTO | null = null;
 
         for (const payload of requests) {
-          const res = await apiFetch(`/api/tournaments/${tournamentId}/mass-start-results/`, {
+          const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/mass-start-results/`, effectiveDivisionId), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
@@ -608,7 +681,7 @@ export default function TournamentResults() {
         });
       }
     },
-    [advanceMassStartStage, canManageTournament, customResultConfig.value_kind, drafts, pushToast, reloadAll, tournamentId]
+    [advanceMassStartStage, canManageTournament, customResultConfig.value_kind, drafts, effectiveDivisionId, pushToast, reloadAll, tournamentId]
   );
 
   const renderMatch = useCallback(
@@ -650,6 +723,17 @@ export default function TournamentResults() {
     [pushToast, reloadAll, tournament, tournamentId]
   );
 
+  const handleDivisionSwitch = useCallback(
+    (nextDivisionId: number) => {
+      if (nextDivisionId === effectiveDivisionId) return;
+
+      const nextSearch = new URLSearchParams(searchParams);
+      nextSearch.set("division_id", String(nextDivisionId));
+      setSearchParams(nextSearch, { replace: false });
+    },
+    [effectiveDivisionId, searchParams, setSearchParams]
+  );
+
   if (!tournamentId) {
     return (
       <div className="w-full py-6">
@@ -680,6 +764,10 @@ export default function TournamentResults() {
         savingRows={savingRows}
         onDraftChange={onDraftChange}
         onSaveEntry={onSaveMassStartEntry}
+        divisions={divisions}
+        activeDivisionId={effectiveDivisionId}
+        activeDivisionName={activeDivisionName}
+        onDivisionChange={handleDivisionSwitch}
       />
     );
   }
@@ -694,6 +782,23 @@ export default function TournamentResults() {
       matches={matches}
       headerSlot={
         <>
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              {activeDivisionName ? (
+                <div className="text-sm text-slate-300">
+                  Aktywna dywizja: <span className="text-slate-100">{activeDivisionName}</span>
+                </div>
+              ) : null}
+            </div>
+
+            <DivisionSwitcher
+              divisions={divisions}
+              activeDivisionId={effectiveDivisionId}
+              onChange={handleDivisionSwitch}
+              disabled={loading}
+            />
+          </div>
+
           {customModeCard}
           {stageAdvanceCard}
         </>

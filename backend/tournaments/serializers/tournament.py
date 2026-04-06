@@ -1,18 +1,27 @@
 # backend/tournaments/serializers/tournament.py
-# Plik definiuje serializery odpowiedzialne za walidację i kontrakt API konfiguracji turnieju.
+# Plik definiuje serializery odpowiedzialne za walidację wspólnych danych turnieju oraz aktywnej dywizji.
 
 from __future__ import annotations
 
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from rest_framework import serializers
 
-from tournaments.models import Match, Tournament, TournamentMembership, TournamentRegistration
+from tournaments.models import Division, Match, Tournament, TournamentMembership, TournamentRegistration
 
 User = get_user_model()
 
 TENIS_POINTS_MODES = ("NONE", "PLT")
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
 ACTIVE_ENTRY_MODES = (Tournament.EntryMode.MANAGER, Tournament.EntryMode.ORGANIZER_ONLY)
+DIVISION_CONFIG_FIELDS = {
+    "competition_type",
+    "competition_model",
+    "tournament_format",
+    "format_config",
+    "result_mode",
+    "result_config",
+}
 
 
 def _normalize_format_config(discipline: str | None, cfg) -> dict:
@@ -55,11 +64,12 @@ def _normalize_result_mode(value: str | None) -> str:
     return mode
 
 
+
 def _normalize_result_config(result_mode: str | None, cfg) -> dict:
     mode = _normalize_result_mode(result_mode)
 
     try:
-        return Tournament.normalize_result_config(mode, cfg)
+        return Division.normalize_result_config(mode, cfg)
     except ValueError as exc:
         raise serializers.ValidationError({"result_config": str(exc)}) from exc
 
@@ -86,12 +96,245 @@ def _is_draft_custom_bootstrap(
     if not _is_create(serializer):
         return False
 
-    # Pozwala utworzyć szkic custom bez pełnej konfiguracji, aby wejść do formularza setup.
     if "custom_discipline_name" not in attrs:
         return True
 
     raw_name = attrs.get("custom_discipline_name")
     return not bool((raw_name or "").strip())
+
+
+def _division_summary_payload(division: Division) -> dict:
+    return {
+        "id": division.id,
+        "name": division.name,
+        "slug": division.slug,
+        "order": division.order,
+        "is_default": division.is_default,
+        "is_archived": division.is_archived,
+        "status": division.status,
+    }
+
+
+def _extract_requested_division_ref(serializer: serializers.ModelSerializer) -> tuple[int | None, str | None]:
+    request = serializer.context.get("request")
+    raw_id = None
+    raw_slug = None
+
+    initial_data = getattr(serializer, "initial_data", None)
+    if hasattr(initial_data, "get"):
+        raw_id = (
+            initial_data.get("division_id")
+            or initial_data.get("active_division_id")
+            or initial_data.get("division")
+        )
+        raw_slug = (
+            initial_data.get("division_slug")
+            or initial_data.get("active_division_slug")
+        )
+
+    if raw_id in (None, "") and request is not None:
+        raw_id = (
+            request.query_params.get("division_id")
+            or request.query_params.get("active_division_id")
+            or request.query_params.get("division")
+        )
+
+    if raw_slug in (None, "") and request is not None:
+        raw_slug = (
+            request.query_params.get("division_slug")
+            or request.query_params.get("active_division_slug")
+        )
+
+    if raw_id in (None, ""):
+        ctx_id = serializer.context.get("division_id")
+        if ctx_id not in (None, ""):
+            raw_id = ctx_id
+
+    if raw_slug in (None, ""):
+        ctx_slug = serializer.context.get("division_slug")
+        if ctx_slug not in (None, ""):
+            raw_slug = ctx_slug
+
+    division = serializer.context.get("division")
+    if raw_id in (None, "") and raw_slug in (None, "") and division is not None:
+        raw_id = getattr(division, "id", None)
+
+    division_id = None
+    if raw_id not in (None, ""):
+        try:
+            division_id = int(raw_id)
+        except (TypeError, ValueError) as exc:
+            raise serializers.ValidationError(
+                {"division_id": "division_id musi być liczbą całkowitą."}
+            ) from exc
+
+    division_slug = None
+    if raw_slug not in (None, ""):
+        division_slug = str(raw_slug).strip()
+        if not division_slug:
+            raise serializers.ValidationError(
+                {"division_slug": "division_slug nie może być pusty."}
+            )
+
+    return division_id, division_slug
+
+
+def _resolve_division_for_serializer(
+    serializer: serializers.ModelSerializer,
+    tournament: Tournament,
+    *,
+    required: bool,
+) -> Division | None:
+    division_id, division_slug = _extract_requested_division_ref(serializer)
+
+    qs = tournament.divisions.all().order_by("order", "id")
+
+    if division_id is not None:
+        division = qs.filter(pk=division_id).first()
+        if not division:
+            raise serializers.ValidationError({"division_id": "Wskazana dywizja nie należy do tego turnieju."})
+        return division
+
+    if division_slug is not None:
+        division = qs.filter(slug=division_slug).first()
+        if not division:
+            raise serializers.ValidationError({"division_slug": "Wskazana dywizja nie należy do tego turnieju."})
+        return division
+
+    division = tournament.get_default_division()
+    if required and not division:
+        raise serializers.ValidationError(
+            {"division_id": "Turniej nie ma jeszcze utworzonej dywizji roboczej."}
+        )
+    return division
+
+
+def _build_division_config_from_source(source, *, discipline: str | None) -> dict:
+    return {
+        "competition_type": source.get("competition_type"),
+        "competition_model": source.get("competition_model"),
+        "tournament_format": source.get("tournament_format"),
+        "format_config": _normalize_format_config(discipline, source.get("format_config")),
+        "result_mode": _normalize_result_mode(source.get("result_mode")),
+        "result_config": source.get("result_config"),
+    }
+
+
+def _normalize_division_config(
+    *,
+    serializer: serializers.ModelSerializer,
+    discipline: str | None,
+    custom_discipline_name: str | None,
+    division_source: dict,
+) -> dict:
+    competition_type = division_source.get("competition_type")
+    competition_model = division_source.get("competition_model")
+    tournament_format = division_source.get("tournament_format")
+    format_config = _normalize_format_config(discipline, division_source.get("format_config"))
+    result_mode = _normalize_result_mode(division_source.get("result_mode"))
+    result_config = division_source.get("result_config")
+
+    is_custom_bootstrap = _is_draft_custom_bootstrap(
+        serializer=serializer,
+        discipline=discipline,
+        attrs={"custom_discipline_name": custom_discipline_name},
+    )
+
+    if discipline == Tournament.Discipline.CUSTOM:
+        effective_name = (custom_discipline_name or "").strip()
+
+        if is_custom_bootstrap:
+            return {
+                "competition_type": competition_type or Tournament.CompetitionType.INDIVIDUAL,
+                "competition_model": competition_model or Tournament.CompetitionModel.MASS_START,
+                "tournament_format": tournament_format or Tournament.TournamentFormat.LEAGUE,
+                "format_config": format_config,
+                "result_mode": Tournament.ResultMode.SCORE,
+                "result_config": {},
+            }
+
+        if not effective_name:
+            raise serializers.ValidationError(
+                {"custom_discipline_name": "Dla dyscypliny niestandardowej podaj własną nazwę."}
+            )
+
+        if competition_type not in (
+            Tournament.CompetitionType.INDIVIDUAL,
+            Tournament.CompetitionType.TEAM,
+        ):
+            raise serializers.ValidationError(
+                {
+                    "competition_type": (
+                        "Dla dyscypliny niestandardowej wybierz typ uczestnictwa: "
+                        "INDIVIDUAL albo TEAM."
+                    )
+                }
+            )
+
+        if competition_model not in (
+            Tournament.CompetitionModel.HEAD_TO_HEAD,
+            Tournament.CompetitionModel.MASS_START,
+        ):
+            raise serializers.ValidationError(
+                {
+                    "competition_model": (
+                        "Dla dyscypliny niestandardowej wybierz model rywalizacji: "
+                        "HEAD_TO_HEAD albo MASS_START."
+                    )
+                }
+            )
+
+        if result_mode != Tournament.ResultMode.CUSTOM:
+            raise serializers.ValidationError(
+                {
+                    "result_mode": (
+                        "Dla w pełni skonfigurowanej dyscypliny niestandardowej wymagany jest "
+                        "result_mode=CUSTOM."
+                    )
+                }
+            )
+
+        return {
+            "competition_type": competition_type,
+            "competition_model": competition_model,
+            "tournament_format": tournament_format,
+            "format_config": format_config,
+            "result_mode": Tournament.ResultMode.CUSTOM,
+            "result_config": _normalize_result_config(Tournament.ResultMode.CUSTOM, result_config),
+        }
+
+    allowed = Division.allowed_formats_for_discipline(discipline)
+    if tournament_format not in allowed:
+        raise serializers.ValidationError(
+            {"tournament_format": "Wybrany format nie jest dostępny dla tej dyscypliny."}
+        )
+
+    if result_mode == Tournament.ResultMode.CUSTOM:
+        raise serializers.ValidationError(
+            {
+                "result_mode": (
+                    "Tryb CUSTOM jest obecnie dostępny tylko dla dyscypliny niestandardowej."
+                )
+            }
+        )
+
+    return {
+        "competition_type": competition_type or Division.infer_default_competition_type(discipline),
+        "competition_model": competition_model or Division.infer_default_competition_model(discipline),
+        "tournament_format": tournament_format,
+        "format_config": format_config,
+        "result_mode": Tournament.ResultMode.SCORE,
+        "result_config": {},
+    }
+
+
+def _sync_legacy_tournament_config(tournament: Tournament, division: Division) -> None:
+    tournament.competition_type = division.competition_type
+    tournament.competition_model = division.competition_model
+    tournament.tournament_format = division.tournament_format
+    tournament.format_config = dict(division.format_config or {})
+    tournament.result_mode = division.result_mode
+    tournament.result_config = dict(division.result_config or {})
 
 
 class StageScheduleEntrySerializer(serializers.Serializer):
@@ -109,13 +352,11 @@ class GroupScheduleEntrySerializer(serializers.Serializer):
 
 
 class TournamentSerializer(serializers.ModelSerializer):
-    # Pola wyliczane utrzymują kontrakt panelu bez duplikowania logiki po stronie frontu.
     my_role = serializers.SerializerMethodField()
     matches_started = serializers.SerializerMethodField()
     my_permissions = serializers.SerializerMethodField()
     schedule_targets = serializers.SerializerMethodField()
 
-    # Te aliasy utrzymują spójny kontrakt API mimo legacy nazw w modelu.
     allow_join_by_code = serializers.BooleanField(required=False, source="join_enabled")
     join_code = serializers.CharField(
         required=False,
@@ -123,6 +364,16 @@ class TournamentSerializer(serializers.ModelSerializer):
         allow_blank=True,
         source="registration_code",
     )
+
+    division_id = serializers.IntegerField(required=False, write_only=True)
+    division_slug = serializers.CharField(required=False, write_only=True)
+    division_name = serializers.CharField(required=False, write_only=True, allow_blank=False, max_length=120)
+
+    active_division_id = serializers.SerializerMethodField()
+    active_division_slug = serializers.SerializerMethodField()
+    active_division_name = serializers.SerializerMethodField()
+    division_status = serializers.SerializerMethodField()
+    divisions = serializers.SerializerMethodField()
 
     class Meta:
         model = Tournament
@@ -134,23 +385,79 @@ class TournamentSerializer(serializers.ModelSerializer):
             "my_role",
             "matches_started",
             "my_permissions",
+            "active_division_id",
+            "active_division_slug",
+            "active_division_name",
+            "division_status",
+            "divisions",
         )
+
+    # ===== Reprezentacja aktywnej dywizji =====
+
+    def _get_active_division(self, tournament: Tournament) -> Division | None:
+        return _resolve_division_for_serializer(self, tournament, required=False)
+
+    def _division_config_source_for_validation(self, tournament: Tournament, division: Division | None) -> dict:
+        if division is not None:
+            return {
+                "competition_type": division.competition_type,
+                "competition_model": division.competition_model,
+                "tournament_format": division.tournament_format,
+                "format_config": dict(division.format_config or {}),
+                "result_mode": division.result_mode,
+                "result_config": dict(division.result_config or {}),
+            }
+
+        return {
+            "competition_type": tournament.competition_type,
+            "competition_model": tournament.competition_model,
+            "tournament_format": tournament.tournament_format,
+            "format_config": dict(tournament.format_config or {}),
+            "result_mode": tournament.result_mode,
+            "result_config": dict(tournament.result_config or {}),
+        }
+
+    def _overlay_active_division_data(self, data: dict, division: Division | None, *, discipline: str | None) -> dict:
+        if division is None:
+            return data
+
+        data["competition_type"] = division.competition_type
+        data["competition_model"] = division.competition_model
+        data["tournament_format"] = division.tournament_format
+        data["format_config"] = dict(division.format_config or {})
+        data["result_mode"] = division.result_mode
+        data["result_config"] = (
+            division.get_result_config() if division.result_mode == Tournament.ResultMode.CUSTOM else {}
+        )
+        data["active_division_id"] = division.id
+        data["active_division_slug"] = division.slug
+        data["active_division_name"] = division.name
+        data["division_status"] = division.status
+
+        if discipline != Tournament.Discipline.CUSTOM:
+            data["custom_discipline_name"] = None
+
+        return data
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
         request = self.context.get("request")
+        division = self._get_active_division(instance)
 
         if "entry_mode" in data:
             data["entry_mode"] = _safe_entry_mode(data.get("entry_mode"))
 
         data.pop("join_enabled", None)
         data.pop("registration_code", None)
+        data.pop("division_id", None)
+        data.pop("division_slug", None)
+        data.pop("division_name", None)
 
-        if instance.discipline != Tournament.Discipline.CUSTOM:
-            data["custom_discipline_name"] = None
-
-        if instance.result_mode != Tournament.ResultMode.CUSTOM:
-            data["result_config"] = {}
+        data = self._overlay_active_division_data(
+            data,
+            division,
+            discipline=instance.discipline,
+        )
 
         if not request or not request.user.is_authenticated or instance.organizer_id != request.user.id:
             data.pop("access_code", None)
@@ -158,26 +465,26 @@ class TournamentSerializer(serializers.ModelSerializer):
 
         return data
 
-    def validate_tournament_format(self, value):
-        discipline = (
-            self.initial_data.get("discipline")
-            or (self.instance.discipline if self.instance else None)
-        )
+    def get_active_division_id(self, obj: Tournament) -> int | None:
+        division = self._get_active_division(obj)
+        return division.id if division else None
 
-        if discipline:
-            allowed = Tournament.allowed_formats_for_discipline(discipline)
-            if value not in allowed:
-                raise serializers.ValidationError(
-                    "Wybrany format nie jest dostępny dla tej dyscypliny."
-                )
-        return value
+    def get_active_division_slug(self, obj: Tournament) -> str | None:
+        division = self._get_active_division(obj)
+        return division.slug if division else None
 
-    def validate_format_config(self, value):
-        discipline = (
-            self.initial_data.get("discipline")
-            or (self.instance.discipline if self.instance else None)
-        )
-        return _normalize_format_config(discipline, value)
+    def get_active_division_name(self, obj: Tournament) -> str | None:
+        division = self._get_active_division(obj)
+        return division.name if division else None
+
+    def get_division_status(self, obj: Tournament) -> str | None:
+        division = self._get_active_division(obj)
+        return division.status if division else None
+
+    def get_divisions(self, obj: Tournament) -> list[dict]:
+        return [_division_summary_payload(division) for division in obj.divisions.all().order_by("order", "id")]
+
+    # ===== Walidacja pól wspólnych =====
 
     def validate_entry_mode(self, value: str):
         if value not in ACTIVE_ENTRY_MODES:
@@ -185,16 +492,6 @@ class TournamentSerializer(serializers.ModelSerializer):
                 "Nieprawidłowy tryb panelu. Dozwolone: MANAGER, ORGANIZER_ONLY."
             )
         return value
-
-    def validate_result_mode(self, value: str):
-        return _normalize_result_mode(value)
-
-    def validate_result_config(self, value):
-        result_mode = (
-            self.initial_data.get("result_mode")
-            or (self.instance.result_mode if self.instance else Tournament.ResultMode.SCORE)
-        )
-        return _normalize_result_config(result_mode, value)
 
     def validate_custom_discipline_name(self, value: str | None):
         if value is None:
@@ -213,34 +510,25 @@ class TournamentSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         instance = self.instance
 
+        division_id = attrs.pop("division_id", None)
+        division_slug = attrs.pop("division_slug", None)
+        division_name = attrs.pop("division_name", None)
+
+        if division_id is not None:
+            self.context["division_id"] = division_id
+        if division_slug not in (None, ""):
+            self.context["division_slug"] = division_slug
+
         discipline = attrs.get("discipline") or (instance.discipline if instance else None)
-        competition_type = attrs.get("competition_type") or (
-            instance.competition_type if instance else None
-        )
-        competition_model = attrs.get("competition_model") or (
-            instance.competition_model if instance else None
-        )
-        result_mode = attrs.get("result_mode") or (
-            instance.result_mode if instance else Tournament.ResultMode.SCORE
-        )
         custom_discipline_name = attrs.get("custom_discipline_name")
-        current_custom_name = instance.custom_discipline_name if instance else None
+        if "custom_discipline_name" not in attrs and instance:
+            custom_discipline_name = instance.custom_discipline_name
 
-        if "format_config" in attrs:
-            attrs["format_config"] = _normalize_format_config(
-                discipline,
-                attrs.get("format_config"),
-            )
-
-        if "result_config" in attrs or "result_mode" in attrs:
-            attrs["result_config"] = _normalize_result_config(
-                result_mode,
-                attrs.get("result_config", instance.result_config if instance else None),
-            )
+        if "entry_mode" in attrs:
+            attrs["entry_mode"] = self.validate_entry_mode(attrs["entry_mode"])
 
         join_enabled = attrs.get("join_enabled", None)
         reg_code = attrs.get("registration_code", None)
-
         if join_enabled is True:
             code = (reg_code or "").strip()
             if len(code) < 3:
@@ -251,95 +539,31 @@ class TournamentSerializer(serializers.ModelSerializer):
         elif join_enabled is False:
             attrs["registration_code"] = None
 
-        is_custom_bootstrap = _is_draft_custom_bootstrap(
-            serializer=self,
-            discipline=discipline,
-            attrs=attrs,
+        division = None
+        if instance:
+            division = _resolve_division_for_serializer(self, instance, required=False)
+
+        division_source = self._division_config_source_for_validation(
+            instance if instance else Tournament(discipline=discipline),
+            division,
         )
 
-        if discipline == Tournament.Discipline.CUSTOM:
-            effective_name = (
-                custom_discipline_name if "custom_discipline_name" in attrs else current_custom_name
-            )
-            effective_name = (effective_name or "").strip()
+        for field in DIVISION_CONFIG_FIELDS:
+            if field in attrs:
+                division_source[field] = attrs[field]
 
-            if is_custom_bootstrap:
-                attrs["custom_discipline_name"] = None
-                attrs["competition_type"] = (
-                    competition_type or Tournament.CompetitionType.INDIVIDUAL
-                )
-                attrs["competition_model"] = (
-                    competition_model or Tournament.CompetitionModel.MASS_START
-                )
-                attrs["result_mode"] = Tournament.ResultMode.SCORE
-                attrs["result_config"] = {}
-            else:
-                if not effective_name:
-                    raise serializers.ValidationError(
-                        {"custom_discipline_name": "Dla dyscypliny niestandardowej podaj własną nazwę."}
-                    )
+        normalized_division_config = _normalize_division_config(
+            serializer=self,
+            discipline=discipline,
+            custom_discipline_name=custom_discipline_name,
+            division_source=division_source,
+        )
 
-                if competition_type not in (
-                    Tournament.CompetitionType.INDIVIDUAL,
-                    Tournament.CompetitionType.TEAM,
-                ):
-                    raise serializers.ValidationError(
-                        {
-                            "competition_type": (
-                                "Dla dyscypliny niestandardowej wybierz typ uczestnictwa: "
-                                "INDIVIDUAL albo TEAM."
-                            )
-                        }
-                    )
-
-                if competition_model not in (
-                    Tournament.CompetitionModel.HEAD_TO_HEAD,
-                    Tournament.CompetitionModel.MASS_START,
-                ):
-                    raise serializers.ValidationError(
-                        {
-                            "competition_model": (
-                                "Dla dyscypliny niestandardowej wybierz model rywalizacji: "
-                                "HEAD_TO_HEAD albo MASS_START."
-                            )
-                        }
-                    )
-
-                if result_mode != Tournament.ResultMode.CUSTOM:
-                    raise serializers.ValidationError(
-                        {
-                            "result_mode": (
-                                "Dla w pełni skonfigurowanej dyscypliny niestandardowej wymagany jest result_mode=CUSTOM."
-                            )
-                        }
-                    )
-
-                attrs["custom_discipline_name"] = effective_name
-                attrs["result_mode"] = Tournament.ResultMode.CUSTOM
-                attrs["result_config"] = _normalize_result_config(
-                    Tournament.ResultMode.CUSTOM,
-                    attrs.get("result_config", instance.result_config if instance else None),
-                )
-
-        else:
-            attrs["custom_discipline_name"] = None
-
-            if result_mode == Tournament.ResultMode.CUSTOM:
-                raise serializers.ValidationError(
-                    {
-                        "result_mode": (
-                            "Tryb CUSTOM jest obecnie dostępny tylko dla dyscypliny niestandardowej."
-                        )
-                    }
-                )
-
-            attrs["result_mode"] = Tournament.ResultMode.SCORE
-            attrs["result_config"] = {}
-            attrs["competition_model"] = Tournament.infer_default_competition_model(discipline)
+        attrs["_division_payload"] = normalized_division_config
+        if division_name is not None:
+            attrs["_division_name"] = str(division_name).strip()
 
         if not request or not request.user.is_authenticated or not instance:
-            if "entry_mode" in attrs:
-                attrs["entry_mode"] = self.validate_entry_mode(attrs["entry_mode"])
             return attrs
 
         if (
@@ -357,26 +581,15 @@ class TournamentSerializer(serializers.ModelSerializer):
             )
 
         if (
-            instance.status != Tournament.Status.DRAFT
-            and discipline != Tournament.Discipline.CUSTOM
-            and any(
-                field in attrs
-                for field in (
-                    "tournament_format",
-                    "format_config",
-                    "competition_type",
-                    "competition_model",
-                    "result_mode",
-                    "result_config",
-                )
-            )
+            division is not None
+            and division.status != Tournament.Status.DRAFT
+            and any(field in attrs for field in DIVISION_CONFIG_FIELDS)
         ):
             raise serializers.ValidationError(
                 {
                     "detail": (
-                        "Zmiana konfiguracji turnieju po wygenerowaniu rozgrywek "
-                        "wymaga resetu etapów i meczów. "
-                        "Użyj endpointu: POST /api/tournaments/<id>/change-setup/"
+                        "Zmiana konfiguracji aktywnej dywizji po wygenerowaniu rozgrywek wymaga resetu "
+                        "etapów i meczów tej dywizji. Użyj dedykowanego endpointu resetu setupu."
                     )
                 }
             )
@@ -400,72 +613,122 @@ class TournamentSerializer(serializers.ModelSerializer):
                 attrs.pop(field, None)
 
         if not (is_organizer or is_assistant):
-            for field in (
-                "competition_type",
-                "competition_model",
-                "tournament_format",
-                "format_config",
-                "custom_discipline_name",
-                "result_mode",
-                "result_config",
-            ):
+            for field in DIVISION_CONFIG_FIELDS:
                 attrs.pop(field, None)
+            attrs.pop("_division_payload", None)
+            attrs.pop("_division_name", None)
 
         if is_organizer and "entry_mode" in attrs:
             attrs["entry_mode"] = self.validate_entry_mode(attrs["entry_mode"])
 
         return attrs
 
+    # ===== Zapis wspólnych danych i konfiguracji dywizji =====
+
+    @transaction.atomic
     def create(self, validated_data):
+        division_payload = validated_data.pop("_division_payload", None)
+        division_name = validated_data.pop("_division_name", None) or "Dywizja główna"
+        validated_data.pop("division_id", None)
+        validated_data.pop("division_slug", None)
+        validated_data.pop("division_name", None)
+
         discipline = validated_data.get("discipline")
 
-        if "competition_type" not in validated_data:
-            if discipline == Tournament.Discipline.CUSTOM:
-                validated_data["competition_type"] = Tournament.CompetitionType.INDIVIDUAL
-            else:
-                validated_data["competition_type"] = Tournament.infer_default_competition_type(
-                    discipline
-                )
-
-        if "competition_model" not in validated_data:
-            validated_data["competition_model"] = Tournament.infer_default_competition_model(
-                discipline
-            )
-
-        is_custom_bootstrap = (
-            discipline == Tournament.Discipline.CUSTOM
-            and not bool((validated_data.get("custom_discipline_name") or "").strip())
-        )
-
-        if discipline == Tournament.Discipline.CUSTOM:
-            if is_custom_bootstrap:
-                validated_data["result_mode"] = Tournament.ResultMode.SCORE
-                validated_data["result_config"] = {}
-                validated_data["custom_discipline_name"] = None
-            else:
-                validated_data["result_mode"] = Tournament.ResultMode.CUSTOM
-        else:
-            validated_data["result_mode"] = Tournament.ResultMode.SCORE
+        if discipline != Tournament.Discipline.CUSTOM:
             validated_data["custom_discipline_name"] = None
-            validated_data["result_config"] = {}
 
-        validated_data["format_config"] = _normalize_format_config(
-            discipline,
-            validated_data.get("format_config"),
+        tournament = super().create(validated_data)
+
+        division_payload = division_payload or _normalize_division_config(
+            serializer=self,
+            discipline=tournament.discipline,
+            custom_discipline_name=tournament.custom_discipline_name,
+            division_source={
+                "competition_type": tournament.competition_type,
+                "competition_model": tournament.competition_model,
+                "tournament_format": tournament.tournament_format,
+                "format_config": tournament.format_config,
+                "result_mode": tournament.result_mode,
+                "result_config": tournament.result_config,
+            },
         )
 
-        if validated_data["result_mode"] == Tournament.ResultMode.CUSTOM:
-            validated_data["result_config"] = _normalize_result_config(
-                validated_data.get("result_mode"),
-                validated_data.get("result_config"),
+        division = Division.objects.create(
+            tournament=tournament,
+            name=division_name,
+            is_default=True,
+            status=tournament.status,
+            **division_payload,
+        )
+
+        _sync_legacy_tournament_config(tournament, division)
+        tournament.save(
+            update_fields=[
+                "competition_type",
+                "competition_model",
+                "tournament_format",
+                "format_config",
+                "result_mode",
+                "result_config",
+                "custom_discipline_name",
+            ]
+        )
+
+        return tournament
+
+    @transaction.atomic
+    def update(self, instance: Tournament, validated_data):
+        division_payload = validated_data.pop("_division_payload", None)
+        division_name = validated_data.pop("_division_name", None)
+        validated_data.pop("division_id", None)
+        validated_data.pop("division_slug", None)
+        validated_data.pop("division_name", None)
+
+        # Konfiguracja sportowa jest utrzymywana w aktywnej dywizji, a nie w rekordzie turnieju.
+        for field in DIVISION_CONFIG_FIELDS:
+            validated_data.pop(field, None)
+
+        if validated_data.get("discipline") != Tournament.Discipline.CUSTOM and "discipline" in validated_data:
+            validated_data["custom_discipline_name"] = None
+
+        instance = super().update(instance, validated_data)
+
+        division = _resolve_division_for_serializer(self, instance, required=False)
+        if division is None:
+            division = Division.objects.create(
+                tournament=instance,
+                name=(division_name or "Dywizja główna"),
+                is_default=True,
+                status=instance.status,
+                **(division_payload or instance.build_default_division_payload()),
             )
-        else:
-            validated_data["result_config"] = {}
 
-        if "entry_mode" in validated_data:
-            validated_data["entry_mode"] = self.validate_entry_mode(validated_data["entry_mode"])
+        if division_name is not None:
+            division.name = division_name
 
-        return super().create(validated_data)
+        if division_payload is not None:
+            for field, value in division_payload.items():
+                setattr(division, field, value)
+
+        division.save()
+
+        if division.is_default:
+            _sync_legacy_tournament_config(instance, division)
+            instance.save(
+                update_fields=[
+                    "competition_type",
+                    "competition_model",
+                    "tournament_format",
+                    "format_config",
+                    "result_mode",
+                    "result_config",
+                ]
+            )
+
+        return instance
+
+    # ===== Pola pochodne =====
 
     def get_my_role(self, obj):
         request = self.context.get("request")
@@ -563,10 +826,15 @@ class TournamentSerializer(serializers.ModelSerializer):
         return base
 
     def get_schedule_targets(self, obj: Tournament) -> dict:
+        division = self._get_active_division(obj)
         stages_payload = []
         groups_payload = []
 
-        for stage in obj.stages.all().order_by("order"):
+        stages_qs = obj.stages.all()
+        if division is not None:
+            stages_qs = stages_qs.filter(division=division)
+
+        for stage in stages_qs.order_by("order"):
             stages_payload.append(
                 {
                     "stage_id": stage.id,
@@ -610,22 +878,40 @@ class TournamentSerializer(serializers.ModelSerializer):
         return f"Etap {stage.order}"
 
     def get_matches_started(self, obj: Tournament) -> bool:
-        return (
-            obj.matches.exclude(home_team__name=BYE_TEAM_NAME)
-            .exclude(away_team__name=BYE_TEAM_NAME)
-            .filter(status__in=(Match.Status.IN_PROGRESS, Match.Status.FINISHED))
-            .exists()
-        )
+        division = self._get_active_division(obj)
+        qs = obj.matches.exclude(home_team__name=BYE_TEAM_NAME).exclude(away_team__name=BYE_TEAM_NAME)
+
+        if division is not None:
+            qs = qs.filter(stage__division=division)
+
+        return qs.filter(status__in=(Match.Status.IN_PROGRESS, Match.Status.FINISHED)).exists()
 
 
 class TournamentMetaUpdateSerializer(serializers.ModelSerializer):
-    # Serializer ogranicza edycję do lekkich pól opisowych bez resetu konfiguracji.
     stage_schedule = StageScheduleEntrySerializer(many=True, required=False, write_only=True)
     group_schedule = GroupScheduleEntrySerializer(many=True, required=False, write_only=True)
+    division_id = serializers.IntegerField(required=False, write_only=True)
+    division_slug = serializers.CharField(required=False, write_only=True)
 
     class Meta:
         model = Tournament
-        fields = ("start_date", "end_date", "location", "description", "stage_schedule", "group_schedule")
+        fields = (
+            "start_date",
+            "end_date",
+            "location",
+            "description",
+            "stage_schedule",
+            "group_schedule",
+            "division_id",
+            "division_slug",
+        )
+
+    def _get_active_division(self) -> Division | None:
+        tournament: Tournament = self.instance
+
+        serializer = TournamentSerializer(context=self.context)
+        serializer.instance = tournament
+        return _resolve_division_for_serializer(serializer, tournament, required=False)
 
     def validate(self, attrs):
         start = attrs.get("start_date", getattr(self.instance, "start_date", None))
@@ -635,6 +921,13 @@ class TournamentMetaUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"end_date": "Data zakończenia nie może być wcześniejsza niż data rozpoczęcia."}
             )
+
+        division_id = attrs.pop("division_id", None)
+        division_slug = attrs.pop("division_slug", None)
+        if division_id is not None:
+            self.context["division_id"] = division_id
+        if division_slug not in (None, ""):
+            self.context["division_slug"] = division_slug
 
         self._validate_schedule_entries(
             attrs.get("stage_schedule") or [],
@@ -646,10 +939,13 @@ class TournamentMetaUpdateSerializer(serializers.ModelSerializer):
         return attrs
 
     def _validate_schedule_entries(self, stage_schedule, group_schedule, *, start, end):
-        stage_ids = set(self.instance.stages.values_list("id", flat=True))
-        group_ids = set(
-            self.instance.stages.all().values_list("groups__id", flat=True)
-        )
+        division = self._get_active_division()
+        stages_qs = self.instance.stages.all()
+        if division is not None:
+            stages_qs = stages_qs.filter(division=division)
+
+        stage_ids = set(stages_qs.values_list("id", flat=True))
+        group_ids = set(stages_qs.values_list("groups__id", flat=True))
         group_ids.discard(None)
 
         def _validate_range(prefix: str, payload: dict):
@@ -676,9 +972,14 @@ class TournamentMetaUpdateSerializer(serializers.ModelSerializer):
         group_schedule = validated_data.pop("group_schedule", None)
 
         instance = super().update(instance, validated_data)
+        division = self._get_active_division()
+
+        stages_qs = instance.stages.all()
+        if division is not None:
+            stages_qs = stages_qs.filter(division=division)
 
         if stage_schedule is not None:
-            stages = {stage.id: stage for stage in instance.stages.all()}
+            stages = {stage.id: stage for stage in stages_qs}
             for entry in stage_schedule:
                 stage = stages.get(entry["stage_id"])
                 if not stage:
@@ -690,7 +991,7 @@ class TournamentMetaUpdateSerializer(serializers.ModelSerializer):
 
         if group_schedule is not None:
             groups = {}
-            for stage in instance.stages.all().prefetch_related("groups"):
+            for stage in stages_qs.prefetch_related("groups"):
                 for group in stage.groups.all():
                     groups[group.id] = group
 

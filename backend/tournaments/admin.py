@@ -1,6 +1,10 @@
+# backend/tournaments/admin.py
+# Plik definiuje konfigurację panelu administracyjnego dla modeli turniejowych, live i dywizji.
+
 from django.contrib import admin
 
 from .models import (
+    Division,
     Match,
     MatchCommentaryEntry,
     Team,
@@ -9,21 +13,19 @@ from .models import (
 )
 
 
-# ============================================================
-# INLINE: DRUŻYNY TURNIEJU
-# ============================================================
+class DivisionInline(admin.TabularInline):
+    model = Division
+    extra = 0
+    fields = ("name", "created_at")
+    readonly_fields = ("created_at",)
+    show_change_link = True
 
 
 class TeamInline(admin.TabularInline):
     model = Team
     extra = 0
-    fields = ("name", "is_active")
+    fields = ("division", "name", "is_active")
     show_change_link = True
-
-
-# ============================================================
-# INLINE: MECZE TURNIEJU
-# ============================================================
 
 
 class MatchInline(admin.TabularInline):
@@ -31,26 +33,22 @@ class MatchInline(admin.TabularInline):
     extra = 0
 
     fields = (
+        "division_name",
         "stage",
         "group",
         "round_number",
         "home_team",
         "away_team",
-
-        # ===== WYNIKI =====
         "home_score",
         "away_score",
-
-        # ===== HARMONOGRAM =====
         "scheduled_date",
         "scheduled_time",
         "location",
-
-        # ===== STATUS =====
         "status",
     )
 
     readonly_fields = (
+        "division_name",
         "stage",
         "group",
         "round_number",
@@ -60,10 +58,14 @@ class MatchInline(admin.TabularInline):
 
     show_change_link = True
 
+    # Odczyt dywizji przez etap pozwala rozróżnić mecze wielu dywizji w jednym turnieju.
+    def division_name(self, obj):
+        if not obj or not getattr(obj, "stage_id", None):
+            return "-"
+        division = getattr(obj.stage, "division", None)
+        return division.name if division else "-"
 
-# ============================================================
-# TURNIEJ
-# ============================================================
+    division_name.short_description = "Dywizja"
 
 
 @admin.register(Tournament)
@@ -88,14 +90,24 @@ class TournamentAdmin(admin.ModelAdmin):
     search_fields = ("name",)
 
     inlines = [
+        DivisionInline,
         TeamInline,
         MatchInline,
     ]
 
 
-# ============================================================
-# LIVE: KOMENTARZE MECZOWE
-# ============================================================
+@admin.register(Division)
+class DivisionAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "name",
+        "tournament",
+        "created_at",
+    )
+
+    list_filter = ("tournament",)
+    search_fields = ("name", "tournament__name")
+    ordering = ("tournament", "id")
 
 
 @admin.register(MatchCommentaryEntry)
@@ -115,6 +127,7 @@ class MatchCommentaryEntryAdmin(admin.ModelAdmin):
         "period",
         "time_source",
         "created_at",
+        "match__stage__division",
     )
 
     search_fields = (
@@ -122,6 +135,7 @@ class MatchCommentaryEntryAdmin(admin.ModelAdmin):
         "match__home_team__name",
         "match__away_team__name",
         "match__tournament__name",
+        "match__stage__division__name",
     )
 
     raw_id_fields = (
@@ -133,11 +147,6 @@ class MatchCommentaryEntryAdmin(admin.ModelAdmin):
         "-created_at",
         "-id",
     )
-
-
-# ============================================================
-# LIVE: SŁOWNIK FRAZ
-# ============================================================
 
 
 @admin.register(TournamentCommentaryPhrase)

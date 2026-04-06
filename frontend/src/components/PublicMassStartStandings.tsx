@@ -76,10 +76,32 @@ type TournamentMassStartResultsResponseDTO = {
 
 type Props = {
   tournamentId: number;
+  divisionId?: number;
   accessCode?: string;
   refreshKey?: number;
   resultConfig?: TournamentResultConfigDTO;
 };
+
+function appendQueryParams(
+  url: string,
+  params: Record<string, string | number | boolean | null | undefined>
+): string {
+  const queryIndex = url.indexOf("?");
+  const base = queryIndex >= 0 ? url.slice(0, queryIndex) : url;
+  const rawQuery = queryIndex >= 0 ? url.slice(queryIndex + 1) : "";
+  const search = new URLSearchParams(rawQuery);
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === null || typeof value === "undefined" || value === "") {
+      search.delete(key);
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return query ? `${base}?${query}` : base;
+}
 
 function getResolvedValueKind(resultConfig?: TournamentResultConfigDTO): CustomResultValueKind {
   const direct = String(resultConfig?.value_kind ?? "").toUpperCase();
@@ -200,6 +222,7 @@ function resultMetaText(valueKind: CustomResultValueKind, unitLabel: string) {
 
 export default function PublicMassStartStandings({
   tournamentId,
+  divisionId,
   accessCode,
   refreshKey = 0,
   resultConfig,
@@ -209,10 +232,14 @@ export default function PublicMassStartStandings({
   const [payload, setPayload] = useState<TournamentMassStartResultsResponseDTO | null>(null);
   const [selectedStageId, setSelectedStageId] = useState<number | null>(null);
 
-  const qs = useMemo(() => {
-    const code = String(accessCode ?? "").trim();
-    return code ? `?code=${encodeURIComponent(code)}` : "";
-  }, [accessCode]);
+  const qs = useMemo(
+    () =>
+      appendQueryParams("", {
+        code: String(accessCode ?? "").trim() || undefined,
+        division_id: divisionId ?? undefined,
+      }),
+    [accessCode, divisionId]
+  );
 
   const valueKind = useMemo(() => getResolvedValueKind(resultConfig), [resultConfig]);
   const unitLabel = useMemo(
@@ -257,7 +284,7 @@ export default function PublicMassStartStandings({
     return () => {
       alive = false;
     };
-  }, [qs, refreshKey, tournamentId]);
+  }, [divisionId, qs, refreshKey, tournamentId]);
 
   const stages = useMemo(() => {
     return Array.isArray(payload?.stages)

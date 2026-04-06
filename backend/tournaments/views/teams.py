@@ -1,5 +1,5 @@
 # backend/tournaments/views/teams.py
-# Plik obsługuje listę drużyn, edycję, składy oraz wnioski o zmianę nazwy uczestnika.
+# Plik obsługuje listę uczestników, edycję, składy oraz wnioski o zmianę nazwy z obsługą aktywnej dywizji.
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from tournaments.access import (
     user_is_registered_participant,
 )
 from tournaments.models import (
+    Division,
     Match,
     Stage,
     Team,
@@ -36,7 +37,7 @@ from tournaments.models import (
 from tournaments.serializers import TeamSerializer, TeamUpdateSerializer, TournamentSerializer
 from tournaments.services.match_generation import ensure_matches_generated
 
-from ._helpers import public_access_or_403
+from ._helpers import public_access_or_403, resolve_request_division
 
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
 
@@ -45,59 +46,71 @@ def _norm_name(value: str) -> str:
     return " ".join((value or "").strip().split())
 
 
-def _tournament_real_started(tournament: Tournament) -> bool:
-    # Start liczony jest tylko po realnym meczu, bez technicznego BYE.
+def _current_division(request, tournament: Tournament) -> Optional[Division]:
+    return resolve_request_division(request, tournament)
+
+
+def _tournament_real_started(tournament: Tournament, division: Optional[Division] = None) -> bool:
+    qs = Match.objects.filter(tournament=tournament)
+    if division is not None:
+        qs = qs.filter(stage__division=division)
+
     return (
-        Match.objects.filter(tournament=tournament)
-        .exclude(Q(home_team__name__iexact=BYE_TEAM_NAME) | Q(away_team__name__iexact=BYE_TEAM_NAME))
+        qs.exclude(Q(home_team__name__iexact=BYE_TEAM_NAME) | Q(away_team__name__iexact=BYE_TEAM_NAME))
         .filter(status__in=(Match.Status.IN_PROGRESS, Match.Status.FINISHED))
         .exists()
     )
 
 
 def _user_owns_team_slot(user, tournament: Tournament, team: Team) -> bool:
-    # Własność slotu wynika z rejestracji albo legacy registered_user.
     if not user or not user.is_authenticated:
         return False
 
     if team.registered_user_id == user.id:
         return True
 
-    return TournamentRegistration.objects.filter(
+    reg_qs = TournamentRegistration.objects.filter(
         tournament=tournament,
         user=user,
         team=team,
-    ).exists()
+    )
+    if team.division_id:
+        reg_qs = reg_qs.filter(division_id=team.division_id)
+    return reg_qs.exists()
 
 
 def _resolve_participant_team(
     *,
     tournament: Tournament,
+    division: Optional[Division],
     user,
     payload_team_id: Optional[int],
 ) -> Team:
-    # team_id z payloadu jest dozwolone tylko dla własnego slotu.
+    team_qs = Team.objects.filter(tournament=tournament, is_active=True)
+    if division is not None:
+        team_qs = team_qs.filter(division=division)
+
     if payload_team_id:
-        team = get_object_or_404(Team, pk=payload_team_id, tournament=tournament, is_active=True)
+        team = get_object_or_404(team_qs, pk=payload_team_id)
         if team.name == BYE_TEAM_NAME:
             raise ValueError("Nie można zmieniać nazwy BYE.")
         if not _user_owns_team_slot(user, tournament, team):
             raise PermissionError("To nie jest Twój slot uczestnika.")
         return team
 
-    reg = (
-        TournamentRegistration.objects.filter(tournament=tournament, user=user)
-        .select_related("team")
-        .first()
-    )
+    reg_qs = TournamentRegistration.objects.filter(tournament=tournament, user=user).select_related("team")
+    if division is not None:
+        reg_qs = reg_qs.filter(division=division)
+
+    reg = reg_qs.first()
     if reg and reg.team_id:
-        team = get_object_or_404(Team, pk=reg.team_id, tournament=tournament, is_active=True)
+        team = get_object_or_404(team_qs, pk=reg.team_id)
         if team.name == BYE_TEAM_NAME:
             raise ValueError("Nie można zmieniać nazwy BYE.")
         return team
 
     team = (
-        Team.objects.filter(tournament=tournament, registered_user=user, is_active=True)
+        team_qs.filter(registered_user=user)
         .exclude(name=BYE_TEAM_NAME)
         .order_by("id")
         .first()
@@ -113,7 +126,6 @@ def _roster_feature_enabled(tournament: Tournament) -> bool:
 
 
 def _allow_team_owner_roster_edit(tournament: Tournament) -> bool:
-    # Domyślnie właściciel drużyny nie edytuje składu bez jawnego włączenia.
     cfg = tournament.format_config or {}
     return bool(cfg.get("allow_team_owner_roster_edit", False))
 
@@ -164,11 +176,15 @@ class TournamentTeamListView(ListAPIView):
         if not user_can_view_tournament(self.request.user, tournament):
             return Team.objects.none()
 
-        return (
+        division = _current_division(self.request, tournament)
+        qs = (
             tournament.teams.filter(is_active=True)
             .exclude(name=BYE_TEAM_NAME)
-            .order_by("id")
         )
+        if division is not None:
+            qs = qs.filter(division=division)
+
+        return qs.order_by("id")
 
 
 class TournamentTeamUpdateView(APIView):
@@ -176,20 +192,22 @@ class TournamentTeamUpdateView(APIView):
 
     def patch(self, request, pk, team_id):
         tournament = get_object_or_404(Tournament, pk=pk)
+        division = _current_division(request, tournament)
 
-        # Zmiana nazwy drużyny wymaga teams_edit.
         if not can_edit_teams(request.user, tournament):
             return Response(
                 {"detail": "Nie masz uprawnień do edycji drużyn/uczestników. Dostępny jest tylko podgląd."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        team = get_object_or_404(
-            Team,
-            pk=team_id,
+        team_qs = Team.objects.filter(
             tournament=tournament,
             is_active=True,
         )
+        if division is not None:
+            team_qs = team_qs.filter(division=division)
+
+        team = get_object_or_404(team_qs, pk=team_id)
 
         if team.name == BYE_TEAM_NAME:
             return Response(
@@ -197,7 +215,12 @@ class TournamentTeamUpdateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        serializer = TeamUpdateSerializer(team, data=request.data, partial=True)
+        serializer = TeamUpdateSerializer(
+            team,
+            data=request.data,
+            partial=True,
+            context={"tournament": tournament, "request": request, "division": division},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
@@ -210,11 +233,18 @@ class TournamentTeamSetupView(APIView):
     @transaction.atomic
     def post(self, request, pk):
         tournament = get_object_or_404(Tournament, pk=pk)
+        division = _current_division(request, tournament)
 
         if not can_edit_teams(request.user, tournament):
             return Response(
                 {"detail": "Nie masz uprawnień do edycji drużyn/uczestników. Dostępny jest tylko podgląd."},
                 status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if division is None:
+            return Response(
+                {"detail": "Brak aktywnej dywizji."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         is_organizer = tournament.organizer_id == request.user.id
@@ -226,9 +256,8 @@ class TournamentTeamSetupView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        real_started = _tournament_real_started(tournament)
+        real_started = _tournament_real_started(tournament, division=division)
 
-        # Po realnym starcie blokada dotyczy tylko asystenta.
         if is_assistant and real_started:
             return Response(
                 {"detail": "Turniej już się rozpoczął - asystent nie może zmieniać liczby uczestników."},
@@ -247,16 +276,18 @@ class TournamentTeamSetupView(APIView):
         if requested_count < 2:
             return Response({"detail": "Liczba uczestników musi wynosić co najmniej 2."}, status=status.HTTP_400_BAD_REQUEST)
 
-        Team.objects.filter(tournament=tournament, name=BYE_TEAM_NAME).update(is_active=False)
+        Team.objects.filter(tournament=tournament, division=division, name=BYE_TEAM_NAME).update(is_active=False)
 
         active_before = (
-            Team.objects.filter(tournament=tournament, is_active=True)
+            Team.objects.filter(tournament=tournament, division=division, is_active=True)
             .exclude(name=BYE_TEAM_NAME)
             .count()
         )
-        had_structure = Stage.objects.filter(tournament=tournament).exists()
+        had_structure = Stage.objects.filter(tournament=tournament, division=division).exists()
 
-        all_real_teams = list(tournament.teams.exclude(name=BYE_TEAM_NAME).order_by("id"))
+        all_real_teams = list(
+            tournament.teams.filter(division=division).exclude(name=BYE_TEAM_NAME).order_by("id")
+        )
         existing_total = len(all_real_teams)
 
         name_prefix = (
@@ -268,11 +299,13 @@ class TournamentTeamSetupView(APIView):
         if existing_total < requested_count:
             Team.objects.bulk_create(
                 [
-                    Team(tournament=tournament, name=f"{name_prefix} {i}", is_active=True)
+                    Team(tournament=tournament, division=division, name=f"{name_prefix} {i}", is_active=True)
                     for i in range(existing_total + 1, requested_count + 1)
                 ]
             )
-            all_real_teams = list(tournament.teams.exclude(name=BYE_TEAM_NAME).order_by("id"))
+            all_real_teams = list(
+                tournament.teams.filter(division=division).exclude(name=BYE_TEAM_NAME).order_by("id")
+            )
 
         changed = []
         for idx, team in enumerate(all_real_teams):
@@ -285,7 +318,7 @@ class TournamentTeamSetupView(APIView):
             Team.objects.bulk_update(changed, ["is_active"])
 
         active_after = (
-            Team.objects.filter(tournament=tournament, is_active=True)
+            Team.objects.filter(tournament=tournament, division=division, is_active=True)
             .exclude(name=BYE_TEAM_NAME)
             .count()
         )
@@ -294,32 +327,36 @@ class TournamentTeamSetupView(APIView):
         should_upgrade = (active_after >= 2) and (count_changed or not had_structure)
 
         reset_done = False
-        if should_upgrade and tournament.status != Tournament.Status.DRAFT:
-            tournament.status = Tournament.Status.DRAFT
-            tournament.save(update_fields=["status"])
+        if should_upgrade and division.status != Tournament.Status.DRAFT:
+            division.status = Tournament.Status.DRAFT
+            division.save(update_fields=["status"])
             reset_done = True
 
         if should_upgrade:
-            ensure_matches_generated(tournament)
-            if tournament.status == Tournament.Status.DRAFT:
-                tournament.status = Tournament.Status.CONFIGURED
-                tournament.save(update_fields=["status"])
+            try:
+                ensure_matches_generated(tournament=tournament, division=division)
+            except TypeError:
+                ensure_matches_generated(tournament)
+
+            if division.status == Tournament.Status.DRAFT:
+                division.status = Tournament.Status.CONFIGURED
+                division.save(update_fields=["status"])
 
         detail = "Uczestnicy zostali zaktualizowani."
         if reset_done:
-            detail += " Rozgrywki zostały przebudowane (reset etapów i meczów)."
+            detail += " Rozgrywki tej dywizji zostały przebudowane."
         elif should_upgrade:
-            detail += " Rozgrywki zostały wygenerowane."
+            detail += " Rozgrywki tej dywizji zostały wygenerowane."
         else:
             detail += " (Bez przebudowy rozgrywek.)"
 
         if is_organizer and real_started and should_upgrade:
             detail += (
-                " UWAGA: turniej był już rozpoczęty - zmiana liczby uczestników usuwa istniejące mecze, wyniki i harmonogram."
+                " UWAGA: dywizja była już rozpoczęta - zmiana liczby uczestników usuwa istniejące mecze, wyniki i harmonogram tej dywizji."
             )
 
         active_teams = (
-            tournament.teams.filter(is_active=True)
+            tournament.teams.filter(division=division, is_active=True)
             .exclude(name=BYE_TEAM_NAME)
             .order_by("id")
         )
@@ -328,7 +365,8 @@ class TournamentTeamSetupView(APIView):
             {
                 "detail": detail,
                 "reset_done": reset_done,
-                "tournament": TournamentSerializer(tournament, context={"request": request}).data,
+                "division_id": division.id,
+                "tournament": TournamentSerializer(tournament, context={"request": request, "division": division}).data,
                 "teams": TeamSerializer(active_teams, many=True).data,
                 "teams_count": active_after,
                 "upgraded": should_upgrade,
@@ -519,6 +557,7 @@ class TournamentMyTeamPlayersView(APIView):
 
     def get(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
+        division = _current_division(request, tournament)
 
         if not user_can_view_tournament(request.user, tournament):
             return Response({"detail": "Brak dostępu do turnieju."}, status=status.HTTP_403_FORBIDDEN)
@@ -527,7 +566,7 @@ class TournamentMyTeamPlayersView(APIView):
             return Response({"detail": "Składy są dostępne tylko dla turniejów drużynowych."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            team = _resolve_participant_team(tournament=tournament, user=request.user, payload_team_id=None)
+            team = _resolve_participant_team(tournament=tournament, division=division, user=request.user, payload_team_id=None)
         except Exception:
             return Response({"detail": "Brak przypisanej drużyny."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -550,12 +589,13 @@ class TournamentMyTeamPlayersView(APIView):
     @transaction.atomic
     def put(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
+        division = _current_division(request, tournament)
 
         if not _roster_feature_enabled(tournament):
             return Response({"detail": "Składy są dostępne tylko dla turniejów drużynowych."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            team = _resolve_participant_team(tournament=tournament, user=request.user, payload_team_id=None)
+            team = _resolve_participant_team(tournament=tournament, division=division, user=request.user, payload_team_id=None)
         except PermissionError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
         except Exception:
@@ -579,6 +619,7 @@ class TournamentTeamNameChangeRequestListView(APIView):
 
     def get(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
+        division = _current_division(request, tournament)
 
         status_q = _norm_name(str(request.query_params.get("status") or "")).upper() or None
         team_id_q = request.query_params.get("team_id")
@@ -593,6 +634,9 @@ class TournamentTeamNameChangeRequestListView(APIView):
                 .select_related("team", "requested_by")
                 .order_by("-created_at")
             )
+
+            if division is not None:
+                qs = qs.filter(team__division=division)
 
             if status_q:
                 qs = qs.filter(status=status_q)
@@ -616,7 +660,6 @@ class TournamentTeamNameChangeRequestListView(APIView):
             ]
             return Response({"count": len(items), "results": items}, status=status.HTTP_200_OK)
 
-        # Dla panelu bez właściwego uprawnienia zwracana jest pusta lista zamiast 403.
         if request.user and getattr(request.user, "is_authenticated", False):
             if tournament.organizer_id == request.user.id or get_membership(request.user, tournament) is not None:
                 return Response({"count": 0, "results": []}, status=status.HTTP_200_OK)
@@ -633,6 +676,9 @@ class TournamentTeamNameChangeRequestListView(APIView):
             .order_by("-created_at")
         )
 
+        if division is not None:
+            qs = qs.filter(team__division=division)
+
         if status_q:
             qs = qs.filter(status=status_q)
 
@@ -640,6 +686,7 @@ class TournamentTeamNameChangeRequestListView(APIView):
             try:
                 team = _resolve_participant_team(
                     tournament=tournament,
+                    division=division,
                     user=request.user,
                     payload_team_id=team_id_int,
                 )
@@ -663,6 +710,7 @@ class TournamentTeamNameChangeRequestListView(APIView):
     @transaction.atomic
     def post(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
+        division = _current_division(request, tournament)
 
         if not user_can_view_tournament(request.user, tournament):
             return Response({"detail": "Brak dostępu do turnieju."}, status=status.HTTP_403_FORBIDDEN)
@@ -692,6 +740,7 @@ class TournamentTeamNameChangeRequestListView(APIView):
         try:
             team = _resolve_participant_team(
                 tournament=tournament,
+                division=division,
                 user=request.user,
                 payload_team_id=payload_team_id_int,
             )
@@ -739,6 +788,7 @@ class TournamentTeamNameChangeRequestCreateView(APIView):
     @transaction.atomic
     def post(self, request, pk: int, team_id: int):
         tournament = get_object_or_404(Tournament, pk=pk)
+        division = _current_division(request, tournament)
 
         if not user_can_view_tournament(request.user, tournament):
             return Response({"detail": "Brak dostępu do turnieju."}, status=status.HTTP_403_FORBIDDEN)
@@ -755,7 +805,10 @@ class TournamentTeamNameChangeRequestCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        team = get_object_or_404(Team, pk=team_id, tournament=tournament, is_active=True)
+        team_qs = Team.objects.filter(pk=team_id, tournament=tournament, is_active=True)
+        if division is not None:
+            team_qs = team_qs.filter(division=division)
+        team = get_object_or_404(team_qs)
 
         if team.name == BYE_TEAM_NAME:
             return Response({"detail": "Nie można zmieniać BYE."}, status=status.HTTP_400_BAD_REQUEST)
@@ -829,7 +882,10 @@ class TournamentTeamNameChangeRequestApproveView(APIView):
             team.name = new_name
             team.save(update_fields=["name"])
 
-        TournamentRegistration.objects.filter(tournament=tournament, team=team).update(display_name=new_name)
+        reg_qs = TournamentRegistration.objects.filter(tournament=tournament, team=team)
+        if team.division_id:
+            reg_qs = reg_qs.filter(division_id=team.division_id)
+        reg_qs.update(display_name=new_name)
 
         req.status = TeamNameChangeRequest.Status.APPROVED
         req.decided_by = request.user

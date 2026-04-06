@@ -5,8 +5,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { apiFetch } from "../api";
-import { cn } from "../lib/cn";
+import DivisionSwitcher, {
+  type DivisionSwitcherItem,
+} from "../components/DivisionSwitcher";
 import { useTournamentWs, type TournamentWsEvent } from "../hooks/useTournamentWs";
+import { cn } from "../lib/cn";
 
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
@@ -22,6 +25,24 @@ import {
   type TabKey,
   type Tournament,
 } from "./_components/TournamentDetailTabs";
+
+type DivisionStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
+type DivisionSummaryDTO = DivisionSwitcherItem & {
+  status?: DivisionStatus;
+};
+
+function parseDivisionId(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) return null;
+  return parsed;
+}
+
+function withDivisionQuery(url: string, divisionId: number | null | undefined) {
+  if (!divisionId) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}division_id=${divisionId}`;
+}
 
 async function readDetail(res: Response): Promise<string | null> {
   const data = await res.json().catch(() => null);
@@ -53,7 +74,19 @@ export default function TournamentDetail() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
+  const requestedDivisionId = useMemo(() => {
+    return (
+      parseDivisionId(searchParams.get("division_id")) ??
+      parseDivisionId(searchParams.get("active_division_id"))
+    );
+  }, [searchParams]);
+
   const [tournament, setTournament] = useState<Tournament | null>(null);
+  const [divisions, setDivisions] = useState<DivisionSummaryDTO[]>([]);
+  const [activeDivisionId, setActiveDivisionId] = useState<number | null>(requestedDivisionId);
+  const [activeDivisionName, setActiveDivisionName] = useState<string | null>(null);
+  const effectiveDivisionId = requestedDivisionId ?? activeDivisionId;
+
   const [loading, setLoading] = useState(true);
 
   const [needsCode, setNeedsCode] = useState(false);
@@ -137,7 +170,11 @@ export default function TournamentDetail() {
 
     try {
       const code = accessCodeRef.current.trim();
-      const url = `/api/tournaments/${id}/` + (code ? `?code=${encodeURIComponent(code)}` : "");
+      const params = new URLSearchParams();
+      if (code) params.set("code", code);
+      if (effectiveDivisionId) params.set("division_id", String(effectiveDivisionId));
+
+      const url = `/api/tournaments/${id}/` + (params.toString() ? `?${params.toString()}` : "");
       const res = await apiFetch(url, { toastOnError: false });
 
       if (res.status === 403) {
@@ -155,6 +192,20 @@ export default function TournamentDetail() {
       if (!data) throw new Error("Nie udało się odczytać danych turnieju.");
 
       setTournament(data);
+      setDivisions(Array.isArray((data as any).divisions) ? ((data as any).divisions as DivisionSummaryDTO[]) : []);
+      setActiveDivisionId((data as any).active_division_id ?? effectiveDivisionId ?? null);
+      setActiveDivisionName((data as any).active_division_name ?? null);
+
+      if (
+        !requestedDivisionId &&
+        (data as any).active_division_id &&
+        Array.isArray((data as any).divisions) &&
+        ((data as any).divisions as DivisionSummaryDTO[]).length > 1
+      ) {
+        const next = new URLSearchParams(searchParams);
+        next.set("division_id", String((data as any).active_division_id));
+        setSearchParams(next, { replace: true });
+      }
 
       setIsPublishedDraft(Boolean(data.is_published));
       setAccessCodeDraft(data.access_code ?? "");
@@ -184,7 +235,7 @@ export default function TournamentDetail() {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [effectiveDivisionId, id, requestedDivisionId, searchParams, setSearchParams]);
 
   useEffect(() => {
     fetchTournament();
@@ -222,8 +273,8 @@ export default function TournamentDetail() {
 
   const onOpenPublicView = useCallback(() => {
     if (!tournament) return;
-    navigate(`/tournaments/${tournament.id}`);
-  }, [navigate, tournament]);
+    navigate(withDivisionQuery(`/tournaments/${tournament.id}`, effectiveDivisionId));
+  }, [effectiveDivisionId, navigate, tournament]);
 
   const onRefresh = useCallback(() => {
     fetchTournament();
@@ -638,6 +689,16 @@ export default function TournamentDetail() {
     }
   }, [allowJoinByCodeDraft, applyPatchedTournament, joinCodeDraft, participantsPreviewDraft, renameRequiresApprovalDraft, tournament]);
 
+  const handleDivisionSwitch = useCallback(
+    (nextDivisionId: number) => {
+      if (nextDivisionId === effectiveDivisionId) return;
+      const next = new URLSearchParams(searchParams);
+      next.set("division_id", String(nextDivisionId));
+      setSearchParams(next, { replace: false });
+    },
+    [effectiveDivisionId, searchParams, setSearchParams]
+  );
+
   if (needsCode) {
     return (
       <div className="mx-auto w-full max-w-xl px-4 py-8">
@@ -693,6 +754,23 @@ export default function TournamentDetail() {
         "[min-width:2560px]:max-w-[128rem]"
       )}
     >
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          {activeDivisionName ? (
+            <div className="text-sm text-slate-300">
+              Aktywna dywizja: <span className="text-slate-100">{activeDivisionName}</span>
+            </div>
+          ) : null}
+        </div>
+
+        <DivisionSwitcher
+          divisions={divisions}
+          activeDivisionId={effectiveDivisionId}
+          onChange={handleDivisionSwitch}
+          disabled={loading}
+        />
+      </div>
+
       <TournamentDetailTabs
         tournament={tournament}
         activeTab={activeTab}

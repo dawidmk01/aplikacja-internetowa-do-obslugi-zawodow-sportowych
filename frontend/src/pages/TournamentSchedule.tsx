@@ -1,11 +1,14 @@
 // frontend/src/pages/TournamentSchedule.tsx
 // Strona obsługuje harmonogram turnieju dla meczów par oraz harmonogram etapów i grup w trybie MASS_START.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 
 import { Calendar, ChevronUp, Clock, Eraser, MapPin } from "lucide-react";
 
 import { apiFetch } from "../api";
+import DivisionSwitcher, {
+  type DivisionSwitcherItem,
+} from "../components/DivisionSwitcher";
 import { useTournamentWs } from "../hooks/useTournamentWs";
 import { cn } from "../lib/cn";
 import { Card } from "../ui/Card";
@@ -32,6 +35,11 @@ import {
 // ---------------------------------------------------------------------------
 // DTO types
 // ---------------------------------------------------------------------------
+
+type DivisionStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
+type DivisionSummaryDTO = DivisionSwitcherItem & {
+  status?: DivisionStatus;
+};
 
 type ScheduleStageDTO = {
   stage_id: number;
@@ -62,6 +70,11 @@ type TournamentScheduleDTO = {
   end_date: string | null;
   location: string | null;
   tournament_format?: string | null;
+  active_division_id?: number | null;
+  active_division_name?: string | null;
+  active_division_slug?: string | null;
+  division_status?: DivisionStatus | null;
+  divisions?: DivisionSummaryDTO[];
   schedule_targets?: {
     stages: ScheduleStageDTO[];
     groups: ScheduleGroupDTO[];
@@ -101,6 +114,19 @@ type LastEditedEntity =
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function parseDivisionId(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) return null;
+  return parsed;
+}
+
+function withDivisionQuery(url: string, divisionId: number | null | undefined) {
+  if (!divisionId) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}division_id=${divisionId}`;
+}
 
 function isIsoDateBetween(value: string, min: string | null, max: string | null) {
   if (!value) return { ok: true as const };
@@ -419,7 +445,23 @@ function MassStartStageBlock({
 
 export default function TournamentSchedule() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
+
   const tournamentId = id ?? "";
+  const requestedDivisionId = useMemo(() => {
+    return (
+      parseDivisionId(searchParams.get("division_id")) ??
+      parseDivisionId(searchParams.get("active_division_id"))
+    );
+  }, [searchParams]);
+
+  const [divisions, setDivisions] = useState<DivisionSummaryDTO[]>([]);
+  const [activeDivisionId, setActiveDivisionId] = useState<number | null>(
+    requestedDivisionId
+  );
+  const [activeDivisionName, setActiveDivisionName] = useState<string | null>(null);
+
+  const effectiveDivisionId = requestedDivisionId ?? activeDivisionId;
 
   const [tournament, setTournament] = useState<TournamentScheduleDTO | null>(null);
   const [matches, setMatches] = useState<MatchScheduleDTO[]>([]);
@@ -436,7 +478,7 @@ export default function TournamentSchedule() {
 
   const matchAutosave = useAutosave<MatchDraft>({
     onSave: async (matchId, data) => {
-      const res = await apiFetch(`/api/matches/${matchId}/`, {
+      const res = await apiFetch(withDivisionQuery(`/api/matches/${matchId}/`, effectiveDivisionId), {
         method: "PATCH",
         toastOnError: false,
         headers: { "Content-Type": "application/json" },
@@ -459,7 +501,7 @@ export default function TournamentSchedule() {
       const datesCheck = validateTournamentDates(data.start_date, data.end_date);
       if (!datesCheck.ok) throw new Error(datesCheck.message);
 
-      const res = await apiFetch(`/api/tournaments/${tournamentId}/meta/`, {
+      const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/meta/`, effectiveDivisionId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -479,6 +521,9 @@ export default function TournamentSchedule() {
       const payload = (await res.json().catch(() => null)) as TournamentScheduleDTO | null;
       if (payload) {
         setTournament(payload);
+        setDivisions(Array.isArray(payload.divisions) ? payload.divisions : []);
+        setActiveDivisionId(payload.active_division_id ?? effectiveDivisionId ?? null);
+        setActiveDivisionName(payload.active_division_name ?? null);
       } else {
         setTournament((prev) =>
           prev
@@ -498,6 +543,30 @@ export default function TournamentSchedule() {
     },
   });
 
+  const matchAutosaveRef = useRef(matchAutosave);
+  const tournamentAutosaveRef = useRef(tournamentAutosave);
+  const matchIdsRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    matchAutosaveRef.current = matchAutosave;
+  }, [matchAutosave]);
+
+  useEffect(() => {
+    tournamentAutosaveRef.current = tournamentAutosave;
+  }, [tournamentAutosave]);
+
+  useEffect(() => {
+    matchIdsRef.current = matches.map((match) => match.id);
+  }, [matches]);
+
+  const resetDivisionScopedAutosave = useCallback(() => {
+    tournamentAutosaveRef.current.clearDraft("meta");
+    matchIdsRef.current.forEach((matchId) => {
+      matchAutosaveRef.current.clearDraft(matchId);
+    });
+    setLastEditedEntity(null);
+  }, []);
+
   // -------------------------------------------------------------------------
   // Data loading
   // -------------------------------------------------------------------------
@@ -509,18 +578,37 @@ export default function TournamentSchedule() {
     const init = async () => {
       try {
         setLoading(true);
+        resetDivisionScopedAutosave();
+
         const [tRes, mRes] = await Promise.all([
-          apiFetch(`/api/tournaments/${tournamentId}/`),
-          apiFetch(`/api/tournaments/${tournamentId}/matches/`),
+          apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/`, requestedDivisionId)),
+          apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/matches/`, requestedDivisionId)),
         ]);
         if (!tRes.ok || !mRes.ok) throw new Error("Błąd ładowania danych.");
+
         const tData = (await tRes.json()) as TournamentScheduleDTO;
         const raw = await mRes.json();
         if (!alive) return;
+
         setTournament(tData);
+        setDivisions(Array.isArray(tData.divisions) ? tData.divisions : []);
+        setActiveDivisionId(tData.active_division_id ?? requestedDivisionId ?? null);
+        setActiveDivisionName(tData.active_division_name ?? null);
         setMatches(normalizeMatches(raw));
-      } catch {
-        toast.error("Wystąpił błąd podczas ładowania.");
+
+        const resolvedDivisionId = tData.active_division_id ?? requestedDivisionId ?? null;
+        if (
+          !requestedDivisionId &&
+          resolvedDivisionId &&
+          Array.isArray(tData.divisions) &&
+          tData.divisions.length > 1
+        ) {
+          const nextSearch = new URLSearchParams(window.location.search);
+          nextSearch.set("division_id", String(resolvedDivisionId));
+          setSearchParams(nextSearch, { replace: true });
+        }
+      } catch (e: any) {
+        toast.error(e?.message || "Wystąpił błąd podczas ładowania.");
       } finally {
         if (alive) setLoading(false);
       }
@@ -530,7 +618,7 @@ export default function TournamentSchedule() {
     return () => {
       alive = false;
     };
-  }, [tournamentId]);
+  }, [tournamentId, requestedDivisionId, resetDivisionScopedAutosave, setSearchParams]);
 
   // -------------------------------------------------------------------------
   // WebSocket reload
@@ -540,12 +628,15 @@ export default function TournamentSchedule() {
     if (!tournamentId) return;
     try {
       const [tRes, mRes] = await Promise.all([
-        apiFetch(`/api/tournaments/${tournamentId}/`),
-        apiFetch(`/api/tournaments/${tournamentId}/matches/`),
+        apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/`, effectiveDivisionId)),
+        apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/matches/`, effectiveDivisionId)),
       ]);
       if (tRes.ok) {
         const tData = (await tRes.json()) as TournamentScheduleDTO;
         setTournament(tData);
+        setDivisions(Array.isArray(tData.divisions) ? tData.divisions : []);
+        setActiveDivisionId(tData.active_division_id ?? effectiveDivisionId ?? null);
+        setActiveDivisionName(tData.active_division_name ?? null);
       }
       if (mRes.ok) {
         const raw = await mRes.json();
@@ -554,7 +645,7 @@ export default function TournamentSchedule() {
     } catch (e: any) {
       toast.error(e?.message || "Nie udało się odświeżyć danych");
     }
-  }, [tournamentId]);
+  }, [effectiveDivisionId, tournamentId]);
 
   const reloadTimerRef = useRef<number | null>(null);
   const requestMatchesReload = useCallback(() => {
@@ -575,6 +666,17 @@ export default function TournamentSchedule() {
       }
     },
   });
+
+  const handleDivisionSwitch = useCallback(
+    async (nextDivisionId: number) => {
+      if (loading || nextDivisionId === effectiveDivisionId) return;
+
+      const nextSearch = new URLSearchParams(searchParams);
+      nextSearch.set("division_id", String(nextDivisionId));
+      setSearchParams(nextSearch, { replace: false });
+    },
+    [effectiveDivisionId, loading, searchParams, setSearchParams]
+  );
 
   // -------------------------------------------------------------------------
   // Derived state
@@ -815,6 +917,29 @@ export default function TournamentSchedule() {
     </Card>
   ) : null;
 
+  const headerSlot = (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          {activeDivisionName ? (
+            <div className="text-sm text-slate-300">
+              Aktywna dywizja: <span className="text-slate-100">{activeDivisionName}</span>
+            </div>
+          ) : null}
+        </div>
+
+        <DivisionSwitcher
+          divisions={divisions}
+          activeDivisionId={effectiveDivisionId}
+          disabled={loading}
+          onChange={handleDivisionSwitch}
+        />
+      </div>
+
+      {tournamentMetaCard}
+    </div>
+  );
+
   // -------------------------------------------------------------------------
   // Match mode helpers
   // -------------------------------------------------------------------------
@@ -1027,7 +1152,7 @@ export default function TournamentSchedule() {
         title="Harmonogram i lokalizacja"
         description="Ustaw termin i lokalizację turnieju, a następnie doprecyzuj datę, godzinę i miejsce dla każdego etapu i grupy."
         loading={loading}
-        headerSlot={tournamentMetaCard}
+        headerSlot={headerSlot}
         storageScope="schedule"
         stages={currentMeta?.stage_schedule ?? []}
         groups={currentMeta?.group_schedule ?? []}
@@ -1048,7 +1173,7 @@ export default function TournamentSchedule() {
       description="Ustaw termin i lokalizację turnieju, a następnie doprecyzuj datę, godzinę i miejsce dla każdego meczu."
       loading={loading}
       matches={matches}
-      headerSlot={tournamentMetaCard}
+      headerSlot={headerSlot}
       storageScope="schedule"
       renderMatch={renderMatchRow}
       stageTitle={stageTitle}

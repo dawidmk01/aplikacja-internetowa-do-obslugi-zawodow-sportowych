@@ -1,5 +1,5 @@
 # backend/tournaments/views/matches.py
-# Plik obsługuje listy meczów, harmonogram, wyniki i zmiany statusu meczu.
+# Plik obsługuje listy meczów, harmonogram, wyniki i zmiany statusu meczu w kontekście aktywnej dywizji.
 
 from __future__ import annotations
 
@@ -18,11 +18,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from tournaments.access import (
-    can_edit_results,
-    can_edit_schedule,
-    user_is_assistant,
-)
+from tournaments.access import can_edit_results, can_edit_schedule, user_is_assistant
 from tournaments.services.match_outcome import (
     knockout_winner_id,
     validate_extra_time_consistency,
@@ -42,11 +38,43 @@ from ._helpers import (
     _get_cup_matches,
     _sync_two_leg_pair_winner_if_possible,
     _try_auto_advance_knockout,
+    get_runtime_competition_model,
+    get_runtime_format_config,
+    get_runtime_result_config,
+    get_runtime_result_mode,
+    get_runtime_tournament_format,
     handle_knockout_winner_change,
     public_access_or_403,
+    resolve_request_division,
 )
 
 _MAX_MATCH_SECONDS = 3 * 60 * 60
+BYE_TEAM_NAME = "__SYSTEM_BYE__"
+SCORE_SYNC_CONFIRM_REQUIRED = "SCORE_SYNC_CONFIRM_REQUIRED"
+
+
+def _match_division(match: Match):
+    return getattr(match.stage, "division", None)
+
+
+def _runtime_result_mode_for_match(match: Match) -> str:
+    return get_runtime_result_mode(match.tournament, _match_division(match))
+
+
+def _runtime_competition_model_for_match(match: Match) -> str:
+    return get_runtime_competition_model(match.tournament, _match_division(match))
+
+
+def _runtime_format_config_for_match(match: Match) -> dict:
+    return get_runtime_format_config(match.tournament, _match_division(match))
+
+
+def _runtime_result_config_for_match(match: Match) -> dict:
+    return get_runtime_result_config(match.tournament, _match_division(match))
+
+
+def _runtime_tournament_format_for_match(match: Match) -> str:
+    return get_runtime_tournament_format(match.tournament, _match_division(match))
 
 
 def _third_place_value() -> str:
@@ -61,41 +89,42 @@ def _is_tennis(tournament: Tournament) -> bool:
     return (getattr(tournament, "discipline", "") or "").lower() == "tennis"
 
 
-def _is_custom_result_mode(tournament: Tournament) -> bool:
-    return getattr(tournament, "result_mode", Tournament.ResultMode.SCORE) == Tournament.ResultMode.CUSTOM
+def _is_custom_result_mode(match: Match) -> bool:
+    return _runtime_result_mode_for_match(match) == Tournament.ResultMode.CUSTOM
 
 
-def _custom_result_config(tournament: Tournament) -> dict:
-    try:
-        return tournament.get_result_config()
-    except Exception:
-        cfg = getattr(tournament, "result_config", None)
-        return cfg if isinstance(cfg, dict) else {}
+def _custom_result_config(match: Match) -> dict:
+    return _runtime_result_config_for_match(match)
 
 
-def _is_custom_head_to_head_points_table(tournament: Tournament) -> bool:
-    if not _is_custom_result_mode(tournament):
+def _is_custom_head_to_head_points_table(match: Match) -> bool:
+    if not _is_custom_result_mode(match):
         return False
 
-    cfg = _custom_result_config(tournament)
+    cfg = _custom_result_config(match)
+    custom_mode = str(cfg.get("custom_mode") or cfg.get(Tournament.RESULTCFG_CUSTOM_MODE_KEY) or "").upper()
     head_mode = str(
         cfg.get("head_to_head_mode")
         or cfg.get("headToHeadMode")
-        or cfg.get(Tournament.RESULTCFG_CUSTOM_MODE_KEY)
+        or cfg.get(Tournament.RESULTCFG_HEAD_TO_HEAD_MODE_KEY)
         or ""
     ).upper()
-    competition_model = str(getattr(tournament, "competition_model", "") or "").upper()
+    competition_model = str(_runtime_competition_model_for_match(match) or "").upper()
 
     return (
         competition_model == str(Tournament.CompetitionModel.HEAD_TO_HEAD).upper()
-        and head_mode in {"POINTS_TABLE", "HEAD_TO_HEAD_POINTS"}
+        and (
+            custom_mode == "HEAD_TO_HEAD_POINTS"
+            or head_mode == "POINTS_TABLE"
+            or head_mode == Tournament.RESULTCFG_HEAD_TO_HEAD_MODE_POINTS_TABLE
+        )
     )
 
 
-def _uses_custom_result_rows(tournament: Tournament) -> bool:
-    if not _is_custom_result_mode(tournament):
+def _uses_custom_result_rows(match: Match) -> bool:
+    if not _is_custom_result_mode(match):
         return False
-    return not _is_custom_head_to_head_points_table(tournament)
+    return not _is_custom_head_to_head_points_table(match)
 
 
 def _get_pair_matches(stage: Stage, match: Match) -> List[Match]:
@@ -197,9 +226,12 @@ def _validate_tennis_match_before_finish(match: Match, cfg: dict) -> Optional[st
         return "W tenisie nie obsługujemy karnych (pola karnych muszą być puste)."
 
     try:
-        from tournaments.serializers.matches import _validate_tennis_sets_and_compute_score
+        from tournaments.serializers.matches import _validate_tennis_sets_and_compute_score_for_save
 
-        home_sets, away_sets = _validate_tennis_sets_and_compute_score(match.tennis_sets, cfg=cfg)
+        home_sets, away_sets, _decided = _validate_tennis_sets_and_compute_score_for_save(
+            match.tennis_sets,
+            cfg=cfg,
+        )
     except Exception as exc:
         detail = getattr(exc, "detail", None)
         if detail is not None:
@@ -225,22 +257,29 @@ def _tennis_winner_id_from_sets(match: Match) -> Optional[int]:
     return match.home_team_id if home_score > away_score else match.away_team_id
 
 
-def _is_mixed(tournament: Tournament) -> bool:
-    return str(getattr(tournament, "tournament_format", "")).upper() == "MIXED"
+def _is_mixed(match: Match) -> bool:
+    return str(_runtime_tournament_format_for_match(match)).upper() == "MIXED"
 
 
-def _knockout_exists(tournament: Tournament) -> bool:
-    return Stage.objects.filter(
-        tournament=tournament,
+def _knockout_exists(match: Match) -> bool:
+    qs = Stage.objects.filter(
+        tournament=match.tournament,
         stage_type=Stage.StageType.KNOCKOUT,
-    ).exists()
+    )
+    division = _match_division(match)
+    if division is not None:
+        qs = qs.filter(division=division)
+    return qs.exists()
 
 
-def _knockout_has_started(tournament: Tournament) -> bool:
+def _knockout_has_started(match: Match) -> bool:
     qs = Match.objects.filter(
-        tournament=tournament,
+        tournament=match.tournament,
         stage__stage_type=Stage.StageType.KNOCKOUT,
     )
+    division = _match_division(match)
+    if division is not None:
+        qs = qs.filter(stage__division=division)
 
     if qs.filter(result_entered=True).exists():
         return True
@@ -251,27 +290,36 @@ def _knockout_has_started(tournament: Tournament) -> bool:
 
 def _import_advance_from_groups():
     from tournaments.services.advance_from_groups import advance_from_groups
-
     return advance_from_groups
 
 
-def _regenerate_knockout_from_groups_if_safe(tournament: Tournament) -> None:
-    if not _is_mixed(tournament):
+def _regenerate_knockout_from_groups_if_safe(match: Match) -> None:
+    tournament = match.tournament
+    division = _match_division(match)
+
+    if not _is_mixed(match):
         return
-    if not _knockout_exists(tournament):
+    if not _knockout_exists(match):
         return
-    if _knockout_has_started(tournament):
+    if _knockout_has_started(match):
         return
 
     third_place = _third_place_value()
 
-    Stage.objects.filter(
+    stage_qs = Stage.objects.filter(
         tournament=tournament,
         stage_type__in=[Stage.StageType.KNOCKOUT, third_place],
-    ).delete()
+    )
+    if division is not None:
+        stage_qs = stage_qs.filter(division=division)
+
+    stage_qs.delete()
 
     advance_from_groups = _import_advance_from_groups()
-    advance_from_groups(tournament)
+    try:
+        advance_from_groups(tournament=tournament, division=division)
+    except TypeError:
+        advance_from_groups(tournament)
 
 
 def _incident_goal_points(discipline: str, meta: object) -> int:
@@ -283,7 +331,6 @@ def _incident_goal_points(discipline: str, meta: object) -> int:
         except (TypeError, ValueError):
             points = 1
         return points if points in (1, 2, 3) else 1
-
     return 1
 
 
@@ -368,8 +415,7 @@ def _custom_sort_value(result: MatchCustomResult):
 
 
 def _recalculate_custom_match_ranks(match: Match) -> Optional[int]:
-    tournament = match.tournament
-    if not tournament.uses_custom_results():
+    if not _is_custom_result_mode(match):
         return None
 
     results = list(
@@ -385,8 +431,9 @@ def _recalculate_custom_match_ranks(match: Match) -> Optional[int]:
             match.save(update_fields=["result_entered", "winner"])
         return None
 
-    lower_is_better = tournament.custom_result_lower_is_better()
-    allow_ties = tournament.get_result_config().get(Tournament.RESULTCFG_ALLOW_TIES_KEY, True)
+    context = _match_division(match) or match.tournament
+    lower_is_better = bool(getattr(context, "custom_result_lower_is_better", lambda: False)())
+    allow_ties = bool(_runtime_result_config_for_match(match).get(Tournament.RESULTCFG_ALLOW_TIES_KEY, True))
 
     ordered = sorted(
         results,
@@ -423,9 +470,6 @@ def _recalculate_custom_match_ranks(match: Match) -> Optional[int]:
     return winner_id
 
 
-SCORE_SYNC_CONFIRM_REQUIRED = "SCORE_SYNC_CONFIRM_REQUIRED"
-
-
 def _apply_manual_result_via_goal_incidents_or_409(
     match: Match,
     *,
@@ -435,7 +479,7 @@ def _apply_manual_result_via_goal_incidents_or_409(
     tournament = match.tournament
     discipline = tournament.discipline
 
-    if _uses_custom_result_rows(tournament):
+    if _uses_custom_result_rows(match):
         return Response(
             {"detail": "Dla customowego wyniku mierzalnego użyj endpointu zapisu rezultatu."},
             status=status.HTTP_400_BAD_REQUEST,
@@ -448,7 +492,7 @@ def _apply_manual_result_via_goal_incidents_or_409(
     if not match.home_team_id or not match.away_team_id:
         return None
 
-    match = Match.objects.select_related("tournament").select_for_update().get(pk=match.pk)
+    match = Match.objects.select_related("tournament", "stage", "stage__division").select_for_update().get(pk=match.pk)
 
     desired_regular_home = int(match.home_score or 0)
     desired_regular_away = int(match.away_score or 0)
@@ -462,7 +506,11 @@ def _apply_manual_result_via_goal_incidents_or_409(
     if et_enabled and not getattr(match, "went_to_extra_time", False):
         match.went_to_extra_time = True
         match.save(update_fields=["went_to_extra_time"])
-        ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
+        ws_emit_tournament(
+            match.tournament_id,
+            "matches_changed",
+            {"match_id": match.id, "division_id": getattr(match.stage, "division_id", None)},
+        )
 
     if not et_enabled:
         desired_et_home = 0
@@ -652,12 +700,17 @@ class TournamentMatchListView(ListAPIView):
         if not is_panel_user:
             return Match.objects.none()
 
-        return (
+        division = resolve_request_division(self.request, tournament)
+        qs = (
             Match.objects.filter(tournament=tournament)
-            .select_related("home_team", "away_team", "stage", "winner")
+            .select_related("home_team", "away_team", "stage", "stage__division", "winner")
             .prefetch_related("custom_results__team")
-            .order_by("stage__order", "round_number", "id")
         )
+
+        if division is not None:
+            qs = qs.filter(stage__division=division)
+
+        return qs.order_by("stage__order", "round_number", "id")
 
 
 class TournamentPublicMatchListView(ListAPIView):
@@ -670,12 +723,17 @@ class TournamentPublicMatchListView(ListAPIView):
         if denied is not None:
             return Match.objects.none()
 
-        return (
+        division = resolve_request_division(self.request, tournament)
+        qs = (
             Match.objects.filter(tournament=tournament)
-            .select_related("home_team", "away_team", "stage", "winner")
+            .select_related("home_team", "away_team", "stage", "stage__division", "winner")
             .prefetch_related("custom_results__team")
-            .order_by("stage__order", "round_number", "id")
         )
+
+        if division is not None:
+            qs = qs.filter(stage__division=division)
+
+        return qs.order_by("stage__order", "round_number", "id")
 
     def list(self, request, *args, **kwargs):
         tournament = get_object_or_404(Tournament, pk=self.kwargs["pk"])
@@ -694,7 +752,7 @@ class MatchScheduleUpdateView(RetrieveUpdateAPIView):
         user = self.request.user
         return Match.objects.filter(
             Q(tournament__organizer=user) | Q(tournament__memberships__user=user)
-        ).distinct()
+        ).select_related("stage__division", "tournament").distinct()
 
     def update(self, request, *args, **kwargs):
         match = self.get_object()
@@ -726,19 +784,19 @@ class MatchCustomResultUpdateView(APIView):
             return Response({"detail": "Brak identyfikatora meczu."}, status=status.HTTP_400_BAD_REQUEST)
 
         match = get_object_or_404(
-            Match.objects.select_related("stage", "tournament", "home_team", "away_team").select_for_update(),
+            Match.objects.select_related("stage", "stage__division", "tournament", "home_team", "away_team").select_for_update(),
             pk=match_id,
         )
         tournament = match.tournament
         stage = match.stage
 
-        if not _is_custom_result_mode(tournament):
+        if not _is_custom_result_mode(match):
             return Response(
                 {"detail": "Ten endpoint jest dostępny tylko dla trybu CUSTOM."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if _is_custom_head_to_head_points_table(tournament):
+        if _is_custom_head_to_head_points_table(match):
             return Response(
                 {"detail": "Dla customowego systemu punktowego użyj standardowego endpointu zapisu wyniku meczu."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -770,7 +828,7 @@ class MatchCustomResultUpdateView(APIView):
                 pass
 
             try:
-                _regenerate_knockout_from_groups_if_safe(tournament)
+                _regenerate_knockout_from_groups_if_safe(match)
             except Exception:
                 pass
 
@@ -779,7 +837,11 @@ class MatchCustomResultUpdateView(APIView):
                 match.winner_id = winner_id
                 match.save(update_fields=["winner"])
 
-        ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
+        ws_emit_tournament(
+            match.tournament_id,
+            "matches_changed",
+            {"match_id": match.id, "division_id": getattr(stage, "division_id", None)},
+        )
 
         response_payload = {
             "detail": "Wynik niestandardowy zapisany.",
@@ -802,18 +864,18 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
             Match.objects.filter(
                 Q(tournament__organizer=user) | Q(tournament__memberships__user=user)
             )
-            .select_related("stage", "tournament")
+            .select_related("stage", "stage__division", "tournament")
             .distinct()
         )
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
         match = self.get_object()
-        match = Match.objects.select_related("stage", "tournament").select_for_update().get(pk=match.pk)
+        match = Match.objects.select_related("stage", "stage__division", "tournament").select_for_update().get(pk=match.pk)
 
         tournament = match.tournament
 
-        if _is_custom_result_mode(tournament):
+        if _is_custom_result_mode(match) and not _is_custom_head_to_head_points_table(match):
             return Response(
                 {"detail": "Dla trybu CUSTOM użyj endpointu zapisu rezultatu."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -828,18 +890,8 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
         stage = match.stage
 
         old_single_winner_id = match.winner_id
-        cup_matches = _get_cup_matches(tournament)
+        cup_matches = _get_cup_matches(tournament, _match_division(match))
         is_knockout_like = stage.stage_type == Stage.StageType.KNOCKOUT or _is_third_place_stage(stage)
-
-        if is_knockout_like and _is_tennis(tournament) and cup_matches == 2:
-            return Response(
-                {"detail": "Tenis nie wspiera trybu dwumeczu (cup_matches=2)."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        old_pair_winner = None
-        if is_knockout_like and cup_matches == 2:
-            old_pair_winner = _pair_winner_id(_get_pair_matches(stage, match))
 
         serializer = self.get_serializer(match, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
@@ -868,7 +920,6 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
             if touched:
                 match.status = Match.Status.IN_PROGRESS
                 match.save(update_fields=["status"])
-                ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
         resp = _apply_manual_result_via_goal_incidents_or_409(
             match,
@@ -887,7 +938,7 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
                 pass
 
             try:
-                _regenerate_knockout_from_groups_if_safe(tournament)
+                _regenerate_knockout_from_groups_if_safe(match)
             except Exception:
                 pass
 
@@ -895,7 +946,7 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
                 lambda: ws_emit_tournament(
                     match.tournament_id,
                     "matches_changed",
-                    {"match_id": match.id},
+                    {"match_id": match.id, "division_id": getattr(stage, "division_id", None)},
                 )
             )
             return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
@@ -910,11 +961,11 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
                 if new_winner_id != match.winner_id:
                     match.winner_id = new_winner_id
                     match.save(update_fields=["winner"])
-                    ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
                 _handle_knockout_progression(tournament, stage, old_single_winner_id, new_winner_id)
 
             elif cup_matches == 2:
+                old_pair_winner = _pair_winner_id(_get_pair_matches(stage, match))
                 _sync_two_leg_pair_winner_if_possible(stage, tournament, match)
                 new_pair_winner = _pair_winner_id(_get_pair_matches(stage, match))
                 _handle_knockout_progression(tournament, stage, old_pair_winner, new_pair_winner)
@@ -923,7 +974,7 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
             lambda: ws_emit_tournament(
                 match.tournament_id,
                 "matches_changed",
-                {"match_id": match.id},
+                {"match_id": match.id, "division_id": getattr(stage, "division_id", None)},
             )
         )
         return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
@@ -939,7 +990,7 @@ class FinishMatchView(APIView):
             return Response({"detail": "Brak identyfikatora meczu."}, status=status.HTTP_400_BAD_REQUEST)
 
         match = get_object_or_404(
-            Match.objects.select_related("stage", "tournament", "home_team", "away_team").select_for_update(),
+            Match.objects.select_related("stage", "stage__division", "tournament", "home_team", "away_team").select_for_update(),
             pk=match_id,
         )
         tournament = match.tournament
@@ -951,7 +1002,7 @@ class FinishMatchView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        if _uses_custom_result_rows(tournament):
+        if _uses_custom_result_rows(match):
             winner_id = _recalculate_custom_match_ranks(match)
             if not match.result_entered:
                 return Response(
@@ -984,7 +1035,7 @@ class FinishMatchView(APIView):
                     pass
 
                 try:
-                    _regenerate_knockout_from_groups_if_safe(tournament)
+                    _regenerate_knockout_from_groups_if_safe(match)
                 except Exception:
                     pass
 
@@ -995,7 +1046,7 @@ class FinishMatchView(APIView):
                 lambda: ws_emit_tournament(
                     match.tournament_id,
                     "matches_changed",
-                    {"match_id": match.id},
+                    {"match_id": match.id, "division_id": getattr(stage, "division_id", None)},
                 )
             )
             return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
@@ -1012,7 +1063,7 @@ class FinishMatchView(APIView):
                 transaction.set_rollback(True)
             return resp
 
-        cfg = tournament.format_config or {}
+        cfg = _runtime_format_config_for_match(match)
 
         if stage.stage_type in (Stage.StageType.LEAGUE, Stage.StageType.GROUP):
             if _is_tennis(tournament):
@@ -1030,10 +1081,9 @@ class FinishMatchView(APIView):
             match.save(
                 update_fields=["status", "clock_state", "clock_started_at", "clock_elapsed_seconds"]
             )
-            ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
             try:
-                _regenerate_knockout_from_groups_if_safe(tournament)
+                _regenerate_knockout_from_groups_if_safe(match)
             except Exception:
                 pass
 
@@ -1041,12 +1091,12 @@ class FinishMatchView(APIView):
                 lambda: ws_emit_tournament(
                     match.tournament_id,
                     "matches_changed",
-                    {"match_id": match.id},
+                    {"match_id": match.id, "division_id": getattr(stage, "division_id", None)},
                 )
             )
             return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
 
-        cup_matches = _get_cup_matches(tournament)
+        cup_matches = _get_cup_matches(tournament, _match_division(match))
         is_knockout_like = stage.stage_type == Stage.StageType.KNOCKOUT or _is_third_place_stage(stage)
 
         if is_knockout_like:
@@ -1102,7 +1152,6 @@ class FinishMatchView(APIView):
                         "clock_elapsed_seconds",
                     ]
                 )
-                ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
                 _handle_knockout_progression(tournament, stage, old_winner_id, winner_id)
 
@@ -1110,7 +1159,7 @@ class FinishMatchView(APIView):
                     lambda: ws_emit_tournament(
                         match.tournament_id,
                         "matches_changed",
-                        {"match_id": match.id},
+                        {"match_id": match.id, "division_id": getattr(stage, "division_id", None)},
                     )
                 )
                 return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
@@ -1129,7 +1178,6 @@ class FinishMatchView(APIView):
                             "clock_elapsed_seconds",
                         ]
                     )
-                    ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
 
                 _sync_two_leg_pair_winner_if_possible(stage, tournament, match)
 
@@ -1139,7 +1187,6 @@ class FinishMatchView(APIView):
                     if not new_pair_winner:
                         match.status = Match.Status.SCHEDULED
                         match.save(update_fields=["status"])
-                        ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
                         return Response(
                             {"detail": "Dwumecz musi być rozstrzygnięty."},
                             status=status.HTTP_400_BAD_REQUEST,
@@ -1153,7 +1200,7 @@ class FinishMatchView(APIView):
                     lambda: ws_emit_tournament(
                         match.tournament_id,
                         "matches_changed",
-                        {"match_id": match.id},
+                        {"match_id": match.id, "division_id": getattr(stage, "division_id", None)},
                     )
                 )
                 return Response({"detail": "Mecz zakończony."}, status=status.HTTP_200_OK)
@@ -1171,12 +1218,12 @@ class ContinueMatchView(APIView):
             return Response({"detail": "Brak identyfikatora meczu."}, status=status.HTTP_400_BAD_REQUEST)
 
         match = get_object_or_404(
-            Match.objects.select_related("stage", "tournament", "home_team", "away_team").select_for_update(),
+            Match.objects.select_related("stage", "stage__division", "tournament", "home_team", "away_team").select_for_update(),
             pk=match_id,
         )
         tournament = match.tournament
 
-        if _uses_custom_result_rows(tournament):
+        if _uses_custom_result_rows(match):
             return Response(
                 {"detail": "Kontynuacja jest dostępna po zapisaniu wyniku także dla trybu CUSTOM."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1198,7 +1245,11 @@ class ContinueMatchView(APIView):
         _continue_match_clock(match)
 
         match.save(update_fields=["status", "clock_state", "clock_started_at"])
-        ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
+        ws_emit_tournament(
+            match.tournament_id,
+            "matches_changed",
+            {"match_id": match.id, "division_id": getattr(match.stage, "division_id", None)},
+        )
 
         return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
 
@@ -1213,12 +1264,12 @@ class SetScheduledMatchView(APIView):
             return Response({"detail": "Brak identyfikatora meczu."}, status=status.HTTP_400_BAD_REQUEST)
 
         match = get_object_or_404(
-            Match.objects.select_related("stage", "tournament").select_for_update(),
+            Match.objects.select_related("stage", "stage__division", "tournament").select_for_update(),
             pk=match_id,
         )
         tournament = match.tournament
 
-        if _uses_custom_result_rows(tournament):
+        if _uses_custom_result_rows(match):
             has_custom_results = match.custom_results.filter(is_active=True).exists()
             if has_custom_results:
                 return Response(
@@ -1228,38 +1279,6 @@ class SetScheduledMatchView(APIView):
                     },
                     status=status.HTTP_409_CONFLICT,
                 )
-
-            if not (can_edit_results(request.user, tournament) or can_edit_schedule(request.user, tournament)):
-                return Response(
-                    {"detail": "Nie masz uprawnień do zmiany statusu meczu. Dostępny jest tylko podgląd."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-
-            match.status = Match.Status.SCHEDULED
-            match.result_entered = False
-            match.winner = None
-            match.clock_state = Match.ClockState.NOT_STARTED
-            match.clock_started_at = None
-            match.clock_elapsed_seconds = 0
-            if hasattr(match, "clock_added_seconds"):
-                match.clock_added_seconds = 0
-            match.clock_period = Match.ClockPeriod.NONE
-
-            update_fields = [
-                "status",
-                "result_entered",
-                "winner",
-                "clock_state",
-                "clock_started_at",
-                "clock_elapsed_seconds",
-                "clock_period",
-            ]
-            if hasattr(match, "clock_added_seconds"):
-                update_fields.append("clock_added_seconds")
-
-            match.save(update_fields=update_fields)
-            ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
-            return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)
 
         has_incidents = MatchIncident.objects.filter(match_id=match.id).exists()
 
@@ -1282,7 +1301,7 @@ class SetScheduledMatchView(APIView):
         if hasattr(match, "tennis_sets") and match.tennis_sets:
             has_any_score = True
 
-        if has_incidents or has_any_score:
+        if not _uses_custom_result_rows(match) and (has_incidents or has_any_score):
             return Response(
                 {
                     "detail": "Nie można ustawić meczu jako zaplanowany: wymagany jest wynik 0:0 oraz brak incydentów.",
@@ -1300,6 +1319,8 @@ class SetScheduledMatchView(APIView):
             )
 
         match.status = Match.Status.SCHEDULED
+        match.result_entered = False
+        match.winner = None
         match.clock_state = Match.ClockState.NOT_STARTED
         match.clock_started_at = None
         match.clock_elapsed_seconds = 0
@@ -1309,6 +1330,8 @@ class SetScheduledMatchView(APIView):
 
         update_fields = [
             "status",
+            "result_entered",
+            "winner",
             "clock_state",
             "clock_started_at",
             "clock_elapsed_seconds",
@@ -1318,6 +1341,10 @@ class SetScheduledMatchView(APIView):
             update_fields.append("clock_added_seconds")
 
         match.save(update_fields=update_fields)
-        ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
+        ws_emit_tournament(
+            match.tournament_id,
+            "matches_changed",
+            {"match_id": match.id, "division_id": getattr(match.stage, "division_id", None)},
+        )
 
         return Response(MatchSerializer(match).data, status=status.HTTP_200_OK)

@@ -1,59 +1,91 @@
-"""
-Generator rozgrywek ligowych (round-robin z kolejkami).
-
-Obsługuje:
-- jedną lub dwie rundy ligi (league_matches = 1 | 2),
-- numerację kolejek (round_number),
-- parzystą i nieparzystą liczbę uczestników (pauzy),
-- regenerację (czyści stare mecze ligowe przed dodaniem nowych),
-- ochronę przed przypadkowym wciągnięciem BYE do ligi.
-
-Frontend steruje liczbą rund przez:
-format_config["league_matches"] = 1 | 2
-"""
+# backend/tournaments/services/generators/league.py
+# Plik generuje strukturę rozgrywek ligowych wraz z kolejkami i meczami dla aktywnej dywizji.
 
 from __future__ import annotations
 
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
+
 from django.db import transaction
 
-from tournaments.models import Tournament, Stage, Match, Team
-
+from tournaments.models import Division, Match, Stage, Team, Tournament
 
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
 
 
+def _resolve_division(tournament: Tournament, division: Division | None = None) -> Division | None:
+    if division is None:
+        return tournament.get_default_division()
+
+    if division.tournament_id != tournament.id:
+        raise ValueError("Wskazana dywizja nie należy do tego turnieju.")
+
+    return division
+
+
+def _runtime_status(
+    tournament: Tournament,
+    division: Division | None,
+) -> str:
+    return division.status if division is not None else tournament.status
+
+
+def _runtime_tournament_format(
+    tournament: Tournament,
+    division: Division | None,
+) -> str:
+    return division.tournament_format if division is not None else tournament.tournament_format
+
+
+def _runtime_format_config(
+    tournament: Tournament,
+    division: Division | None,
+) -> dict:
+    if division is not None:
+        return dict(division.format_config or {})
+    return dict(tournament.format_config or {})
+
+
+def _promote_after_generation(
+    tournament: Tournament,
+    division: Division | None,
+) -> None:
+    if division is not None and division.status == Tournament.Status.DRAFT:
+        division.status = Tournament.Status.CONFIGURED
+        division.save(update_fields=["status"])
+
+    if tournament.status == Tournament.Status.DRAFT:
+        tournament.status = Tournament.Status.CONFIGURED
+        tournament.save(update_fields=["status"])
+
+
 @transaction.atomic
-def generate_league_stage(tournament: Tournament) -> Stage:
-    """
-    Generuje pełną strukturę ligi wraz z kolejkami i meczami.
-    UWAGA: Czyści istniejące mecze ligowe w tym etapie, jeśli liga była już generowana.
-    """
-    _validate_tournament(tournament)
+def generate_league_stage(
+    tournament: Tournament,
+    division: Division | None = None,
+) -> Stage:
+    division = _resolve_division(tournament, division)
 
-    # ✅ LIGA NIGDY nie ma brać BYE jako uczestnika
-    teams = _get_active_teams_excluding_bye(tournament)
+    _validate_tournament(tournament, division)
 
-    # ✅ źródło prawdy: format_config["league_matches"]
-    league_matches = _get_league_matches(tournament)
+    teams = _get_active_teams_excluding_bye(tournament, division)
+    league_matches = _get_league_matches(tournament, division)
 
-    # 1) Pobierz lub stwórz etap
+    # Generator pracuje na jednym etapie ligi danej dywizji.
     stage, _created = Stage.objects.get_or_create(
         tournament=tournament,
+        division=division,
         stage_type=Stage.StageType.LEAGUE,
         defaults={"order": 1, "status": Stage.Status.OPEN},
     )
 
-    # 2) Wyczyść stare mecze tej ligi (żeby nie dublować)
     Match.objects.filter(stage=stage).delete()
 
-    # 3) Harmonogram round-robin (pauzy przy nieparzystej liczbie drużyn)
     schedule = _round_robin_schedule(teams)
 
     matches: list[Match] = []
     current_round = 1
 
-    # leg=0 -> pierwsza runda, leg=1 -> rewanże (zamiana gospodarza)
+    # Druga runda odwraca gospodarza, aby zachować układ rewanżowy.
     for leg in range(league_matches):
         for round_pairs in schedule:
             for home, away in round_pairs:
@@ -78,71 +110,68 @@ def generate_league_stage(tournament: Tournament) -> Stage:
         raise ValueError("Generator ligi nie utworzył żadnych meczów.")
 
     Match.objects.bulk_create(matches)
-
-    # Status turnieju
-    if tournament.status == Tournament.Status.DRAFT:
-        tournament.status = Tournament.Status.CONFIGURED
-        tournament.save(update_fields=["status"])
+    _promote_after_generation(tournament, division)
 
     return stage
 
 
-# ============================================================
-# WALIDACJE / KONFIG
-# ============================================================
-
-def _validate_tournament(tournament: Tournament) -> None:
+def _validate_tournament(
+    tournament: Tournament,
+    division: Division | None,
+) -> None:
     allowed_statuses = {Tournament.Status.DRAFT, Tournament.Status.CONFIGURED}
-    if tournament.status not in allowed_statuses:
+    status_value = _runtime_status(tournament, division)
+    if status_value not in allowed_statuses:
         raise ValueError(
-            "Ligę można generować tylko dla turnieju w statusie DRAFT lub CONFIGURED. "
-            f"Obecny status: {tournament.status}"
+            "Ligę można generować tylko dla dywizji w statusie DRAFT lub CONFIGURED. "
+            f"Obecny status: {status_value}"
         )
 
-    if tournament.tournament_format != Tournament.TournamentFormat.LEAGUE:
+    tournament_format = _runtime_tournament_format(tournament, division)
+    if tournament_format != Tournament.TournamentFormat.LEAGUE:
         raise ValueError("Generator ligi obsługuje wyłącznie format LEAGUE.")
 
 
-def _get_league_matches(tournament: Tournament) -> int:
-    cfg = tournament.format_config or {}
+def _get_league_matches(
+    tournament: Tournament,
+    division: Division | None,
+) -> int:
+    cfg = _runtime_format_config(tournament, division)
     try:
-        v = int(cfg.get("league_matches", 1))
+        value = int(cfg.get("league_matches", 1))
     except (TypeError, ValueError):
-        v = 1
+        value = 1
 
-    if v not in (1, 2):
+    if value not in (1, 2):
         raise ValueError("Liczba rund (league_matches) musi wynosić 1 albo 2.")
-    return v
+    return value
 
 
-def _get_active_teams_excluding_bye(tournament: Tournament) -> List[Team]:
-    # ✅ jeśli BYE istnieje, wymuś jego nieaktywność (żeby nie mieszał w /teams/setup/)
-    Team.objects.filter(tournament=tournament, name=BYE_TEAM_NAME).update(is_active=False)
+def _get_active_teams_excluding_bye(
+    tournament: Tournament,
+    division: Division | None,
+) -> List[Team]:
+    # Wymuszenie nieaktywności BYE chroni generator przed wejściem technicznej drużyny do ligi.
+    bye_qs = Team.objects.filter(tournament=tournament, name=BYE_TEAM_NAME)
+    if division is not None:
+        bye_qs = bye_qs.filter(division=division)
+    bye_qs.update(is_active=False)
 
-    teams = list(
-        tournament.teams
-        .filter(is_active=True)
-        .exclude(name=BYE_TEAM_NAME)
-        .order_by("id")
-    )
+    teams_qs = tournament.teams.filter(is_active=True).exclude(name=BYE_TEAM_NAME)
+    if division is not None:
+        teams_qs = teams_qs.filter(division=division)
+
+    teams = list(teams_qs.order_by("id"))
 
     if len(teams) < 2:
         raise ValueError("Liga wymaga co najmniej 2 aktywnych uczestników.")
     return teams
 
 
-# ============================================================
-# ROUND-ROBIN (KOLEJKI)
-# ============================================================
-
 def _round_robin_schedule(teams: List[Team]) -> List[List[Tuple[Team, Team]]]:
-    """
-    Zwraca listę kolejek round-robin (algorytm Bergera).
-    Przy nieparzystej liczbie drużyn dodajemy None jako pauzę,
-    ale NIE generujemy meczu technicznego.
-    """
     arr: List[Optional[Team]] = list(teams)
 
+    # Nieparzysta liczba drużyn daje pauzę w kolejce, ale bez tworzenia meczu technicznego.
     if len(arr) % 2 == 1:
         arr.append(None)
 
@@ -156,14 +185,14 @@ def _round_robin_schedule(teams: List[Team]) -> List[List[Tuple[Team, Team]]]:
         round_matches: list[tuple[Team, Team]] = []
 
         for i in range(half):
-            t1 = arr[i]
-            t2 = arr[n - 1 - i]
-            if t1 is not None and t2 is not None:
-                round_matches.append((t1, t2))
+            team_one = arr[i]
+            team_two = arr[n - 1 - i]
+            if team_one is not None and team_two is not None:
+                round_matches.append((team_one, team_two))
 
         schedule.append(round_matches)
 
-        # rotacja (Berger): element [0] zostaje, reszta przesuwa się w prawo
+        # Rotacja Bergera utrzymuje poprawny układ par bez naruszania pierwszej pozycji.
         arr = [arr[0]] + [arr[-1]] + arr[1:-1]
 
     return schedule

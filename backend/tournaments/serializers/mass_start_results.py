@@ -1,5 +1,5 @@
 # backend/tournaments/serializers/mass_start_results.py
-# Plik definiuje serializery odpowiedzialne za odczyt i zapis wyników etapowych trybu MASS_START.
+# Plik definiuje serializery odpowiedzialne za odczyt i zapis wyników etapowych trybu MASS_START w kontekście dywizji.
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any
 from rest_framework import serializers
 
 from tournaments.models import (
+    Division,
     Group,
     Stage,
     StageMassStartEntry,
@@ -87,8 +88,49 @@ def _parse_place_value(raw_value: Any) -> int:
     return parsed
 
 
+def _stage_division(stage: Stage) -> Division | None:
+    return getattr(stage, "division", None)
+
+
+def _competition_context_for_stage(stage: Stage) -> Division | Tournament:
+    division = _stage_division(stage)
+    if division is not None:
+        return division
+    return stage.tournament
+
+
+def _get_result_config_for_stage(stage: Stage) -> dict:
+    context = _competition_context_for_stage(stage)
+    if hasattr(context, "get_result_config"):
+        return context.get_result_config()
+    return {}
+
+
+def _get_result_value_kind_for_stage(stage: Stage) -> str | None:
+    context = _competition_context_for_stage(stage)
+    if hasattr(context, "get_result_value_kind"):
+        return context.get_result_value_kind()
+    return None
+
+
+def _get_mass_start_stage_cfg(stage: Stage) -> dict:
+    context = _competition_context_for_stage(stage)
+    stage_cfgs = list(context.get_mass_start_stages() or []) if hasattr(context, "get_mass_start_stages") else []
+    index = max(0, int(stage.order or 1) - 1)
+    return stage_cfgs[index] if index < len(stage_cfgs) else {}
+
+
+def _uses_mass_start_context(stage: Stage) -> bool:
+    context = _competition_context_for_stage(stage)
+    if hasattr(context, "uses_custom_results") and hasattr(context, "uses_mass_start"):
+        return bool(context.uses_custom_results() and context.uses_mass_start())
+    return False
+
+
 class StageMassStartResultSerializer(serializers.ModelSerializer):
     stage_id = serializers.IntegerField(source="stage.id", read_only=True)
+    division_id = serializers.IntegerField(source="stage.division.id", read_only=True, allow_null=True)
+    division_name = serializers.CharField(source="stage.division.name", read_only=True, allow_null=True)
     group_id = serializers.IntegerField(source="group.id", read_only=True, allow_null=True)
     group_name = serializers.CharField(source="group.name", read_only=True, allow_null=True)
     team_id = serializers.IntegerField(source="team.id", read_only=True)
@@ -100,6 +142,8 @@ class StageMassStartResultSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "stage_id",
+            "division_id",
+            "division_name",
             "group_id",
             "group_name",
             "team_id",
@@ -135,23 +179,29 @@ class StageMassStartResultWriteSerializer(serializers.Serializer):
     def validate(self, attrs):
         tournament: Tournament = self.context["tournament"]
 
-        if not tournament.uses_custom_results() or not tournament.uses_mass_start():
+        stage = (
+            Stage.objects.select_related("division", "tournament")
+            .filter(
+                pk=attrs["stage_id"],
+                tournament=tournament,
+                stage_type=Stage.StageType.MASS_START,
+            )
+            .first()
+        )
+        if not stage:
+            raise serializers.ValidationError({"stage_id": "Wskazano nieprawidłowy etap."})
+
+        if not _uses_mass_start_context(stage):
             raise serializers.ValidationError(
                 {"detail": "Ten endpoint obsługuje wyłącznie wyniki etapowe MASS_START."}
             )
-
-        stage = Stage.objects.filter(
-            pk=attrs["stage_id"],
-            tournament=tournament,
-            stage_type=Stage.StageType.MASS_START,
-        ).first()
-        if not stage:
-            raise serializers.ValidationError({"stage_id": "Wskazano nieprawidłowy etap."})
 
         if stage.status == Stage.Status.PLANNED:
             raise serializers.ValidationError(
                 {"stage_id": "Ten etap nie został jeszcze wygenerowany."}
             )
+
+        division = _stage_division(stage)
 
         group = None
         if attrs.get("group_id") is not None:
@@ -161,7 +211,10 @@ class StageMassStartResultWriteSerializer(serializers.Serializer):
         else:
             group = stage.groups.order_by("id").first()
 
-        team = Team.objects.filter(pk=attrs["team_id"], tournament=tournament).first()
+        team_qs = Team.objects.filter(pk=attrs["team_id"], tournament=tournament)
+        if division is not None:
+            team_qs = team_qs.filter(division=division)
+        team = team_qs.first()
         if not team:
             raise serializers.ValidationError({"team_id": "Wskazano nieprawidłowego uczestnika."})
 
@@ -186,15 +239,14 @@ class StageMassStartResultWriteSerializer(serializers.Serializer):
                 {"group_id": "Uczestnik nie należy do wskazanej grupy tego etapu."}
             )
 
-        stage_cfgs = list(tournament.get_mass_start_stages() or [])
-        stage_cfg = stage_cfgs[stage.order - 1] if stage.order - 1 < len(stage_cfgs) else {}
+        stage_cfg = _get_mass_start_stage_cfg(stage)
         rounds_count = int(stage_cfg.get(Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY) or 1)
         if attrs["round_number"] > rounds_count:
             raise serializers.ValidationError(
                 {"round_number": f"Dozwolony zakres rund dla tego etapu to 1-{rounds_count}."}
             )
 
-        value_kind = tournament.get_result_value_kind()
+        value_kind = _get_result_value_kind_for_stage(stage)
         if value_kind == Tournament.RESULTCFG_VALUE_KIND_TIME:
             if "time_ms" not in attrs:
                 raise serializers.ValidationError(
@@ -227,17 +279,17 @@ class StageMassStartResultWriteSerializer(serializers.Serializer):
         attrs["group"] = group
         attrs["team"] = team
         attrs["stage_entry"] = entry
+        attrs["division"] = division
         return attrs
 
     def save(self, **kwargs):
-        tournament: Tournament = self.context["tournament"]
-        value_kind = tournament.get_result_value_kind()
-        cfg = tournament.get_result_config()
-
         stage: Stage = self.validated_data["stage"]
         group: Group | None = self.validated_data.get("group")
         team: Team = self.validated_data["team"]
         round_number = self.validated_data["round_number"]
+
+        value_kind = _get_result_value_kind_for_stage(stage)
+        cfg = _get_result_config_for_stage(stage)
 
         defaults: dict[str, Any] = {
             "group": group,

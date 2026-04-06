@@ -1,3 +1,6 @@
+# backend/tournaments/consumers.py
+# Plik obsługuje kanał websocket turnieju wykorzystywany do zdarzeń realtime /ws/tournaments/<id>/.
+
 from __future__ import annotations
 
 from urllib.parse import parse_qs
@@ -28,7 +31,7 @@ class TournamentConsumer(AsyncJsonWebsocketConsumer):
             await self.close(code=4401)
             return
 
-        # Fallback: autoryzacja przez token w querystring (JWT w localStorage).
+        # Fallback utrzymuje autoryzację także dla klienta z tokenem w querystring.
         if not user.is_authenticated:
             token = self._get_token_from_qs()
             if token:
@@ -37,8 +40,8 @@ class TournamentConsumer(AsyncJsonWebsocketConsumer):
                     user = user_from_token
                     self.scope["user"] = user_from_token
 
+        # Kanał publiczny pozostaje dostępny wyłącznie dla opublikowanego turnieju.
         if not user.is_authenticated:
-            # Publiczne połączenia tylko dla opublikowanych turniejów.
             if not await self._is_tournament_published(self.tournament_id):
                 await self.close(code=4403)
                 return
@@ -52,17 +55,16 @@ class TournamentConsumer(AsyncJsonWebsocketConsumer):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
     async def receive_json(self, content, **kwargs):
-        # WS jest jednokierunkowy (server -> klient).
+        # Kanał jest jednokierunkowy i nie przyjmuje komend od klienta.
         return
 
     async def tournament_event(self, event):
-        # Docelowo wysyłamy pojedynczy obiekt JSON jako event.
         ev = event.get("event")
         if isinstance(ev, dict):
             await self.send_json(ev)
             return
 
-        # Kompatybilność z wcześniejszym wrapperem {event: str, payload: {...}}.
+        # Wrapper zachowuje zgodność ze starszym formatem event/payload.
         payload = event.get("payload") or {}
         await self.send_json({"v": 1, "type": str(ev or "unknown"), "payload": payload})
 

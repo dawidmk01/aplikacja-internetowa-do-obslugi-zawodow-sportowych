@@ -1,7 +1,11 @@
+# backend/tournaments/routing.py
+# Plik definiuje routing websocketów dla kanałów turniejowych i prywatnych użytkownika.
+
 from django.urls import re_path
 
 from .consumers import TournamentConsumer
 from .consumers_me import MeConsumer
+
 
 websocket_urlpatterns = [
     re_path(r"^ws/me/$", MeConsumer.as_asgi()),

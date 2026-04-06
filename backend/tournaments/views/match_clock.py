@@ -1,5 +1,5 @@
 # backend/tournaments/views/match_clock.py
-# Plik obsługuje odczyt i sterowanie zegarem meczu.
+# Plik obsługuje odczyt i sterowanie zegarem meczu z payloadem realtime rozszerzonym o dywizję.
 
 from __future__ import annotations
 
@@ -18,13 +18,17 @@ from tournaments.models import Match, Tournament
 from ..realtime import ws_emit_tournament
 from ._helpers import public_access_or_403
 
-# Limit zabezpiecza zegar przed niekontrolowanym wzrostem.
 MAX_CLOCK_SECONDS = 3 * 60 * 60
 
 
+def _division_id(match: Match):
+    return getattr(match.stage, "division_id", None)
+
+
 def _ws_emit_clock(match: Match) -> None:
-    ws_emit_tournament(match.tournament_id, "clock_changed", {"match_id": match.id})
-    ws_emit_tournament(match.tournament_id, "matches_changed", {"match_id": match.id})
+    payload = {"match_id": match.id, "division_id": _division_id(match)}
+    ws_emit_tournament(match.tournament_id, "clock_changed", payload)
+    ws_emit_tournament(match.tournament_id, "matches_changed", payload)
 
 
 def _p(name: str, fallback: str) -> str:
@@ -35,8 +39,6 @@ def _is_extra_time_period(period: str | None) -> bool:
     value = (period or "").strip()
     if not value:
         return False
-
-    # Fallback utrzymuje kompatybilność ze starszymi wartościami period.
     return value in {_p("ET1", "ET1"), _p("ET2", "ET2"), _p("ET", "ET"), _p("OT", "OT")}
 
 
@@ -45,7 +47,6 @@ def _ensure_went_to_extra_time(match: Match) -> bool:
         return False
     if getattr(match, "went_to_extra_time", False):
         return False
-
     setattr(match, "went_to_extra_time", True)
     return True
 
@@ -58,7 +59,6 @@ def _minute_from_seconds(seconds: int) -> int:
 
 
 def _require_can_manage_clock(user, match: Match) -> None:
-    # Zegar jest częścią live/results i dopuszcza także schedule_edit.
     if can_edit_results(user, match.tournament) or can_edit_schedule(user, match.tournament):
         return
     raise PermissionError("Brak uprawnień do obsługi zegara.")
@@ -66,46 +66,38 @@ def _require_can_manage_clock(user, match: Match) -> None:
 
 def _default_period_for_discipline(match: Match) -> str:
     discipline = match.tournament.discipline
-
     if discipline == Tournament.Discipline.FOOTBALL:
         return _p("FH", "FH")
     if discipline == Tournament.Discipline.HANDBALL:
         return _p("H1", "H1")
-
     return _p("NONE", "NONE")
 
 
 def _allowed_periods_for_match(match: Match) -> set[str]:
     discipline = match.tournament.discipline
     allowed: set[str] = {_p("NONE", "NONE")}
-
     if discipline == Tournament.Discipline.FOOTBALL:
         allowed.update({_p("FH", "FH"), _p("SH", "SH"), _p("ET1", "ET1"), _p("ET2", "ET2")})
         return allowed
-
     if discipline == Tournament.Discipline.HANDBALL:
         allowed.update({_p("H1", "H1"), _p("H2", "H2"), _p("ET1", "ET1"), _p("ET2", "ET2")})
         return allowed
-
     return allowed
 
 
 def _clock_running_elapsed_seconds(match: Match, now) -> int:
     base = int(match.clock_elapsed_seconds or 0)
-
     if match.clock_state == Match.ClockState.RUNNING and match.clock_started_at:
         try:
             delta = now - match.clock_started_at
             base += max(0, int(delta.total_seconds()))
         except Exception:
             pass
-
     return base
 
 
 def _maybe_apply_clock_cap(match: Match, now) -> bool:
     elapsed_now = _clock_running_elapsed_seconds(match, now)
-
     if elapsed_now <= MAX_CLOCK_SECONDS:
         if int(match.clock_elapsed_seconds or 0) > MAX_CLOCK_SECONDS:
             match.clock_elapsed_seconds = MAX_CLOCK_SECONDS
@@ -120,8 +112,6 @@ def _maybe_apply_clock_cap(match: Match, now) -> bool:
 
 def _serialize_clock(match: Match) -> dict:
     now = timezone.now()
-
-    # Cap zapisuje bezpieczny stan także przy samym odczycie.
     if _maybe_apply_clock_cap(match, now):
         match.save(update_fields=["clock_elapsed_seconds", "clock_started_at", "clock_state"])
 
@@ -131,6 +121,7 @@ def _serialize_clock(match: Match) -> dict:
 
     return {
         "match_id": match.id,
+        "division_id": _division_id(match),
         "match_status": getattr(match, "status", None),
         "clock_state": match.clock_state,
         "clock_period": match.clock_period,
@@ -149,12 +140,10 @@ class MatchClockGetView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, match_id: int):
-        match = get_object_or_404(Match.objects.select_related("tournament"), pk=match_id)
-
+        match = get_object_or_404(Match.objects.select_related("tournament", "stage"), pk=match_id)
         err = public_access_or_403(request, match.tournament)
         if err is not None:
             return err
-
         return Response(_serialize_clock(match))
 
 
@@ -162,7 +151,7 @@ class MatchClockStartView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, match_id: int):
-        match = get_object_or_404(Match.objects.select_related("tournament"), pk=match_id)
+        match = get_object_or_404(Match.objects.select_related("tournament", "stage"), pk=match_id)
 
         try:
             _require_can_manage_clock(request.user, match)
@@ -179,7 +168,6 @@ class MatchClockStartView(APIView):
         if match.clock_state == Match.ClockState.RUNNING:
             return Response(_serialize_clock(match))
 
-        # Start zegara traktuje mecz jako rozpoczęty.
         status_changed = False
         if getattr(match, "status", None) == Match.Status.SCHEDULED:
             match.status = Match.Status.IN_PROGRESS
@@ -193,10 +181,8 @@ class MatchClockStartView(APIView):
             match.clock_period = _default_period_for_discipline(match)
 
         update_fields = ["clock_state", "clock_started_at", "clock_period"]
-
         if status_changed:
             update_fields.append("status")
-
         if _is_extra_time_period(match.clock_period) and _ensure_went_to_extra_time(match):
             update_fields.append("went_to_extra_time")
 
@@ -209,7 +195,7 @@ class MatchClockPauseView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, match_id: int):
-        match = get_object_or_404(Match.objects.select_related("tournament"), pk=match_id)
+        match = get_object_or_404(Match.objects.select_related("tournament", "stage"), pk=match_id)
 
         try:
             _require_can_manage_clock(request.user, match)
@@ -238,7 +224,7 @@ class MatchClockResumeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, match_id: int):
-        match = get_object_or_404(Match.objects.select_related("tournament"), pk=match_id)
+        match = get_object_or_404(Match.objects.select_related("tournament", "stage"), pk=match_id)
 
         try:
             _require_can_manage_clock(request.user, match)
@@ -255,7 +241,6 @@ class MatchClockResumeView(APIView):
         if match.clock_state == Match.ClockState.RUNNING:
             return Response(_serialize_clock(match))
 
-        # Wznowienie także traktuje mecz jako aktywny.
         status_changed = False
         if getattr(match, "status", None) == Match.Status.SCHEDULED:
             match.status = Match.Status.IN_PROGRESS
@@ -265,16 +250,13 @@ class MatchClockResumeView(APIView):
         match.clock_started_at = now
 
         update_fields = ["clock_state", "clock_started_at"]
-
         if status_changed:
             update_fields.append("status")
-
         if _is_extra_time_period(match.clock_period) and _ensure_went_to_extra_time(match):
             update_fields.append("went_to_extra_time")
 
         match.save(update_fields=update_fields)
         _ws_emit_clock(match)
-
         return Response(_serialize_clock(match))
 
 
@@ -282,7 +264,7 @@ class MatchClockStopView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, match_id: int):
-        match = get_object_or_404(Match.objects.select_related("tournament"), pk=match_id)
+        match = get_object_or_404(Match.objects.select_related("tournament", "stage"), pk=match_id)
 
         try:
             _require_can_manage_clock(request.user, match)
@@ -301,7 +283,6 @@ class MatchClockStopView(APIView):
 
         match.save(update_fields=["clock_elapsed_seconds", "clock_started_at", "clock_state"])
         _ws_emit_clock(match)
-
         return Response(_serialize_clock(match))
 
 
@@ -309,7 +290,7 @@ class MatchClockSetPeriodView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, match_id: int):
-        match = get_object_or_404(Match.objects.select_related("tournament"), pk=match_id)
+        match = get_object_or_404(Match.objects.select_related("tournament", "stage"), pk=match_id)
 
         try:
             _require_can_manage_clock(request.user, match)
@@ -322,14 +303,10 @@ class MatchClockSetPeriodView(APIView):
 
         allowed = _allowed_periods_for_match(match)
         if period not in allowed:
-            return Response(
-                {"detail": f"Nieprawidłowy period. Dozwolone: {sorted(list(allowed))}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": f"Nieprawidłowy period. Dozwolone: {sorted(list(allowed))}"}, status=status.HTTP_400_BAD_REQUEST)
 
         now = timezone.now()
 
-        # Zmiana period zamyka poprzedni odcinek czasu.
         if match.clock_state == Match.ClockState.RUNNING and match.clock_started_at:
             delta = now - match.clock_started_at
             match.clock_elapsed_seconds = min(
@@ -342,7 +319,6 @@ class MatchClockSetPeriodView(APIView):
         match.clock_started_at = now if match.clock_state == Match.ClockState.RUNNING else None
 
         update_fields = ["clock_period", "clock_elapsed_seconds", "clock_started_at"]
-
         if _is_extra_time_period(period) and _ensure_went_to_extra_time(match):
             update_fields.append("went_to_extra_time")
 
@@ -355,7 +331,7 @@ class MatchClockSetAddedSecondsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, match_id: int):
-        match = get_object_or_404(Match.objects.select_related("tournament"), pk=match_id)
+        match = get_object_or_404(Match.objects.select_related("tournament", "stage"), pk=match_id)
 
         try:
             _require_can_manage_clock(request.user, match)
@@ -363,7 +339,6 @@ class MatchClockSetAddedSecondsView(APIView):
             return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
         raw = (request.data or {}).get("added_seconds")
-
         try:
             added = int(raw)
         except (TypeError, ValueError):
@@ -384,7 +359,7 @@ class MatchClockResetPeriodView(APIView):
     def post(self, request, match_id: int):
         with transaction.atomic():
             match = get_object_or_404(
-                Match.objects.select_related("tournament").select_for_update(),
+                Match.objects.select_related("tournament", "stage").select_for_update(),
                 pk=match_id,
             )
 
@@ -396,16 +371,12 @@ class MatchClockResetPeriodView(APIView):
             data = request.data or {}
             allowed = _allowed_periods_for_match(match)
 
-            # Reset dotyczy tylko clock_* i nie dotyka wyniku ani incydentów.
             period = match.clock_period or Match.ClockPeriod.NONE
             if data.get("period") not in (None, "", "null"):
                 period = str(data.get("period")).strip()
 
             if period not in allowed:
-                return Response(
-                    {"detail": f"Nieprawidłowy period. Dozwolone: {sorted(list(allowed))}"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                return Response({"detail": f"Nieprawidłowy period. Dozwolone: {sorted(list(allowed))}"}, status=status.HTTP_400_BAD_REQUEST)
 
             match.clock_state = Match.ClockState.NOT_STARTED
             match.clock_started_at = None

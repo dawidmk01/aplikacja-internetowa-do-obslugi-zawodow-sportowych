@@ -1,8 +1,8 @@
 // frontend/src/pages/TournamentTeams.tsx
-// Strona obsługuje zarządzanie drużynami i składem turnieju.
+// Strona obsługuje zarządzanie uczestnikami, składami i kolejką zmian nazw w kontekście aktywnej dywizji turnieju.
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useSearchParams } from "react-router-dom";
 
 import { ChevronDown, ChevronUp } from "lucide-react";
 
@@ -17,12 +17,24 @@ import { toast } from "../ui/Toast";
 import { useAutosave } from "../hooks/useAutosave";
 import { AutosaveIndicator } from "../components/AutosaveIndicator";
 import ConfirmActionModal from "../components/ConfirmActionModal";
+import DivisionSwitcher, {
+  type DivisionSwitcherItem,
+} from "../components/DivisionSwitcher";
 
-type Team = { id: number; name: string; players_count?: number };
+type Team = {
+  id: number;
+  name: string;
+  players_count?: number;
+  division_id?: number | null;
+  division_name?: string | null;
+};
 
 type TournamentFormat = "LEAGUE" | "CUP" | "MIXED";
 type TournamentStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
 type MyRole = "ORGANIZER" | "ASSISTANT" | null;
+type DivisionStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
+
+type DivisionSummaryDTO = DivisionSwitcherItem;
 
 type MyPermissions = {
   teams_edit: boolean;
@@ -30,10 +42,8 @@ type MyPermissions = {
   results_edit: boolean;
   bracket_edit: boolean;
   tournament_edit: boolean;
-
   roster_edit: boolean;
   name_change_approve: boolean;
-
   publish?: boolean;
   archive?: boolean;
   manage_assistants?: boolean;
@@ -50,6 +60,11 @@ type TournamentDTO = {
   my_role?: MyRole;
   my_permissions?: MyPermissions;
   matches_started?: boolean;
+  active_division_id?: number | null;
+  active_division_slug?: string | null;
+  active_division_name?: string | null;
+  division_status?: DivisionStatus | null;
+  divisions?: DivisionSummaryDTO[];
   [key: string]: any;
 };
 
@@ -95,6 +110,38 @@ type TeamPlayersResponse = {
   }>;
 };
 
+type ConfirmDialogState = {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  confirmVariant?: "primary" | "danger";
+  resolve: (result: boolean) => void;
+};
+
+type ConfirmDialogRequest = Omit<ConfirmDialogState, "resolve">;
+
+function parseDivisionId(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) return null;
+  return parsed;
+}
+
+function withDivisionQuery(url: string, divisionId: number | null | undefined) {
+  if (!divisionId) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}division_id=${divisionId}`;
+}
+
+function withDivisionPayload<T extends Record<string, any>>(
+  payload: T,
+  divisionId: number | null | undefined
+): T {
+  if (!divisionId) return payload;
+  return { ...payload, division_id: divisionId };
+}
+
 function normName(s: string): string {
   return (s || "").trim().replace(/\s+/g, " ");
 }
@@ -116,36 +163,46 @@ function getEntityLabels(tournament: TournamentDTO | null) {
   };
 }
 
-function getRoleAndPerms(t: TournamentDTO | null): { role: MyRole; perms: MyPermissions | null } {
+function getRoleAndPerms(
+  t: TournamentDTO | null
+): { role: MyRole; perms: MyPermissions | null } {
   const role: MyRole = t?.my_role ?? null;
   const perms = (t?.my_permissions as MyPermissions | undefined) ?? null;
   return { role, perms };
 }
 
 function clonePlayers(rows: PlayerRow[]): PlayerRow[] {
-  return rows.map((r) => ({ id: r.id, display_name: r.display_name, jersey_number: r.jersey_number ?? null }));
+  return rows.map((r) => ({
+    id: r.id,
+    display_name: r.display_name,
+    jersey_number: r.jersey_number ?? null,
+  }));
 }
-
-
-type ConfirmDialogState = {
-  title: string;
-  message: string;
-  confirmLabel?: string;
-  cancelLabel?: string;
-  confirmVariant?: "primary" | "danger";
-  resolve: (result: boolean) => void;
-};
-
-type ConfirmDialogRequest = Omit<ConfirmDialogState, "resolve">;
 
 export default function TournamentTeams() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // ===== Kontekst aktywnej dywizji =====
+  const requestedDivisionId = useMemo(() => {
+    return (
+      parseDivisionId(searchParams.get("division_id")) ??
+      parseDivisionId(searchParams.get("active_division_id"))
+    );
+  }, [searchParams]);
+
+  const [divisions, setDivisions] = useState<DivisionSummaryDTO[]>([]);
+  const [activeDivisionId, setActiveDivisionId] = useState<number | null>(
+    requestedDivisionId
+  );
+  const [activeDivisionName, setActiveDivisionName] = useState<string | null>(null);
+
+  const effectiveDivisionId = requestedDivisionId ?? activeDivisionId;
 
   const [tournament, setTournament] = useState<TournamentDTO | null>(null);
   const tournamentRef = useRef<TournamentDTO | null>(null);
 
   const [teams, setTeams] = useState<Team[]>([]);
-
   const teamOptions = useMemo<SelectOption<number>[]>(
     () => teams.map((t) => ({ value: t.id, label: t.name })),
     [teams]
@@ -154,26 +211,29 @@ export default function TournamentTeams() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
-  // kolejka
+  // ===== Kolejka zmian nazw =====
   const [queueLoading, setQueueLoading] = useState(false);
   const [queueBusy, setQueueBusy] = useState(false);
-  const [pendingRequests, setPendingRequests] = useState<NameChangeRequestItem[]>([]);
+  const [pendingRequests, setPendingRequests] = useState<NameChangeRequestItem[]>(
+    []
+  );
 
-  // roster UI
+  // ===== Edytor składu =====
   const [rosterOpen, setRosterOpen] = useState(true);
   const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
   const [playersLoading, setPlayersLoading] = useState(false);
-  const [players, setPlayers] = useState<PlayerRow[]>([{ display_name: "", jersey_number: null }]);
+  const [players, setPlayers] = useState<PlayerRow[]>([
+    { display_name: "", jersey_number: null },
+  ]);
   const [playersDirty, setPlayersDirty] = useState(false);
 
-  // participant shortcut
   const [participantMode, setParticipantMode] = useState(false);
-
   const inFlightRef = useRef(false);
 
-
-  // ===== potwierdzenia (modal zamiast window.confirm) =====
-  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  // ===== Potwierdzenia =====
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(
+    null
+  );
 
   const requestConfirm = (req: ConfirmDialogRequest) =>
     new Promise<boolean>((resolve) => setConfirmDialog({ ...req, resolve }));
@@ -184,14 +244,18 @@ export default function TournamentTeams() {
     resolver?.(result);
   };
 
-  // ===== podgląd składu w kartach drużyn =====
+  // ===== Podgląd składu w kartach =====
   const [expandedTeams, setExpandedTeams] = useState<Record<number, boolean>>({});
-  const [teamPlayersPreview, setTeamPlayersPreview] = useState<Record<number, TeamPlayersResponse | null>>({});
-  const [teamPlayersPreviewLoading, setTeamPlayersPreviewLoading] = useState<Record<number, boolean>>({});
+  const [teamPlayersPreview, setTeamPlayersPreview] = useState<
+    Record<number, TeamPlayersResponse | null>
+  >({});
+  const [teamPlayersPreviewLoading, setTeamPlayersPreviewLoading] = useState<
+    Record<number, boolean>
+  >({});
 
   const canEditRosterAsManagerRef = useRef<boolean>(false);
 
-  // ===== undo (Cofnij) per drużyna =====
+  // ===== Cofanie zmian składu =====
   const undoStacksRef = useRef<Record<number, PlayerRow[][]>>({});
 
   const getActiveTeamId = (): number => {
@@ -219,65 +283,21 @@ export default function TournamentTeams() {
     undoStacksRef.current[teamId] = [];
   };
 
-  const loadTournament = async (): Promise<TournamentDTO> => {
-    const res = await apiFetch(`/api/tournaments/${id}/`);
-    if (!res.ok) throw new Error("Nie udało się pobrać turnieju.");
-    const data: TournamentDTO = await res.json();
-    setTournament(data);
-    tournamentRef.current = data;
-    return data;
-  };
+  // ===== Uprawnienia =====
+  const myRole: MyRole = tournament?.my_role ?? null;
+  const myPerms: MyPermissions | null =
+    (tournament?.my_permissions as MyPermissions | undefined) ?? null;
 
-  const loadTeams = async (): Promise<Team[]> => {
-    const res = await apiFetch(`/api/tournaments/${id}/teams/`);
-    if (!res.ok) throw new Error("Nie udało się pobrać uczestników.");
-    const data: Team[] = await res.json();
-    setTeams(data);
-    return data;
-  };
+  const isOrganizer = myRole === "ORGANIZER";
+  const isAssistant = myRole === "ASSISTANT";
 
-  const setupTeams = async (count: number) => {
-    const res = await apiFetch(`/api/tournaments/${id}/teams/setup/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ teams_count: count }),
-    });
+  const canEditTeams = isOrganizer || (isAssistant && Boolean(myPerms?.teams_edit));
+  const canEditRosterAsManager =
+    isOrganizer || (isAssistant && Boolean(myPerms?.roster_edit));
+  const canManageQueue =
+    isOrganizer || (isAssistant && Boolean(myPerms?.name_change_approve));
 
-    if (!res.ok) {
-      const data = await res.json().catch(() => null);
-      throw new Error(data?.detail || "Nie udało się zaktualizować liczby uczestników.");
-    }
-
-    const data: SetupTeamsResponse = await res.json();
-    setTournament(data.tournament);
-    tournamentRef.current = data.tournament;
-    setTeams(data.teams);
-    return data;
-  };
-
-  // ===== autosave: nazwy drużyn =====
-  const teamNameAutosave = useAutosave<{ name: string }>({
-    onSave: async (teamId, data) => {
-      const name = normName(data.name);
-      if (!name) throw new Error("Nazwa nie może być pusta.");
-
-      const res = await apiFetch(`/api/tournaments/${id}/teams/${teamId}/`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        toastOnError: false,
-        body: JSON.stringify({ name }),
-      });
-
-      if (!res.ok) {
-        const json = await res.json().catch(() => null);
-        throw new Error(json?.detail || "Nie udało się zapisać nazwy.");
-      }
-
-      setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, name } : t)));
-    },
-  });
-
-  // ===== autosave: skład (na całej stronie) =====
+  // ===== Autosave składu =====
   const rosterAutosave = useAutosave<{ teamId: number; players: PlayerRow[] }>({
     onSave: async (_key, payload) => {
       const teamId = payload.teamId;
@@ -299,11 +319,19 @@ export default function TournamentTeams() {
         }))
         .filter((r) => r.display_name.length > 0);
 
-      const res = await apiFetch(endpoint, {
+      const res = await apiFetch(withDivisionQuery(endpoint, effectiveDivisionId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         toastOnError: false,
-        body: JSON.stringify({ players: payloadPlayers }),
+        body: JSON.stringify(
+          withDivisionPayload(
+            {
+              team_id: canEditRosterAsManagerRef.current ? undefined : teamId,
+              players: payloadPlayers,
+            },
+            effectiveDivisionId
+          )
+        ),
       });
 
       if (!res.ok) {
@@ -313,7 +341,9 @@ export default function TournamentTeams() {
 
       const data: TeamPlayersResponse = await res.json();
 
-      setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, players_count: data.count } : t)));
+      setTeams((prev) =>
+        prev.map((t) => (t.id === teamId ? { ...t, players_count: data.count } : t))
+      );
 
       setTeamPlayersPreview((prev) => ({
         ...prev,
@@ -332,38 +362,178 @@ export default function TournamentTeams() {
     },
   });
 
-  // ===== kolejka (name-change requests) =====
-  const canViewOrApproveQueue = (): boolean => {
+  const rosterAutosaveRef = useRef(rosterAutosave);
+
+  useEffect(() => {
+    rosterAutosaveRef.current = rosterAutosave;
+  }, [rosterAutosave]);
+
+  const resetDivisionScopedUi = useCallback(() => {
+    setExpandedTeams({});
+    setTeamPlayersPreview({});
+    setTeamPlayersPreviewLoading({});
+    setSelectedTeamId(null);
+    setPlayers([{ display_name: "", jersey_number: null }]);
+    setPlayersDirty(false);
+    setParticipantMode(false);
+    undoStacksRef.current = {};
+    rosterAutosaveRef.current.clearDraft("roster");
+  }, []);
+
+  // ===== Odczyt danych w kontekście aktywnej dywizji =====
+  const loadTournament = useCallback(
+    async (divisionId: number | null | undefined): Promise<TournamentDTO> => {
+      const res = await apiFetch(
+        withDivisionQuery(`/api/tournaments/${id}/`, divisionId)
+      );
+      if (!res.ok) throw new Error("Nie udało się pobrać turnieju.");
+
+      const data: TournamentDTO = await res.json();
+      setTournament(data);
+      tournamentRef.current = data;
+
+      setDivisions(Array.isArray(data.divisions) ? data.divisions : []);
+      setActiveDivisionId(data.active_division_id ?? divisionId ?? null);
+      setActiveDivisionName(data.active_division_name ?? null);
+
+      return data;
+    },
+    [id]
+  );
+
+  const loadTeams = useCallback(
+    async (divisionId: number | null | undefined): Promise<Team[]> => {
+      const res = await apiFetch(
+        withDivisionQuery(`/api/tournaments/${id}/teams/`, divisionId)
+      );
+      if (!res.ok) throw new Error("Nie udało się pobrać uczestników.");
+
+      const data: Team[] = await res.json();
+      setTeams(data);
+      return data;
+    },
+    [id]
+  );
+
+  const setupTeams = useCallback(
+    async (count: number, divisionId: number | null | undefined) => {
+      const res = await apiFetch(
+        withDivisionQuery(`/api/tournaments/${id}/teams/setup/`, divisionId),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            withDivisionPayload(
+              {
+                teams_count: count,
+                participants_count: count,
+              },
+              divisionId
+            )
+          ),
+        }
+      );
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(
+          data?.detail || "Nie udało się zaktualizować liczby uczestników."
+        );
+      }
+
+      const data: SetupTeamsResponse = await res.json();
+      setTournament(data.tournament);
+      tournamentRef.current = data.tournament;
+      setTeams(data.teams);
+
+      setDivisions(
+        Array.isArray(data.tournament?.divisions) ? data.tournament.divisions : []
+      );
+      setActiveDivisionId(data.tournament?.active_division_id ?? divisionId ?? null);
+      setActiveDivisionName(data.tournament?.active_division_name ?? null);
+
+      return data;
+    },
+    [id]
+  );
+
+  // ===== Autosave nazw uczestników =====
+  const teamNameAutosave = useAutosave<{ name: string }>({
+    onSave: async (teamId, data) => {
+      const name = normName(data.name);
+      if (!name) throw new Error("Nazwa nie może być pusta.");
+
+      const res = await apiFetch(
+        withDivisionQuery(
+          `/api/tournaments/${id}/teams/${teamId}/`,
+          effectiveDivisionId
+        ),
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          toastOnError: false,
+          body: JSON.stringify(withDivisionPayload({ name }, effectiveDivisionId)),
+        }
+      );
+
+      if (!res.ok) {
+        const json = await res.json().catch(() => null);
+        throw new Error(json?.detail || "Nie udało się zapisać nazwy.");
+      }
+
+      setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, name } : t)));
+    },
+  });
+
+  useEffect(() => {
+    canEditRosterAsManagerRef.current = Boolean(canEditRosterAsManager);
+  }, [canEditRosterAsManager]);
+
+  const matchesStarted = Boolean(tournament?.matches_started);
+  const canChangeTeamsCount =
+    isOrganizer ||
+    (isAssistant && Boolean(myPerms?.tournament_edit) && !matchesStarted);
+
+  // ===== Kolejka zmian nazw =====
+  const canViewOrApproveQueue = useCallback((): boolean => {
     const t = tournamentRef.current;
     const { role, perms } = getRoleAndPerms(t);
     if (role === "ORGANIZER") return true;
     if (role === "ASSISTANT") return Boolean(perms?.name_change_approve);
     return false;
-  };
+  }, []);
 
-  const loadPendingQueue = async () => {
-    if (!id) return;
+  const loadPendingQueue = useCallback(
+    async (divisionId: number | null | undefined) => {
+      if (!id) return;
 
-    if (!canViewOrApproveQueue()) {
-      setPendingRequests([]);
-      return;
-    }
-
-    setQueueLoading(true);
-    try {
-      const res = await apiFetch(`/api/tournaments/${id}/teams/name-change-requests/`);
-      if (!res.ok) {
+      if (!canViewOrApproveQueue()) {
         setPendingRequests([]);
         return;
       }
-      const data: NameChangeRequestListResponse = await res.json();
-      setPendingRequests(Array.isArray(data?.results) ? data.results : []);
-    } catch {
-      setPendingRequests([]);
-    } finally {
-      setQueueLoading(false);
-    }
-  };
+
+      setQueueLoading(true);
+      try {
+        const res = await apiFetch(
+          withDivisionQuery(
+            `/api/tournaments/${id}/teams/name-change-requests/`,
+            divisionId
+          )
+        );
+        if (!res.ok) {
+          setPendingRequests([]);
+          return;
+        }
+        const data: NameChangeRequestListResponse = await res.json();
+        setPendingRequests(Array.isArray(data?.results) ? data.results : []);
+      } catch {
+        setPendingRequests([]);
+      } finally {
+        setQueueLoading(false);
+      }
+    },
+    [canViewOrApproveQueue, id]
+  );
 
   const approveRequest = async (requestId: number) => {
     if (!id) return;
@@ -375,16 +545,24 @@ export default function TournamentTeams() {
 
     setQueueBusy(true);
     try {
-      const res = await apiFetch(`/api/tournaments/${id}/teams/name-change-requests/${requestId}/approve/`, {
-        method: "POST",
-      });
+      const res = await apiFetch(
+        withDivisionQuery(
+          `/api/tournaments/${id}/teams/name-change-requests/${requestId}/approve/`,
+          effectiveDivisionId
+        ),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(withDivisionPayload({}, effectiveDivisionId)),
+        }
+      );
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         throw new Error(data?.detail || "Nie udało się zaakceptować prośby.");
       }
 
-      await loadPendingQueue();
-      await loadTeams().catch(() => null);
+      await loadPendingQueue(effectiveDivisionId);
+      await loadTeams(effectiveDivisionId).catch(() => null);
     } catch (e: any) {
       toast.error(e?.message || "Błąd akceptacji prośby.");
     } finally {
@@ -402,15 +580,23 @@ export default function TournamentTeams() {
 
     setQueueBusy(true);
     try {
-      const res = await apiFetch(`/api/tournaments/${id}/teams/name-change-requests/${requestId}/reject/`, {
-        method: "POST",
-      });
+      const res = await apiFetch(
+        withDivisionQuery(
+          `/api/tournaments/${id}/teams/name-change-requests/${requestId}/reject/`,
+          effectiveDivisionId
+        ),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(withDivisionPayload({}, effectiveDivisionId)),
+        }
+      );
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         throw new Error(data?.detail || "Nie udało się odrzucić prośby.");
       }
 
-      await loadPendingQueue();
+      await loadPendingQueue(effectiveDivisionId);
     } catch (e: any) {
       toast.error(e?.message || "Błąd odrzucenia prośby.");
     } finally {
@@ -418,25 +604,7 @@ export default function TournamentTeams() {
     }
   };
 
-  // ===== role/perms =====
-  const myRole: MyRole = tournament?.my_role ?? null;
-  const myPerms: MyPermissions | null = (tournament?.my_permissions as MyPermissions | undefined) ?? null;
-
-  const isOrganizer = myRole === "ORGANIZER";
-  const isAssistant = myRole === "ASSISTANT";
-
-  const canEditTeams = isOrganizer || (isAssistant && Boolean(myPerms?.teams_edit));
-  const canEditRosterAsManager = isOrganizer || (isAssistant && Boolean(myPerms?.roster_edit));
-  const canManageQueue = isOrganizer || (isAssistant && Boolean(myPerms?.name_change_approve));
-
-  useEffect(() => {
-    canEditRosterAsManagerRef.current = Boolean(canEditRosterAsManager);
-  }, [canEditRosterAsManager]);
-
-  const matchesStarted = Boolean(tournament?.matches_started);
-  const canChangeTeamsCount = isOrganizer || (isAssistant && Boolean(myPerms?.tournament_edit) && !matchesStarted);
-
-  // ===== roster helpers =====
+  // ===== Edycja składu =====
   const ensureRosterStateForEmpty = (rows: PlayerRow[]): PlayerRow[] => {
     const cleaned = rows.filter((r) => normName(r.display_name).length > 0);
     if (cleaned.length === 0) return [{ display_name: "", jersey_number: null }];
@@ -452,65 +620,111 @@ export default function TournamentTeams() {
     return ensureRosterStateForEmpty(rows);
   };
 
-  const getRosterEndpoint = (teamId: number): { endpoint: string; mode: "MANAGER" | "PARTICIPANT" } => {
+  const getRosterEndpoint = (
+    teamId: number
+  ): { endpoint: string; mode: "MANAGER" | "PARTICIPANT" } => {
     const t = tournamentRef.current;
     const { role, perms } = getRoleAndPerms(t);
 
-    const canManager = role === "ORGANIZER" || (role === "ASSISTANT" && Boolean(perms?.roster_edit));
+    const canManager =
+      role === "ORGANIZER" || (role === "ASSISTANT" && Boolean(perms?.roster_edit));
     if (canManager) {
-      return { endpoint: `/api/tournaments/${id}/teams/${teamId}/players/`, mode: "MANAGER" };
+      return {
+        endpoint: `/api/tournaments/${id}/teams/${teamId}/players/`,
+        mode: "MANAGER",
+      };
     }
-    return { endpoint: `/api/tournaments/${id}/my-team/players/`, mode: "PARTICIPANT" };
+    return {
+      endpoint: `/api/tournaments/${id}/my-team/players/`,
+      mode: "PARTICIPANT",
+    };
   };
 
-  const loadTeamPlayers = async (teamId: number) => {
-    if (!id) return;
+  const loadTeamPlayers = useCallback(
+    async (
+      teamId: number,
+      divisionId: number | null | undefined = effectiveDivisionId
+    ) => {
+      if (!id) return;
 
-    const t = tournamentRef.current;
-    const { role, perms } = getRoleAndPerms(t);
-    if (role === "ASSISTANT" && !Boolean(perms?.roster_edit)) {
-      toast.error("Brak uprawnień do edycji składów (roster_edit = false).");
-      return;
-    }
-
-    setPlayersLoading(true);
-    try {
-      const { endpoint, mode } = getRosterEndpoint(teamId);
-
-      const res = await apiFetch(endpoint);
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.detail || "Nie udało się pobrać składu.");
-      }
-      const data: TeamPlayersResponse = await res.json();
-
-      const nextRows = mapApiPlayersToRows(data);
-
-      setPlayers(nextRows);
-      setPlayersDirty(false);
-
-      const effectiveTeamId = data.team_id ?? teamId ?? 0;
-      clearUndoStack(effectiveTeamId);
-
-      if (mode === "PARTICIPANT") {
-        setParticipantMode(true);
-        setSelectedTeamId(data.team_id ?? null);
-      } else {
-        setParticipantMode(false);
-        setSelectedTeamId(effectiveTeamId || null);
+      const t = tournamentRef.current;
+      const { role, perms } = getRoleAndPerms(t);
+      if (role === "ASSISTANT" && !Boolean(perms?.roster_edit)) {
+        toast.error("Brak uprawnień do edycji składów (roster_edit = false).");
+        return;
       }
 
-      rosterAutosave.clearDraft("roster");
-    } catch (e: any) {
-      setPlayers([{ display_name: "", jersey_number: null }]);
-      setPlayersDirty(false);
-      toast.error(e?.message || "Błąd pobierania składu.");
-    } finally {
-      setPlayersLoading(false);
-    }
-  };
+      setPlayersLoading(true);
+      try {
+        const { endpoint, mode } = getRosterEndpoint(teamId);
 
-  // ===== init =====
+        const res = await apiFetch(withDivisionQuery(endpoint, divisionId));
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.detail || "Nie udało się pobrać składu.");
+        }
+        const data: TeamPlayersResponse = await res.json();
+
+        const nextRows = mapApiPlayersToRows(data);
+
+        setPlayers(nextRows);
+        setPlayersDirty(false);
+
+        const effectiveTeamId = data.team_id ?? teamId ?? 0;
+        clearUndoStack(effectiveTeamId);
+
+        if (mode === "PARTICIPANT") {
+          setParticipantMode(true);
+          setSelectedTeamId(data.team_id ?? null);
+        } else {
+          setParticipantMode(false);
+          setSelectedTeamId(effectiveTeamId || null);
+        }
+
+        rosterAutosaveRef.current.clearDraft("roster");
+      } catch (e: any) {
+        setPlayers([{ display_name: "", jersey_number: null }]);
+        setPlayersDirty(false);
+        toast.error(e?.message || "Błąd pobierania składu.");
+      } finally {
+        setPlayersLoading(false);
+      }
+    },
+    [effectiveDivisionId, id]
+  );
+
+  const loadTeamPreview = useCallback(
+    async (teamId: number) => {
+      if (!id) return;
+
+      setTeamPlayersPreviewLoading((p) => ({ ...p, [teamId]: true }));
+      try {
+        const res = await apiFetch(
+          withDivisionQuery(
+            `/api/tournaments/${id}/teams/${teamId}/players/`,
+            effectiveDivisionId
+          )
+        );
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.detail || "Nie udało się pobrać składu.");
+        }
+        const data: TeamPlayersResponse = await res.json();
+        setTeamPlayersPreview((p) => ({ ...p, [teamId]: data }));
+        setTeams((prev) =>
+          prev.map((t) => (t.id === teamId ? { ...t, players_count: data.count } : t))
+        );
+      } catch (e: any) {
+        toast.error(e?.message || "Błąd pobierania składu.");
+        setTeamPlayersPreview((p) => ({ ...p, [teamId]: null }));
+      } finally {
+        setTeamPlayersPreviewLoading((p) => ({ ...p, [teamId]: false }));
+      }
+    },
+    [effectiveDivisionId, id]
+  );
+
+  // ===== Inicjalizacja i przełączanie dywizji =====
   useEffect(() => {
     if (!id) return;
 
@@ -519,28 +733,53 @@ export default function TournamentTeams() {
     const init = async () => {
       try {
         setLoading(true);
+        resetDivisionScopedUi();
 
-        const t = await loadTournament();
-        const list = await loadTeams();
+        const tournamentData = await loadTournament(requestedDivisionId);
+        const resolvedDivisionId =
+          tournamentData.active_division_id ?? requestedDivisionId ?? null;
 
-        const { role, perms } = getRoleAndPerms(t);
+        if (
+          mounted &&
+          !requestedDivisionId &&
+          resolvedDivisionId &&
+          Array.isArray(tournamentData.divisions) &&
+          tournamentData.divisions.length > 1
+        ) {
+          const nextSearch = new URLSearchParams(window.location.search);
+          nextSearch.set("division_id", String(resolvedDivisionId));
+          setSearchParams(nextSearch, { replace: true });
+        }
 
-        const allowQueue = role === "ORGANIZER" || (role === "ASSISTANT" && Boolean(perms?.name_change_approve));
-        if (mounted && allowQueue) await loadPendingQueue();
-        if (mounted && !allowQueue) setPendingRequests([]);
+        const list = await loadTeams(resolvedDivisionId);
 
-        if (mounted && hasRosterFeature(t)) {
-          const allowManagerRoster = role === "ORGANIZER" || (role === "ASSISTANT" && Boolean(perms?.roster_edit));
+        const { role, perms } = getRoleAndPerms(tournamentData);
+        const allowQueue =
+          role === "ORGANIZER" ||
+          (role === "ASSISTANT" && Boolean(perms?.name_change_approve));
+        if (mounted && allowQueue) {
+          await loadPendingQueue(resolvedDivisionId);
+        }
+        if (mounted && !allowQueue) {
+          setPendingRequests([]);
+        }
+
+        if (mounted && hasRosterFeature(tournamentData)) {
+          const allowManagerRoster =
+            role === "ORGANIZER" ||
+            (role === "ASSISTANT" && Boolean(perms?.roster_edit));
 
           if (allowManagerRoster) {
             const first = list?.[0]?.id ?? null;
             setSelectedTeamId(first);
             setParticipantMode(false);
-            if (first) await loadTeamPlayers(first);
+            if (first) {
+              await loadTeamPlayers(first, resolvedDivisionId);
+            }
           } else {
             setSelectedTeamId(null);
             setParticipantMode(true);
-            await loadTeamPlayers(0).catch(() => null);
+            await loadTeamPlayers(0, resolvedDivisionId).catch(() => null);
           }
         }
       } catch (e: any) {
@@ -554,22 +793,68 @@ export default function TournamentTeams() {
       }
     };
 
-    init();
+    void init();
+
     return () => {
       mounted = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id, requestedDivisionId, setSearchParams]);
 
-  // ===== teams count =====
+  const hasPendingNameAutosave = useMemo(() => {
+    return Object.keys(teamNameAutosave.drafts || {}).length > 0;
+  }, [teamNameAutosave.drafts]);
+
+  const handleDivisionSwitch = useCallback(
+    async (nextDivisionId: number) => {
+      if (loading || busy || nextDivisionId === effectiveDivisionId) return;
+
+      const hasUnsavedRoster =
+        playersDirty || (rosterAutosave.statuses["roster"] ?? "idle") === "saving";
+
+      if (hasUnsavedRoster || hasPendingNameAutosave) {
+        const ok = await requestConfirm({
+          title: "Zmiana dywizji",
+          message:
+            "Masz niezapisane zmiany w aktywnej dywizji. Po przejściu do innej dywizji widok zostanie przeładowany. Kontynuować?",
+          confirmLabel: "Przejdź",
+          cancelLabel: "Zostań",
+          confirmVariant: "primary",
+        });
+        if (!ok) return;
+      }
+
+      resetDivisionScopedUi();
+
+      const nextSearch = new URLSearchParams(searchParams);
+      nextSearch.set("division_id", String(nextDivisionId));
+      setSearchParams(nextSearch, { replace: false });
+    },
+    [
+      busy,
+      effectiveDivisionId,
+      hasPendingNameAutosave,
+      loading,
+      playersDirty,
+      resetDivisionScopedUi,
+      rosterAutosave.statuses,
+      searchParams,
+      setSearchParams,
+    ]
+  );
+
+  // ===== Zmiana liczby uczestników =====
   const currentCount = useMemo(() => Math.max(2, teams.length), [teams.length]);
-
 
   const confirmChangeCount = async (): Promise<boolean> => {
     if (!canChangeTeamsCount) {
       if (isAssistant) {
-        if (!myPerms?.tournament_edit) toast.error("Brak uprawnień: asystent nie ma tournament_edit.");
-        else if (matchesStarted) toast.error("Asystent nie może zmieniać liczby uczestników po starcie.");
+        if (!myPerms?.tournament_edit) {
+          toast.error("Brak uprawnień: asystent nie ma tournament_edit.");
+        } else if (matchesStarted) {
+          toast.error(
+            "Asystent nie może zmieniać liczby uczestników po starcie dywizji."
+          );
+        }
       } else {
         toast.error("Brak uprawnień.");
       }
@@ -580,20 +865,20 @@ export default function TournamentTeams() {
 
     if (isOrganizer && matchesStarted) {
       const message = [
-        "Turniej jest rozpoczęty.",
+        "Aktywna dywizja jest już rozpoczęta.",
         "",
-        "Zmiana liczby uczestników spowoduje PEŁNY RESET rozgrywek:",
-        "- usunięcie wszystkich etapów i meczów (także rozegranych)",
-        "- skasowanie wyników i postępu drabinki/tabel",
-        "- skasowanie harmonogramu meczów",
+        "Zmiana liczby uczestników spowoduje reset rozgrywek tej dywizji:",
+        "- usunięcie etapów i meczów aktywnej dywizji",
+        "- skasowanie wyników i postępu klasyfikacji",
+        "- skasowanie harmonogramu dywizji",
         "",
-        "Nazwy drużyn pozostaną (część może zostać dezaktywowana przy zmniejszeniu liczby).",
+        "Nazwy uczestników w innych dywizjach pozostaną bez zmian.",
         "",
         "Kontynuować?",
       ].join("\n");
 
       return await requestConfirm({
-        title: "Potwierdź reset rozgrywek",
+        title: "Potwierdź reset rozgrywek dywizji",
         message,
         confirmLabel: "Kontynuuj",
         cancelLabel: "Anuluj",
@@ -603,12 +888,14 @@ export default function TournamentTeams() {
 
     return await requestConfirm({
       title: "Potwierdź zmianę liczby uczestników",
-      message: "Zmiana liczby uczestników spowoduje reset rozgrywek (etapy i mecze).\nKontynuować?",
+      message:
+        "Zmiana liczby uczestników spowoduje reset rozgrywek aktywnej dywizji.\nKontynuować?",
       confirmLabel: "Kontynuuj",
       cancelLabel: "Anuluj",
       confirmVariant: "danger",
     });
   };
+
   const changeTeamsCount = async (delta: number) => {
     if (!tournament || busy || inFlightRef.current) return;
     if (!canChangeTeamsCount) return;
@@ -622,18 +909,29 @@ export default function TournamentTeams() {
       inFlightRef.current = true;
       setBusy(true);
 
-      const resp = await setupTeams(next);
+      const resp = await setupTeams(next, effectiveDivisionId);
 
-      if (canManageQueue) await loadPendingQueue();
+      if (canManageQueue) {
+        await loadPendingQueue(effectiveDivisionId);
+      }
 
       const { role, perms } = getRoleAndPerms(resp.tournament);
-      const allowManagerRoster = role === "ORGANIZER" || (role === "ASSISTANT" && Boolean(perms?.roster_edit));
+      const allowManagerRoster =
+        role === "ORGANIZER" ||
+        (role === "ASSISTANT" && Boolean(perms?.roster_edit));
 
       if (hasRosterFeature(resp.tournament) && allowManagerRoster) {
         const ids = new Set(resp.teams.map((t) => t.id));
-        const nextSelected = selectedTeamId && ids.has(selectedTeamId) ? selectedTeamId : resp.teams?.[0]?.id ?? null;
+        const nextSelected =
+          selectedTeamId && ids.has(selectedTeamId)
+            ? selectedTeamId
+            : resp.teams?.[0]?.id ?? null;
         setSelectedTeamId(nextSelected);
-        if (nextSelected) await loadTeamPlayers(nextSelected);
+        if (nextSelected) {
+          await loadTeamPlayers(nextSelected, effectiveDivisionId);
+        }
+      } else {
+        resetDivisionScopedUi();
       }
     } catch (e: any) {
       toast.error(e?.message || "Nie udało się zmienić liczby uczestników.");
@@ -649,7 +947,7 @@ export default function TournamentTeams() {
     return role === "ASSISTANT" && !Boolean(perms?.roster_edit);
   }
 
-  // ===== autosave: helper dla edytora składu =====
+  // ===== Planowanie autosave składu =====
   const scheduleRosterAutosave = (nextPlayers: PlayerRow[]) => {
     if (!hasRosterFeature(tournamentRef.current)) return;
     if (participantsRosterBlocked()) return;
@@ -679,7 +977,8 @@ export default function TournamentTeams() {
       if (teamId) pushUndoSnapshot(teamId, prev);
 
       const next = prev.filter((_, i) => i !== idx);
-      const safe = next.length === 0 ? [{ display_name: "", jersey_number: null }] : next;
+      const safe =
+        next.length === 0 ? [{ display_name: "", jersey_number: null }] : next;
       scheduleRosterAutosave(safe);
       return safe;
     });
@@ -709,28 +1008,6 @@ export default function TournamentTeams() {
     scheduleRosterAutosave(snap);
   };
 
-  // ===== podgląd składu w karcie (lazy) =====
-  const loadTeamPreview = async (teamId: number) => {
-    if (!id) return;
-
-    setTeamPlayersPreviewLoading((p) => ({ ...p, [teamId]: true }));
-    try {
-      const res = await apiFetch(`/api/tournaments/${id}/teams/${teamId}/players/`);
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.detail || "Nie udało się pobrać składu.");
-      }
-      const data: TeamPlayersResponse = await res.json();
-      setTeamPlayersPreview((p) => ({ ...p, [teamId]: data }));
-      setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, players_count: data.count } : t)));
-    } catch (e: any) {
-      toast.error(e?.message || "Błąd pobierania składu.");
-      setTeamPlayersPreview((p) => ({ ...p, [teamId]: null }));
-    } finally {
-      setTeamPlayersPreviewLoading((p) => ({ ...p, [teamId]: false }));
-    }
-  };
-
   const toggleTeamExpand = async (teamId: number) => {
     const next = !Boolean(expandedTeams[teamId]);
     setExpandedTeams((p) => ({ ...p, [teamId]: next }));
@@ -749,26 +1026,40 @@ export default function TournamentTeams() {
   const entityLabels = getEntityLabels(tournament);
   const titleLabel = entityLabels.pluralCapitalized;
   const nameInputPlaceholderLabel = entityLabels.singularCapitalized;
-  const canUndoNow = !playersLoading && (undoStacksRef.current[getActiveTeamId()]?.length ?? 0) > 0;
+  const canUndoNow =
+    !playersLoading && (undoStacksRef.current[getActiveTeamId()]?.length ?? 0) > 0;
 
   return (
     <div className="w-full py-6">
-      {/* HEADER */}
+      {/* ===== Nagłówek procesu ===== */}
       <div className="mb-4 flex flex-col gap-3">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-white">Uczestnicy</h1>
-            <div className="mt-1 text-sm text-slate-300">Zarządzanie uczestnikami - liczba, nazwy i składy.</div>
+            <h1 className="text-2xl font-semibold tracking-tight text-white">
+              Uczestnicy
+            </h1>
+            <div className="mt-1 text-sm text-slate-300">
+              Zarządzanie uczestnikami, składami i kolejką zmian nazw w aktywnej dywizji.
+              {activeDivisionName ? ` Aktywna dywizja: ${activeDivisionName}.` : ""}
+            </div>
           </div>
+
+          <DivisionSwitcher
+            divisions={divisions}
+            activeDivisionId={effectiveDivisionId}
+            disabled={busy || loading}
+            onChange={handleDivisionSwitch}
+          />
         </div>
       </div>
 
-      {/* INFO/WARN */}
+      {/* ===== Komunikaty statusowe i uprawnienia ===== */}
       <div className="space-y-3">
         {isAssistant && !myPerms && (
           <Card className="p-4">
             <div className="text-sm text-amber-200/90">
-              Uwaga: backend nie zwrócił <code className="text-amber-100">my_permissions</code>. UI traktuje uprawnienia
+              Uwaga: backend nie zwrócił{" "}
+              <code className="text-amber-100">my_permissions</code>. UI traktuje uprawnienia
               asystenta jako wyłączone.
             </div>
           </Card>
@@ -777,7 +1068,8 @@ export default function TournamentTeams() {
         {isAssistant && matchesStarted && (
           <Card className="p-4">
             <div className="text-sm text-rose-200/90">
-              Turniej już się rozpoczął - zmiana liczby uczestników jest zablokowana dla asystenta.
+              Aktywna dywizja już się rozpoczęła - zmiana liczby uczestników jest
+              zablokowana dla asystenta.
             </div>
           </Card>
         )}
@@ -785,7 +1077,8 @@ export default function TournamentTeams() {
         {isOrganizer && matchesStarted && (
           <Card className="p-4">
             <div className="text-sm text-amber-200/90">
-              Turniej jest rozpoczęty. Zmiana liczby uczestników spowoduje pełny reset (mecze, wyniki, harmonogram).
+              Aktywna dywizja jest rozpoczęta. Zmiana liczby uczestników spowoduje
+              reset rozgrywek tej dywizji.
             </div>
           </Card>
         )}
@@ -793,27 +1086,46 @@ export default function TournamentTeams() {
         {!matchesStarted && tournament.status !== "DRAFT" && (
           <Card className="p-4">
             <div className="text-sm text-slate-200/80">
-              Zmiana nazw jest bezpieczna. Zmiana liczby uczestników (+/-) spowoduje reset rozgrywek.
+              Zmiana nazw jest bezpieczna. Zmiana liczby uczestników (+/-) może
+              spowodować reset rozgrywek aktywnej dywizji.
             </div>
           </Card>
         )}
       </div>
 
-      {/* TOP: COUNT + QUEUE */}
+      {/* ===== Liczba uczestników i kolejka zmian nazw ===== */}
       <div className="mt-4 grid gap-4 lg:grid-cols-[360px_1fr]">
         <Card className="p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-semibold text-slate-100">Liczba uczestników</div>
-              <div className="mt-1 text-xs text-slate-300">Zmiana może wymagać resetu (zależnie od statusu).</div>
+              <div className="text-sm font-semibold text-slate-100">
+                Liczba uczestników dywizji
+              </div>
+              <div className="mt-1 text-xs text-slate-300">
+                Zmiana dotyczy wyłącznie aktywnej dywizji.
+              </div>
             </div>
 
             <div className="flex items-center gap-2">
-              <Button variant="secondary" disabled={busy || !canChangeTeamsCount} onClick={() => changeTeamsCount(-1)}>
+              <Button
+                variant="secondary"
+                disabled={busy || !canChangeTeamsCount}
+                onClick={() => {
+                  void changeTeamsCount(-1);
+                }}
+              >
                 -
               </Button>
-              <div className="min-w-[2.5rem] text-center text-lg font-semibold text-slate-100">{currentCount}</div>
-              <Button variant="secondary" disabled={busy || !canChangeTeamsCount} onClick={() => changeTeamsCount(1)}>
+              <div className="min-w-[2.5rem] text-center text-lg font-semibold text-slate-100">
+                {currentCount}
+              </div>
+              <Button
+                variant="secondary"
+                disabled={busy || !canChangeTeamsCount}
+                onClick={() => {
+                  void changeTeamsCount(1);
+                }}
+              >
                 +
               </Button>
             </div>
@@ -821,7 +1133,7 @@ export default function TournamentTeams() {
 
           {isAssistant && !canChangeTeamsCount && (
             <div className="mt-3 text-xs text-slate-300">
-              Wymaga <code className="text-slate-100">tournament_edit</code> i braku startu.
+              Wymaga <code className="text-slate-100">tournament_edit</code> i braku startu aktywnej dywizji.
             </div>
           )}
         </Card>
@@ -830,7 +1142,9 @@ export default function TournamentTeams() {
           <Card className="p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold text-slate-100">Kolejka próśb o zmianę nazwy</div>
+                <div className="text-sm font-semibold text-slate-100">
+                  Kolejka próśb o zmianę nazwy
+                </div>
                 <div className="mt-1 text-xs text-slate-300">
                   Oczekuje: <span className="text-slate-100">{pendingRequests.length}</span>
                   {queueLoading ? <span className="ml-2 text-slate-400">Ładowanie...</span> : null}
@@ -840,14 +1154,18 @@ export default function TournamentTeams() {
 
             <div className="mt-3 grid gap-2">
               {pendingRequests.length === 0 && !queueLoading ? (
-                <div className="text-sm text-slate-300 italic">Brak oczekujących próśb.</div>
+                <div className="text-sm italic text-slate-300">
+                  Brak oczekujących próśb w aktywnej dywizji.
+                </div>
               ) : (
                 pendingRequests.map((r) => (
                   <div key={r.id} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="text-sm font-semibold text-slate-100">{entityLabels.queueItemLabel} #{r.team_id}</div>
-                        <div className="mt-1 text-xs text-slate-300 break-words">
+                        <div className="text-sm font-semibold text-slate-100">
+                          {entityLabels.queueItemLabel} #{r.team_id}
+                        </div>
+                        <div className="mt-1 break-words text-xs text-slate-300">
                           <div>
                             <span className="text-slate-400">Było:</span> {r.old_name}
                           </div>
@@ -858,10 +1176,22 @@ export default function TournamentTeams() {
                       </div>
 
                       <div className="flex shrink-0 items-center gap-2">
-                        <Button variant="secondary" disabled={queueBusy} onClick={() => approveRequest(r.id)}>
+                        <Button
+                          variant="secondary"
+                          disabled={queueBusy}
+                          onClick={() => {
+                            void approveRequest(r.id);
+                          }}
+                        >
                           Akceptuj
                         </Button>
-                        <Button variant="danger" disabled={queueBusy} onClick={() => rejectRequest(r.id)}>
+                        <Button
+                          variant="danger"
+                          disabled={queueBusy}
+                          onClick={() => {
+                            void rejectRequest(r.id);
+                          }}
+                        >
                           Odrzuć
                         </Button>
                       </div>
@@ -873,26 +1203,43 @@ export default function TournamentTeams() {
           </Card>
         ) : (
           <Card className="p-4">
-            <div className="text-sm text-slate-300">Kolejka zmian nazw jest niedostępna (brak uprawnień).</div>
+            <div className="text-sm text-slate-300">
+              Kolejka zmian nazw jest niedostępna dla tej roli.
+            </div>
           </Card>
         )}
       </div>
 
-      {/* ROSTER */}
+      {/* ===== Składy aktywnej dywizji ===== */}
       {hasRosterFeature(tournament) && (
         <Card className="mt-4 p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <div className="text-sm font-semibold text-slate-100">Składy (zawodnicy)</div>
-                <AutosaveIndicator status={rosterAutosave.statuses["roster"] ?? "idle"} error={rosterAutosave.errors["roster"]} />
+                <div className="text-sm font-semibold text-slate-100">
+                  Składy (zawodnicy)
+                </div>
+                <AutosaveIndicator
+                  status={rosterAutosave.statuses["roster"] ?? "idle"}
+                  error={rosterAutosave.errors["roster"]}
+                />
               </div>
 
-              {participantMode ? <div className="mt-1 text-xs text-slate-300">Tryb uczestnika</div> : null}
+              {participantMode ? (
+                <div className="mt-1 text-xs text-slate-300">Tryb uczestnika</div>
+              ) : null}
             </div>
 
-            <button type="button" onClick={() => setRosterOpen((v) => !v)} className={collapseBtnBase}>
-              {rosterOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            <button
+              type="button"
+              onClick={() => setRosterOpen((v) => !v)}
+              className={collapseBtnBase}
+            >
+              {rosterOpen ? (
+                <ChevronUp className="h-4 w-4" />
+              ) : (
+                <ChevronDown className="h-4 w-4" />
+              )}
               {rosterOpen ? "Zwiń" : "Rozwiń"}
             </button>
           </div>
@@ -901,13 +1248,16 @@ export default function TournamentTeams() {
             <div className="mt-4">
               {isAssistant && !canEditRosterAsManager ? (
                 <div className="text-sm text-slate-300">
-                  Brak uprawnień do składów (wymagane: <code className="text-slate-100">roster_edit</code>).
+                  Brak uprawnień do składów (wymagane:{" "}
+                  <code className="text-slate-100">roster_edit</code>).
                 </div>
               ) : (
                 <div className="flex flex-wrap items-center gap-2">
                   {canEditRosterAsManager ? (
                     <>
-                      <div className="text-sm text-slate-300">{entityLabels.singularCapitalized}:</div>
+                      <div className="text-sm text-slate-300">
+                        {entityLabels.singularCapitalized}:
+                      </div>
                       <Select<number>
                         value={selectedTeamId ?? (teamOptions[0]?.value ?? 0)}
                         onChange={(nextId) => {
@@ -920,38 +1270,54 @@ export default function TournamentTeams() {
                         options={teamOptions}
                         disabled={playersLoading || teamOptions.length === 0}
                         ariaLabel={`Wybierz ${entityLabels.singular}`}
-                        className=""
                         buttonClassName="rounded-2xl border border-white/10 bg-white/[0.06] px-3 py-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10"
                         menuClassName="rounded-2xl"
                         size="md"
                         align="start"
                       />
 
-                      <Button variant="ghost" disabled={!canUndoNow} onClick={undoLastRosterChange}>
+                      <Button
+                        variant="ghost"
+                        disabled={!canUndoNow}
+                        onClick={undoLastRosterChange}
+                      >
                         Cofnij
                       </Button>
 
                       <div className="ml-auto text-xs text-slate-400">
-                        {playersLoading ? "Ładowanie..." : playersDirty ? "Niezapisane zmiany" : " "}
+                        {playersLoading
+                          ? "Ładowanie..."
+                          : playersDirty
+                            ? "Niezapisane zmiany"
+                            : " "}
                       </div>
                     </>
                   ) : (
                     <>
-                      <div className="text-sm text-slate-300">{entityLabels.ownerLabel}</div>
+                      <div className="text-sm text-slate-300">
+                        {entityLabels.ownerLabel}
+                      </div>
 
-                      <Button variant="ghost" disabled={!canUndoNow} onClick={undoLastRosterChange}>
+                      <Button
+                        variant="ghost"
+                        disabled={!canUndoNow}
+                        onClick={undoLastRosterChange}
+                      >
                         Cofnij
                       </Button>
 
                       <div className="ml-auto text-xs text-slate-400">
-                        {playersLoading ? "Ładowanie..." : playersDirty ? "Niezapisane zmiany" : " "}
+                        {playersLoading
+                          ? "Ładowanie..."
+                          : playersDirty
+                            ? "Niezapisane zmiany"
+                            : " "}
                       </div>
                     </>
                   )}
                 </div>
               )}
 
-              {/* editor */}
               {(!isAssistant || canEditRosterAsManager) && (
                 <div className="mt-4 grid gap-2">
                   {players.map((p, idx) => (
@@ -963,7 +1329,11 @@ export default function TournamentTeams() {
                         value={p.display_name}
                         disabled={playersLoading}
                         placeholder={`Zawodnik ${idx + 1} - imię i nazwisko`}
-                        onChange={(e) => updatePlayerField(idx, { display_name: e.target.value })}
+                        onChange={(e) =>
+                          updatePlayerField(idx, {
+                            display_name: e.target.value,
+                          })
+                        }
                       />
 
                       <Input
@@ -982,21 +1352,30 @@ export default function TournamentTeams() {
                         }}
                       />
 
-                      <Button variant="danger" disabled={playersLoading} onClick={() => removePlayerRow(idx)} title="Usuń wiersz">
+                      <Button
+                        variant="danger"
+                        disabled={playersLoading}
+                        onClick={() => removePlayerRow(idx)}
+                        title="Usuń wiersz"
+                      >
                         -
                       </Button>
                     </div>
                   ))}
 
                   <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <Button variant="secondary" disabled={playersLoading} onClick={addPlayerRow}>
+                    <Button
+                      variant="secondary"
+                      disabled={playersLoading}
+                      onClick={addPlayerRow}
+                    >
                       + Dodaj zawodnika
                     </Button>
 
                     <div className="text-xs text-slate-400">
                       {participantMode
-                        ? "Uwaga: zapis może być zablokowany, jeśli organizator wyłączył edycję składu przez właściciela drużyny."
-                        : "Skład zapisuje się automatycznie dla wybranej drużyny."}
+                        ? "Zapis może być zablokowany, jeśli organizator wyłączył edycję składu przez właściciela drużyny."
+                        : "Skład zapisuje się automatycznie dla wybranego uczestnika w aktywnej dywizji."}
                     </div>
                   </div>
                 </div>
@@ -1006,22 +1385,28 @@ export default function TournamentTeams() {
         </Card>
       )}
 
-      {/* TEAMS LIST */}
+      {/* ===== Lista uczestników aktywnej dywizji ===== */}
       <div className="mt-4">
         <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
           <div>
             <div className="text-sm font-semibold text-slate-100">{titleLabel}</div>
-            <div className="mt-1 text-xs text-slate-300">Szybka edycja nazw i podgląd składu w kartach.</div>
+            <div className="mt-1 text-xs text-slate-300">
+              Szybka edycja nazw i podgląd składu w kartach aktywnej dywizji.
+            </div>
             {!canEditTeams && (isOrganizer || isAssistant) && (
               <div className="mt-1 text-xs text-slate-400">
-                Edycja nazw zablokowana (wymagane: <code className="text-slate-100">teams_edit</code>).
+                Edycja nazw zablokowana (wymagane:{" "}
+                <code className="text-slate-100">teams_edit</code>).
               </div>
             )}
           </div>
         </div>
 
         {teams.length === 0 && !busy ? (
-          <div className="text-sm text-slate-300 italic">Brak aktywnych uczestników - ustaw liczbę miejsc (+), aby utworzyć listę.</div>
+          <div className="text-sm italic text-slate-300">
+            Brak aktywnych uczestników w tej dywizji - ustaw liczbę miejsc (+), aby
+            utworzyć listę.
+          </div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {teams.map((team, index) => {
@@ -1050,13 +1435,21 @@ export default function TournamentTeams() {
                         placeholder={`${nameInputPlaceholderLabel} ${index + 1}`}
                         onChange={(e) => {
                           const v = e.target.value;
-                          setTeams((prev) => prev.map((t) => (t.id === team.id ? { ...t, name: v } : t)));
+                          setTeams((prev) =>
+                            prev.map((t) =>
+                              t.id === team.id ? { ...t, name: v } : t
+                            )
+                          );
                           teamNameAutosave.update(team.id, { name: v });
                         }}
                         onBlur={() => {
                           if (!canEditTeams) return;
-                          const v = normName((teamNameAutosave.drafts[team.id]?.name ?? team.name) || "");
-                          void Promise.resolve(teamNameAutosave.forceSave(team.id, { name: v })).catch((err: any) => {
+                          const v = normName(
+                            (teamNameAutosave.drafts[team.id]?.name ?? team.name) || ""
+                          );
+                          void Promise.resolve(
+                            teamNameAutosave.forceSave(team.id, { name: v })
+                          ).catch((err: any) => {
                             toast.error(err?.message || "Nie udało się zapisać nazwy.");
                           });
                         }}
@@ -1064,7 +1457,9 @@ export default function TournamentTeams() {
                     </div>
 
                     {hasRosterFeature(tournament) ? (
-                      <div className="shrink-0 whitespace-nowrap text-xs text-slate-400">Skład: {playersCount}</div>
+                      <div className="shrink-0 whitespace-nowrap text-xs text-slate-400">
+                        Skład: {playersCount}
+                      </div>
                     ) : null}
 
                     <div className="shrink-0">
@@ -1074,11 +1469,17 @@ export default function TournamentTeams() {
                     {hasRosterFeature(tournament) ? (
                       <button
                         type="button"
-                        onClick={() => toggleTeamExpand(team.id).catch(() => void 0)}
+                        onClick={() => {
+                          void toggleTeamExpand(team.id);
+                        }}
                         className={collapseBtnBase}
                         disabled={previewLoading}
                       >
-                        {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                        {expanded ? (
+                          <ChevronUp className="h-4 w-4" />
+                        ) : (
+                          <ChevronDown className="h-4 w-4" />
+                        )}
                         {expanded ? "Zwiń" : "Rozwiń"}
                       </button>
                     ) : null}
@@ -1088,19 +1489,30 @@ export default function TournamentTeams() {
                     <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
                       {previewLoading ? (
                         <div className="text-sm text-slate-300">Ładowanie...</div>
-                      ) : preview && Array.isArray(preview.results) && preview.results.length > 0 ? (
+                      ) : preview &&
+                        Array.isArray(preview.results) &&
+                        preview.results.length > 0 ? (
                         <div className="divide-y divide-white/10">
                           {preview.results.map((p) => (
-                            <div key={p.id} className="grid grid-cols-4 items-center gap-3 py-1.5 text-sm">
-                              <div className="col-span-3 min-w-0 truncate text-white">{p.display_name}</div>
+                            <div
+                              key={p.id}
+                              className="grid grid-cols-4 items-center gap-3 py-1.5 text-sm"
+                            >
+                              <div className="col-span-3 min-w-0 truncate text-white">
+                                {p.display_name}
+                              </div>
                               <div className="col-span-1 text-right text-white">
-                                {typeof p.jersey_number === "number" ? String(p.jersey_number) : ""}
+                                {typeof p.jersey_number === "number"
+                                  ? String(p.jersey_number)
+                                  : ""}
                               </div>
                             </div>
                           ))}
                         </div>
                       ) : (
-                        <div className="text-sm text-slate-300 italic">Brak zawodników w składzie.</div>
+                        <div className="text-sm italic text-slate-300">
+                          Brak zawodników w składzie.
+                        </div>
                       )}
                     </div>
                   ) : null}
@@ -1111,19 +1523,16 @@ export default function TournamentTeams() {
         )}
       </div>
 
-
-
-<ConfirmActionModal
-  open={!!confirmDialog}
-  title={confirmDialog?.title ?? ""}
-  message={confirmDialog?.message ?? ""}
-  confirmLabel={confirmDialog?.confirmLabel}
-  cancelLabel={confirmDialog?.cancelLabel}
-  confirmVariant={confirmDialog?.confirmVariant}
-  onCancel={() => resolveConfirm(false)}
-  onConfirm={() => resolveConfirm(true)}
-/>
-
+      <ConfirmActionModal
+        open={!!confirmDialog}
+        title={confirmDialog?.title ?? ""}
+        message={confirmDialog?.message ?? ""}
+        confirmLabel={confirmDialog?.confirmLabel}
+        cancelLabel={confirmDialog?.cancelLabel}
+        confirmVariant={confirmDialog?.confirmVariant}
+        onCancel={() => resolveConfirm(false)}
+        onConfirm={() => resolveConfirm(true)}
+      />
     </div>
   );
 }

@@ -25,6 +25,27 @@ import { InlineAlert } from "../ui/InlineAlert";
 
 // ===== Dostęp i kontekst publiczny =====
 
+function appendQueryParams(
+  url: string,
+  params: Record<string, string | number | boolean | null | undefined>
+): string {
+  const queryIndex = url.indexOf("?");
+  const base = queryIndex >= 0 ? url.slice(0, queryIndex) : url;
+  const rawQuery = queryIndex >= 0 ? url.slice(queryIndex + 1) : "";
+  const search = new URLSearchParams(rawQuery);
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === null || typeof value === "undefined" || value === "") {
+      search.delete(key);
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return query ? `${base}?${query}` : base;
+}
+
 function hasAccessToken(): boolean {
   try {
     const keys = ["access", "accessToken", "access_token", "jwt_access", "token"];
@@ -173,6 +194,7 @@ export type StandingsResponse = {
 
 type StandingsBracketProps = {
   tournamentId: number;
+  divisionId?: number;
   accessCode?: string;
   showHeader?: boolean;
 };
@@ -181,6 +203,7 @@ type StandingsBracketProps = {
 
 export default function StandingsBracket({
   tournamentId,
+  divisionId,
   accessCode,
   showHeader = true,
 }: StandingsBracketProps) {
@@ -191,10 +214,14 @@ export default function StandingsBracket({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const qs = useMemo(() => {
-    const code = (accessCode ?? "").trim();
-    return code ? `?code=${encodeURIComponent(code)}` : "";
-  }, [accessCode]);
+  const qs = useMemo(
+    () =>
+      appendQueryParams("", {
+        code: (accessCode ?? "").trim() || undefined,
+        division_id: divisionId ?? undefined,
+      }),
+    [accessCode, divisionId]
+  );
 
   const url = (path: string) => `${path}${qs}`;
 
@@ -322,7 +349,7 @@ export default function StandingsBracket({
     return () => {
       alive = false;
     };
-  }, [accessCode, qs, tournamentId]);
+  }, [accessCode, divisionId, qs, tournamentId]);
 
   if (loading) return <div className="text-sm text-slate-300">Ładowanie...</div>;
   if (error) return <InlineAlert variant="error">{error}</InlineAlert>;

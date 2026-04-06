@@ -1,5 +1,5 @@
 # backend/tournaments/models.py
-# Plik definiuje modele domenowe odpowiedzialne za konfigurację turnieju, uczestników, etapy i wyniki.
+# Plik definiuje modele domenowe odpowiedzialne za konfigurację turnieju, dywizji, uczestników, etapów i wyników.
 
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ from decimal import Decimal, InvalidOperation
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q
+from django.db.models import Max, Q
 from django.utils import timezone
+from django.utils.text import slugify
 
 
 class Tournament(models.Model):
@@ -140,13 +141,13 @@ class Tournament(models.Model):
         related_name="organized_tournaments",
     )
 
+    # Pola konfiguracyjne pozostawiono przejściowo dla zgodności z istniejącą logiką.
     competition_type = models.CharField(
         max_length=16,
         choices=CompetitionType.choices,
         default=CompetitionType.TEAM,
     )
 
-    # Pole rozdziela klasyczne pojedynki od trybu "wszyscy razem".
     competition_model = models.CharField(
         max_length=20,
         choices=CompetitionModel.choices,
@@ -159,7 +160,6 @@ class Tournament(models.Model):
         default=TournamentFormat.LEAGUE,
     )
 
-    # Tryb wyniku rozdziela klasyczny wynik meczowy od konfiguracji custom.
     result_mode = models.CharField(
         max_length=16,
         choices=ResultMode.choices,
@@ -250,6 +250,22 @@ class Tournament(models.Model):
             Tournament.TournamentFormat.CUP,
             Tournament.TournamentFormat.LEAGUE,
             Tournament.TournamentFormat.MIXED,
+        }
+
+    def get_default_division(self):
+        return self.divisions.filter(is_default=True).order_by("order", "id").first() or self.divisions.order_by(
+            "order", "id"
+        ).first()
+
+    def build_default_division_payload(self) -> dict:
+        return {
+            "competition_type": self.competition_type,
+            "competition_model": self.competition_model,
+            "tournament_format": self.tournament_format,
+            "result_mode": self.result_mode,
+            "format_config": dict(self.format_config or {}),
+            "result_config": dict(self.result_config or {}),
+            "status": self.status,
         }
 
     def get_league_legs(self) -> int:
@@ -787,6 +803,15 @@ class TournamentRegistration(models.Model):
         related_name="registrations",
     )
 
+    division = models.ForeignKey(
+        "Division",
+        on_delete=models.PROTECT,
+        related_name="registrations",
+        blank=True,
+        null=True,
+        help_text="Dywizja rejestracji. Pole pozostaje opcjonalne wyłącznie na czas migracji starszych danych.",
+    )
+
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -808,10 +833,32 @@ class TournamentRegistration(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
+                fields=["division", "user"],
+                condition=Q(division__isnull=False),
+                name="uniq_registration_division_user",
+            ),
+            models.UniqueConstraint(
                 fields=["tournament", "user"],
-                name="uniq_registration_tournament_user",
-            )
+                condition=Q(division__isnull=True),
+                name="uniq_registration_tournament_user_without_division",
+            ),
         ]
+
+    def clean(self) -> None:
+        if self.division_id and self.division and self.division.tournament_id != self.tournament_id:
+            raise ValidationError("Dywizja rejestracji musi należeć do tego samego turnieju.")
+
+        if self.team_id and self.team:
+            if self.team.tournament_id != self.tournament_id:
+                raise ValidationError("Uczestnik rejestracji musi należeć do tego samego turnieju.")
+            if self.division_id and self.team.division_id and self.team.division_id != self.division_id:
+                raise ValidationError("Dywizja rejestracji musi być zgodna z dywizją przypisanego uczestnika.")
+            if not self.division_id and self.team.division_id:
+                self.division = self.team.division
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.tournament_id}:{self.user_id} -> {self.display_name}"
@@ -872,6 +919,14 @@ class TeamNameChangeRequest(models.Model):
             ),
         ]
 
+    def clean(self) -> None:
+        if self.team.tournament_id != self.tournament_id:
+            raise ValidationError("Wniosek o zmianę nazwy musi wskazywać uczestnika z tego samego turnieju.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
     def __str__(self) -> str:
         return (
             f"{self.tournament_id}:{self.team_id} "
@@ -887,15 +942,216 @@ class Division(models.Model):
     )
 
     name = models.CharField(max_length=120)
+
+    slug = models.SlugField(
+        max_length=140,
+        blank=True,
+        help_text="Stabilny identyfikator dywizji wykorzystywany w URL i przełączaniu kontekstu.",
+    )
+
+    order = models.PositiveIntegerField(
+        default=0,
+        db_index=True,
+        help_text="Kolejność prezentacji dywizji w obrębie turnieju.",
+    )
+
+    is_default = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Flaga wskazuje dywizję domyślnie otwieraną w panelu oraz w widokach publicznych.",
+    )
+
+    is_archived = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Logiczne archiwum dywizji bez usuwania jej historii sportowej.",
+    )
+
+    competition_type = models.CharField(
+        max_length=16,
+        choices=Tournament.CompetitionType.choices,
+        default=Tournament.CompetitionType.TEAM,
+    )
+
+    competition_model = models.CharField(
+        max_length=20,
+        choices=Tournament.CompetitionModel.choices,
+        default=Tournament.CompetitionModel.HEAD_TO_HEAD,
+    )
+
+    tournament_format = models.CharField(
+        max_length=16,
+        choices=Tournament.TournamentFormat.choices,
+        default=Tournament.TournamentFormat.LEAGUE,
+    )
+
+    result_mode = models.CharField(
+        max_length=16,
+        choices=Tournament.ResultMode.choices,
+        default=Tournament.ResultMode.SCORE,
+    )
+
+    format_config = models.JSONField(default=dict, blank=True)
+    result_config = models.JSONField(default=dict, blank=True)
+
+    status = models.CharField(
+        max_length=20,
+        choices=Tournament.Status.choices,
+        default=Tournament.Status.DRAFT,
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        ordering = ["order", "id"]
         constraints = [
             models.UniqueConstraint(
                 fields=["tournament", "name"],
                 name="uniq_tournament_division_name",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["tournament", "slug"],
+                name="uniq_tournament_division_slug",
+            ),
+            models.UniqueConstraint(
+                fields=["tournament"],
+                condition=Q(is_default=True),
+                name="uniq_default_division_per_tournament",
+            ),
         ]
+        indexes = [
+            models.Index(fields=["tournament", "order"], name="idx_division_tournament_order"),
+            models.Index(fields=["tournament", "is_archived"], name="idx_division_tournament_arch"),
+        ]
+
+    @staticmethod
+    def infer_default_competition_type(discipline: str) -> str:
+        return Tournament.infer_default_competition_type(discipline)
+
+    @staticmethod
+    def infer_default_competition_model(discipline: str) -> str:
+        return Tournament.infer_default_competition_model(discipline)
+
+    @staticmethod
+    def allowed_formats_for_discipline(discipline: str) -> set[str]:
+        return Tournament.allowed_formats_for_discipline(discipline)
+
+    @classmethod
+    def default_result_config(cls, result_mode: str) -> dict:
+        return Tournament.default_result_config(result_mode)
+
+    @classmethod
+    def normalize_result_config(cls, result_mode: str, cfg) -> dict:
+        return Tournament.normalize_result_config(result_mode, cfg)
+
+    def get_league_legs(self) -> int:
+        raw = (self.format_config or {}).get(
+            Tournament.FORMATCFG_LEAGUE_LEGS_KEY,
+            Tournament.DEFAULT_LEAGUE_LEGS,
+        )
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return Tournament.DEFAULT_LEAGUE_LEGS
+        return value if value in (1, 2) else Tournament.DEFAULT_LEAGUE_LEGS
+
+    def set_league_legs(self, legs: int) -> None:
+        if legs not in (1, 2):
+            raise ValueError("league_legs musi wynosić 1 albo 2")
+        cfg = dict(self.format_config or {})
+        cfg[Tournament.FORMATCFG_LEAGUE_LEGS_KEY] = legs
+        self.format_config = cfg
+
+    def uses_custom_results(self) -> bool:
+        return self.result_mode == Tournament.ResultMode.CUSTOM
+
+    def get_result_config(self) -> dict:
+        return self.normalize_result_config(self.result_mode, self.result_config)
+
+    def get_custom_mode(self) -> str | None:
+        return self.get_result_config().get(Tournament.RESULTCFG_CUSTOM_MODE_KEY)
+
+    def uses_mass_start(self) -> bool:
+        if self.competition_model == Tournament.CompetitionModel.MASS_START:
+            return True
+        return self.get_custom_mode() == Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED
+
+    def uses_head_to_head(self) -> bool:
+        if self.competition_model == Tournament.CompetitionModel.HEAD_TO_HEAD:
+            return True
+        return self.get_custom_mode() == Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS
+
+    def get_result_value_kind(self) -> str | None:
+        return self.get_result_config().get(Tournament.RESULTCFG_VALUE_KIND_KEY)
+
+    def result_is_time(self) -> bool:
+        return self.get_result_value_kind() == Tournament.RESULTCFG_VALUE_KIND_TIME
+
+    def result_is_number(self) -> bool:
+        return self.get_result_value_kind() == Tournament.RESULTCFG_VALUE_KIND_NUMBER
+
+    def result_is_place(self) -> bool:
+        return self.get_result_value_kind() == Tournament.RESULTCFG_VALUE_KIND_PLACE
+
+    def get_result_order(self) -> str | None:
+        return self.get_result_config().get(Tournament.RESULTCFG_BETTER_RESULT_KEY)
+
+    def custom_result_lower_is_better(self) -> bool:
+        return self.get_result_order() == Tournament.RESULTCFG_BETTER_RESULT_LOWER
+
+    def custom_result_higher_is_better(self) -> bool:
+        return self.get_result_order() == Tournament.RESULTCFG_BETTER_RESULT_HIGHER
+
+    def get_mass_start_stages(self) -> list[dict]:
+        cfg = self.get_result_config()
+        if cfg.get(Tournament.RESULTCFG_CUSTOM_MODE_KEY) != Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED:
+            return []
+        return list(cfg.get(Tournament.RESULTCFG_STAGES_KEY) or [])
+
+    def clean(self) -> None:
+        allowed_formats = self.allowed_formats_for_discipline(self.tournament.discipline)
+        if self.tournament_format not in allowed_formats:
+            raise ValidationError("Wybrany format nie jest dostępny dla wskazanej dyscypliny.")
+
+        if self.competition_type not in dict(Tournament.CompetitionType.choices):
+            raise ValidationError("Nieprawidłowy competition_type dla dywizji.")
+
+        if self.competition_model not in dict(Tournament.CompetitionModel.choices):
+            raise ValidationError("Nieprawidłowy competition_model dla dywizji.")
+
+        if self.result_mode not in dict(Tournament.ResultMode.choices):
+            raise ValidationError("Nieprawidłowy result_mode dla dywizji.")
+
+        if not isinstance(self.format_config or {}, dict):
+            raise ValidationError("format_config musi być obiektem JSON (dict).")
+
+        try:
+            self.result_config = self.normalize_result_config(self.result_mode, self.result_config)
+        except ValueError as exc:
+            raise ValidationError({"result_config": str(exc)}) from exc
+
+    def save(self, *args, **kwargs):
+        if not self.order:
+            max_order = (
+                Division.objects.filter(tournament=self.tournament).exclude(pk=self.pk).aggregate(max_order=Max("order"))[
+                    "max_order"
+                ]
+                or 0
+            )
+            self.order = max_order + 1
+
+        base_slug = slugify(self.slug or self.name)[:140] or "dywizja"
+        slug = base_slug
+        index = 2
+        while Division.objects.filter(tournament=self.tournament, slug=slug).exclude(pk=self.pk).exists():
+            suffix = f"-{index}"
+            slug = f"{base_slug[: 140 - len(suffix)]}{suffix}"
+            index += 1
+        self.slug = slug
+
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.name} ({self.tournament})"
@@ -910,10 +1166,11 @@ class Team(models.Model):
 
     division = models.ForeignKey(
         Division,
-        on_delete=models.SET_NULL,
+        on_delete=models.PROTECT,
         related_name="participants",
         blank=True,
         null=True,
+        help_text="Dywizja uczestnika. Pole pozostaje opcjonalne wyłącznie na czas migracji starszych danych.",
     )
 
     # Powiązanie zachowano dla zgodności, ale preferowanym źródłem relacji jest rejestracja.
@@ -929,6 +1186,14 @@ class Team(models.Model):
     name = models.CharField(max_length=255)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def clean(self) -> None:
+        if self.division_id and self.division and self.division.tournament_id != self.tournament_id:
+            raise ValidationError("Dywizja uczestnika musi należeć do tego samego turnieju.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         if self.registered_user_id:
@@ -1005,10 +1270,11 @@ class Stage(models.Model):
 
     division = models.ForeignKey(
         Division,
-        on_delete=models.SET_NULL,
+        on_delete=models.PROTECT,
         related_name="stages",
         blank=True,
         null=True,
+        help_text="Dywizja etapu. Pole pozostaje opcjonalne wyłącznie na czas migracji starszych danych.",
     )
 
     stage_type = models.CharField(
@@ -1046,6 +1312,33 @@ class Stage(models.Model):
 
     class Meta:
         ordering = ["order"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["division", "order"],
+                condition=Q(division__isnull=False),
+                name="uniq_stage_order_per_division",
+            ),
+            models.UniqueConstraint(
+                fields=["tournament", "order"],
+                condition=Q(division__isnull=True),
+                name="uniq_stage_order_per_tournament_without_division",
+            ),
+        ]
+
+    def get_competition_context(self):
+        return self.division or self.tournament
+
+    def clean(self) -> None:
+        if self.division_id and self.division and self.division.tournament_id != self.tournament_id:
+            raise ValidationError("Dywizja etapu musi należeć do tego samego turnieju.")
+
+        context = self.get_competition_context()
+        if self.stage_type == self.StageType.MASS_START and not context.uses_mass_start():
+            raise ValidationError("Etap MASS_START wymaga konfiguracji dywizji lub turnieju zgodnej z modelem MASS_START.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.stage_type} ({self.tournament})"
@@ -1249,6 +1542,33 @@ class Match(models.Model):
         ]
         ordering = ["round_number", "id"]
 
+    def get_competition_context(self):
+        return self.stage.get_competition_context()
+
+    def clean(self) -> None:
+        if self.stage.tournament_id != self.tournament_id:
+            raise ValidationError("Etap meczu musi należeć do tego samego turnieju co mecz.")
+
+        if self.home_team.tournament_id != self.tournament_id or self.away_team.tournament_id != self.tournament_id:
+            raise ValidationError("Obie strony meczu muszą należeć do tego samego turnieju co mecz.")
+
+        stage_division_id = self.stage.division_id
+        if stage_division_id:
+            if self.home_team.division_id != stage_division_id or self.away_team.division_id != stage_division_id:
+                raise ValidationError("Obie strony meczu muszą należeć do dywizji etapu.")
+        elif self.home_team.division_id and self.away_team.division_id and self.home_team.division_id != self.away_team.division_id:
+            raise ValidationError("Mecz bez dywizji etapu nie może łączyć uczestników z różnych dywizji.")
+
+        if self.group_id and self.group and self.group.stage_id != self.stage_id:
+            raise ValidationError("Grupa meczu musi należeć do wskazanego etapu.")
+
+        if self.winner_id and self.winner_id not in (self.home_team_id, self.away_team_id):
+            raise ValidationError("Zwycięzca meczu musi być jednym z uczestników tego meczu.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
     def clock_seconds_in_period(self, now: datetime | None = None) -> int:
         now_dt = now or timezone.now()
         running = 0
@@ -1407,11 +1727,12 @@ class MatchCustomResult(models.Model):
 
     def clean(self) -> None:
         tournament = self.match.tournament
+        context = self.match.get_competition_context()
 
-        if not tournament.uses_custom_results():
-            raise ValidationError("Wynik custom można zapisać tylko dla turnieju z result_mode=CUSTOM.")
+        if not context.uses_custom_results():
+            raise ValidationError("Wynik custom można zapisać tylko dla kontekstu z result_mode=CUSTOM.")
 
-        if tournament.get_custom_mode() == Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS:
+        if context.get_custom_mode() == Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS:
             raise ValidationError("Ten model nie obsługuje punktowego trybu HEAD_TO_HEAD_POINTS.")
 
         if self.team.tournament_id != tournament.id:
@@ -1420,9 +1741,12 @@ class MatchCustomResult(models.Model):
         if self.team_id not in (self.match.home_team_id, self.match.away_team_id):
             raise ValidationError("Uczestnik wyniku musi być jednym z uczestników tego meczu.")
 
-        expected_kind = tournament.get_result_value_kind()
+        if self.match.stage.division_id and self.team.division_id != self.match.stage.division_id:
+            raise ValidationError("Uczestnik wyniku musi należeć do dywizji etapu meczu.")
+
+        expected_kind = context.get_result_value_kind()
         if self.value_kind != expected_kind:
-            raise ValidationError("value_kind wyniku nie zgadza się z konfiguracją turnieju.")
+            raise ValidationError("value_kind wyniku nie zgadza się z konfiguracją dywizji lub turnieju.")
 
         if self.value_kind == self.ValueKind.TIME:
             if self.time_ms is None:
@@ -1444,7 +1768,7 @@ class MatchCustomResult(models.Model):
             if self.time_ms is not None or self.place_value is not None:
                 raise ValidationError("Dla value_kind=NUMBER pozostałe pola wartości muszą być puste.")
 
-            decimal_places = tournament.get_result_config().get(
+            decimal_places = context.get_result_config().get(
                 Tournament.RESULTCFG_DECIMAL_PLACES_KEY,
                 0,
             )
@@ -1552,15 +1876,16 @@ class StageMassStartEntry(models.Model):
 
     def clean(self) -> None:
         tournament = self.stage.tournament
+        context = self.stage.get_competition_context()
 
-        if not tournament.uses_custom_results():
-            raise ValidationError("Obsada etapu MASS_START jest dostępna tylko dla turnieju z result_mode=CUSTOM.")
+        if not context.uses_custom_results():
+            raise ValidationError("Obsada etapu MASS_START jest dostępna tylko dla kontekstu z result_mode=CUSTOM.")
 
-        if tournament.get_custom_mode() != Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED:
+        if context.get_custom_mode() != Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED:
             raise ValidationError("Ten model obsługuje wyłącznie tryb MASS_START_MEASURED.")
 
-        if not tournament.uses_mass_start():
-            raise ValidationError("Ten model obsługuje wyłącznie turniej w modelu MASS_START.")
+        if not context.uses_mass_start():
+            raise ValidationError("Ten model obsługuje wyłącznie turniej lub dywizję w modelu MASS_START.")
 
         if self.stage.stage_type != Stage.StageType.MASS_START:
             raise ValidationError("Obsada MASS_START może dotyczyć wyłącznie etapu typu MASS_START.")
@@ -1568,11 +1893,17 @@ class StageMassStartEntry(models.Model):
         if self.team.tournament_id != tournament.id:
             raise ValidationError("Uczestnik obsady musi należeć do tego samego turnieju co etap.")
 
+        if self.stage.division_id and self.team.division_id != self.stage.division_id:
+            raise ValidationError("Uczestnik obsady musi należeć do dywizji etapu.")
+
         if self.group_id and self.group and self.group.stage_id != self.stage_id:
             raise ValidationError("Grupa obsady musi należeć do wskazanego etapu.")
 
         if self.source_stage_id and self.source_stage and self.source_stage.tournament_id != tournament.id:
             raise ValidationError("Etap źródłowy musi należeć do tego samego turnieju.")
+
+        if self.source_stage_id and self.stage.division_id and self.source_stage.division_id != self.stage.division_id:
+            raise ValidationError("Etap źródłowy awansu musi należeć do tej samej dywizji co etap docelowy.")
 
         if self.source_group_id and self.source_group and self.source_stage_id and self.source_group.stage_id != self.source_stage_id:
             raise ValidationError("Grupa źródłowa musi należeć do wskazanego etapu źródłowego.")
@@ -1711,18 +2042,22 @@ class StageMassStartResult(models.Model):
 
     def clean(self) -> None:
         tournament = self.stage.tournament
+        context = self.stage.get_competition_context()
 
-        if not tournament.uses_custom_results():
-            raise ValidationError("Wynik etapu custom można zapisać tylko dla turnieju z result_mode=CUSTOM.")
+        if not context.uses_custom_results():
+            raise ValidationError("Wynik etapu custom można zapisać tylko dla kontekstu z result_mode=CUSTOM.")
 
-        if tournament.get_custom_mode() != Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED:
+        if context.get_custom_mode() != Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED:
             raise ValidationError("Ten model obsługuje wyłącznie tryb MASS_START_MEASURED.")
 
-        if not tournament.uses_mass_start():
-            raise ValidationError("Ten model obsługuje wyłącznie turniej w modelu MASS_START.")
+        if not context.uses_mass_start():
+            raise ValidationError("Ten model obsługuje wyłącznie turniej lub dywizję w modelu MASS_START.")
 
         if self.team.tournament_id != tournament.id:
             raise ValidationError("Uczestnik wyniku musi należeć do tego samego turnieju co etap.")
+
+        if self.stage.division_id and self.team.division_id != self.stage.division_id:
+            raise ValidationError("Uczestnik wyniku musi należeć do dywizji etapu.")
 
         if self.group_id and self.group and self.group.stage_id != self.stage_id:
             raise ValidationError("Grupa wyniku musi należeć do wskazanego etapu.")
@@ -1742,9 +2077,9 @@ class StageMassStartResult(models.Model):
         ).exists():
             raise ValidationError("Nie można zapisać wyniku dla uczestnika poza przypisaną grupą etapu.")
 
-        expected_kind = tournament.get_result_value_kind()
+        expected_kind = context.get_result_value_kind()
         if self.value_kind != expected_kind:
-            raise ValidationError("value_kind wyniku nie zgadza się z konfiguracją turnieju.")
+            raise ValidationError("value_kind wyniku nie zgadza się z konfiguracją dywizji lub turnieju.")
 
         if self.round_number < 1:
             raise ValidationError("round_number musi być większe lub równe 1.")
@@ -1769,7 +2104,7 @@ class StageMassStartResult(models.Model):
             if self.time_ms is not None or self.place_value is not None:
                 raise ValidationError("Dla value_kind=NUMBER pozostałe pola wartości muszą być puste.")
 
-            decimal_places = tournament.get_result_config().get(
+            decimal_places = context.get_result_config().get(
                 Tournament.RESULTCFG_DECIMAL_PLACES_KEY,
                 0,
             )
@@ -1928,6 +2263,26 @@ class MatchIncident(models.Model):
                 name="non_sub_no_players_in_out",
             ),
         ]
+
+    def clean(self) -> None:
+        if self.team.tournament_id != self.match.tournament_id:
+            raise ValidationError("Drużyna zdarzenia musi należeć do tego samego turnieju co mecz.")
+
+        if self.match.stage.division_id and self.team.division_id != self.match.stage.division_id:
+            raise ValidationError("Drużyna zdarzenia musi należeć do dywizji meczu.")
+
+        if self.player_id and self.player and self.player.team_id != self.team_id:
+            raise ValidationError("Zawodnik zdarzenia musi należeć do wskazanej drużyny.")
+
+        if self.player_in_id and self.player_in and self.player_in.team_id != self.team_id:
+            raise ValidationError("Zawodnik wchodzący musi należeć do wskazanej drużyny.")
+
+        if self.player_out_id and self.player_out and self.player_out.team_id != self.team_id:
+            raise ValidationError("Zawodnik schodzący musi należeć do wskazanej drużyny.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.match_id}:{self.team_id} {self.kind} @{self.minute or '-'}"
