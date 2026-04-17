@@ -492,7 +492,7 @@ def _apply_manual_result_via_goal_incidents_or_409(
     if not match.home_team_id or not match.away_team_id:
         return None
 
-    match = Match.objects.select_related("tournament", "stage", "stage__division").select_for_update().get(pk=match.pk)
+    match = Match.objects.select_related("tournament", "stage").select_for_update().get(pk=match.pk)
 
     desired_regular_home = int(match.home_score or 0)
     desired_regular_away = int(match.away_score or 0)
@@ -784,7 +784,7 @@ class MatchCustomResultUpdateView(APIView):
             return Response({"detail": "Brak identyfikatora meczu."}, status=status.HTTP_400_BAD_REQUEST)
 
         match = get_object_or_404(
-            Match.objects.select_related("stage", "stage__division", "tournament", "home_team", "away_team").select_for_update(),
+            Match.objects.select_related("stage", "tournament", "home_team", "away_team").select_for_update(),
             pk=match_id,
         )
         tournament = match.tournament
@@ -864,14 +864,14 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
             Match.objects.filter(
                 Q(tournament__organizer=user) | Q(tournament__memberships__user=user)
             )
-            .select_related("stage", "stage__division", "tournament")
+            .select_related("stage", "tournament")
             .distinct()
         )
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
         match = self.get_object()
-        match = Match.objects.select_related("stage", "stage__division", "tournament").select_for_update().get(pk=match.pk)
+        match = Match.objects.select_related("stage", "tournament").select_for_update().get(pk=match.pk)
 
         tournament = match.tournament
 
@@ -990,7 +990,7 @@ class FinishMatchView(APIView):
             return Response({"detail": "Brak identyfikatora meczu."}, status=status.HTTP_400_BAD_REQUEST)
 
         match = get_object_or_404(
-            Match.objects.select_related("stage", "stage__division", "tournament", "home_team", "away_team").select_for_update(),
+            Match.objects.select_related("stage", "tournament", "home_team", "away_team").select_for_update(),
             pk=match_id,
         )
         tournament = match.tournament
@@ -1218,7 +1218,7 @@ class ContinueMatchView(APIView):
             return Response({"detail": "Brak identyfikatora meczu."}, status=status.HTTP_400_BAD_REQUEST)
 
         match = get_object_or_404(
-            Match.objects.select_related("stage", "stage__division", "tournament", "home_team", "away_team").select_for_update(),
+            Match.objects.select_related("stage", "tournament", "home_team", "away_team").select_for_update(),
             pk=match_id,
         )
         tournament = match.tournament
@@ -1264,7 +1264,7 @@ class SetScheduledMatchView(APIView):
             return Response({"detail": "Brak identyfikatora meczu."}, status=status.HTTP_400_BAD_REQUEST)
 
         match = get_object_or_404(
-            Match.objects.select_related("stage", "stage__division", "tournament").select_for_update(),
+            Match.objects.select_related("stage", "tournament").select_for_update(),
             pk=match_id,
         )
         tournament = match.tournament

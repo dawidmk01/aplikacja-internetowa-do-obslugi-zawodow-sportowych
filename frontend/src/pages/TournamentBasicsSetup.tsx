@@ -1578,10 +1578,55 @@ export default function TournamentBasicsSetup() {
   const isTournamentCreated = !isCreateMode || Boolean(createdIdRef.current);
   const showLeagueOrGroupConfig = format === "LEAGUE" || format === "MIXED";
   const showKnockoutConfig = format === "CUP" || format === "MIXED";
+  const usesPanelLayoutShell = !isCreateMode;
+  const pageClassName = usesPanelLayoutShell ? "w-full space-y-6" : "w-full space-y-6 py-8";
+  const loadingClassName = usesPanelLayoutShell ? "w-full" : "w-full py-8";
 
   const clearInlineError = useCallback(() => {
     if (inlineError) setInlineError(null);
   }, [inlineError]);
+
+  useEffect(() => {
+    if (!dirty || saving) return;
+
+    const message = "Masz niezapisane zmiany. Czy chcesz porzucić zmiany i opuścić stronę?";
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    const handleDocumentClick = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+
+      const target = event.target as HTMLElement | null;
+      const anchor = target?.closest("a[href]") as HTMLAnchorElement | null;
+      if (!anchor) return;
+      if (anchor.target && anchor.target !== "_self") return;
+
+      const nextUrl = new URL(anchor.href, window.location.href);
+      if (nextUrl.origin !== window.location.origin) return;
+
+      const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      const next = `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`;
+      if (current === next) return;
+
+      const shouldLeave = window.confirm(message);
+      if (!shouldLeave) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    document.addEventListener("click", handleDocumentClick, true);
+
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("click", handleDocumentClick, true);
+    };
+  }, [dirty, saving]);
 
   const onNameChange = useCallback(
     (v: string) => {
@@ -1666,7 +1711,7 @@ export default function TournamentBasicsSetup() {
 
   if (loading) {
     return (
-      <div className="w-full py-8">
+      <div className={loadingClassName}>
         <Card className="p-6">
           <div className="text-sm text-slate-300">Ładowanie...</div>
         </Card>
@@ -1675,15 +1720,11 @@ export default function TournamentBasicsSetup() {
   }
 
   return (
-    <div className="w-full space-y-6 py-8">
-      {isCreateMode && (
-        <div className="-mt-2">
-          <TournamentFlowNav />
-        </div>
-      )}
+    <div className={pageClassName}>
+      {isCreateMode ? <TournamentFlowNav /> : null}
 
       <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
             {isCreateMode ? "Utwórz turniej" : "Ustawienia turnieju"}
           </h1>
@@ -1698,8 +1739,7 @@ export default function TournamentBasicsSetup() {
         <div className="text-sm leading-relaxed text-slate-300">
           {isCreateMode
             ? "Ustal podstawy i strukturę rozgrywek. W kolejnym kroku uzupełnisz uczestników."
-            : "Zmień parametry rozgrywek aktywnej dywizji. Część zmian może wymagać resetu."}
-          {!isCreateMode && activeDivisionName ? ` Aktywna dywizja: ${activeDivisionName}.` : ""}
+            : "Zmień parametry aktywnej dywizji. Część zmian może wymagać resetu rozgrywek lub ponownego wygenerowania układu."}
         </div>
       </div>
 
@@ -2017,6 +2057,7 @@ export default function TournamentBasicsSetup() {
               <div className="flex justify-end">
                 <Button
                   type="button"
+                  className="w-full sm:w-auto"
                   onClick={() => {
                     void goNext();
                   }}

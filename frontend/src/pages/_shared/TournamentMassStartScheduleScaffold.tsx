@@ -10,8 +10,6 @@ import {
   ChevronUp,
   Eraser,
   Filter,
-  LayoutGrid,
-  LayoutList,
   Search,
 } from "lucide-react";
 
@@ -138,8 +136,6 @@ type MassStartFilterPanelProps = {
   groupOptions: GroupFilterOption[];
   filters: MassStartFiltersState;
   onFiltersChange: (next: MassStartFiltersState) => void;
-  viewMode: MassStartViewMode;
-  onViewModeChange: (next: MassStartViewMode) => void;
   panelCollapsed: boolean;
   onTogglePanelCollapsed: () => void;
   onClearAll: () => void;
@@ -152,8 +148,6 @@ function MassStartFilterPanel({
   groupOptions,
   filters,
   onFiltersChange,
-  viewMode,
-  onViewModeChange,
   panelCollapsed,
   onTogglePanelCollapsed,
   onClearAll,
@@ -181,23 +175,6 @@ function MassStartFilterPanel({
     onFiltersChange({ ...filters, groupKeys: nextGroupKeys });
   };
 
-  const viewChip = (mode: MassStartViewMode, label: string, icon: ReactNode) => (
-    <button
-      type="button"
-      onClick={() => onViewModeChange(mode)}
-      aria-pressed={viewMode === mode}
-      className={cn(
-        "inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-slate-200 transition",
-        "hover:bg-white/[0.07]",
-        "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
-        viewMode === mode && "border-white/20 bg-white/[0.10]"
-      )}
-    >
-      {icon}
-      {label}
-    </button>
-  );
-
   return (
     <Card className="relative overflow-hidden p-4 sm:p-5">
       <div className="pointer-events-none absolute inset-0">
@@ -222,8 +199,6 @@ function MassStartFilterPanel({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {viewChip("list", "Lista", <LayoutList className="h-4 w-4" />)}
-            {viewChip("grid", "Siatka", <LayoutGrid className="h-4 w-4" />)}
 
             <button
               type="button"
@@ -401,20 +376,17 @@ export function TournamentMassStartScheduleScaffold<
   });
 
   const [ui, setUi] = useState<{
-    viewMode: MassStartViewMode;
     panelCollapsed: boolean;
     stageCollapsed: Record<number, boolean>;
     groupsCollapsed: Record<number, boolean>;
   }>(() => {
     const parsed = safeReadJson<{
-      viewMode?: MassStartViewMode;
       panelCollapsed?: boolean;
       stageCollapsed?: Record<number, boolean>;
       groupsCollapsed?: Record<number, boolean>;
     }>(uiKey, {});
 
     return {
-      viewMode: parsed.viewMode === "list" || parsed.viewMode === "grid" ? parsed.viewMode : "list",
       panelCollapsed: Boolean(parsed.panelCollapsed),
       stageCollapsed:
         parsed.stageCollapsed && typeof parsed.stageCollapsed === "object"
@@ -565,8 +537,6 @@ export function TournamentMassStartScheduleScaffold<
             groupOptions={groupOptions}
             filters={filters}
             onFiltersChange={setFilters}
-            viewMode={ui.viewMode}
-            onViewModeChange={(next) => setUi((prev) => ({ ...prev, viewMode: next }))}
             panelCollapsed={ui.panelCollapsed}
             onTogglePanelCollapsed={() =>
               setUi((prev) => ({ ...prev, panelCollapsed: !prev.panelCollapsed }))
@@ -596,7 +566,7 @@ export function TournamentMassStartScheduleScaffold<
                       ? renderStageBlock(
                           stage,
                           stageGroups,
-                          ui.viewMode,
+                          "list",
                           Boolean(ui.groupsCollapsed[stage.stage_id]),
                           () => toggleGroupsCollapsed(stage.stage_id)
                         )

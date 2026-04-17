@@ -4,7 +4,10 @@
 from django.urls import path
 
 from .views import (
+    AcceptAssistantInviteView,
     AddAssistantView,
+    CancelAssistantInviteView,
+    DeclineAssistantInviteView,
     AdvanceFromGroupsView,
     AdvanceMassStartStageView,
     ArchiveTournamentView,
@@ -77,6 +80,9 @@ urlpatterns = [
     path("tournaments/<int:pk>/divisions/<int:division_id>/", TournamentDivisionDetailView.as_view()),
     path("tournaments/<int:pk>/assistants/", TournamentAssistantListView.as_view()),
     path("tournaments/<int:pk>/assistants/add/", AddAssistantView.as_view()),
+    path("tournaments/<int:pk>/assistant-invite/accept/", AcceptAssistantInviteView.as_view()),
+    path("tournaments/<int:pk>/assistant-invite/decline/", DeclineAssistantInviteView.as_view()),
+    path("tournaments/<int:pk>/assistant-invites/<int:invite_id>/cancel/", CancelAssistantInviteView.as_view()),
     path("tournaments/<int:pk>/assistants/<int:user_id>/remove/", RemoveAssistantView.as_view()),
     path(
         "tournaments/<int:pk>/assistants/<int:user_id>/permissions/",

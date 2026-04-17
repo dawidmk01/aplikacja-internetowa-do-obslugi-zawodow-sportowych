@@ -7,9 +7,6 @@ import { useParams, useSearchParams } from "react-router-dom";
 import { Brackets, Calendar, Clock, Gauge, TimerReset } from "lucide-react";
 
 import { apiFetch } from "../api";
-import DivisionSwitcher, {
-  type DivisionSwitcherItem,
-} from "../components/DivisionSwitcher";
 import MassStartStageCard from "../components/MassStartStageCard";
 import MatchRow from "../components/MatchRow";
 import { useTournamentWs } from "../hooks/useTournamentWs";
@@ -38,11 +35,7 @@ import {
 
 type ToastKind = "saved" | "success" | "error" | "info";
 type MatchLike = MatchDTO & MatchLikeBase;
-type DivisionStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
-type DivisionSummaryDTO = DivisionSwitcherItem & {
-  status?: DivisionStatus;
-};
-
+type DivisionSummaryDTO = { id: number; name?: string; status?: string };
 type MassStartResultSaveResponseDTO = {
   detail?: string;
   payload?: TournamentMassStartResultsResponseDTO | null;
@@ -158,10 +151,6 @@ function MassStartResultsView({
   savingRows,
   onDraftChange,
   onSaveEntry,
-  divisions,
-  activeDivisionId,
-  activeDivisionName,
-  onDivisionChange,
 }: {
   loading: boolean;
   pageTitle: string;
@@ -174,10 +163,6 @@ function MassStartResultsView({
   savingRows: Record<string, boolean>;
   onDraftChange: (key: string, value: string) => void;
   onSaveEntry: (stage: MassStartStageDTO, groupId: number | null, entry: MassStartEntryDTO) => Promise<void>;
-  divisions: DivisionSummaryDTO[];
-  activeDivisionId: number | null;
-  activeDivisionName: string | null;
-  onDivisionChange: (divisionId: number) => void;
 }) {
   const visibleStages = useMemo(
     () => getVisibleMassStartStages(massStartData?.stages),
@@ -186,24 +171,11 @@ function MassStartResultsView({
 
   return (
     <div className="w-full py-6">
-      <div className="mx-auto w-full max-w-7xl px-4 sm:px-6">
         <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
           <div>
             <div className="text-2xl font-extrabold text-white">{pageTitle}</div>
             <div className="mt-1 text-sm text-slate-300">{pageDescription}</div>
-            {activeDivisionName ? (
-              <div className="mt-1 text-sm text-slate-400">
-                Aktywna dywizja: <span className="text-slate-200">{activeDivisionName}</span>
-              </div>
-            ) : null}
           </div>
-
-          <DivisionSwitcher
-            divisions={divisions}
-            activeDivisionId={activeDivisionId}
-            onChange={onDivisionChange}
-            disabled={loading}
-          />
         </div>
 
         {customModeCard}
@@ -228,7 +200,6 @@ function MassStartResultsView({
             ))}
           </div>
         )}
-      </div>
     </div>
   );
 }
@@ -248,9 +219,7 @@ export default function TournamentResults() {
   const mountedRef = useRef(true);
 
   const [tournament, setTournament] = useState<TournamentDTO | null>(null);
-  const [divisions, setDivisions] = useState<DivisionSummaryDTO[]>([]);
   const [activeDivisionId, setActiveDivisionId] = useState<number | null>(requestedDivisionId);
-  const [activeDivisionName, setActiveDivisionName] = useState<string | null>(null);
 
   const effectiveDivisionId = requestedDivisionId ?? activeDivisionId;
 
@@ -293,9 +262,7 @@ export default function TournamentResults() {
       if (!mountedRef.current) return;
 
       setTournament(tData);
-      setDivisions(Array.isArray((tData as any).divisions) ? ((tData as any).divisions as DivisionSummaryDTO[]) : []);
       setActiveDivisionId((tData as any).active_division_id ?? effectiveDivisionId ?? null);
-      setActiveDivisionName((tData as any).active_division_name ?? null);
 
       const resolvedDivisionId = (tData as any).active_division_id ?? effectiveDivisionId ?? null;
       if (
@@ -722,18 +689,6 @@ export default function TournamentResults() {
     },
     [pushToast, reloadAll, tournament, tournamentId]
   );
-
-  const handleDivisionSwitch = useCallback(
-    (nextDivisionId: number) => {
-      if (nextDivisionId === effectiveDivisionId) return;
-
-      const nextSearch = new URLSearchParams(searchParams);
-      nextSearch.set("division_id", String(nextDivisionId));
-      setSearchParams(nextSearch, { replace: false });
-    },
-    [effectiveDivisionId, searchParams, setSearchParams]
-  );
-
   if (!tournamentId) {
     return (
       <div className="w-full py-6">
@@ -764,10 +719,6 @@ export default function TournamentResults() {
         savingRows={savingRows}
         onDraftChange={onDraftChange}
         onSaveEntry={onSaveMassStartEntry}
-        divisions={divisions}
-        activeDivisionId={effectiveDivisionId}
-        activeDivisionName={activeDivisionName}
-        onDivisionChange={handleDivisionSwitch}
       />
     );
   }
@@ -782,23 +733,6 @@ export default function TournamentResults() {
       matches={matches}
       headerSlot={
         <>
-          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0">
-              {activeDivisionName ? (
-                <div className="text-sm text-slate-300">
-                  Aktywna dywizja: <span className="text-slate-100">{activeDivisionName}</span>
-                </div>
-              ) : null}
-            </div>
-
-            <DivisionSwitcher
-              divisions={divisions}
-              activeDivisionId={effectiveDivisionId}
-              onChange={handleDivisionSwitch}
-              disabled={loading}
-            />
-          </div>
-
           {customModeCard}
           {stageAdvanceCard}
         </>

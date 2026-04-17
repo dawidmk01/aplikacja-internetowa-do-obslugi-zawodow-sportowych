@@ -17,9 +17,6 @@ import { toast } from "../ui/Toast";
 import { useAutosave } from "../hooks/useAutosave";
 import { AutosaveIndicator } from "../components/AutosaveIndicator";
 import ConfirmActionModal from "../components/ConfirmActionModal";
-import DivisionSwitcher, {
-  type DivisionSwitcherItem,
-} from "../components/DivisionSwitcher";
 
 type Team = {
   id: number;
@@ -34,7 +31,12 @@ type TournamentStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
 type MyRole = "ORGANIZER" | "ASSISTANT" | null;
 type DivisionStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
 
-type DivisionSummaryDTO = DivisionSwitcherItem;
+type DivisionSummaryDTO = {
+  id: number;
+  name: string;
+  slug?: string | null;
+  order?: number | null;
+};
 
 type MyPermissions = {
   teams_edit: boolean;
@@ -179,6 +181,36 @@ function clonePlayers(rows: PlayerRow[]): PlayerRow[] {
   }));
 }
 
+function readBooleanStorage(key: string, fallback: boolean): boolean {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function readExpandedTeamsStorage(key: string): Record<number, boolean> {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+
+    return Object.entries(parsed).reduce<Record<number, boolean>>((acc, [teamId, value]) => {
+      const numericId = Number(teamId);
+      if (Number.isInteger(numericId) && numericId > 0) {
+        acc[numericId] = Boolean(value);
+      }
+      return acc;
+    }, {});
+  } catch {
+    return {};
+  }
+}
+
 export default function TournamentTeams() {
   const { id } = useParams<{ id: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -191,13 +223,26 @@ export default function TournamentTeams() {
     );
   }, [searchParams]);
 
-  const [divisions, setDivisions] = useState<DivisionSummaryDTO[]>([]);
   const [activeDivisionId, setActiveDivisionId] = useState<number | null>(
     requestedDivisionId
   );
-  const [activeDivisionName, setActiveDivisionName] = useState<string | null>(null);
 
   const effectiveDivisionId = requestedDivisionId ?? activeDivisionId;
+
+  const rosterPanelStorageKey = useMemo(
+    () => `tournament-teams:roster-open:${id ?? "new"}:${effectiveDivisionId ?? "all"}`,
+    [effectiveDivisionId, id]
+  );
+
+  const teamCardsStorageKey = useMemo(
+    () => `tournament-teams:expanded-cards:${id ?? "new"}:${effectiveDivisionId ?? "all"}`,
+    [effectiveDivisionId, id]
+  );
+
+  const teamsSectionStorageKey = useMemo(
+    () => `tournament-teams:teams-section-open:${id ?? "new"}:${effectiveDivisionId ?? "all"}`,
+    [effectiveDivisionId, id]
+  );
 
   const [tournament, setTournament] = useState<TournamentDTO | null>(null);
   const tournamentRef = useRef<TournamentDTO | null>(null);
@@ -220,6 +265,7 @@ export default function TournamentTeams() {
 
   // ===== Edytor składu =====
   const [rosterOpen, setRosterOpen] = useState(true);
+  const [teamsSectionOpen, setTeamsSectionOpen] = useState(true);
   const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
   const [playersLoading, setPlayersLoading] = useState(false);
   const [players, setPlayers] = useState<PlayerRow[]>([
@@ -380,6 +426,43 @@ export default function TournamentTeams() {
     rosterAutosaveRef.current.clearDraft("roster");
   }, []);
 
+  // ===== Trwałość sekcji i kart =====
+  useEffect(() => {
+    setRosterOpen(readBooleanStorage(rosterPanelStorageKey, true));
+  }, [rosterPanelStorageKey]);
+
+  useEffect(() => {
+    setTeamsSectionOpen(readBooleanStorage(teamsSectionStorageKey, true));
+  }, [teamsSectionStorageKey]);
+
+  useEffect(() => {
+    setExpandedTeams(readExpandedTeamsStorage(teamCardsStorageKey));
+  }, [teamCardsStorageKey]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(rosterPanelStorageKey, String(rosterOpen));
+    } catch {
+      // Brak dostępu do localStorage nie blokuje działania strony.
+    }
+  }, [rosterOpen, rosterPanelStorageKey]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(teamsSectionStorageKey, String(teamsSectionOpen));
+    } catch {
+      // Brak dostępu do localStorage nie blokuje działania strony.
+    }
+  }, [teamsSectionOpen, teamsSectionStorageKey]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(teamCardsStorageKey, JSON.stringify(expandedTeams));
+    } catch {
+      // Brak dostępu do localStorage nie blokuje działania strony.
+    }
+  }, [expandedTeams, teamCardsStorageKey]);
+
   // ===== Odczyt danych w kontekście aktywnej dywizji =====
   const loadTournament = useCallback(
     async (divisionId: number | null | undefined): Promise<TournamentDTO> => {
@@ -392,9 +475,7 @@ export default function TournamentTeams() {
       setTournament(data);
       tournamentRef.current = data;
 
-      setDivisions(Array.isArray(data.divisions) ? data.divisions : []);
       setActiveDivisionId(data.active_division_id ?? divisionId ?? null);
-      setActiveDivisionName(data.active_division_name ?? null);
 
       return data;
     },
@@ -446,11 +527,7 @@ export default function TournamentTeams() {
       tournamentRef.current = data.tournament;
       setTeams(data.teams);
 
-      setDivisions(
-        Array.isArray(data.tournament?.divisions) ? data.tournament.divisions : []
-      );
       setActiveDivisionId(data.tournament?.active_division_id ?? divisionId ?? null);
-      setActiveDivisionName(data.tournament?.active_division_name ?? null);
 
       return data;
     },
@@ -800,48 +877,6 @@ export default function TournamentTeams() {
     };
   }, [id, requestedDivisionId, setSearchParams]);
 
-  const hasPendingNameAutosave = useMemo(() => {
-    return Object.keys(teamNameAutosave.drafts || {}).length > 0;
-  }, [teamNameAutosave.drafts]);
-
-  const handleDivisionSwitch = useCallback(
-    async (nextDivisionId: number) => {
-      if (loading || busy || nextDivisionId === effectiveDivisionId) return;
-
-      const hasUnsavedRoster =
-        playersDirty || (rosterAutosave.statuses["roster"] ?? "idle") === "saving";
-
-      if (hasUnsavedRoster || hasPendingNameAutosave) {
-        const ok = await requestConfirm({
-          title: "Zmiana dywizji",
-          message:
-            "Masz niezapisane zmiany w aktywnej dywizji. Po przejściu do innej dywizji widok zostanie przeładowany. Kontynuować?",
-          confirmLabel: "Przejdź",
-          cancelLabel: "Zostań",
-          confirmVariant: "primary",
-        });
-        if (!ok) return;
-      }
-
-      resetDivisionScopedUi();
-
-      const nextSearch = new URLSearchParams(searchParams);
-      nextSearch.set("division_id", String(nextDivisionId));
-      setSearchParams(nextSearch, { replace: false });
-    },
-    [
-      busy,
-      effectiveDivisionId,
-      hasPendingNameAutosave,
-      loading,
-      playersDirty,
-      resetDivisionScopedUi,
-      rosterAutosave.statuses,
-      searchParams,
-      setSearchParams,
-    ]
-  );
-
   // ===== Zmiana liczby uczestników =====
   const currentCount = useMemo(() => Math.max(2, teams.length), [teams.length]);
 
@@ -1020,40 +1055,25 @@ export default function TournamentTeams() {
   const collapseBtnBase =
     "inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-slate-200 hover:bg-white/[0.07] transition disabled:opacity-60 disabled:hover:bg-white/[0.04]";
 
-  if (loading) return <div className="px-4 py-8 text-slate-200/80">Ładowanie...</div>;
-  if (!tournament) return <div className="px-4 py-8 text-rose-300">Brak danych turnieju.</div>;
+  if (loading) return <div className="w-full py-6 text-slate-200/80">Ładowanie...</div>;
+  if (!tournament) return <div className="w-full py-6 text-rose-300">Brak danych turnieju.</div>;
 
   const entityLabels = getEntityLabels(tournament);
   const titleLabel = entityLabels.pluralCapitalized;
+  const entityCountLabel = entityLabels.pluralCapitalized.toLowerCase();
   const nameInputPlaceholderLabel = entityLabels.singularCapitalized;
   const canUndoNow =
     !playersLoading && (undoStacksRef.current[getActiveTeamId()]?.length ?? 0) > 0;
 
   return (
     <div className="w-full py-6">
-      {/* ===== Nagłówek procesu ===== */}
-      <div className="mb-4 flex flex-col gap-3">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-white">
-              Uczestnicy
-            </h1>
-            <div className="mt-1 text-sm text-slate-300">
-              Zarządzanie uczestnikami, składami i kolejką zmian nazw w aktywnej dywizji.
-              {activeDivisionName ? ` Aktywna dywizja: ${activeDivisionName}.` : ""}
-            </div>
-          </div>
-
-          <DivisionSwitcher
-            divisions={divisions}
-            activeDivisionId={effectiveDivisionId}
-            disabled={busy || loading}
-            onChange={handleDivisionSwitch}
-          />
+      <div className="mb-4 min-w-0">
+        <div className="text-2xl font-extrabold text-slate-100">Uczestnicy</div>
+        <div className="mt-1 text-sm leading-relaxed text-slate-300/90">
+          Zarządzaj listą uczestników, składami i kolejką zmian nazw w jednym miejscu.
         </div>
       </div>
 
-      {/* ===== Komunikaty statusowe i uprawnienia ===== */}
       <div className="space-y-3">
         {isAssistant && !myPerms && (
           <Card className="p-4">
@@ -1082,27 +1102,17 @@ export default function TournamentTeams() {
             </div>
           </Card>
         )}
-
-        {!matchesStarted && tournament.status !== "DRAFT" && (
-          <Card className="p-4">
-            <div className="text-sm text-slate-200/80">
-              Zmiana nazw jest bezpieczna. Zmiana liczby uczestników (+/-) może
-              spowodować reset rozgrywek aktywnej dywizji.
-            </div>
-          </Card>
-        )}
       </div>
 
-      {/* ===== Liczba uczestników i kolejka zmian nazw ===== */}
       <div className="mt-4 grid gap-4 lg:grid-cols-[360px_1fr]">
         <Card className="p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-semibold text-slate-100">
-                Liczba uczestników dywizji
+              <div className="text-base font-extrabold text-slate-100">
+                Liczba {entityCountLabel}
               </div>
-              <div className="mt-1 text-xs text-slate-300">
-                Zmiana dotyczy wyłącznie aktywnej dywizji.
+              <div className="mt-1 text-sm text-slate-300/90">
+                Dopasuj liczbę {entityCountLabel} zanim przejdziesz do dokładnej edycji nazw i składów.
               </div>
             </div>
 
@@ -1116,7 +1126,7 @@ export default function TournamentTeams() {
               >
                 -
               </Button>
-              <div className="min-w-[2.5rem] text-center text-lg font-semibold text-slate-100">
+              <div className="min-w-[4rem] text-center text-2xl font-extrabold text-slate-100">
                 {currentCount}
               </div>
               <Button
@@ -1133,29 +1143,30 @@ export default function TournamentTeams() {
 
           {isAssistant && !canChangeTeamsCount && (
             <div className="mt-3 text-xs text-slate-300">
-              Wymaga <code className="text-slate-100">tournament_edit</code> i braku startu aktywnej dywizji.
+              Wymaga <code className="text-slate-100">tournament_edit</code> i braku rozpoczętych rozgrywek.
             </div>
           )}
         </Card>
 
         {canManageQueue ? (
           <Card className="p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold text-slate-100">
-                  Kolejka próśb o zmianę nazwy
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-base font-extrabold text-slate-100">Kolejka zmian nazw</div>
+                <div className="mt-1 text-sm text-slate-300/90">
+                  W tym miejscu pojawiają się zgłoszenia wymagające akceptacji.
                 </div>
-                <div className="mt-1 text-xs text-slate-300">
-                  Oczekuje: <span className="text-slate-100">{pendingRequests.length}</span>
-                  {queueLoading ? <span className="ml-2 text-slate-400">Ładowanie...</span> : null}
-                </div>
+              </div>
+
+              <div className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-slate-200">
+                Oczekuje: {pendingRequests.length}
               </div>
             </div>
 
-            <div className="mt-3 grid gap-2">
+            <div className="mt-4 grid gap-2">
               {pendingRequests.length === 0 && !queueLoading ? (
-                <div className="text-sm italic text-slate-300">
-                  Brak oczekujących próśb w aktywnej dywizji.
+                <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] px-4 py-4 text-sm italic text-slate-300">
+                  Brak oczekujących próśb o zmianę nazwy.
                 </div>
               ) : (
                 pendingRequests.map((r) => (
@@ -1210,30 +1221,32 @@ export default function TournamentTeams() {
         )}
       </div>
 
-      {/* ===== Składy aktywnej dywizji ===== */}
       {hasRosterFeature(tournament) && (
-        <Card className="mt-4 p-4">
+        <Card className="mt-4 overflow-hidden border-cyan-400/10 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.14),transparent_38%),radial-gradient(circle_at_top_right,rgba(99,102,241,0.14),transparent_34%),rgba(255,255,255,0.05)] p-5">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <div className="text-sm font-semibold text-slate-100">
-                  Składy (zawodnicy)
-                </div>
+                <div className="text-base font-extrabold text-slate-100">Składy</div>
                 <AutosaveIndicator
                   status={rosterAutosave.statuses["roster"] ?? "idle"}
                   error={rosterAutosave.errors["roster"]}
                 />
               </div>
 
+              <div className="mt-1 text-sm text-slate-300/90">
+                Uzupełniaj skład wybranego uczestnika i pracuj na nim bez przeładowywania widoku.
+              </div>
+
               {participantMode ? (
-                <div className="mt-1 text-xs text-slate-300">Tryb uczestnika</div>
+                <div className="mt-1 text-xs text-cyan-200/80">Tryb uczestnika</div>
               ) : null}
             </div>
 
             <button
               type="button"
-              onClick={() => setRosterOpen((v) => !v)}
+              onClick={() => setRosterOpen((prev) => !prev)}
               className={collapseBtnBase}
+              aria-expanded={rosterOpen}
             >
               {rosterOpen ? (
                 <ChevronUp className="h-4 w-4" />
@@ -1385,143 +1398,159 @@ export default function TournamentTeams() {
         </Card>
       )}
 
-      {/* ===== Lista uczestników aktywnej dywizji ===== */}
-      <div className="mt-4">
-        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <div className="text-sm font-semibold text-slate-100">{titleLabel}</div>
-            <div className="mt-1 text-xs text-slate-300">
-              Szybka edycja nazw i podgląd składu w kartach aktywnej dywizji.
+      <Card className="mt-4 overflow-hidden border-cyan-400/10 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.14),transparent_38%),radial-gradient(circle_at_top_right,rgba(99,102,241,0.14),transparent_34%),rgba(255,255,255,0.05)] p-5">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-base font-extrabold text-slate-100">{titleLabel}</div>
+            <div className="mt-1 text-sm text-slate-300/90">
+              Edytuj nazwy bezpośrednio w kartach i rozwijaj szczegóły tylko tam, gdzie są potrzebne.
             </div>
             {!canEditTeams && (isOrganizer || isAssistant) && (
               <div className="mt-1 text-xs text-slate-400">
-                Edycja nazw zablokowana (wymagane:{" "}
-                <code className="text-slate-100">teams_edit</code>).
+                Edycja nazw zablokowana - wymagane <code className="text-slate-100">teams_edit</code>.
               </div>
             )}
           </div>
+
+          <button
+            type="button"
+            onClick={() => setTeamsSectionOpen((prev) => !prev)}
+            className={collapseBtnBase}
+            aria-expanded={teamsSectionOpen}
+          >
+            {teamsSectionOpen ? (
+              <ChevronUp className="h-4 w-4" />
+            ) : (
+              <ChevronDown className="h-4 w-4" />
+            )}
+            {teamsSectionOpen ? "Zwiń" : "Rozwiń"}
+          </button>
         </div>
 
-        {teams.length === 0 && !busy ? (
-          <div className="text-sm italic text-slate-300">
-            Brak aktywnych uczestników w tej dywizji - ustaw liczbę miejsc (+), aby
-            utworzyć listę.
-          </div>
-        ) : (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {teams.map((team, index) => {
-              const expanded = Boolean(expandedTeams[team.id]);
-              const preview = teamPlayersPreview[team.id] ?? null;
-              const previewLoading = Boolean(teamPlayersPreviewLoading[team.id]);
+        {teamsSectionOpen && (
+          <>
+            {teams.length === 0 && !busy ? (
+              <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] px-4 py-5 text-sm italic text-slate-300">
+                Brak aktywnych {entityCountLabel} - zwiększ ich liczbę, aby utworzyć listę.
+              </div>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {teams.map((team, index) => {
+                  const expanded = Boolean(expandedTeams[team.id]);
+                  const preview = teamPlayersPreview[team.id] ?? null;
+                  const previewLoading = Boolean(teamPlayersPreviewLoading[team.id]);
 
-              const draft = teamNameAutosave.drafts[team.id]?.name ?? team.name;
-              const saveStatus = teamNameAutosave.statuses[team.id] ?? "idle";
-              const error = teamNameAutosave.errors[team.id];
+                  const draft = teamNameAutosave.drafts[team.id]?.name ?? team.name;
+                  const saveStatus = teamNameAutosave.statuses[team.id] ?? "idle";
+                  const error = teamNameAutosave.errors[team.id];
 
-              const playersCount =
-                typeof team.players_count === "number"
-                  ? team.players_count
-                  : typeof preview?.count === "number"
-                    ? preview.count
-                    : 0;
+                  const playersCount =
+                    typeof team.players_count === "number"
+                      ? team.players_count
+                      : typeof preview?.count === "number"
+                        ? preview.count
+                        : 0;
 
-              return (
-                <Card key={team.id} className="p-3">
-                  <div className="flex items-center gap-3">
-                    <div className="min-w-0 flex-1">
-                      <Input
-                        value={draft}
-                        disabled={busy || !canEditTeams}
-                        placeholder={`${nameInputPlaceholderLabel} ${index + 1}`}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          setTeams((prev) =>
-                            prev.map((t) =>
-                              t.id === team.id ? { ...t, name: v } : t
-                            )
-                          );
-                          teamNameAutosave.update(team.id, { name: v });
-                        }}
-                        onBlur={() => {
-                          if (!canEditTeams) return;
-                          const v = normName(
-                            (teamNameAutosave.drafts[team.id]?.name ?? team.name) || ""
-                          );
-                          void Promise.resolve(
-                            teamNameAutosave.forceSave(team.id, { name: v })
-                          ).catch((err: any) => {
-                            toast.error(err?.message || "Nie udało się zapisać nazwy.");
-                          });
-                        }}
-                      />
-                    </div>
+                  return (
+                    <Card key={team.id} className="border-white/10 bg-white/[0.035] p-3">
+                      <div className="flex items-center gap-3">
+                        <div className="min-w-0 flex-1">
+                          <Input
+                            value={draft}
+                            disabled={busy || !canEditTeams}
+                            placeholder={`${nameInputPlaceholderLabel} ${index + 1}`}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setTeams((prev) =>
+                                prev.map((t) =>
+                                  t.id === team.id ? { ...t, name: v } : t
+                                )
+                              );
+                              teamNameAutosave.update(team.id, { name: v });
+                            }}
+                            onBlur={() => {
+                              if (!canEditTeams) return;
+                              const v = normName(
+                                (teamNameAutosave.drafts[team.id]?.name ?? team.name) || ""
+                              );
+                              void Promise.resolve(
+                                teamNameAutosave.forceSave(team.id, { name: v })
+                              ).catch((err: any) => {
+                                toast.error(err?.message || "Nie udało się zapisać nazwy.");
+                              });
+                            }}
+                          />
+                        </div>
 
-                    {hasRosterFeature(tournament) ? (
-                      <div className="shrink-0 whitespace-nowrap text-xs text-slate-400">
-                        Skład: {playersCount}
+                        <div className="shrink-0">
+                          <AutosaveIndicator status={saveStatus} error={error} />
+                        </div>
+
+                        {hasRosterFeature(tournament) ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void toggleTeamExpand(team.id);
+                            }}
+                            className={collapseBtnBase}
+                            disabled={previewLoading}
+                            aria-expanded={expanded}
+                          >
+                            {expanded ? (
+                              <ChevronUp className="h-4 w-4" />
+                            ) : (
+                              <ChevronDown className="h-4 w-4" />
+                            )}
+                            {expanded ? "Zwiń" : "Rozwiń"}
+                          </button>
+                        ) : null}
                       </div>
-                    ) : null}
 
-                    <div className="shrink-0">
-                      <AutosaveIndicator status={saveStatus} error={error} />
-                    </div>
+                      {hasRosterFeature(tournament) ? (
+                        <div className="mt-3 text-xs text-slate-400">
+                          Liczba zawodników: {playersCount}
+                        </div>
+                      ) : null}
 
-                    {hasRosterFeature(tournament) ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void toggleTeamExpand(team.id);
-                        }}
-                        className={collapseBtnBase}
-                        disabled={previewLoading}
-                      >
-                        {expanded ? (
-                          <ChevronUp className="h-4 w-4" />
-                        ) : (
-                          <ChevronDown className="h-4 w-4" />
-                        )}
-                        {expanded ? "Zwiń" : "Rozwiń"}
-                      </button>
-                    ) : null}
-                  </div>
-
-                  {hasRosterFeature(tournament) && expanded ? (
-                    <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-                      {previewLoading ? (
-                        <div className="text-sm text-slate-300">Ładowanie...</div>
-                      ) : preview &&
-                        Array.isArray(preview.results) &&
-                        preview.results.length > 0 ? (
-                        <div className="divide-y divide-white/10">
-                          {preview.results.map((p) => (
-                            <div
-                              key={p.id}
-                              className="grid grid-cols-4 items-center gap-3 py-1.5 text-sm"
-                            >
-                              <div className="col-span-3 min-w-0 truncate text-white">
-                                {p.display_name}
-                              </div>
-                              <div className="col-span-1 text-right text-white">
-                                {typeof p.jersey_number === "number"
-                                  ? String(p.jersey_number)
-                                  : ""}
-                              </div>
+                      {hasRosterFeature(tournament) && expanded ? (
+                        <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+                          {previewLoading ? (
+                            <div className="text-sm text-slate-300">Ładowanie...</div>
+                          ) : preview &&
+                            Array.isArray(preview.results) &&
+                            preview.results.length > 0 ? (
+                            <div className="divide-y divide-white/10">
+                              {preview.results.map((p) => (
+                                <div
+                                  key={p.id}
+                                  className="grid grid-cols-4 items-center gap-3 py-1.5 text-sm"
+                                >
+                                  <div className="col-span-3 min-w-0 truncate text-white">
+                                    {p.display_name}
+                                  </div>
+                                  <div className="col-span-1 text-right text-white">
+                                    {typeof p.jersey_number === "number"
+                                      ? String(p.jersey_number)
+                                      : ""}
+                                  </div>
+                                </div>
+                              ))}
                             </div>
-                          ))}
+                          ) : (
+                            <div className="text-sm italic text-slate-300">
+                              Brak zawodników w składzie.
+                            </div>
+                          )}
                         </div>
-                      ) : (
-                        <div className="text-sm italic text-slate-300">
-                          Brak zawodników w składzie.
-                        </div>
-                      )}
-                    </div>
-                  ) : null}
-                </Card>
-              );
-            })}
-          </div>
+                      ) : null}
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
-      </div>
+      </Card>
 
       <ConfirmActionModal
         open={!!confirmDialog}

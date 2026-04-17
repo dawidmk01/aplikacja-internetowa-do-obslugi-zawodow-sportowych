@@ -1,13 +1,10 @@
 // frontend/src/pages/TournamentDetail.tsx
-// Strona obsługuje szczegóły turnieju oraz konfigurację dostępu i asystentów.
+// Strona obsługuje panel ustawień turnieju oraz synchronizuje dane dostępu, rejestracji i asystentów.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { apiFetch } from "../api";
-import DivisionSwitcher, {
-  type DivisionSwitcherItem,
-} from "../components/DivisionSwitcher";
 import { useTournamentWs, type TournamentWsEvent } from "../hooks/useTournamentWs";
 import { cn } from "../lib/cn";
 
@@ -27,7 +24,8 @@ import {
 } from "./_components/TournamentDetailTabs";
 
 type DivisionStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
-type DivisionSummaryDTO = DivisionSwitcherItem & {
+
+type DivisionSummaryDTO = {
   status?: DivisionStatus;
 };
 
@@ -38,10 +36,8 @@ function parseDivisionId(value: string | null | undefined): number | null {
   return parsed;
 }
 
-function withDivisionQuery(url: string, divisionId: number | null | undefined) {
-  if (!divisionId) return url;
-  const separator = url.includes("?") ? "&" : "?";
-  return `${url}${separator}division_id=${divisionId}`;
+function readTournamentName(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 async function readDetail(res: Response): Promise<string | null> {
@@ -69,16 +65,21 @@ function buildRenameApprovalPatch(tournament: Tournament, renameRequiresApproval
   return { participants_self_rename_requires_approval: renameRequiresApproval } as any;
 }
 
+function isRealAssistantUserId(userId: number): boolean {
+  return Number.isInteger(userId) && userId > 0;
+}
+
+function isPendingAssistantInvite(assistant: AssistantListItem): boolean {
+  return assistant.user_id < 0 || typeof assistant.invite_id === "number" || assistant.status === "PENDING";
+}
+
 export default function TournamentDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const requestedDivisionId = useMemo(() => {
-    return (
-      parseDivisionId(searchParams.get("division_id")) ??
-      parseDivisionId(searchParams.get("active_division_id"))
-    );
+    return parseDivisionId(searchParams.get("division_id")) ?? parseDivisionId(searchParams.get("active_division_id"));
   }, [searchParams]);
 
   const [tournament, setTournament] = useState<Tournament | null>(null);
@@ -88,18 +89,19 @@ export default function TournamentDetail() {
   const effectiveDivisionId = requestedDivisionId ?? activeDivisionId;
 
   const [loading, setLoading] = useState(true);
-
   const [needsCode, setNeedsCode] = useState(false);
   const [accessCode, setAccessCode] = useState("");
   const accessCodeRef = useRef("");
 
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  const [nameDraft, setNameDraft] = useState("");
+  const [descriptionDraft, setDescriptionDraft] = useState("");
+  const [savingIdentity, setSavingIdentity] = useState(false);
+
   const [isPublishedDraft, setIsPublishedDraft] = useState(false);
   const [accessCodeDraft, setAccessCodeDraft] = useState("");
-  const [descriptionDraft, setDescriptionDraft] = useState("");
-
-  const [savingSettings, setSavingSettings] = useState(false);
+  const [savingVisibility, setSavingVisibility] = useState(false);
 
   const [allowJoinByCodeDraft, setAllowJoinByCodeDraft] = useState(false);
   const [joinCodeDraft, setJoinCodeDraft] = useState("");
@@ -107,14 +109,12 @@ export default function TournamentDetail() {
   const [renameRequiresApprovalDraft, setRenameRequiresApprovalDraft] = useState(false);
   const [includeJoinCodeInLink, setIncludeJoinCodeInLink] = useState(false);
   const [includeShareCodeInLink, setIncludeShareCodeInLink] = useState(false);
-
-  const [savingJoin, setSavingJoin] = useState(false);
+  const [savingRegistration, setSavingRegistration] = useState(false);
 
   const [assistants, setAssistants] = useState<AssistantListItem[]>([]);
   const [assistantDrafts, setAssistantDrafts] = useState<Record<number, Required<AssistantPermissionsPayload>>>({});
   const [assistantBusy, setAssistantBusy] = useState<Record<number, boolean>>({});
   const [pendingRemoveAssistantId, setPendingRemoveAssistantId] = useState<number | null>(null);
-
   const [assistantPermsBump, setAssistantPermsBump] = useState(0);
 
   const [myUserId, setMyUserId] = useState<number | null>(null);
@@ -135,18 +135,18 @@ export default function TournamentDetail() {
   const activeTab = (searchParams.get("tab") as TabKey | null) ?? "overview";
 
   const setTab = useCallback(
-    (k: TabKey) => {
+    (tab: TabKey) => {
       const next = new URLSearchParams(searchParams);
-      next.set("tab", k);
+      next.set("tab", tab);
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams]
   );
 
-  const allowedTabs = useMemo(() => getAllowedTabs(Boolean(isOrganizer), Boolean(canManage)), [isOrganizer, canManage]);
+  const allowedTabs = useMemo(() => getAllowedTabs(Boolean(isOrganizer), Boolean(canManage)), [canManage, isOrganizer]);
 
   useEffect(() => {
-    if (!allowedTabs.some((t) => t.key === activeTab)) {
+    if (!allowedTabs.some((tab) => tab.key === activeTab)) {
       setTab(allowedTabs[0]?.key ?? "overview");
     }
   }, [activeTab, allowedTabs, setTab]);
@@ -156,7 +156,7 @@ export default function TournamentDetail() {
       if (!prev) return prev;
       const merged: any = { ...prev, ...patch };
       if (responseBody && typeof responseBody === "object") {
-        for (const k of Object.keys(responseBody)) merged[k] = (responseBody as any)[k];
+        for (const key of Object.keys(responseBody)) merged[key] = (responseBody as any)[key];
       }
       return merged as Tournament;
     });
@@ -207,18 +207,16 @@ export default function TournamentDetail() {
         setSearchParams(next, { replace: true });
       }
 
+      setNameDraft(readTournamentName((data as any).name));
+      setDescriptionDraft(data.description ?? "");
       setIsPublishedDraft(Boolean(data.is_published));
       setAccessCodeDraft(data.access_code ?? "");
-      setDescriptionDraft(data.description ?? "");
-
       setAllowJoinByCodeDraft(Boolean((data as any).allow_join_by_code ?? false));
       setJoinCodeDraft(((data as any).join_code ?? "") as string);
-
       setParticipantsPreviewDraft(Boolean((data as any).participants_public_preview_enabled ?? false));
 
       if (Object.prototype.hasOwnProperty.call(data, "participants_self_rename_enabled")) {
-        const enabled = Boolean((data as any).participants_self_rename_enabled);
-        setRenameRequiresApprovalDraft(!enabled);
+        setRenameRequiresApprovalDraft(!Boolean((data as any).participants_self_rename_enabled));
       } else if (Object.prototype.hasOwnProperty.call(data, "participants_self_rename_requires_approval")) {
         setRenameRequiresApprovalDraft(Boolean((data as any).participants_self_rename_requires_approval));
       } else if (Object.prototype.hasOwnProperty.call(data, "participants_self_rename_approval_required")) {
@@ -229,9 +227,9 @@ export default function TournamentDetail() {
 
       setNeedsCode(false);
     } catch (e: any) {
-      const msg = e?.message ?? "Błąd połączenia z serwerem.";
-      setLoadError(msg);
-      toast.error(msg, { title: "Turniej" });
+      const message = e?.message ?? "Błąd połączenia z serwerem.";
+      setLoadError(message);
+      toast.error(message, { title: "Turniej" });
     } finally {
       setLoading(false);
     }
@@ -271,15 +269,6 @@ export default function TournamentDetail() {
     };
   }, [tournament]);
 
-  const onOpenPublicView = useCallback(() => {
-    if (!tournament) return;
-    navigate(withDivisionQuery(`/tournaments/${tournament.id}`, effectiveDivisionId));
-  }, [effectiveDivisionId, navigate, tournament]);
-
-  const onRefresh = useCallback(() => {
-    fetchTournament();
-  }, [fetchTournament]);
-
   const loadAssistants = useCallback(
     async (showSuccessToast?: boolean) => {
       if (!id) return;
@@ -290,29 +279,25 @@ export default function TournamentDetail() {
 
         const raw = await res.json().catch(() => []);
         const list: AssistantListItem[] = extractList(raw) as any;
+        const ids = new Set(list.map((item) => item.user_id));
 
         setAssistants(list);
-
-        const ids = new Set(list.map((x) => x.user_id));
-
         setAssistantDrafts((prev) => {
           const next: Record<number, Required<AssistantPermissionsPayload>> = {};
-          for (const uid of Object.keys(prev)) {
-            const idNum = Number(uid);
-            if (ids.has(idNum)) next[idNum] = prev[idNum];
+          for (const key of Object.keys(prev)) {
+            const numericId = Number(key);
+            if (ids.has(numericId)) next[numericId] = prev[numericId];
           }
           return next;
         });
-
         setAssistantBusy((prev) => {
           const next: Record<number, boolean> = {};
-          for (const uid of Object.keys(prev)) {
-            const idNum = Number(uid);
-            if (ids.has(idNum)) next[idNum] = prev[idNum];
+          for (const key of Object.keys(prev)) {
+            const numericId = Number(key);
+            if (ids.has(numericId)) next[numericId] = prev[numericId];
           }
           return next;
         });
-
         setPendingRemoveAssistantId((prev) => (prev != null && !ids.has(prev) ? null : prev));
 
         if (showSuccessToast) toast.success("Odświeżono listę asystentów.");
@@ -325,23 +310,22 @@ export default function TournamentDetail() {
   );
 
   useEffect(() => {
-    if (!id) return;
-    if (!isOrganizer) return;
+    if (!id || !isOrganizer) return;
     loadAssistants(false);
   }, [id, isOrganizer, loadAssistants]);
 
   const loadAssistantPerms = useCallback(
     async (userId: number) => {
-      if (!id) return;
+      if (!id || !isRealAssistantUserId(userId)) return;
 
-      setAssistantBusy((m) => ({ ...m, [userId]: true }));
+      setAssistantBusy((prev) => ({ ...prev, [userId]: true }));
 
       try {
         const res = await apiFetch(`/api/tournaments/${id}/assistants/${userId}/permissions/`, { toastOnError: false });
         if (res.status === 404) {
-          setAssistants((prev) => prev.filter((a) => a.user_id !== userId));
-          setAssistantDrafts((m) => {
-            const copy = { ...m };
+          setAssistants((prev) => prev.filter((assistant) => assistant.user_id !== userId));
+          setAssistantDrafts((prev) => {
+            const copy = { ...prev };
             delete copy[userId];
             return copy;
           });
@@ -362,11 +346,11 @@ export default function TournamentDetail() {
           name_change_approve: Boolean(eff.name_change_approve),
         };
 
-        setAssistantDrafts((m) => ({ ...m, [userId]: draft }));
+        setAssistantDrafts((prev) => ({ ...prev, [userId]: draft }));
       } catch (e: any) {
         toast.error(e?.message ?? "Błąd pobierania uprawnień.", { title: "Asystenci" });
       } finally {
-        setAssistantBusy((m) => ({ ...m, [userId]: false }));
+        setAssistantBusy((prev) => ({ ...prev, [userId]: false }));
       }
     },
     [id]
@@ -374,16 +358,18 @@ export default function TournamentDetail() {
 
   useEffect(() => {
     if (!isOrganizer) return;
-    for (const a of assistants) {
-      if (!assistantDrafts[a.user_id]) {
-        loadAssistantPerms(a.user_id);
+
+    for (const assistant of assistants) {
+      if (!isRealAssistantUserId(assistant.user_id)) continue;
+      if (!assistantDrafts[assistant.user_id]) {
+        loadAssistantPerms(assistant.user_id);
       }
     }
-  }, [assistants, assistantDrafts, isOrganizer, loadAssistantPerms]);
+  }, [assistantDrafts, assistants, isOrganizer, loadAssistantPerms]);
 
   const updateAssistantDraft = useCallback((userId: number, patch: Partial<Required<AssistantPermissionsPayload>>) => {
-    setAssistantDrafts((m) => {
-      const prev = m[userId] ?? {
+    setAssistantDrafts((prev) => {
+      const base = prev[userId] ?? {
         teams_edit: false,
         schedule_edit: false,
         results_edit: false,
@@ -392,17 +378,18 @@ export default function TournamentDetail() {
         roster_edit: false,
         name_change_approve: false,
       };
-      return { ...m, [userId]: { ...prev, ...patch } };
+      return { ...prev, [userId]: { ...base, ...patch } };
     });
   }, []);
 
   const saveAssistantPerms = useCallback(
     async (userId: number) => {
-      if (!id) return;
+      if (!id || !isRealAssistantUserId(userId)) return;
+
       const draft = assistantDrafts[userId];
       if (!draft) return;
 
-      setAssistantBusy((m) => ({ ...m, [userId]: true }));
+      setAssistantBusy((prev) => ({ ...prev, [userId]: true }));
 
       try {
         const payload: AssistantPermissionsPayload = { ...draft };
@@ -415,9 +402,9 @@ export default function TournamentDetail() {
 
         const data = await res.json().catch(() => ({}));
         if (res.status === 404) {
-          setAssistants((prev) => prev.filter((a) => a.user_id !== userId));
-          setAssistantDrafts((m) => {
-            const copy = { ...m };
+          setAssistants((prev) => prev.filter((assistant) => assistant.user_id !== userId));
+          setAssistantDrafts((prev) => {
+            const copy = { ...prev };
             delete copy[userId];
             return copy;
           });
@@ -436,44 +423,54 @@ export default function TournamentDetail() {
           name_change_approve: Boolean(eff.name_change_approve),
         };
 
-        setAssistantDrafts((m) => ({ ...m, [userId]: normalized }));
+        setAssistantDrafts((prev) => ({ ...prev, [userId]: normalized }));
         toast.success("Uprawnienia asystenta zapisane.");
       } catch (e: any) {
         toast.error(e?.message ?? "Błąd zapisu uprawnień.", { title: "Asystenci" });
       } finally {
-        setAssistantBusy((m) => ({ ...m, [userId]: false }));
+        setAssistantBusy((prev) => ({ ...prev, [userId]: false }));
       }
     },
     [assistantDrafts, id]
   );
 
   const removeAssistant = useCallback(
-    async (userId: number) => {
+    async (assistant: AssistantListItem) => {
       if (!id) return;
 
-      setAssistantBusy((m) => ({ ...m, [userId]: true }));
+      const itemKey = assistant.user_id;
+      setAssistantBusy((prev) => ({ ...prev, [itemKey]: true }));
 
       try {
-        const res = await apiFetch(`/api/tournaments/${id}/assistants/${userId}/remove/`, {
-          toastOnError: false,
-          method: "DELETE",
-        });
+        const isInvite = isPendingAssistantInvite(assistant) && typeof assistant.invite_id === "number";
+        const res = await apiFetch(
+          isInvite
+            ? `/api/tournaments/${id}/assistant-invites/${assistant.invite_id}/cancel/`
+            : `/api/tournaments/${id}/assistants/${assistant.user_id}/remove/`,
+          {
+            toastOnError: false,
+            method: isInvite ? "POST" : "DELETE",
+          }
+        );
 
-        if (!res.ok) throw new Error((await readDetail(res)) || "Nie udało się usunąć asystenta.");
+        if (!res.ok) {
+          throw new Error(
+            (await readDetail(res)) || (isInvite ? "Nie udało się cofnąć zaproszenia." : "Nie udało się usunąć asystenta.")
+          );
+        }
 
-        setAssistants((prev) => prev.filter((a) => a.user_id !== userId));
-        setAssistantDrafts((m) => {
-          const copy = { ...m };
-          delete copy[userId];
+        setAssistants((prev) => prev.filter((item) => item.user_id !== itemKey));
+        setAssistantDrafts((prev) => {
+          const copy = { ...prev };
+          delete copy[itemKey];
           return copy;
         });
-
-        toast.success("Asystent usunięty.");
+        toast.success(isInvite ? "Zaproszenie cofnięte." : "Asystent usunięty.");
       } catch (e: any) {
         toast.error(e?.message ?? "Błąd usuwania asystenta.", { title: "Asystenci" });
       } finally {
-        setAssistantBusy((m) => ({ ...m, [userId]: false }));
-        setPendingRemoveAssistantId((prev) => (prev === userId ? null : prev));
+        setAssistantBusy((prev) => ({ ...prev, [itemKey]: false }));
+        setPendingRemoveAssistantId((prev) => (prev === itemKey ? null : prev));
       }
     },
     [id]
@@ -489,10 +486,9 @@ export default function TournamentDetail() {
       if (tournament.my_role === "ORGANIZER") {
         const action = typeof (evt as any).action === "string" ? String((evt as any).action) : "";
 
-        if (action == "assistant_removed" && typeof evt.userId === "number") {
+        if (action === "assistant_removed" && typeof evt.userId === "number") {
           const removedUserId = evt.userId;
-
-          setAssistants((prev) => prev.filter((a) => a.user_id !== removedUserId));
+          setAssistants((prev) => prev.filter((assistant) => assistant.user_id !== removedUserId));
           setAssistantDrafts((prev) => {
             const copy = { ...prev };
             delete copy[removedUserId];
@@ -502,7 +498,7 @@ export default function TournamentDetail() {
 
         loadAssistants(false);
 
-        if (action == "assistant_permissions_updated" && typeof evt.userId === "number") {
+        if (action === "assistant_permissions_updated" && typeof evt.userId === "number" && isRealAssistantUserId(evt.userId)) {
           loadAssistantPerms(evt.userId);
         }
         return;
@@ -511,7 +507,7 @@ export default function TournamentDetail() {
       if (tournament.my_role === "ASSISTANT") {
         const mine = myUserIdRef.current;
         if (typeof evt.userId === "number" && mine != null && evt.userId !== mine) return;
-        setAssistantPermsBump((x) => x + 1);
+        setAssistantPermsBump((prev) => prev + 1);
       }
     },
     [loadAssistants, loadAssistantPerms, tournament]
@@ -524,10 +520,7 @@ export default function TournamentDetail() {
   });
 
   useEffect(() => {
-    if (!id) return;
-    if (!tournament) return;
-    if (tournament.my_role !== "ASSISTANT") return;
-    if (!myUserId) return;
+    if (!id || !tournament || tournament.my_role !== "ASSISTANT" || !myUserId) return;
 
     const now = Date.now();
     if (now - lastPermsRefreshAtRef.current < 600) return;
@@ -537,13 +530,11 @@ export default function TournamentDetail() {
 
     (async () => {
       try {
-        const pRes = await apiFetch(`/api/tournaments/${id}/assistants/${myUserId}/permissions/`, { toastOnError: false });
-        const pdata = await pRes.json().catch(() => null);
-        if (!pRes.ok || !pdata) return;
+        const res = await apiFetch(`/api/tournaments/${id}/assistants/${myUserId}/permissions/`, { toastOnError: false });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data || cancelled) return;
 
-        const eff = (pdata as any).effective ?? pdata ?? {};
-        if (cancelled) return;
-
+        const eff = (data as any).effective ?? data ?? {};
         setTournament((prev) => {
           if (!prev) return prev;
           return {
@@ -556,7 +547,6 @@ export default function TournamentDetail() {
               tournament_edit: Boolean(eff.tournament_edit),
               roster_edit: Boolean(eff.roster_edit),
               name_change_approve: Boolean(eff.name_change_approve),
-
               publish: Boolean(eff.publish),
               archive: Boolean(eff.archive),
               manage_assistants: Boolean(eff.manage_assistants),
@@ -574,24 +564,61 @@ export default function TournamentDetail() {
     };
   }, [assistantPermsBump, id, myUserId, tournament?.my_role]);
 
-  const saveSettings = useCallback(async () => {
+  const saveIdentity = useCallback(async () => {
     if (!tournament) return;
 
-    const normalizedCode = accessCodeDraft.trim();
+    const normalizedName = nameDraft.trim();
     const normalizedDesc = descriptionDraft.trim();
 
-    if (normalizedDesc.length > DESCRIPTION_MAX) {
-      toast.error(`Opis jest za długi (max ${DESCRIPTION_MAX} znaków).`, { title: "Dostęp i opis" });
+    if (!normalizedName.length) {
+      toast.error("Nazwa turnieju nie może być pusta.", { title: "Nazwa i opis" });
       return;
     }
 
-    setSavingSettings(true);
+    if (normalizedDesc.length > DESCRIPTION_MAX) {
+      toast.error(`Opis jest za długi (max ${DESCRIPTION_MAX} znaków).`, { title: "Nazwa i opis" });
+      return;
+    }
+
+    setSavingIdentity(true);
+
+    try {
+      const payload: Partial<Tournament> = {
+        name: normalizedName,
+        description: normalizedDesc.length ? normalizedDesc : null,
+      } as any;
+
+      const res = await apiFetch(`/api/tournaments/${tournament.id}/`, {
+        toastOnError: false,
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as any)?.detail || "Nie udało się zapisać nazwy i opisu.");
+
+      applyPatchedTournament(payload, data);
+      setNameDraft(readTournamentName((data as any).name ?? payload.name));
+      setDescriptionDraft(Object.prototype.hasOwnProperty.call(data, "description") ? ((data as any).description ?? "") : ((payload.description ?? "") as string));
+      toast.success("Nazwa i opis zostały zapisane.");
+    } catch (e: any) {
+      toast.error(e?.message || "Błąd połączenia z serwerem.", { title: "Nazwa i opis" });
+    } finally {
+      setSavingIdentity(false);
+    }
+  }, [applyPatchedTournament, descriptionDraft, nameDraft, tournament]);
+
+  const saveVisibility = useCallback(async () => {
+    if (!tournament) return;
+
+    const normalizedCode = accessCodeDraft.trim();
+    setSavingVisibility(true);
 
     try {
       const payload: Partial<Tournament> = {
         is_published: isPublishedDraft,
         access_code: normalizedCode.length ? normalizedCode : null,
-        description: normalizedDesc.length ? normalizedDesc : null,
       };
 
       const res = await apiFetch(`/api/tournaments/${tournament.id}/`, {
@@ -602,39 +629,29 @@ export default function TournamentDetail() {
       });
 
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error((data as any)?.detail || "Nie udało się zapisać ustawień.");
+      if (!res.ok) throw new Error((data as any)?.detail || "Nie udało się zapisać ustawień publikacji.");
 
       applyPatchedTournament(payload, data);
-
-      setIsPublishedDraft(
-        Object.prototype.hasOwnProperty.call(data, "is_published") ? Boolean((data as any).is_published) : Boolean(payload.is_published)
-      );
-      setAccessCodeDraft(
-        Object.prototype.hasOwnProperty.call(data, "access_code") ? ((data as any).access_code ?? "") : ((payload.access_code ?? "") as string)
-      );
-      setDescriptionDraft(
-        Object.prototype.hasOwnProperty.call(data, "description") ? ((data as any).description ?? "") : ((payload.description ?? "") as string)
-      );
-
-      toast.success("Ustawienia zapisane.");
+      setIsPublishedDraft(Object.prototype.hasOwnProperty.call(data, "is_published") ? Boolean((data as any).is_published) : Boolean(payload.is_published));
+      setAccessCodeDraft(Object.prototype.hasOwnProperty.call(data, "access_code") ? ((data as any).access_code ?? "") : ((payload.access_code ?? "") as string));
+      toast.success("Publikacja i widoczność zostały zapisane.");
     } catch (e: any) {
-      toast.error(e?.message || "Błąd połączenia z serwerem.", { title: "Dostęp i opis" });
+      toast.error(e?.message || "Błąd połączenia z serwerem.", { title: "Publikacja i widoczność" });
     } finally {
-      setSavingSettings(false);
+      setSavingVisibility(false);
     }
-  }, [applyPatchedTournament, descriptionDraft, accessCodeDraft, isPublishedDraft, tournament]);
+  }, [accessCodeDraft, applyPatchedTournament, isPublishedDraft, tournament]);
 
-  const saveJoinAndParticipantSettings = useCallback(async () => {
+  const saveRegistration = useCallback(async () => {
     if (!tournament) return;
 
     const normalizedJoinCode = joinCodeDraft.trim();
-
     if (allowJoinByCodeDraft && normalizedJoinCode.length < 3) {
-      toast.error("Dla dołączania przez kod wymagany jest kod (min. 3 znaki).", { title: "Dołączanie" });
+      toast.error("Dla rejestracji wymagany jest kod o długości minimum 3 znaków.", { title: "Rejestracja zawodników" });
       return;
     }
 
-    setSavingJoin(true);
+    setSavingRegistration(true);
 
     try {
       const payload: Partial<Tournament> = {
@@ -652,25 +669,22 @@ export default function TournamentDetail() {
       });
 
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error((data as any)?.detail || "Nie udało się zapisać ustawień dołączania.");
+      if (!res.ok) throw new Error((data as any)?.detail || "Nie udało się zapisać ustawień rejestracji.");
 
       applyPatchedTournament(payload, data);
 
       const nextAllow = Object.prototype.hasOwnProperty.call(data, "allow_join_by_code")
         ? Boolean((data as any).allow_join_by_code)
         : Boolean((payload as any).allow_join_by_code);
-
       const nextJoinCode = Object.prototype.hasOwnProperty.call(data, "join_code")
         ? ((data as any).join_code ?? "")
         : (((payload as any).join_code ?? "") as string);
-
-      setAllowJoinByCodeDraft(nextAllow);
-      setJoinCodeDraft(nextJoinCode);
-
       const nextPreview = Object.prototype.hasOwnProperty.call(data, "participants_public_preview_enabled")
         ? Boolean((data as any).participants_public_preview_enabled)
         : Boolean((payload as any).participants_public_preview_enabled);
 
+      setAllowJoinByCodeDraft(nextAllow);
+      setJoinCodeDraft(nextJoinCode);
       setParticipantsPreviewDraft(nextPreview);
 
       if (Object.prototype.hasOwnProperty.call(data, "participants_self_rename_enabled")) {
@@ -681,23 +695,13 @@ export default function TournamentDetail() {
         setRenameRequiresApprovalDraft(Boolean((data as any).participants_self_rename_approval_required));
       }
 
-      toast.success("Ustawienia dołączania zapisane.");
+      toast.success("Rejestracja zawodników została zapisana.");
     } catch (e: any) {
-      toast.error(e?.message || "Błąd połączenia z serwerem.", { title: "Dołączanie" });
+      toast.error(e?.message || "Błąd połączenia z serwerem.", { title: "Rejestracja zawodników" });
     } finally {
-      setSavingJoin(false);
+      setSavingRegistration(false);
     }
   }, [allowJoinByCodeDraft, applyPatchedTournament, joinCodeDraft, participantsPreviewDraft, renameRequiresApprovalDraft, tournament]);
-
-  const handleDivisionSwitch = useCallback(
-    (nextDivisionId: number) => {
-      if (nextDivisionId === effectiveDivisionId) return;
-      const next = new URLSearchParams(searchParams);
-      next.set("division_id", String(nextDivisionId));
-      setSearchParams(next, { replace: false });
-    },
-    [effectiveDivisionId, searchParams, setSearchParams]
-  );
 
   if (needsCode) {
     return (
@@ -708,7 +712,14 @@ export default function TournamentDetail() {
 
           <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-end">
             <div className="w-full sm:flex-1">
-              <Input id="tournament-access-code" name="tournamentAccessCode" autoComplete="off" value={accessCode} onChange={(e) => setAccessCode(e.target.value)} placeholder="Kod dostępu" />
+              <Input
+                id="tournament-access-code"
+                name="tournamentAccessCode"
+                autoComplete="off"
+                value={accessCode}
+                onChange={(e) => setAccessCode(e.target.value)}
+                placeholder="Kod dostępu"
+              />
             </div>
 
             <Button type="button" variant="primary" onClick={fetchTournament}>
@@ -747,30 +758,13 @@ export default function TournamentDetail() {
   return (
     <div
       className={cn(
-        "mx-auto w-full py-6 px-4 sm:px-6",
+        "mx-auto w-full px-4 py-6 sm:px-6",
         "max-w-7xl",
         "2xl:max-w-[96rem]",
         "[min-width:1920px]:max-w-[110rem]",
         "[min-width:2560px]:max-w-[128rem]"
       )}
     >
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          {activeDivisionName ? (
-            <div className="text-sm text-slate-300">
-              Aktywna dywizja: <span className="text-slate-100">{activeDivisionName}</span>
-            </div>
-          ) : null}
-        </div>
-
-        <DivisionSwitcher
-          divisions={divisions}
-          activeDivisionId={effectiveDivisionId}
-          onChange={handleDivisionSwitch}
-          disabled={loading}
-        />
-      </div>
-
       <TournamentDetailTabs
         tournament={tournament}
         activeTab={activeTab}
@@ -779,16 +773,18 @@ export default function TournamentDetail() {
         isOrganizer={Boolean(isOrganizer)}
         canManage={Boolean(canManage)}
         loadError={loadError}
-        onOpenPublicView={onOpenPublicView}
-        onRefresh={onRefresh}
+        nameDraft={nameDraft}
+        setNameDraft={setNameDraft}
+        descriptionDraft={descriptionDraft}
+        setDescriptionDraft={setDescriptionDraft}
+        savingIdentity={savingIdentity}
+        onSaveIdentity={saveIdentity}
         isPublishedDraft={isPublishedDraft}
         setIsPublishedDraft={setIsPublishedDraft}
         accessCodeDraft={accessCodeDraft}
         setAccessCodeDraft={setAccessCodeDraft}
-        descriptionDraft={descriptionDraft}
-        setDescriptionDraft={setDescriptionDraft}
-        savingSettings={savingSettings}
-        onSaveSettings={saveSettings}
+        savingVisibility={savingVisibility}
+        onSaveVisibility={saveVisibility}
         allowJoinByCodeDraft={allowJoinByCodeDraft}
         setAllowJoinByCodeDraft={setAllowJoinByCodeDraft}
         joinCodeDraft={joinCodeDraft}
@@ -799,8 +795,8 @@ export default function TournamentDetail() {
         setRenameRequiresApprovalDraft={setRenameRequiresApprovalDraft}
         includeJoinCodeInLink={includeJoinCodeInLink}
         setIncludeJoinCodeInLink={setIncludeJoinCodeInLink}
-        savingJoin={savingJoin}
-        onSaveJoinAndParticipantSettings={saveJoinAndParticipantSettings}
+        savingRegistration={savingRegistration}
+        onSaveRegistration={saveRegistration}
         includeShareCodeInLink={includeShareCodeInLink}
         setIncludeShareCodeInLink={setIncludeShareCodeInLink}
         assistants={assistants}

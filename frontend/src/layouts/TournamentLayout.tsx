@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 
@@ -7,7 +8,6 @@ import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 
 import TournamentFlowNav from "../components/TournamentFlowNav";
-import TournamentStepFooter from "../components/TournamentStepFooter";
 import { TournamentFlowGuardProvider } from "../flow/TournamentFlowGuardContext";
 
 type TournamentLite = {
@@ -16,24 +16,56 @@ type TournamentLite = {
   name?: string;
 };
 
-function canOpenPanel(t: TournamentLite) {
-  return t.my_role === "ORGANIZER" || t.my_role === "ASSISTANT";
+function canOpenPanel(tournament: TournamentLite) {
+  return tournament.my_role === "ORGANIZER" || tournament.my_role === "ASSISTANT";
 }
 
 function isAuthError(message: string) {
-  const m = (message || "").toLowerCase();
-  return m.includes("401") || m.includes("403") || m.includes("unauthorized") || m.includes("forbidden");
+  const normalized = (message || "").toLowerCase();
+  return (
+    normalized.includes("401") ||
+    normalized.includes("403") ||
+    normalized.includes("unauthorized") ||
+    normalized.includes("forbidden")
+  );
 }
 
-/** Layout panelu utrzymuje kontrakt dostępu (role) i spójne stany krytyczne przed renderowaniem podstron panelu. */
+function PanelStateCard({
+  title,
+  message,
+  actions,
+  loading = false,
+}: {
+  title: string;
+  message?: string;
+  actions?: ReactNode;
+  loading?: boolean;
+}) {
+  return (
+    <Card className="p-5 sm:p-6">
+      <div className="space-y-2">
+        <div className="flex items-center gap-3">
+          {loading ? <div className="h-2 w-2 animate-pulse rounded-full bg-white/40" /> : null}
+          <div className="text-base font-semibold text-white">{title}</div>
+        </div>
+
+        {message ? <div className="text-sm leading-relaxed text-slate-300">{message}</div> : null}
+
+        {actions ? <div className="flex flex-col gap-2 pt-3 sm:flex-row sm:flex-wrap">{actions}</div> : null}
+      </div>
+    </Card>
+  );
+}
+
+/** Layout panelu utrzymuje kontrakt dostępu i wspólną dolną nawigację kroków. */
 export default function TournamentLayout() {
   const { id } = useParams<{ id: string }>();
-  const loc = useLocation();
+  const location = useLocation();
   const navigate = useNavigate();
 
   const [tournament, setTournament] = useState<TournamentLite | null>(null);
   const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -41,7 +73,7 @@ export default function TournamentLayout() {
     let alive = true;
 
     setLoading(true);
-    setErr(null);
+    setError(null);
     setTournament(null);
 
     apiGet<TournamentLite>(`/api/tournaments/${id}/`)
@@ -49,9 +81,9 @@ export default function TournamentLayout() {
         if (!alive) return;
         setTournament(data);
       })
-      .catch((e) => {
+      .catch((err) => {
         if (!alive) return;
-        setErr(e?.message ?? "Błąd pobierania turnieju.");
+        setError(err?.message ?? "Błąd pobierania turnieju.");
       })
       .finally(() => {
         if (!alive) return;
@@ -65,77 +97,55 @@ export default function TournamentLayout() {
 
   if (!id) return null;
 
-  const next = encodeURIComponent(loc.pathname + loc.search);
+  const next = encodeURIComponent(location.pathname + location.search);
 
   return (
     <TournamentFlowGuardProvider>
-      <div className="w-full py-6">
+      <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 sm:py-8 xl:px-8">
         {loading ? (
-          <div className="mx-auto w-full max-w-3xl py-2">
-            <Card className="p-5 sm:p-6">
-              <div className="flex items-center gap-3">
-                <div className="h-2 w-2 animate-pulse rounded-full bg-white/40" />
-                <div className="text-sm text-slate-300">Ładowanie panelu...</div>
-              </div>
-            </Card>
-          </div>
-        ) : err ? (
-          <div className="mx-auto w-full max-w-3xl py-2">
-            <Card className="p-5 sm:p-6">
-              <div className="text-base font-semibold text-white">Nie można otworzyć panelu</div>
-              <div className="mt-2 text-sm text-slate-300">{err}</div>
-
-              <div className="mt-5 flex flex-wrap gap-2">
-                <Button type="button" variant="secondary" onClick={() => navigate(`/tournaments/${id}`)}>
+          <PanelStateCard title="Ładowanie panelu..." loading />
+        ) : error ? (
+          <PanelStateCard
+            title="Nie można otworzyć panelu"
+            message={error}
+            actions={
+              <>
+                <Button type="button" className="w-full sm:w-auto" variant="secondary" onClick={() => navigate(`/tournaments/${id}`)}>
                   Przejdź do podglądu
                 </Button>
 
-                {isAuthError(err) ? (
-                  <Button type="button" onClick={() => navigate(`/login?next=${next}`)}>
+                {isAuthError(error) ? (
+                  <Button type="button" className="w-full sm:w-auto" onClick={() => navigate(`/login?next=${next}`)}>
                     Zaloguj się
                   </Button>
                 ) : null}
 
-                <Button type="button" variant="ghost" onClick={() => navigate("/my-tournaments")}>
+                <Button type="button" className="w-full sm:w-auto" variant="ghost" onClick={() => navigate("/my-tournaments")}>
                   Wróć do moich turniejów
                 </Button>
-              </div>
-            </Card>
-          </div>
+              </>
+            }
+          />
         ) : tournament && !canOpenPanel(tournament) ? (
-          <div className="mx-auto w-full max-w-3xl py-2">
-            <Card className="p-5 sm:p-6">
-              <div className="text-base font-semibold text-white">Brak dostępu do panelu</div>
-
-              <div className="mt-2 text-sm text-slate-300">
-                Turniej:{" "}
-                <span className="font-semibold text-white">{tournament.name ?? `#${tournament.id}`}</span>
-              </div>
-
-              <div className="mt-2 text-sm text-slate-300">
-                Ta część jest dostępna tylko dla organizatora i asystentów.
-              </div>
-
-              <div className="mt-5 flex flex-wrap gap-2">
-                <Button type="button" variant="secondary" onClick={() => navigate(`/tournaments/${id}`)}>
+          <PanelStateCard
+            title="Brak dostępu do panelu"
+            message={`Turniej: ${tournament.name ?? `#${tournament.id}`}. Ta część jest dostępna tylko dla organizatora i asystentów.`}
+            actions={
+              <>
+                <Button type="button" className="w-full sm:w-auto" variant="secondary" onClick={() => navigate(`/tournaments/${id}`)}>
                   Przejdź do podglądu
                 </Button>
 
-                <Button type="button" variant="ghost" onClick={() => navigate("/my-tournaments")}>
+                <Button type="button" className="w-full sm:w-auto" variant="ghost" onClick={() => navigate("/my-tournaments")}>
                   Wróć do moich turniejów
                 </Button>
-              </div>
-            </Card>
-          </div>
+              </>
+            }
+          />
         ) : (
           <div className="w-full">
-            <div className="mb-4">
-              <TournamentFlowNav />
-            </div>
             <Outlet />
-            <div className="mt-6">
-              <TournamentStepFooter />
-            </div>
+            <TournamentFlowNav side="bottom" className="mt-4" />
           </div>
         )}
       </div>

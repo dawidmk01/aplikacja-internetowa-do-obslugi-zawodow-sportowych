@@ -340,23 +340,42 @@ export async function apiGet<T>(path: string, init: ApiFetchInit = {}): Promise<
   return (await res.json()) as T;
 }
 
-export async function addAssistant(tournamentId: number, email: string): Promise<void> {
+export type AssistantInvitePermissions = {
+  teams_edit?: boolean;
+  roster_edit?: boolean;
+  schedule_edit?: boolean;
+  results_edit?: boolean;
+  bracket_edit?: boolean;
+  tournament_edit?: boolean;
+  name_change_approve?: boolean;
+};
+
+export async function addAssistant(
+  tournamentId: number,
+  email: string,
+  permissions: AssistantInvitePermissions = {}
+): Promise<string> {
   const res = await apiFetch(`/api/tournaments/${tournamentId}/assistants/add/`, {
     method: "POST",
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ email, permissions }),
     toastOnError: false,
   });
 
-  if (!res.ok) {
-    const data = (await res.json().catch(() => ({}))) as Record<string, any>;
+  const data = (await res.json().catch(() => ({}))) as Record<string, any>;
 
+  if (!res.ok) {
     throw new Error(
       data?.detail ||
         data?.non_field_errors?.[0] ||
         data?.email?.[0] ||
-        "Nie udało się dodać współorganizatora"
+        "Nie udało się zapisać zaproszenia asystenta."
     );
   }
+
+  return (
+    data?.detail ||
+    "Zaproszenie zostało zapisane. Jeśli konto z tym adresem istnieje albo zostanie utworzone później, użytkownik zobaczy je na liście swoich turniejów."
+  );
 }
 
 export async function getAssistants(tournamentId: number) {
@@ -377,4 +396,46 @@ export async function removeAssistant(tournamentId: number, userId: number) {
   if (!res.ok) {
     throw new Error(await getResponseErrorMessage(res.clone()));
   }
+}
+
+export async function cancelAssistantInvite(tournamentId: number, inviteId: number): Promise<string> {
+  const res = await apiFetch(`/api/tournaments/${tournamentId}/assistant-invites/${inviteId}/cancel/`, {
+    method: "POST",
+    toastOnError: false,
+  });
+
+  const data = (await res.json().catch(() => ({}))) as Record<string, any>;
+  if (!res.ok) {
+    throw new Error(data?.detail || "Nie udało się cofnąć zaproszenia.");
+  }
+
+  return data?.detail || "Zaproszenie zostało cofnięte.";
+}
+
+export async function acceptAssistantInvite(tournamentId: number): Promise<string> {
+  const res = await apiFetch(`/api/tournaments/${tournamentId}/assistant-invite/accept/`, {
+    method: "POST",
+    toastOnError: false,
+  });
+
+  const data = (await res.json().catch(() => ({}))) as Record<string, any>;
+  if (!res.ok) {
+    throw new Error(data?.detail || "Nie udało się zaakceptować zaproszenia.");
+  }
+
+  return data?.detail || "Zaproszenie zostało zaakceptowane.";
+}
+
+export async function declineAssistantInvite(tournamentId: number): Promise<string> {
+  const res = await apiFetch(`/api/tournaments/${tournamentId}/assistant-invite/decline/`, {
+    method: "POST",
+    toastOnError: false,
+  });
+
+  const data = (await res.json().catch(() => ({}))) as Record<string, any>;
+  if (!res.ok) {
+    throw new Error(data?.detail || "Nie udało się odrzucić zaproszenia.");
+  }
+
+  return data?.detail || "Zaproszenie zostało odrzucone.";
 }

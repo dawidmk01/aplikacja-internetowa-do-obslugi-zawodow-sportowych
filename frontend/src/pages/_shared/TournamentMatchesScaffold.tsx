@@ -9,8 +9,6 @@ import {
   ChevronUp,
   Eraser,
   Filter,
-  LayoutGrid,
-  LayoutList,
   Search,
 } from "lucide-react";
 
@@ -100,10 +98,6 @@ type MatchesFilterPanelProps = {
   onToggleShowBye: (next: boolean) => void;
 
   showLayoutSection: boolean;
-
-  // Widok listy/siatki
-  viewMode: ViewMode;
-  onViewModeChange: (next: ViewMode) => void;
 };
 
 export type TournamentMatchesScaffoldProps<TMatch extends MatchLikeBase> = {
@@ -394,22 +388,12 @@ function collapseKey(parts: Array<string | number | null | undefined>): string {
 }
 
 function MatchesListOrGrid({
-  mode,
   children,
   className,
 }: {
-  mode: ViewMode;
   children: ReactNode;
   className?: string;
 }) {
-  if (mode === "grid") {
-    return (
-      <div className={cn("grid gap-4", "sm:grid-cols-2 xl:grid-cols-3", className)}>
-        {children}
-      </div>
-    );
-  }
-
   return <div className={cn("space-y-4", className)}>{children}</div>;
 }
 
@@ -425,8 +409,6 @@ function MatchesFilterPanel({
   showBye,
   onToggleShowBye,
   showLayoutSection,
-  viewMode,
-  onViewModeChange,
 }: MatchesFilterPanelProps) {
   const roundsSorted = useMemo(() => sortOptionsStable(roundOptions ?? []), [roundOptions]);
   const groupsSorted = useMemo(() => sortOptionsStable(groupOptions ?? []), [groupOptions]);
@@ -465,27 +447,6 @@ function MatchesFilterPanel({
     onChange(next);
   };
 
-  const viewChip = (mode: ViewMode, label: string, icon: ReactNode) => {
-    const active = viewMode === mode;
-    return (
-      <button
-        type="button"
-        onClick={() => onViewModeChange(mode)}
-        aria-pressed={active}
-        title={label}
-        className={cn(
-          "inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-xs transition",
-          "border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.07]",
-          "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
-          active && "border-white/20 bg-white/[0.10]"
-        )}
-      >
-        {icon}
-        {label}
-      </button>
-    );
-  };
-
   return (
     <Card className="relative overflow-hidden p-4 sm:p-5">
       <div className="pointer-events-none absolute inset-0">
@@ -508,8 +469,6 @@ function MatchesFilterPanel({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {viewChip("list", "Lista", <LayoutList className="h-4 w-4" />)}
-            {viewChip("grid", "Siatka", <LayoutGrid className="h-4 w-4" />)}
 
             <button
               type="button"
@@ -936,15 +895,10 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
       showBye?: boolean;
       collapsed?: Record<string, boolean>;
       statusCollapsed?: Record<MatchStatusBucket, boolean>;
-      viewMode?: ViewMode;
     }>(uiKey, {});
-
-    const viewMode: ViewMode =
-      parsed.viewMode === "list" || parsed.viewMode === "grid" ? parsed.viewMode : "grid";
 
     return {
       showBye: Boolean(parsed.showBye),
-      viewMode,
       collapsed:
         parsed.collapsed && typeof parsed.collapsed === "object"
           ? parsed.collapsed
@@ -1281,8 +1235,6 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
             showBye={ui.showBye}
             onToggleShowBye={(next) => setUi((p) => ({ ...p, showBye: next }))}
             showLayoutSection={isMixedTournament}
-            viewMode={ui.viewMode}
-            onViewModeChange={(next) => setUi((p) => ({ ...p, viewMode: next }))}
           />
         </div>
 
@@ -1295,7 +1247,7 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
                   <div className="text-base font-semibold text-white">Mecze techniczne (BYE)</div>
                 </div>
 
-                <MatchesListOrGrid mode={ui.viewMode}>
+                <MatchesListOrGrid>
                   {filteredByeMatches.map((m) => {
                     const bucket = bucketForStatus(m.status);
                     return renderByeMatch ? renderByeMatch(m, bucket) : renderByeDefault(m);
@@ -1355,7 +1307,7 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
                                             <div key={r} className="space-y-3">
                                               <div className="text-base text-white">Kolejka {r}</div>
 
-                                              <MatchesListOrGrid mode={ui.viewMode}>
+                                              <MatchesListOrGrid>
                                                 {applySecondaryPriority(rm, filters.secondaryPriority).map((m) => (
                                                   <div key={m.id}>{renderMatch(m)}</div>
                                                 ))}
@@ -1392,7 +1344,7 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
                                                 <div key={groupKey} className="space-y-2">
                                                   <div className="text-xs font-semibold text-slate-400">{groupLabel}</div>
 
-                                                  <MatchesListOrGrid mode={ui.viewMode}>
+                                                  <MatchesListOrGrid>
                                                     {applySecondaryPriority(gm, filters.secondaryPriority).map((m) => (
                                                       <div key={m.id}>{renderMatch(m)}</div>
                                                     ))}
@@ -1419,7 +1371,7 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
                                       </div>
 
                                       {!ui.collapsed[rKey] ? (
-                                        <MatchesListOrGrid mode={ui.viewMode}>
+                                        <MatchesListOrGrid>
                                           {applySecondaryPriority(rm, filters.secondaryPriority).map((m) => (
                                             <div key={m.id}>{renderMatch(m)}</div>
                                           ))}
@@ -1430,7 +1382,7 @@ export function TournamentMatchesScaffold<TMatch extends MatchLikeBase>({
                                 })}
                               </div>
                             ) : (
-                              <MatchesListOrGrid mode={ui.viewMode}>
+                              <MatchesListOrGrid>
                                 {applySecondaryPriority(s.matches, filters.secondaryPriority).map((m) => (
                                   <div key={m.id}>{renderMatch(m)}</div>
                                 ))}

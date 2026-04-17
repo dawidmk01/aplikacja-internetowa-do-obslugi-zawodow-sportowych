@@ -22,7 +22,7 @@ import {
   Trophy,
 } from "lucide-react";
 
-import { apiFetch, apiGet, getAccess } from "../api";
+import { acceptAssistantInvite, apiFetch, apiGet, declineAssistantInvite, getAccess } from "../api";
 import { cn } from "../lib/cn";
 
 import { Button } from "../ui/Button";
@@ -48,11 +48,14 @@ type Tournament = {
   registration_code?: string | null;
 
   my_role: "ORGANIZER" | "ASSISTANT" | "PARTICIPANT" | null;
+  assistant_invite_pending?: boolean;
+  assistant_membership_status?: "PENDING" | "ACCEPTED" | "DECLINED" | null;
 };
 
 type FilterTab = "all" | "unpublished" | "published" | "archived";
 
 type VisibleSections = {
+  pending: boolean;
   draft: boolean;
   ready: boolean;
   published: boolean;
@@ -268,6 +271,7 @@ function safeReadState(): { query: string; activeTab: FilterTab; visible: Visibl
         : "all";
 
     const visible: VisibleSections = {
+      pending: typeof parsed?.visible?.pending === "boolean" ? parsed.visible.pending : true,
       draft: typeof parsed?.visible?.draft === "boolean" ? parsed.visible.draft : true,
       ready: typeof parsed?.visible?.ready === "boolean" ? parsed.visible.ready : true,
       published: typeof parsed?.visible?.published === "boolean" ? parsed.visible.published : true,
@@ -337,7 +341,7 @@ export default function MyTournaments() {
   const [activeTab, setActiveTab] = useState<FilterTab>(saved?.activeTab ?? "all");
 
   const [visibleSections, setVisibleSections] = useState<VisibleSections>(
-    saved?.visible ?? { draft: true, ready: true, published: true, archived: false }
+    saved?.visible ?? { pending: true, draft: true, ready: true, published: true, archived: false }
   );
 
   // ===== Persistencja ustawień widoku =====
@@ -474,6 +478,7 @@ export default function MyTournaments() {
         const arch = normalizePL(t.is_archived ? "archiwum" : "");
         const role = normalizePL(roleLabel(t.my_role));
         const join = normalizePL(t.join_enabled ? "dolaczanie" : "");
+        const invite = normalizePL(t.assistant_invite_pending ? "zaproszenie asystenta" : "");
 
         let score = 0;
 
@@ -490,8 +495,9 @@ export default function MyTournaments() {
         if (arch.includes(q)) score += 6;
         if (role.includes(q)) score += 6;
         if (join.includes(q)) score += 4;
+        if (invite.includes(q)) score += 12;
 
-        const hay = [name, discipline, format, st, pub, arch, role, join].join(" ");
+        const hay = [name, discipline, format, st, pub, arch, role, join, invite].join(" ");
         if (score === 0 && hay.includes(q)) score = 1;
 
         return { t, score };
@@ -502,8 +508,9 @@ export default function MyTournaments() {
   }, [items, query]);
 
   const grouped = useMemo(() => {
-    const archived = filtered.filter((t) => !!t.is_archived);
-    const notArchived = filtered.filter((t) => !t.is_archived);
+    const pending = filtered.filter((t) => !!t.assistant_invite_pending);
+    const archived = filtered.filter((t) => !!t.is_archived && !t.assistant_invite_pending);
+    const notArchived = filtered.filter((t) => !t.is_archived && !t.assistant_invite_pending);
 
     const draft = notArchived.filter((t) => (t.status ?? "DRAFT") === "DRAFT");
     const ready = notArchived.filter(
@@ -513,13 +520,13 @@ export default function MyTournaments() {
       (t) => (t.status ?? "DRAFT") !== "DRAFT" && !!t.is_published
     );
 
-    return { draft, ready, published, archived };
+    return { pending, draft, ready, published, archived };
   }, [filtered]);
 
   const counts = useMemo(() => {
     return {
       all: filtered.length,
-      unpublished: grouped.draft.length + grouped.ready.length,
+      unpublished: grouped.pending.length + grouped.draft.length + grouped.ready.length,
       published: grouped.published.length,
       archived: grouped.archived.length,
     };
@@ -591,6 +598,43 @@ export default function MyTournaments() {
     },
     [load]
   );
+
+  const acceptInvite = useCallback(
+    async (t: Tournament) => {
+      setBusyId(t.id);
+      setError(null);
+
+      try {
+        const message = await acceptAssistantInvite(t.id);
+        await load();
+        toast.success(message);
+      } catch (e: any) {
+        toast.error(e?.message ?? "Nie udało się zaakceptować zaproszenia.", { title: "Zaproszenie" });
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load]
+  );
+
+  const declineInvite = useCallback(
+    async (t: Tournament) => {
+      setBusyId(t.id);
+      setError(null);
+
+      try {
+        const message = await declineAssistantInvite(t.id);
+        await load();
+        toast.success(message);
+      } catch (e: any) {
+        toast.error(e?.message ?? "Nie udało się odrzucić zaproszenia.", { title: "Zaproszenie" });
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load]
+  );
+
 
   const SharePanel = ({ t }: { t: Tournament }) => {
     const isOrganizer = t.my_role === "ORGANIZER";
@@ -764,6 +808,93 @@ export default function MyTournaments() {
       : t.is_published
       ? "Opublikowany"
       : "Nieopublikowany";
+    const hasPendingInvite = Boolean(t.assistant_invite_pending);
+
+    if (hasPendingInvite) {
+      return (
+        <motion.div
+          whileHover={{ y: -3, scale: 1.01 }}
+          transition={{ type: "spring", stiffness: 260, damping: 18 }}
+          className="h-full"
+        >
+          <Card className="relative h-full overflow-hidden border border-sky-400/20 bg-sky-500/[0.05] p-5">
+            <div className="pointer-events-none absolute inset-0">
+              <div className="absolute -right-14 -top-14 h-28 w-28 rounded-full bg-sky-400/10 blur-2xl" />
+            </div>
+
+            <div className="relative flex h-full flex-col">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-baseline gap-2">
+                    <span className="shrink-0 text-xs text-slate-400">Nazwa turnieju:</span>
+                    <span className="min-w-0 truncate text-base font-semibold text-white">{t.name}</span>
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Badge>{disciplineLabel(t.discipline)}</Badge>
+                    <Badge>{formatLabel(t.tournament_format)}</Badge>
+                    <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-100">Zaproszenie asystenta</Badge>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-slate-200">
+                Organizator zaprosił Cię do tego turnieju jako asystenta. Po akceptacji turniej pojawi się z dostępem do panelu zgodnym z nadanymi uprawnieniami.
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                  <div className="text-[11px] text-slate-400">Twoja rola</div>
+                  <div className="mt-0.5 truncate text-sm font-semibold text-white">Zaproszony asystent</div>
+                </div>
+
+                <div className="min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                  <div className="text-[11px] text-slate-400">Status turnieju</div>
+                  <div className="mt-0.5 truncate text-sm font-semibold text-white">{statusLabel(t.status)}</div>
+                </div>
+
+                <div className="min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2">
+                  <div className="text-[11px] text-slate-400">Status zaproszenia</div>
+                  <div className="mt-0.5 truncate text-sm font-semibold text-sky-100">Oczekuje na decyzję</div>
+                </div>
+              </div>
+
+              <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <Button
+                  type="button"
+                  variant="primary"
+                  disabled={busyId === t.id}
+                  onClick={() => void acceptInvite(t)}
+                  className="w-full justify-center"
+                >
+                  Akceptuj
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={busyId === t.id}
+                  onClick={() => void declineInvite(t)}
+                  className="w-full justify-center"
+                >
+                  Odrzuć
+                </Button>
+
+                <Link to={`/tournaments/${t.id}`} className="w-full">
+                  <Button
+                    variant="ghost"
+                    leftIcon={<Trophy className="h-4 w-4" />}
+                    className="w-full justify-center"
+                  >
+                    Podgląd
+                  </Button>
+                </Link>
+              </div>
+            </div>
+          </Card>
+        </motion.div>
+      );
+    }
 
     return (
       <motion.div
@@ -987,14 +1118,20 @@ export default function MyTournaments() {
   );
 
   const sectionsEnabled = useMemo(() => {
-    if (activeTab === "published") return { draft: false, ready: false, published: true, archived: false };
-    if (activeTab === "archived") return { draft: false, ready: false, published: false, archived: true };
-    if (activeTab === "unpublished") return { draft: true, ready: true, published: false, archived: false };
-    return { draft: true, ready: true, published: true, archived: true };
+    if (activeTab === "published") {
+      return { pending: false, draft: false, ready: false, published: true, archived: false };
+    }
+    if (activeTab === "archived") {
+      return { pending: false, draft: false, ready: false, published: false, archived: true };
+    }
+    if (activeTab === "unpublished") {
+      return { pending: true, draft: true, ready: true, published: false, archived: false };
+    }
+    return { pending: true, draft: true, ready: true, published: true, archived: true };
   }, [activeTab]);
 
   return (
-    <div className="mx-auto w-full max-w-[1400px] space-y-6">
+    <div className="mx-auto w-full max-w-7xl space-y-6 px-4 sm:px-6 xl:px-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold text-white sm:text-3xl">Moje turnieje</h1>
@@ -1127,6 +1264,7 @@ export default function MyTournaments() {
 
       {!loading && items.length > 0 && (
         <div className="space-y-10">
+          {renderSection("Zaproszenia asystenta", grouped.pending, "pending", sectionsEnabled.pending)}
           {renderSection("Szkice", grouped.draft, "draft", sectionsEnabled.draft)}
           {renderSection("Gotowe do publikacji", grouped.ready, "ready", sectionsEnabled.ready)}
           {renderSection("Opublikowane", grouped.published, "published", sectionsEnabled.published)}

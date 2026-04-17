@@ -2,8 +2,11 @@
 # Plik eksportuje publiczny zestaw widoków używanych przez routing aplikacji turniejów.
 
 from .assistants import (
+    AcceptAssistantInviteView,
     AddAssistantView,
     AssistantPermissionsView,
+    CancelAssistantInviteView,
+    DeclineAssistantInviteView,
     RemoveAssistantView,
     TournamentAssistantListView,
 )
@@ -70,11 +73,14 @@ from .tournaments import (
 )
 
 __all__ = [
+    "AcceptAssistantInviteView",
     "AddAssistantView",
     "AdvanceFromGroupsView",
     "AdvanceMassStartStageView",
     "ArchiveTournamentView",
     "AssistantPermissionsView",
+    "CancelAssistantInviteView",
+    "DeclineAssistantInviteView",
     "ChangeDisciplineView",
     "ChangeSetupView",
     "ContinueMatchView",

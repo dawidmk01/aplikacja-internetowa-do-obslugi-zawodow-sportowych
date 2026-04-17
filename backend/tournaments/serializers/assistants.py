@@ -1,5 +1,5 @@
 # backend/tournaments/serializers/assistants.py
-# Plik definiuje serializery odpowiedzialne za listę asystentów i ich uprawnienia w skali całego turnieju.
+# Plik definiuje serializery odpowiedzialne za listę asystentów, zaproszeń i ich uprawnień.
 
 from __future__ import annotations
 
@@ -11,67 +11,62 @@ from tournaments.models import Tournament, TournamentMembership
 User = get_user_model()
 
 
+ALLOWED_PERMISSION_KEYS = {
+    TournamentMembership.PERM_TEAMS_EDIT,
+    TournamentMembership.PERM_ROSTER_EDIT,
+    TournamentMembership.PERM_SCHEDULE_EDIT,
+    TournamentMembership.PERM_RESULTS_EDIT,
+    TournamentMembership.PERM_BRACKET_EDIT,
+    TournamentMembership.PERM_TOURNAMENT_EDIT,
+    TournamentMembership.PERM_NAME_CHANGE_APPROVE,
+}
+
+
 def _get_tournament_from_context(serializer: serializers.Serializer) -> Tournament:
     tournament = serializer.context.get("tournament")
     if not isinstance(tournament, Tournament):
-        raise serializers.ValidationError(
-            {"detail": "Brakuje turnieju w kontekście serializera."}
-        )
+        raise serializers.ValidationError({"detail": "Brakuje turnieju w kontekście serializera."})
     return tournament
 
 
-class TournamentAssistantSerializer(serializers.ModelSerializer):
-    user_id = serializers.IntegerField(source="user.id", read_only=True)
-    email = serializers.EmailField(source="user.email", read_only=True)
-    username = serializers.CharField(source="user.username", read_only=True)
-    permissions = serializers.SerializerMethodField()
+def normalize_email(value: str | None) -> str:
+    return str(value or "").strip().lower()
 
-    class Meta:
-        model = TournamentMembership
-        fields = (
-            "user_id",
-            "email",
-            "username",
-            "role",
-            "permissions",
-            "created_at",
-        )
 
-    def get_permissions(self, obj: TournamentMembership) -> dict:
-        return obj.effective_permissions()
+def normalize_assistant_permissions(raw: object) -> dict[str, bool]:
+    payload = raw if isinstance(raw, dict) else {}
+    return {key: bool(payload.get(key, False)) for key in ALLOWED_PERMISSION_KEYS}
+
+
+class TournamentAssistantSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField(required=False, allow_null=True)
+    invite_id = serializers.IntegerField(required=False, allow_null=True)
+    email = serializers.EmailField()
+    username = serializers.CharField(required=False, allow_null=True)
+    role = serializers.CharField(required=False, allow_null=True)
+    status = serializers.CharField()
+    permissions = serializers.DictField(child=serializers.BooleanField(), required=False)
+    created_at = serializers.DateTimeField(required=False)
 
 
 class AddAssistantSerializer(serializers.Serializer):
     email = serializers.EmailField()
-
-    def validate_email(self, value):
-        normalized = str(value).strip()
-
-        try:
-            return User.objects.get(email__iexact=normalized)
-        except User.DoesNotExist as exc:
-            raise serializers.ValidationError(
-                "Użytkownik o podanym adresie e-mail nie istnieje."
-            ) from exc
+    permissions = serializers.DictField(required=False)
 
     def validate(self, attrs):
         tournament = _get_tournament_from_context(self)
-        user = attrs["email"]
+        normalized = normalize_email(attrs.get("email"))
 
-        if tournament.organizer_id == user.id:
-            raise serializers.ValidationError(
-                "Organizator nie może dodać samego siebie."
-            )
+        if not normalized:
+            raise serializers.ValidationError({"email": "Podaj adres e-mail."})
 
-        if TournamentMembership.objects.filter(
-            tournament=tournament,
-            user=user,
-        ).exists():
-            raise serializers.ValidationError(
-                "Użytkownik jest już asystentem w tym turnieju."
-            )
+        organizer_email = normalize_email(getattr(getattr(tournament, "organizer", None), "email", None))
+        if organizer_email and organizer_email == normalized:
+            raise serializers.ValidationError("Organizator nie może dodać samego siebie.")
 
-        attrs["user"] = user
+        attrs["email"] = normalized
+        attrs["permissions"] = normalize_assistant_permissions(attrs.get("permissions"))
+        attrs["matched_user"] = User.objects.filter(email__iexact=normalized).first()
         return attrs
 
 
@@ -84,7 +79,6 @@ class AssistantPermissionsSerializer(serializers.Serializer):
     tournament_edit = serializers.BooleanField(required=False)
     name_change_approve = serializers.BooleanField(required=False)
 
-    # Pola zastrzeżone dla organizatora mogą być zwracane w effective_permissions, ale nie są zapisywane.
     publish = serializers.BooleanField(required=False)
     archive = serializers.BooleanField(required=False)
     manage_assistants = serializers.BooleanField(required=False)
@@ -92,25 +86,12 @@ class AssistantPermissionsSerializer(serializers.Serializer):
 
     @classmethod
     def allowed_keys(cls) -> set[str]:
-        return {
-            TournamentMembership.PERM_TEAMS_EDIT,
-            TournamentMembership.PERM_ROSTER_EDIT,
-            TournamentMembership.PERM_SCHEDULE_EDIT,
-            TournamentMembership.PERM_RESULTS_EDIT,
-            TournamentMembership.PERM_BRACKET_EDIT,
-            TournamentMembership.PERM_TOURNAMENT_EDIT,
-            TournamentMembership.PERM_NAME_CHANGE_APPROVE,
-        }
+        return set(ALLOWED_PERMISSION_KEYS)
 
     def validate(self, attrs):
         unsupported = set(attrs.keys()) - self.allowed_keys()
         if unsupported:
             raise serializers.ValidationError(
-                {
-                    "detail": (
-                        "Wskazano niedozwolone klucze uprawnień: "
-                        + ", ".join(sorted(unsupported))
-                    )
-                }
+                {"detail": "Wskazano niedozwolone klucze uprawnień: " + ", ".join(sorted(unsupported))}
             )
         return attrs

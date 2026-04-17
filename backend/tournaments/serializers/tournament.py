@@ -7,7 +7,19 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from rest_framework import serializers
 
-from tournaments.models import Division, Match, Tournament, TournamentMembership, TournamentRegistration
+from tournaments.models import (
+    Division,
+    Match,
+    Stage,
+    StageMassStartEntry,
+    StageMassStartResult,
+    Team,
+    TeamPlayer,
+    Tournament,
+    TournamentMembership,
+    TournamentRegistration,
+    TournamentAssistantInvite,
+)
 
 User = get_user_model()
 
@@ -356,6 +368,9 @@ class TournamentSerializer(serializers.ModelSerializer):
     matches_started = serializers.SerializerMethodField()
     my_permissions = serializers.SerializerMethodField()
     schedule_targets = serializers.SerializerMethodField()
+    panel_stats = serializers.SerializerMethodField()
+    assistant_invite_pending = serializers.SerializerMethodField()
+    assistant_membership_status = serializers.SerializerMethodField()
 
     allow_join_by_code = serializers.BooleanField(required=False, source="join_enabled")
     join_code = serializers.CharField(
@@ -390,6 +405,9 @@ class TournamentSerializer(serializers.ModelSerializer):
             "active_division_name",
             "division_status",
             "divisions",
+            "panel_stats",
+            "assistant_invite_pending",
+            "assistant_membership_status",
         )
 
     # ===== Reprezentacja aktywnej dywizji =====
@@ -730,6 +748,30 @@ class TournamentSerializer(serializers.ModelSerializer):
 
     # ===== Pola pochodne =====
 
+    def _get_assistant_membership(self, obj: Tournament):
+        request = self.context.get("request")
+        user = request.user if request and request.user and request.user.is_authenticated else None
+        if not user:
+            return None
+
+        return obj.memberships.filter(
+            user=user,
+            role=TournamentMembership.Role.ASSISTANT,
+            status=TournamentMembership.Status.ACCEPTED,
+        ).first()
+
+    def _get_pending_assistant_invite(self, obj: Tournament):
+        request = self.context.get("request")
+        user = request.user if request and request.user and request.user.is_authenticated else None
+        normalized_email = str(getattr(user, "email", "") or "").strip().lower() if user else ""
+        if not normalized_email:
+            return None
+
+        return obj.assistant_invites.filter(
+            normalized_email=normalized_email,
+            status=TournamentAssistantInvite.Status.PENDING,
+        ).first()
+
     def get_my_role(self, obj):
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
@@ -738,15 +780,24 @@ class TournamentSerializer(serializers.ModelSerializer):
         if obj.organizer_id == request.user.id:
             return "ORGANIZER"
 
-        if obj.memberships.filter(
-            user=request.user,
-            role=TournamentMembership.Role.ASSISTANT,
-        ).exists():
+        if self._get_assistant_membership(obj) is not None:
             return TournamentMembership.Role.ASSISTANT
 
         if TournamentRegistration.objects.filter(tournament=obj, user=request.user).exists():
             return "PARTICIPANT"
 
+        return None
+
+    def get_assistant_invite_pending(self, obj: Tournament) -> bool:
+        if self._get_assistant_membership(obj) is not None:
+            return False
+        return self._get_pending_assistant_invite(obj) is not None
+
+    def get_assistant_membership_status(self, obj: Tournament) -> str | None:
+        if self._get_assistant_membership(obj) is not None:
+            return TournamentMembership.Status.ACCEPTED
+        if self._get_pending_assistant_invite(obj) is not None:
+            return TournamentAssistantInvite.Status.PENDING
         return None
 
     def get_my_permissions(self, obj: Tournament) -> dict:
@@ -784,11 +835,7 @@ class TournamentSerializer(serializers.ModelSerializer):
 
         membership = None
         if user:
-            membership = TournamentMembership.objects.filter(
-                tournament=obj,
-                user=user,
-                role=TournamentMembership.Role.ASSISTANT,
-            ).first()
+            membership = self._get_assistant_membership(obj)
 
         if not membership:
             return base
@@ -824,6 +871,115 @@ class TournamentSerializer(serializers.ModelSerializer):
             }
         )
         return base
+
+    def _panel_competition_context(self, obj: Tournament, division: Division | None):
+        return division or obj
+
+    def _panel_status_value(self, obj: Tournament, division: Division | None) -> str:
+        return division.status if division is not None else obj.status
+
+    def _panel_status_label(self, status_value: str | None) -> str:
+        return dict(Tournament.Status.choices).get(status_value, str(status_value or "-"))
+
+    def _mass_start_stage_rounds_count(self, context_obj, stage: Stage) -> int:
+        if not hasattr(context_obj, "get_mass_start_stages"):
+            return 1
+
+        stage_cfgs = list(context_obj.get_mass_start_stages() or [])
+        index = max(0, int(stage.order or 1) - 1)
+        if index >= len(stage_cfgs):
+            return 1
+
+        stage_cfg = stage_cfgs[index]
+        if not isinstance(stage_cfg, dict):
+            return 1
+
+        raw_value = stage_cfg.get(Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY, 1)
+        try:
+            rounds_count = int(raw_value)
+        except (TypeError, ValueError):
+            rounds_count = 1
+
+        return max(1, rounds_count)
+
+    def get_panel_stats(self, obj: Tournament) -> dict:
+        divisions_count = Division.objects.filter(tournament=obj).count()
+
+        teams_qs = Team.objects.filter(tournament=obj, is_active=True).exclude(name=BYE_TEAM_NAME)
+        teams_count = teams_qs.count()
+
+        players_qs = TeamPlayer.objects.filter(
+            team__tournament=obj,
+            team__is_active=True,
+            is_active=True,
+        ).exclude(team__name=BYE_TEAM_NAME)
+        players_count = players_qs.count()
+
+        stages_qs = Stage.objects.filter(tournament=obj)
+        stages_total = stages_qs.count()
+        stages_closed = stages_qs.filter(status=Stage.Status.CLOSED).count()
+        stage_progress_label = f"{stages_closed}/{stages_total}"
+
+        status_value = obj.status
+        status_label = self._panel_status_label(status_value)
+
+        matches_qs = Match.objects.filter(tournament=obj).exclude(home_team__name=BYE_TEAM_NAME).exclude(away_team__name=BYE_TEAM_NAME)
+        matches_total = matches_qs.count()
+        matches_in_progress = matches_qs.filter(status=Match.Status.IN_PROGRESS).count()
+        matches_finished = matches_qs.filter(status=Match.Status.FINISHED).count()
+
+        if matches_total > 0:
+            return {
+                "status": status_value,
+                "status_label": status_label,
+                "divisions_count": divisions_count,
+                "teams_count": teams_count,
+                "players_count": players_count,
+                "stages_total": stages_total,
+                "stages_closed": stages_closed,
+                "stage_progress_label": stage_progress_label,
+                "progress_mode": "MATCHES",
+                "primary_progress_current": matches_in_progress,
+                "primary_progress_total": matches_total,
+                "primary_progress_label": f"{matches_in_progress}/{matches_total}",
+                "secondary_progress_current": matches_finished,
+                "secondary_progress_total": matches_total,
+                "secondary_progress_label": f"{matches_finished}/{matches_total}",
+            }
+
+        mass_start_stages = Stage.objects.filter(tournament=obj, stage_type=Stage.StageType.MASS_START).order_by("order", "id")
+        progress_current = 0
+        progress_total = 0
+
+        for stage in mass_start_stages:
+            context_obj = getattr(stage, "division", None) or obj
+            entry_count = StageMassStartEntry.objects.filter(stage=stage, is_active=True).count()
+            rounds_count = self._mass_start_stage_rounds_count(context_obj, stage)
+            progress_total += entry_count * rounds_count
+            progress_current += (
+                StageMassStartResult.objects.filter(stage=stage, is_active=True)
+                .values("team_id", "round_number")
+                .distinct()
+                .count()
+            )
+
+        return {
+            "status": status_value,
+            "status_label": status_label,
+            "divisions_count": divisions_count,
+            "teams_count": teams_count,
+            "players_count": players_count,
+            "stages_total": stages_total,
+            "stages_closed": stages_closed,
+            "stage_progress_label": stage_progress_label,
+            "progress_mode": "MASS_START" if progress_total > 0 else "NONE",
+            "primary_progress_current": progress_current,
+            "primary_progress_total": progress_total,
+            "primary_progress_label": f"{progress_current}/{progress_total}" if progress_total > 0 else "0/0",
+            "secondary_progress_current": None,
+            "secondary_progress_total": None,
+            "secondary_progress_label": None,
+        }
 
     def get_schedule_targets(self, obj: Tournament) -> dict:
         division = self._get_active_division(obj)

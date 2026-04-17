@@ -700,6 +700,11 @@ class TournamentMembership(models.Model):
     class Role(models.TextChoices):
         ASSISTANT = "ASSISTANT", "Asystent"
 
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Oczekuje"
+        ACCEPTED = "ACCEPTED", "Zaakceptowane"
+        DECLINED = "DECLINED", "Odrzucone"
+
     PERM_TEAMS_EDIT = "teams_edit"
     PERM_SCHEDULE_EDIT = "schedule_edit"
     PERM_RESULTS_EDIT = "results_edit"
@@ -752,6 +757,29 @@ class TournamentMembership(models.Model):
         default=Role.ASSISTANT,
     )
 
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+        help_text="Status zaproszenia asystenta w obrębie turnieju.",
+    )
+
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="sent_tournament_memberships",
+        null=True,
+        blank=True,
+        help_text="Użytkownik, który utworzył lub ponowił zaproszenie asystenta.",
+    )
+
+    responded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Znacznik czasu akceptacji albo odrzucenia zaproszenia asystenta.",
+    )
+
     permissions = models.JSONField(
         default=dict,
         blank=True,
@@ -794,6 +822,127 @@ class TournamentMembership(models.Model):
             merged[key] = bool(value)
 
         return merged
+
+    def mark_pending(self, *, invited_by=None) -> None:
+        self.status = self.Status.PENDING
+        self.invited_by = invited_by
+        self.responded_at = None
+
+    def mark_accepted(self) -> None:
+        self.status = self.Status.ACCEPTED
+        self.responded_at = timezone.now()
+
+    def mark_declined(self) -> None:
+        self.status = self.Status.DECLINED
+        self.responded_at = timezone.now()
+
+
+class TournamentAssistantInvite(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Oczekuje"
+        ACCEPTED = "ACCEPTED", "Zaakceptowane"
+        DECLINED = "DECLINED", "Odrzucone"
+        CANCELED = "CANCELED", "Cofnięte"
+
+    tournament = models.ForeignKey(
+        Tournament,
+        on_delete=models.CASCADE,
+        related_name="assistant_invites",
+    )
+
+    invited_email = models.EmailField(
+        max_length=254,
+        help_text="Adres e-mail, na który zostało zapisane zaproszenie asystenta.",
+    )
+
+    normalized_email = models.CharField(
+        max_length=254,
+        db_index=True,
+        help_text="Znormalizowany adres e-mail używany do dopasowania zaproszenia po logowaniu.",
+    )
+
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="sent_tournament_assistant_invites",
+        null=True,
+        blank=True,
+        help_text="Organizator, który utworzył albo ponowił zaproszenie.",
+    )
+
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+        help_text="Status zaproszenia asystenta zapisany niezależnie od istnienia konta użytkownika.",
+    )
+
+    permissions = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Uprawnienia, które zostaną nadane po akceptacji zaproszenia.",
+    )
+
+    responded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Znacznik czasu akceptacji, odrzucenia albo cofnięcia zaproszenia.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tournament", "normalized_email"],
+                name="uniq_tournament_assistant_invite_email",
+            )
+        ]
+
+    def save(self, *args, **kwargs):
+        normalized = str(self.invited_email or "").strip().lower()
+        self.invited_email = normalized
+        self.normalized_email = normalized
+        return super().save(*args, **kwargs)
+
+    def normalized_permissions(self) -> dict:
+        allowed_keys = {
+            TournamentMembership.PERM_TEAMS_EDIT,
+            TournamentMembership.PERM_ROSTER_EDIT,
+            TournamentMembership.PERM_SCHEDULE_EDIT,
+            TournamentMembership.PERM_RESULTS_EDIT,
+            TournamentMembership.PERM_BRACKET_EDIT,
+            TournamentMembership.PERM_TOURNAMENT_EDIT,
+            TournamentMembership.PERM_NAME_CHANGE_APPROVE,
+        }
+
+        raw = self.permissions or {}
+        if not isinstance(raw, dict):
+            return {}
+
+        return {key: bool(raw.get(key, False)) for key in allowed_keys}
+
+    def mark_pending(self, *, invited_by=None, permissions: dict | None = None) -> None:
+        self.status = self.Status.PENDING
+        self.invited_by = invited_by
+        self.responded_at = None
+        if permissions is not None:
+            self.permissions = dict(permissions)
+
+    def mark_accepted(self) -> None:
+        self.status = self.Status.ACCEPTED
+        self.responded_at = timezone.now()
+
+    def mark_declined(self) -> None:
+        self.status = self.Status.DECLINED
+        self.responded_at = timezone.now()
+
+    def mark_canceled(self) -> None:
+        self.status = self.Status.CANCELED
+        self.responded_at = timezone.now()
 
 
 class TournamentRegistration(models.Model):

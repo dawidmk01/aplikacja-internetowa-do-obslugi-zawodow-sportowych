@@ -43,18 +43,40 @@ def _normalize_args(user_or_tournament: Any, tournament_or_user: Any) -> tuple[A
     return user, tournament
 
 
-def get_membership(user, tournament: Tournament) -> Optional[TournamentMembership]:
+def get_assistant_membership(
+    user,
+    tournament: Tournament,
+    *,
+    statuses: Iterable[str] | None = None,
+) -> Optional[TournamentMembership]:
     if not _is_authenticated(user):
         return None
 
-    return (
-        TournamentMembership.objects.filter(
-            tournament=tournament,
-            user=user,
-            role=TournamentMembership.Role.ASSISTANT,
-        )
-        .order_by("id")
-        .first()
+    qs = TournamentMembership.objects.filter(
+        tournament=tournament,
+        user=user,
+        role=TournamentMembership.Role.ASSISTANT,
+    )
+
+    if statuses is not None:
+        qs = qs.filter(status__in=list(statuses))
+
+    return qs.order_by("id").first()
+
+
+def get_membership(user, tournament: Tournament) -> Optional[TournamentMembership]:
+    return get_assistant_membership(
+        user,
+        tournament,
+        statuses=(TournamentMembership.Status.ACCEPTED,),
+    )
+
+
+def get_pending_assistant_membership(user, tournament: Tournament) -> Optional[TournamentMembership]:
+    return get_assistant_membership(
+        user,
+        tournament,
+        statuses=(TournamentMembership.Status.PENDING,),
     )
 
 
@@ -64,6 +86,10 @@ def user_is_organizer(user, tournament: Tournament) -> bool:
 
 def user_is_assistant(user, tournament: Tournament) -> bool:
     return get_membership(user, tournament) is not None
+
+
+def user_has_pending_assistant_invite(user, tournament: Tournament) -> bool:
+    return get_pending_assistant_membership(user, tournament) is not None
 
 
 def user_is_registered_participant(user, tournament: Tournament) -> bool:
@@ -151,7 +177,6 @@ def assistant_has_perm(user, tournament: Tournament, perm_key: str) -> bool:
     if tournament.entry_mode != Tournament.EntryMode.MANAGER:
         return False
 
-    # Klucze ścisłe są odczytywane wyłącznie z raw permissions.
     if perm_key in STRICT_EXPLICIT_KEYS:
         raw = membership.permissions or {}
         return bool(raw.get(perm_key, False))

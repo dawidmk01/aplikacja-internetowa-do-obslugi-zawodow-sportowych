@@ -1,7 +1,7 @@
 // frontend/src/components/PublicMatchRow.tsx
-// Komponent renderuje publiczny wiersz pozycji z opcjonalnym rozwijaniem szczegółów dla klasycznych meczów i trybu custom.
+// Komponent renderuje publiczny wiersz meczu z rozwijanym podglądem szczegółów, wydarzeń i komentarza.
 
-import type { KeyboardEvent } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { useMemo } from "react";
 
 import { cn } from "../lib/cn";
@@ -30,13 +30,11 @@ type MatchCustomResultDTO = {
 
 function toMinute(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
-
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (!trimmed) return null;
     if (/^\d+$/.test(trimmed)) return Number(trimmed);
   }
-
   return null;
 }
 
@@ -109,13 +107,20 @@ function statusPl(status?: MatchPublicDTO["status"]): string {
   }
 }
 
+function stageTypeLabel(stageType: MatchPublicDTO["stage_type"]): string {
+  if (stageType === "GROUP") return "Etap grupowy";
+  if (stageType === "LEAGUE") return "Liga";
+  if (stageType === "KNOCKOUT") return "Faza pucharowa";
+  if (stageType === "THIRD_PLACE") return "Mecz o 3 miejsce";
+  return "Etap";
+}
+
 function formatDateShort(iso: string | null): string | null {
   const value = (iso ?? "").trim();
   if (!value) return null;
 
   const match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(value);
   if (!match) return value;
-
   return `${match[3]}.${match[2]}.${match[1]}`;
 }
 
@@ -132,8 +137,10 @@ function statusBadgeClasses(status?: MatchPublicDTO["status"]): string {
 }
 
 function usesCustomResults(match: MatchPublicDTO): boolean {
-  return String((match as MatchPublicDTO & { result_mode?: ResultMode }).result_mode ?? "SCORE").toUpperCase() === "CUSTOM"
-    || Boolean((match as MatchPublicDTO & { uses_custom_results?: boolean }).uses_custom_results);
+  return (
+    String((match as MatchPublicDTO & { result_mode?: ResultMode }).result_mode ?? "SCORE").toUpperCase() ===
+      "CUSTOM" || Boolean((match as MatchPublicDTO & { uses_custom_results?: boolean }).uses_custom_results)
+  );
 }
 
 function getCustomResults(match: MatchPublicDTO): MatchCustomResultDTO[] {
@@ -161,6 +168,24 @@ function bestCustomResult(match: MatchPublicDTO): MatchCustomResultDTO | null {
     });
 
   return list[0] ?? null;
+}
+
+function DetailItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
+      <div className="text-[11px] uppercase tracking-wide text-slate-400">{label}</div>
+      <div className="mt-1 break-words text-sm font-semibold text-slate-100">{value}</div>
+    </div>
+  );
+}
+
+function DetailSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div>
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</div>
+      {children}
+    </div>
+  );
 }
 
 type Props = {
@@ -200,9 +225,7 @@ export default function PublicMatchRow({
   const customResults = getCustomResults(match);
   const leadingCustomResult = bestCustomResult(match);
 
-  const hasScore =
-    typeof match.home_score === "number" && typeof match.away_score === "number";
-
+  const hasScore = typeof match.home_score === "number" && typeof match.away_score === "number";
   const scoreLabel = customMode
     ? customResultSummary(leadingCustomResult)
     : hasScore
@@ -215,9 +238,7 @@ export default function PublicMatchRow({
       : "Najlepszy zapisany wynik"
     : "Wynik";
 
-  const isClickable =
-    Boolean(onMatchClick) && (match.status === "IN_PROGRESS" || match.status === "FINISHED");
-
+  const isClickable = Boolean(onMatchClick) && (match.status === "IN_PROGRESS" || match.status === "FINISHED");
   const isSelected =
     selectedMatchId != null &&
     selectedSection != null &&
@@ -225,39 +246,43 @@ export default function PublicMatchRow({
     selectedSection === sectionId;
 
   const detailsId = `public-match-${sectionId}-${match.id}-details`;
-
   const incidents = incidentsByMatch?.[match.id] ?? [];
   const commentary = commentaryByMatch?.[match.id] ?? [];
 
-  // Sortowanie utrzymuje chronologiczny porządek wpisów.
   const sortedIncidents = useMemo(() => {
     return incidents.slice().sort((left, right) => {
       const leftMinute = incidentMinute(left);
       const rightMinute = incidentMinute(right);
-
       if (leftMinute == null && rightMinute == null) return (left.id ?? 0) - (right.id ?? 0);
       if (leftMinute == null) return 1;
       if (rightMinute == null) return -1;
       if (leftMinute !== rightMinute) return leftMinute - rightMinute;
-
       return (left.id ?? 0) - (right.id ?? 0);
     });
   }, [incidents]);
 
-  // Sortowanie utrzymuje chronologiczny porządek komentarzy.
   const sortedCommentary = useMemo(() => {
     return commentary.slice().sort((left, right) => {
       const leftMinute = commentaryMinute(left);
       const rightMinute = commentaryMinute(right);
-
       if (leftMinute == null && rightMinute == null) return (left.id ?? 0) - (right.id ?? 0);
       if (leftMinute == null) return 1;
       if (rightMinute == null) return -1;
       if (leftMinute !== rightMinute) return leftMinute - rightMinute;
-
       return (left.id ?? 0) - (right.id ?? 0);
     });
   }, [commentary]);
+
+  const detailItems = [
+    { label: "Status", value: statusPl(match.status) || "-" },
+    { label: "Etap", value: `${stageTypeLabel(match.stage_type)}${match.stage_order ? ` - ${match.stage_order}` : ""}` },
+    { label: "Grupa", value: (match.group_name || "-").trim() || "-" },
+    { label: "Kolejka", value: match.round_number != null ? String(match.round_number) : "-" },
+    { label: "Data", value: dateLabel ?? "-" },
+    { label: "Godzina", value: timeLabel ?? "-" },
+    { label: "Miejsce", value: locationLabel || "-" },
+    { label: customMode ? "Typ wyniku" : "Wynik", value: customMode ? "Rezultat niestandardowy" : scoreLabel },
+  ];
 
   const handleClick = () => {
     if (!isClickable) return;
@@ -266,7 +291,6 @@ export default function PublicMatchRow({
 
   const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (!isClickable) return;
-
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       onMatchClick?.(match, sectionId);
@@ -276,10 +300,15 @@ export default function PublicMatchRow({
   const headerContent = (
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-semibold text-slate-100">
-          <span className="break-words">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="break-words text-sm font-semibold text-slate-100 sm:text-base">
             {match.home_team_name} <span className="font-normal text-slate-400">vs</span> {match.away_team_name}
-          </span>
+          </div>
+          {isClickable ? (
+            <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[11px] text-slate-300">
+              {isSelected ? "Zwiń szczegóły" : "Pokaż szczegóły"}
+            </span>
+          ) : null}
         </div>
 
         {dateLabel || timeLabel || locationLabel ? (
@@ -296,7 +325,7 @@ export default function PublicMatchRow({
       <div className="shrink-0 text-right">
         <div className="flex items-center justify-end gap-2">
           <div className="text-right">
-            <div className="text-sm font-semibold text-slate-100">{scoreLabel}</div>
+            <div className="text-sm font-semibold text-slate-100 sm:text-base">{scoreLabel}</div>
             <div className="mt-0.5 text-[11px] text-slate-400">{scoreCaption}</div>
           </div>
 
@@ -337,121 +366,107 @@ export default function PublicMatchRow({
       )}
 
       {isSelected && isClickable ? (
-        <div id={detailsId} className="mt-3 border-t border-white/10 pt-3">
-          {customMode ? (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-                  Rezultaty uczestników
-                </div>
+        <div id={detailsId} className="mt-4 border-t border-white/10 pt-4">
+          <div className={cn("grid gap-4", customMode ? "xl:grid-cols-[0.92fr_1.04fr_1.04fr]" : "xl:grid-cols-[0.92fr_1.04fr_1.04fr]") }>
+            <DetailSection title="Szczegóły meczu">
+              <div className="grid gap-2 sm:grid-cols-2">
+                {detailItems.map((item) => (
+                  <DetailItem key={item.label} label={item.label} value={item.value} />
+                ))}
+              </div>
+            </DetailSection>
 
-                {customResults.length === 0 ? (
-                  <div className="text-sm text-slate-300">Brak zapisanych rezultatów.</div>
-                ) : (
+            <DetailSection title={customMode ? "Rezultaty i wydarzenia" : "Wydarzenia"}>
+              {customMode ? (
+                <div className="space-y-3">
                   <div className="space-y-1.5">
-                    {customResults
-                      .filter((item) => item.is_active !== false)
-                      .sort((a, b) => {
-                        const ar = typeof a.rank === "number" ? a.rank : Number.MAX_SAFE_INTEGER;
-                        const br = typeof b.rank === "number" ? b.rank : Number.MAX_SAFE_INTEGER;
-                        if (ar !== br) return ar - br;
-                        return a.id - b.id;
-                      })
-                      .map((result) => (
-                        <div
-                          key={result.id}
-                          className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2"
-                        >
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-semibold text-slate-100">
-                              {result.team_name}
+                    {customResults.filter((item) => item.is_active !== false).length === 0 ? (
+                      <div className="text-sm text-slate-300">Brak zapisanych rezultatów.</div>
+                    ) : (
+                      customResults
+                        .filter((item) => item.is_active !== false)
+                        .sort((a, b) => {
+                          const ar = typeof a.rank === "number" ? a.rank : Number.MAX_SAFE_INTEGER;
+                          const br = typeof b.rank === "number" ? b.rank : Number.MAX_SAFE_INTEGER;
+                          if (ar !== br) return ar - br;
+                          return a.id - b.id;
+                        })
+                        .map((result) => (
+                          <div
+                            key={result.id}
+                            className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2"
+                          >
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-semibold text-slate-100">{result.team_name}</div>
+                              <div className="mt-0.5 text-xs text-slate-400">
+                                {String(result.value_kind ?? "").toUpperCase() === "TIME" ? "Czas" : "Wynik"}
+                              </div>
                             </div>
-                            <div className="mt-0.5 text-xs text-slate-400">
-                              {String(result.value_kind ?? "").toUpperCase() === "TIME"
-                                ? "Czas"
-                                : "Wynik liczbowy"}
+                            <div className="shrink-0 text-right">
+                              <div className="text-sm font-semibold text-slate-100">{customResultSummary(result)}</div>
+                              <div className="mt-0.5 text-xs text-slate-400">
+                                {typeof result.rank === "number" ? `Miejsce ${result.rank}` : "Bez pozycji"}
+                              </div>
                             </div>
                           </div>
+                        ))
+                    )}
+                  </div>
 
-                          <div className="shrink-0 text-right">
-                            <div className="text-sm font-semibold text-slate-100">
-                              {customResultSummary(result)}
-                            </div>
-                            <div className="mt-0.5 text-xs text-slate-400">
-                              {typeof result.rank === "number" ? `Miejsce ${result.rank}` : "Bez pozycji"}
-                            </div>
+                  <div className="border-t border-white/10 pt-3">
+                    {incidentsError ? <div className="mb-2 text-sm text-rose-300">{incidentsError}</div> : null}
+                    {incidentsBusy && sortedIncidents.length === 0 ? (
+                      <div className="text-sm text-slate-300">Ładowanie wydarzeń...</div>
+                    ) : sortedIncidents.length === 0 ? (
+                      <div className="text-sm text-slate-300">Brak wydarzeń.</div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {sortedIncidents.map((incident) => (
+                          <div key={incident.id} className="text-sm text-slate-200">
+                            {formatIncidentLine(incident)}
                           </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  {incidentsError ? <div className="mb-2 text-sm text-rose-300">{incidentsError}</div> : null}
+                  {incidentsBusy && sortedIncidents.length === 0 ? (
+                    <div className="text-sm text-slate-300">Ładowanie wydarzeń...</div>
+                  ) : sortedIncidents.length === 0 ? (
+                    <div className="text-sm text-slate-300">Brak wydarzeń.</div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {sortedIncidents.map((incident) => (
+                        <div key={incident.id} className="text-sm text-slate-200">
+                          {formatIncidentLine(incident)}
                         </div>
                       ))}
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-                  Relacja / komentarz
+                    </div>
+                  )}
                 </div>
+              )}
+            </DetailSection>
 
-                {commentaryError ? <div className="mb-2 text-sm text-rose-300">{commentaryError}</div> : null}
-
-                {commentaryBusy && sortedCommentary.length === 0 ? (
-                  <div className="text-sm text-slate-300">Ładowanie relacji...</div>
-                ) : sortedCommentary.length === 0 ? (
-                  <div className="text-sm text-slate-300">Brak komentarzy.</div>
-                ) : (
-                  <div className="space-y-1">
-                    {sortedCommentary.map((entry) => (
-                      <div key={entry.id} className="whitespace-pre-wrap text-sm text-slate-200">
-                        {formatCommentaryLine(entry)}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Incydenty</div>
-
-                {incidentsError ? <div className="mb-2 text-sm text-rose-300">{incidentsError}</div> : null}
-
-                {incidentsBusy && sortedIncidents.length === 0 ? (
-                  <div className="text-sm text-slate-300">Ładowanie incydentów...</div>
-                ) : sortedIncidents.length === 0 ? (
-                  <div className="text-sm text-slate-300">Brak incydentów.</div>
-                ) : (
-                  <div className="space-y-1">
-                    {sortedIncidents.map((incident) => (
-                      <div key={incident.id} className="text-sm text-slate-200">
-                        {formatIncidentLine(incident)}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Relacja live</div>
-
-                {commentaryError ? <div className="mb-2 text-sm text-rose-300">{commentaryError}</div> : null}
-
-                {commentaryBusy && sortedCommentary.length === 0 ? (
-                  <div className="text-sm text-slate-300">Ładowanie relacji...</div>
-                ) : sortedCommentary.length === 0 ? (
-                  <div className="text-sm text-slate-300">Brak komentarzy.</div>
-                ) : (
-                  <div className="space-y-1">
-                    {sortedCommentary.map((entry) => (
-                      <div key={entry.id} className="whitespace-pre-wrap text-sm text-slate-200">
-                        {formatCommentaryLine(entry)}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+            <DetailSection title="Komentarz / relacja">
+              {commentaryError ? <div className="mb-2 text-sm text-rose-300">{commentaryError}</div> : null}
+              {commentaryBusy && sortedCommentary.length === 0 ? (
+                <div className="text-sm text-slate-300">Ładowanie komentarza...</div>
+              ) : sortedCommentary.length === 0 ? (
+                <div className="text-sm text-slate-300">Brak komentarzy.</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {sortedCommentary.map((entry) => (
+                    <div key={entry.id} className="whitespace-pre-wrap text-sm text-slate-200">
+                      {formatCommentaryLine(entry)}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </DetailSection>
+          </div>
         </div>
       ) : null}
     </div>

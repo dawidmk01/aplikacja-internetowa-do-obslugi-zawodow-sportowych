@@ -6,9 +6,6 @@ import { useParams, useSearchParams } from "react-router-dom";
 import { Calendar, ChevronUp, Clock, Eraser, MapPin } from "lucide-react";
 
 import { apiFetch } from "../api";
-import DivisionSwitcher, {
-  type DivisionSwitcherItem,
-} from "../components/DivisionSwitcher";
 import { useTournamentWs } from "../hooks/useTournamentWs";
 import { cn } from "../lib/cn";
 import { Card } from "../ui/Card";
@@ -37,9 +34,7 @@ import {
 // ---------------------------------------------------------------------------
 
 type DivisionStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
-type DivisionSummaryDTO = DivisionSwitcherItem & {
-  status?: DivisionStatus;
-};
+type DivisionSummaryDTO = { id: number; name?: string; status?: DivisionStatus };
 
 type ScheduleStageDTO = {
   stage_id: number;
@@ -455,11 +450,9 @@ export default function TournamentSchedule() {
     );
   }, [searchParams]);
 
-  const [divisions, setDivisions] = useState<DivisionSummaryDTO[]>([]);
   const [activeDivisionId, setActiveDivisionId] = useState<number | null>(
     requestedDivisionId
   );
-  const [activeDivisionName, setActiveDivisionName] = useState<string | null>(null);
 
   const effectiveDivisionId = requestedDivisionId ?? activeDivisionId;
 
@@ -521,9 +514,7 @@ export default function TournamentSchedule() {
       const payload = (await res.json().catch(() => null)) as TournamentScheduleDTO | null;
       if (payload) {
         setTournament(payload);
-        setDivisions(Array.isArray(payload.divisions) ? payload.divisions : []);
         setActiveDivisionId(payload.active_division_id ?? effectiveDivisionId ?? null);
-        setActiveDivisionName(payload.active_division_name ?? null);
       } else {
         setTournament((prev) =>
           prev
@@ -591,9 +582,7 @@ export default function TournamentSchedule() {
         if (!alive) return;
 
         setTournament(tData);
-        setDivisions(Array.isArray(tData.divisions) ? tData.divisions : []);
         setActiveDivisionId(tData.active_division_id ?? requestedDivisionId ?? null);
-        setActiveDivisionName(tData.active_division_name ?? null);
         setMatches(normalizeMatches(raw));
 
         const resolvedDivisionId = tData.active_division_id ?? requestedDivisionId ?? null;
@@ -634,9 +623,7 @@ export default function TournamentSchedule() {
       if (tRes.ok) {
         const tData = (await tRes.json()) as TournamentScheduleDTO;
         setTournament(tData);
-        setDivisions(Array.isArray(tData.divisions) ? tData.divisions : []);
         setActiveDivisionId(tData.active_division_id ?? effectiveDivisionId ?? null);
-        setActiveDivisionName(tData.active_division_name ?? null);
       }
       if (mRes.ok) {
         const raw = await mRes.json();
@@ -666,18 +653,6 @@ export default function TournamentSchedule() {
       }
     },
   });
-
-  const handleDivisionSwitch = useCallback(
-    async (nextDivisionId: number) => {
-      if (loading || nextDivisionId === effectiveDivisionId) return;
-
-      const nextSearch = new URLSearchParams(searchParams);
-      nextSearch.set("division_id", String(nextDivisionId));
-      setSearchParams(nextSearch, { replace: false });
-    },
-    [effectiveDivisionId, loading, searchParams, setSearchParams]
-  );
-
   // -------------------------------------------------------------------------
   // Derived state
   // -------------------------------------------------------------------------
@@ -917,28 +892,7 @@ export default function TournamentSchedule() {
     </Card>
   ) : null;
 
-  const headerSlot = (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          {activeDivisionName ? (
-            <div className="text-sm text-slate-300">
-              Aktywna dywizja: <span className="text-slate-100">{activeDivisionName}</span>
-            </div>
-          ) : null}
-        </div>
-
-        <DivisionSwitcher
-          divisions={divisions}
-          activeDivisionId={effectiveDivisionId}
-          disabled={loading}
-          onChange={handleDivisionSwitch}
-        />
-      </div>
-
-      {tournamentMetaCard}
-    </div>
-  );
+  const headerSlot = tournamentMetaCard;
 
   // -------------------------------------------------------------------------
   // Match mode helpers

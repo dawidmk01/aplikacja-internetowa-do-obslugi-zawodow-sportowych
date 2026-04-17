@@ -24,7 +24,7 @@ from tournaments.access import (
     user_is_organizer,
     user_is_registered_participant,
 )
-from tournaments.models import Division, Stage, StageMassStartEntry, StageMassStartResult, Team, Tournament
+from tournaments.models import Division, Stage, StageMassStartEntry, StageMassStartResult, Team, Tournament, TournamentMembership
 from tournaments.permissions import IsTournamentOrganizer
 from tournaments.serializers import TournamentMetaUpdateSerializer, TournamentSerializer
 from tournaments.services.match_generation import ensure_matches_generated
@@ -459,15 +459,21 @@ class MyTournamentListView(ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        return (
-            Tournament.objects.filter(
-                Q(organizer=user)
-                | Q(memberships__user=user)
-                | Q(registrations__user=user)
+        normalized_email = str(getattr(user, "email", "") or "").strip().lower()
+
+        filters = Q(organizer=user) | Q(
+            memberships__user=user,
+            memberships__role=TournamentMembership.Role.ASSISTANT,
+            memberships__status=TournamentMembership.Status.ACCEPTED,
+        ) | Q(registrations__user=user)
+
+        if normalized_email:
+            filters |= Q(
+                assistant_invites__normalized_email=normalized_email,
+                assistant_invites__status="PENDING",
             )
-            .distinct()
-            .order_by("-created_at")
-        )
+
+        return Tournament.objects.filter(filters).distinct().order_by("-created_at")
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
