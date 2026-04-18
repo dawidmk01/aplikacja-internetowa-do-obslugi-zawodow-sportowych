@@ -22,6 +22,7 @@ import {
   StructureCard,
   SummaryCard,
   getDefaultResultConfig,
+  type BasketballResolutionMode,
   type CompetitionModel,
   type CompetitionType,
   type CustomAggregationMode,
@@ -525,6 +526,8 @@ export default function TournamentBasicsSetup() {
   const [hbPointsMode, setHbPointsMode] = useState<HandballPointsMode>("2_1_0");
   const [hbKnockoutTiebreak, setHbKnockoutTiebreak] =
     useState<HandballKnockoutTiebreak>("OVERTIME_PENALTIES");
+  const [basketballResolutionMode, setBasketballResolutionMode] =
+    useState<BasketballResolutionMode>("OVERTIME_ONLY");
 
   const [cupMatches, setCupMatches] = useState<1 | 2>(1);
   const [finalMatches, setFinalMatches] = useState<1 | 2>(1);
@@ -547,6 +550,7 @@ export default function TournamentBasicsSetup() {
   });
 
   const isHandball = discipline === "handball";
+  const isBasketball = discipline === "basketball";
   const isTennis = discipline === "tennis";
   const isCustomDiscipline = discipline === "custom";
 
@@ -735,6 +739,7 @@ export default function TournamentBasicsSetup() {
         setHbTableDrawMode(cfg.handball_table_draw_mode ?? "ALLOW_DRAW");
         setHbKnockoutTiebreak(cfg.handball_knockout_tiebreak ?? "OVERTIME_PENALTIES");
         setHbPointsMode(cfg.handball_points_mode ?? "2_1_0");
+        setBasketballResolutionMode(cfg.basketball_resolution_mode ?? "OVERTIME_ONLY");
 
         setTennisBestOf(cfg.tennis_best_of === 5 ? 5 : 3);
         const tpm = (cfg.tennis_points_mode ?? "NONE").toString().toUpperCase();
@@ -926,6 +931,10 @@ export default function TournamentBasicsSetup() {
       rawConfig.handball_points_mode = hbPointsMode;
     }
 
+    if (isBasketball) {
+      rawConfig.basketball_resolution_mode = basketballResolutionMode;
+    }
+
     if (isTennis) {
       rawConfig.tennis_best_of = tennisBestOf;
       rawConfig.tennis_points_mode = tennisPointsMode;
@@ -958,6 +967,10 @@ export default function TournamentBasicsSetup() {
 
     if (format === "MIXED") {
       delete finalConfig.league_matches;
+    }
+
+    if (!isBasketball) {
+      delete finalConfig.basketball_resolution_mode;
     }
 
     return finalConfig;
@@ -1263,8 +1276,10 @@ export default function TournamentBasicsSetup() {
     hbTableDrawMode,
     hbKnockoutTiebreak,
     hbPointsMode,
+    basketballResolutionMode,
     tennisBestOf,
     tennisPointsMode,
+    isBasketball,
     isTennis,
     isCustomDiscipline,
     customDisciplineName,
@@ -1515,6 +1530,7 @@ export default function TournamentBasicsSetup() {
       setHbTableDrawMode(sourceConfig.handball_table_draw_mode ?? "ALLOW_DRAW");
       setHbKnockoutTiebreak(sourceConfig.handball_knockout_tiebreak ?? "OVERTIME_PENALTIES");
       setHbPointsMode(sourceConfig.handball_points_mode ?? "2_1_0");
+      setBasketballResolutionMode(sourceConfig.basketball_resolution_mode ?? "OVERTIME_ONLY");
 
       setTennisBestOf(sourceConfig.tennis_best_of === 5 ? 5 : 3);
       const tennisMode = (sourceConfig.tennis_points_mode ?? "NONE").toString().toUpperCase();
@@ -1809,6 +1825,7 @@ export default function TournamentBasicsSetup() {
             hbTableDrawMode={hbTableDrawMode}
             hbPointsMode={hbPointsMode}
             hbKnockoutTiebreak={hbKnockoutTiebreak}
+            basketballResolutionMode={basketballResolutionMode}
             cupMatches={cupMatches}
             finalMatches={finalMatches}
             thirdPlace={thirdPlace}
@@ -1900,6 +1917,11 @@ export default function TournamentBasicsSetup() {
             }}
             onHbKnockoutTiebreakChange={(v) => {
               setHbKnockoutTiebreak(v);
+              markDirty();
+              clearInlineError();
+            }}
+            onBasketballResolutionModeChange={(v) => {
+              setBasketballResolutionMode(v);
               markDirty();
               clearInlineError();
             }}
@@ -2082,6 +2104,7 @@ export default function TournamentBasicsSetup() {
             competitionModel={competitionModel}
             customDisciplineName={customDisciplineName}
             resultConfig={resultConfig}
+            basketballResolutionMode={basketballResolutionMode}
           />
         </div>
       </div>

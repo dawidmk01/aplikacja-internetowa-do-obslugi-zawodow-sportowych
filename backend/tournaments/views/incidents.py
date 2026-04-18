@@ -31,7 +31,12 @@ def _match_division_id(match: Match):
 
 def _kind_display(kind: str, discipline: str) -> str:
     if discipline == Tournament.Discipline.BASKETBALL:
-        mapping = {"GOAL": "Punkt", "FOUL": "Faul", "TIMEOUT": "Timeout"}
+        mapping = {
+            "GOAL": "Punkt",
+            "FOUL": "Faul",
+            "TIMEOUT": "Timeout",
+            "SUBSTITUTION": "Zmiana",
+        }
         return mapping.get(kind, kind)
     if discipline == Tournament.Discipline.HANDBALL:
         mapping = {
@@ -66,7 +71,7 @@ def _allowed_kinds_for_discipline(discipline: str) -> set[str]:
     if discipline == Tournament.Discipline.HANDBALL:
         return {"GOAL", "FOUL", "TIMEOUT", "HANDBALL_TWO_MINUTES", "SUBSTITUTION"}
     if discipline == Tournament.Discipline.BASKETBALL:
-        return {"GOAL", "FOUL", "TIMEOUT"}
+        return {"GOAL", "FOUL", "TIMEOUT", "SUBSTITUTION"}
     if discipline == Tournament.Discipline.TENNIS:
         return {"TENNIS_POINT", "TENNIS_CODE_VIOLATION", "TIMEOUT"}
     return {"GOAL", "FOUL", "TIMEOUT"}

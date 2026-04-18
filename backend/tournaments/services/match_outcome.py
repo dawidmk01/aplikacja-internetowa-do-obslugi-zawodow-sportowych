@@ -16,12 +16,22 @@ def _discipline(match: Match) -> str:
         return ""
 
 
+def _disallows_extra_time(match: Match) -> bool:
+    discipline = _discipline(match)
+    return discipline in {"tennis"}
+
+
+def _disallows_penalties(match: Match) -> bool:
+    discipline = _discipline(match)
+    return discipline in {"tennis", "basketball"}
+
+
 def regular_score(match: Match) -> Tuple[int, int]:
     return (int(match.home_score or 0), int(match.away_score or 0))
 
 
 def extra_time_score(match: Match) -> Tuple[int, int]:
-    if _discipline(match) == "tennis":
+    if _disallows_extra_time(match):
         return (0, 0)
 
     if not getattr(match, "went_to_extra_time", False):
@@ -45,7 +55,7 @@ def is_draw_after_final(match: Match) -> bool:
 
 
 def penalty_winner_id(match: Match) -> Optional[int]:
-    if _discipline(match) == "tennis":
+    if _disallows_penalties(match):
         return None
 
     if not match.decided_by_penalties:
@@ -66,21 +76,32 @@ def knockout_winner_id(match: Match) -> Optional[int]:
     if final_home != final_away:
         return match.home_team_id if final_home > final_away else match.away_team_id
 
-    # Przy remisie KO próbuje rozstrzygnięcia karnymi, poza tenisem.
-    if _discipline(match) == "tennis":
+    # Przy remisie KO próbuje rozstrzygnięcia karnymi wyłącznie w dyscyplinach, które je dopuszczają.
+    if _disallows_penalties(match):
         return None
 
     return penalty_winner_id(match)
 
 
 def validate_penalties_consistency(match: Match) -> Optional[str]:
-    if _discipline(match) == "tennis":
+    discipline = _discipline(match)
+
+    if discipline == "tennis":
         if (
             match.decided_by_penalties
             or match.home_penalty_score is not None
             or match.away_penalty_score is not None
         ):
             return "W tenisie karne są niedozwolone."
+        return None
+
+    if discipline == "basketball":
+        if (
+            match.decided_by_penalties
+            or match.home_penalty_score is not None
+            or match.away_penalty_score is not None
+        ):
+            return "W koszykówce karne są niedozwolone."
         return None
 
     # Karne mają sens wyłącznie przy remisie po regulaminie i dogrywce.
@@ -96,7 +117,9 @@ def validate_penalties_consistency(match: Match) -> Optional[str]:
 
 
 def validate_extra_time_consistency(match: Match) -> Optional[str]:
-    if _discipline(match) == "tennis":
+    discipline = _discipline(match)
+
+    if discipline == "tennis":
         if (
             getattr(match, "went_to_extra_time", False)
             or match.home_extra_time_score is not None
@@ -111,6 +134,23 @@ def validate_extra_time_consistency(match: Match) -> Optional[str]:
                 "Jeśli zaznaczono dogrywkę, musisz podać wynik dogrywki "
                 "(home_extra_time_score, away_extra_time_score)."
             )
+
+    return None
+
+
+def validate_basketball_consistency(match: Match) -> Optional[str]:
+    if _discipline(match) != "basketball":
+        return None
+
+    if match.decided_by_penalties:
+        return "W koszykówce karne są niedozwolone."
+
+    if is_draw_after_final(match):
+        return (
+            "W koszykówce wynik końcowy nie może pozostać remisowy. "
+            "Jeśli po czasie podstawowym był remis, mecz powinien zostać rozstrzygnięty dogrywką."
+        )
+
     return None
 
 

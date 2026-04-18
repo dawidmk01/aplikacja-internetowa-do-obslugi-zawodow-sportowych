@@ -18,7 +18,7 @@ type LiveMatchSummary = {
 };
 
 type Props = {
-  tournamentId: string; // z useParams
+  tournamentId: string;
   discipline: string;
   goalScope: "REGULAR" | "EXTRA_TIME";
   canEdit: boolean;
@@ -37,7 +37,6 @@ type Props = {
   onAfterRecompute?: () => Promise<void> | void;
 };
 
-/** Komponuje widok live meczu: zegar, incydenty i komentarz oraz propaguje metadane i sygnały odświeżania. */
 export default function MatchLivePanel({
   tournamentId,
   discipline,
@@ -62,7 +61,6 @@ export default function MatchLivePanel({
   const requestIncidentsReload = useCallback(() => setIncidentsReloadToken((x) => x + 1), []);
 
   const commentaryMinute = useMemo(() => {
-    // Kontrakt: wspiera wsteczną kompatybilność różnych wersji ClockMeta.
     const m: any = clockMeta as any;
     const raw =
       m?.commentaryMinute ??

@@ -283,8 +283,14 @@ export function ClockPanel({
 
       const next = nextPeriodFromIntermission(discipline, clock.clock_period, { allowExtraTimeStart });
       if (next === "SH" || next === "H2") return "Rozpocznij 2 połowę";
-      if (next === "ET1") return "Rozpocznij dogrywkę";
+      if (next === "Q2") return "Rozpocznij 2 kwartę";
+      if (next === "Q3") return "Rozpocznij 3 kwartę";
+      if (next === "Q4") return "Rozpocznij 4 kwartę";
+      if (next === "ET1" || next === "OT1") return "Rozpocznij dogrywkę";
       if (next === "ET2") return "Rozpocznij 2 połowę dogrywki";
+      if (next === "OT2") return "Rozpocznij 2 dogrywkę";
+      if (next === "OT3") return "Rozpocznij 3 dogrywkę";
+      if (next === "OT4") return "Rozpocznij 4 dogrywkę";
       return "Rozpocznij kolejny etap";
     }
 

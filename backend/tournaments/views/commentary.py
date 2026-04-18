@@ -40,6 +40,45 @@ def _parse_int(value, field: str, allow_none: bool = True) -> int | None:
         raise ValueError(f"{field} musi być liczbą całkowitą.")
 
 
+def _p(name: str, fallback: str) -> str:
+    return getattr(Match.ClockPeriod, name, fallback)
+
+
+def _allowed_periods_for_match(match: Match) -> set[str]:
+    discipline = match.tournament.discipline
+    allowed: set[str] = {_p("NONE", "NONE")}
+
+    if discipline == Tournament.Discipline.FOOTBALL:
+        allowed.update({_p("FH", "FH"), _p("SH", "SH"), _p("ET1", "ET1"), _p("ET2", "ET2")})
+        return allowed
+
+    if discipline == Tournament.Discipline.HANDBALL:
+        allowed.update({_p("H1", "H1"), _p("H2", "H2"), _p("ET1", "ET1"), _p("ET2", "ET2")})
+        return allowed
+
+    if discipline == Tournament.Discipline.BASKETBALL:
+        allowed.update({
+            _p("Q1", "Q1"),
+            _p("Q2", "Q2"),
+            _p("Q3", "Q3"),
+            _p("Q4", "Q4"),
+            _p("OT1", "OT1"),
+            _p("OT2", "OT2"),
+            _p("OT3", "OT3"),
+            _p("OT4", "OT4"),
+        })
+        return allowed
+
+    return allowed
+
+
+def _validate_period_for_match(match: Match, period: str) -> str:
+    allowed = _allowed_periods_for_match(match)
+    if period not in allowed:
+        raise ValueError(f"Nieprawidłowy period. Dozwolone: {sorted(list(allowed))}")
+    return period
+
+
 def _serialize_commentary_entry(entry: MatchCommentaryEntry) -> dict:
     return {
         "id": entry.id,
@@ -145,6 +184,11 @@ class MatchCommentaryListCreateView(APIView):
             if data.get("period"):
                 period = str(data.get("period") or "").strip() or period
 
+            try:
+                period = _validate_period_for_match(match, period)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
             entry = MatchCommentaryEntry.objects.create(
                 match=match,
                 period=period,
@@ -203,7 +247,11 @@ class MatchCommentaryDetailView(APIView):
                 update_fields.append("minute_raw")
 
             if "period" in data:
-                entry.period = str(data.get("period") or "").strip() or entry.period
+                proposed_period = str(data.get("period") or "").strip() or entry.period
+                try:
+                    entry.period = _validate_period_for_match(entry.match, proposed_period)
+                except ValueError as exc:
+                    return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
                 update_fields.append("period")
 
             if update_fields:

@@ -25,7 +25,6 @@ import TournamentDetail from "./pages/TournamentDetail";
 import TournamentPublic from "./pages/TournamentPublic";
 import TournamentResults from "./pages/TournamentResults";
 import TournamentSchedule from "./pages/TournamentSchedule";
-import TournamentStandings from "./pages/TournamentStandings";
 import TournamentTeams from "./pages/TournamentTeams";
 
 export default function App() {
@@ -155,7 +154,7 @@ export default function App() {
                 <Route path="teams" element={<TournamentTeams />} />
                 <Route path="schedule" element={<TournamentSchedule />} />
                 <Route path="results" element={<TournamentResults />} />
-                <Route path="standings" element={<TournamentStandings />} />
+                <Route path="standings" element={<Navigate to="../results" replace />} />
               </Route>
 
               <Route path="*" element={<Navigate to="/" replace />} />

@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 from tournaments.access import can_edit_results, can_edit_schedule, user_is_assistant
 from tournaments.services.match_outcome import (
     knockout_winner_id,
+    validate_basketball_consistency,
     validate_extra_time_consistency,
     validate_penalties_consistency,
 )
@@ -87,6 +88,10 @@ def _is_third_place_stage(stage: Stage) -> bool:
 
 def _is_tennis(tournament: Tournament) -> bool:
     return (getattr(tournament, "discipline", "") or "").lower() == "tennis"
+
+
+def _is_basketball(tournament: Tournament) -> bool:
+    return (getattr(tournament, "discipline", "") or "").lower() == "basketball"
 
 
 def _is_custom_result_mode(match: Match) -> bool:
@@ -243,6 +248,28 @@ def _validate_tennis_match_before_finish(match: Match, cfg: dict) -> Optional[st
 
     if home_score != home_sets or away_score != away_sets:
         return "Niespójność danych: wynik setów nie zgadza się z tennis_sets. Zapisz wynik ponownie."
+
+    return None
+
+
+def _validate_basketball_match_before_finish(match: Match) -> Optional[str]:
+    if not match.result_entered:
+        return "Nie można zakończyć meczu koszykówki bez wprowadzenia wyniku."
+
+    if match.home_score is None or match.away_score is None:
+        return "Brak kompletnego wyniku - uzupełnij punkty."
+
+    penalties_error = validate_penalties_consistency(match)
+    if penalties_error:
+        return penalties_error
+
+    extra_time_error = validate_extra_time_consistency(match)
+    if extra_time_error:
+        return extra_time_error
+
+    basketball_error = validate_basketball_consistency(match)
+    if basketball_error:
+        return basketball_error
 
     return None
 
@@ -1071,6 +1098,11 @@ class FinishMatchView(APIView):
                 if err:
                     return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
+            if _is_basketball(tournament):
+                err = _validate_basketball_match_before_finish(match)
+                if err:
+                    return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
+
             try:
                 MatchResultService.apply_result(match)
             except Exception:
@@ -1117,6 +1149,11 @@ class FinishMatchView(APIView):
                 if err:
                     return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
+            if _is_basketball(tournament):
+                err = _validate_basketball_match_before_finish(match)
+                if err:
+                    return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
+
             if match.home_score is None or match.away_score is None:
                 return Response(
                     {"detail": "Brak kompletnego wyniku - uzupełnij bramki/punkty."},
@@ -1125,7 +1162,7 @@ class FinishMatchView(APIView):
 
             if cup_matches == 1:
                 err = validate_extra_time_consistency(match) or validate_penalties_consistency(match)
-                if err and not _is_tennis(tournament):
+                if err and not (_is_tennis(tournament) or _is_basketball(tournament)):
                     return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
                 winner_id = (

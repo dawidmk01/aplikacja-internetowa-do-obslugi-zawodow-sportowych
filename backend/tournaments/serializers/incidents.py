@@ -20,6 +20,7 @@ def _allowed_kinds_for_discipline(discipline: str) -> set[str]:
             k.RED_CARD,
             k.FOUL,
             k.SUBSTITUTION,
+            k.TIMEOUT,
         }
 
     if discipline == Tournament.Discipline.HANDBALL:
@@ -33,6 +34,7 @@ def _allowed_kinds_for_discipline(discipline: str) -> set[str]:
 
     if discipline == Tournament.Discipline.TENNIS:
         return {
+            k.TENNIS_POINT,
             k.TENNIS_CODE_VIOLATION,
             k.TIMEOUT,
         }
@@ -45,15 +47,19 @@ def _allowed_kinds_for_discipline(discipline: str) -> set[str]:
 
     if discipline == Tournament.Discipline.BASKETBALL:
         return {
+            k.GOAL,
             k.FOUL,
-            k.SUBSTITUTION,
             k.TIMEOUT,
         }
 
     if discipline == Tournament.Discipline.WRESTLING:
         return {k.TIMEOUT}
 
-    return {k.TIMEOUT}
+    return {
+        k.GOAL,
+        k.FOUL,
+        k.TIMEOUT,
+    }
 
 
 def _parse_minute_raw(minute_raw: str) -> Optional[int]:
@@ -69,6 +75,24 @@ def _parse_minute_raw(minute_raw: str) -> Optional[int]:
         if left.isdigit() and right.isdigit():
             return int(left) + int(right)
     return None
+
+
+def _validate_goal_meta_for_discipline(discipline: str, meta: dict) -> None:
+    if discipline != Tournament.Discipline.BASKETBALL:
+        return
+
+    raw_points = meta.get("points", 1)
+    try:
+        points = int(raw_points or 1)
+    except (TypeError, ValueError) as exc:
+        raise serializers.ValidationError(
+            {"meta": "Dla koszykówki meta.points musi być liczbą 1, 2 albo 3."}
+        ) from exc
+
+    if points not in (1, 2, 3):
+        raise serializers.ValidationError(
+            {"meta": "Dla koszykówki meta.points musi być równe 1, 2 albo 3."}
+        )
 
 
 class MatchIncidentSerializer(serializers.ModelSerializer):
@@ -247,6 +271,12 @@ class MatchIncidentCreateSerializer(serializers.Serializer):
 
         if "meta" not in attrs or attrs["meta"] is None:
             attrs["meta"] = {}
+
+        if not isinstance(attrs["meta"], dict):
+            raise serializers.ValidationError({"meta": "meta musi być obiektem JSON."})
+
+        if kind == MatchIncident.Kind.GOAL:
+            _validate_goal_meta_for_discipline(discipline, attrs["meta"])
 
         return attrs
 

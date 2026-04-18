@@ -127,6 +127,7 @@ export function IncidentsPanel({
     player_id: string;
     player_in_id: string;
     player_out_id: string;
+    points: 1 | 2 | 3;
   } | null>(null);
   const [updating, setUpdating] = useState<Record<number, boolean>>({});
 
@@ -491,11 +492,15 @@ export function IncidentsPanel({
   const beginEdit = useCallback((i: IncidentDTO) => {
     setPendingDeleteId(null);
     setEditIncidentId(i.id);
+    const rawPoints = Number(i.meta?.points ?? 2);
+    const points: 1 | 2 | 3 = rawPoints === 1 || rawPoints === 3 ? rawPoints : 2;
+
     setEditDraft({
       minute: i.minute != null ? String(i.minute) : "",
       player_id: i.player_id != null ? String(i.player_id) : "",
       player_out_id: i.player_out_id != null ? String(i.player_out_id) : "",
       player_in_id: i.player_in_id != null ? String(i.player_in_id) : "",
+      points,
     });
   }, []);
 
@@ -549,6 +554,10 @@ export function IncidentsPanel({
         patch.player_in_id = editDraft.player_in_id.trim() ? Number(editDraft.player_in_id) : null;
       } else if (supportsPlayerKind(i.kind)) {
         patch.player_id = editDraft.player_id.trim() ? Number(editDraft.player_id) : null;
+      }
+
+      if (isBasketball(discipline) && i.kind === "GOAL") {
+        patch.points = editDraft.points;
       }
 
       await updateIncident(i.id, patch);
@@ -962,7 +971,21 @@ export function IncidentsPanel({
                         />
                       </label>
 
-                      {supportsSubKind(i.kind) ? (
+                      {isBasketball(discipline) && i.kind === "GOAL" ? (
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <label className="grid gap-1 text-sm text-slate-200">
+                            Punkty
+                            <Select<1 | 2 | 3>
+                              value={editDraft.points}
+                              onChange={(v) => setEditDraft((d) => (d ? { ...d, points: v } : d))}
+                              options={pointsOptions}
+                              disabled={busy}
+                              ariaLabel="Punkty"
+                            />
+                          </label>
+                          <div />
+                        </div>
+                      ) : supportsSubKind(i.kind) ? (
                         <div className="grid gap-2 sm:grid-cols-2">
                           <label className="grid gap-1 text-sm text-slate-200">
                             ID schodzącego

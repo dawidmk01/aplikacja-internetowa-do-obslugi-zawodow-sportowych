@@ -98,6 +98,10 @@ function isHandball(t: TournamentDTO | null) {
   return lower(t?.discipline) === "handball";
 }
 
+function isBasketball(t: TournamentDTO | null) {
+  return lower(t?.discipline) === "basketball";
+}
+
 function usesCustomResults(t: TournamentDTO | null) {
   return String(t?.result_mode ?? "SCORE").toUpperCase() === "CUSTOM";
 }
@@ -295,6 +299,7 @@ function getCustomValueSummary(
 export default function MatchRow({ tournamentId, tournament, match, onReload, onToast }: Props) {
   const tn = isTennis(tournament);
   const hb = isHandball(tournament);
+  const bb = isBasketball(tournament);
   const customMode = usesCustomResults(tournament);
   const competitionModel = getCompetitionModel(tournament);
   const massStartCustomMode = customMode && competitionModel === "MASS_START";
@@ -391,6 +396,28 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
     }
   }, [isCustomDirty, originalCustomDraft]);
 
+  useEffect(() => {
+    if (!bb) return;
+
+    setDraft((current) => {
+      const regularDraw = Number(current.home_score ?? 0) === Number(current.away_score ?? 0);
+      const next: MatchDraft = {
+        ...current,
+        decided_by_penalties: false,
+        home_penalty_score: null,
+        away_penalty_score: null,
+      };
+
+      if (!regularDraw) {
+        next.went_to_extra_time = false;
+        next.home_extra_time_score = null;
+        next.away_extra_time_score = null;
+      }
+
+      return sameComparableDraft(current, next) ? current : next;
+    });
+  }, [bb, draft.home_score, draft.away_score]);
+
   const pushToast = useCallback(
     (text: string, kind: ToastKind = "info") => {
       if (onToast) {
@@ -434,15 +461,21 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
           away_penalty_score: null,
         };
       } else {
+        const regularHome = Number(draft.home_score ?? 0) || 0;
+        const regularAway = Number(draft.away_score ?? 0) || 0;
+        const regularDraw = regularHome === regularAway;
+        const useExtraTime = bb ? regularDraw && !!draft.went_to_extra_time : !!draft.went_to_extra_time;
+        const usePenalties = bb ? false : !!draft.decided_by_penalties;
+
         payload = {
-          home_score: Number(draft.home_score ?? 0) || 0,
-          away_score: Number(draft.away_score ?? 0) || 0,
-          went_to_extra_time: !!draft.went_to_extra_time,
-          home_extra_time_score: draft.went_to_extra_time ? Number(draft.home_extra_time_score ?? 0) || 0 : null,
-          away_extra_time_score: draft.went_to_extra_time ? Number(draft.away_extra_time_score ?? 0) || 0 : null,
-          decided_by_penalties: !!draft.decided_by_penalties,
-          home_penalty_score: draft.decided_by_penalties ? Number(draft.home_penalty_score ?? 0) || 0 : null,
-          away_penalty_score: draft.decided_by_penalties ? Number(draft.away_penalty_score ?? 0) || 0 : null,
+          home_score: regularHome,
+          away_score: regularAway,
+          went_to_extra_time: useExtraTime,
+          home_extra_time_score: useExtraTime ? Number(draft.home_extra_time_score ?? 0) || 0 : null,
+          away_extra_time_score: useExtraTime ? Number(draft.away_extra_time_score ?? 0) || 0 : null,
+          decided_by_penalties: usePenalties,
+          home_penalty_score: usePenalties ? Number(draft.home_penalty_score ?? 0) || 0 : null,
+          away_penalty_score: usePenalties ? Number(draft.away_penalty_score ?? 0) || 0 : null,
         };
       }
 
@@ -476,7 +509,7 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
 
       return { confirmed: true };
     },
-    [draft, match.id, tn]
+    [bb, draft, match.id, tn]
   );
 
   const saveSingleCustomResult = useCallback(
@@ -792,6 +825,7 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
     [doReload, finishMatch, pushToast, updateMatchScore]
   );
 
+  const basketballOvertimeAvailable = bb && Number(draft.home_score ?? 0) === Number(draft.away_score ?? 0);
   const goalScope = draft.went_to_extra_time ? "EXTRA_TIME" : "REGULAR";
 
   const scoreInputClass = cn(
@@ -1172,8 +1206,8 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
                 away_extra_time_score: checked ? (d.away_extra_time_score ?? 0) : null,
               }))
             }
-            disabled={!canEditResult}
-            label="Dogrywka"
+            disabled={!canEditResult || (bb && !basketballOvertimeAvailable)}
+            label={bb ? "Dogrywka po remisie" : "Dogrywka"}
           />
 
           {draft.went_to_extra_time ? (
@@ -1207,26 +1241,38 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
             </div>
           ) : null}
 
-          <div
-            className={cn("inline-flex", hb ? "opacity-60" : "")}
-            title={hb ? "W piłce ręcznej rozstrzygnięcie zależy od konfiguracji turnieju." : undefined}
-          >
-            <Checkbox
-              checked={!!draft.decided_by_penalties}
-              onCheckedChange={(checked) =>
-                setDraft((d) => ({
-                  ...d,
-                  decided_by_penalties: checked,
-                  home_penalty_score: checked ? (d.home_penalty_score ?? 0) : null,
-                  away_penalty_score: checked ? (d.away_penalty_score ?? 0) : null,
-                }))
-              }
-              disabled={!canEditResult || hb}
-              label="Rozstrzygnięcie w rzutach karnych"
-            />
-          </div>
+          {bb && !basketballOvertimeAvailable ? (
+            <div className="text-xs text-slate-400">
+              Dogrywka jest dostępna tylko przy remisie po czasie podstawowym.
+            </div>
+          ) : null}
 
-          {draft.decided_by_penalties ? (
+          {bb ? (
+            <div className="text-xs text-slate-400">
+              Koszykówka nie obsługuje rzutów karnych. Przy remisie po czasie podstawowym wpisz punkty dogrywki.
+            </div>
+          ) : (
+            <div
+              className={cn("inline-flex", hb ? "opacity-60" : "")}
+              title={hb ? "W piłce ręcznej rozstrzygnięcie zależy od konfiguracji turnieju." : undefined}
+            >
+              <Checkbox
+                checked={!!draft.decided_by_penalties}
+                onCheckedChange={(checked) =>
+                  setDraft((d) => ({
+                    ...d,
+                    decided_by_penalties: checked,
+                    home_penalty_score: checked ? (d.home_penalty_score ?? 0) : null,
+                    away_penalty_score: checked ? (d.away_penalty_score ?? 0) : null,
+                  }))
+                }
+                disabled={!canEditResult || hb}
+                label="Rozstrzygnięcie w rzutach karnych"
+              />
+            </div>
+          )}
+
+          {!bb && draft.decided_by_penalties ? (
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs text-slate-400">Karne:</span>
               <Input

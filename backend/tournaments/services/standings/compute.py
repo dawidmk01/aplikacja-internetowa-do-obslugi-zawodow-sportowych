@@ -9,6 +9,7 @@ from typing import Any, Literal, Tuple
 from tournaments.models import Group, Match, MatchCustomResult, Stage, Team, Tournament
 from tournaments.services.match_outcome import final_score
 from tournaments.services.standings.rulesets.base import StandingsRuleset
+from tournaments.services.standings.rulesets.basketball import BasketballFibaRuleset
 from tournaments.services.standings.rulesets.football import FootballPZPNRuleset
 from tournaments.services.standings.rulesets.handball import HandballSuperligaRuleset
 from tournaments.services.standings.rulesets.tennis import TennisRuleset
@@ -72,6 +73,9 @@ def _get_ruleset(context) -> StandingsRuleset:
 
     if discipline in (Tournament.Discipline.HANDBALL, "handball", "HANDBALL"):
         return HandballSuperligaRuleset()
+
+    if discipline in (Tournament.Discipline.BASKETBALL, "basketball", "BASKETBALL"):
+        return BasketballFibaRuleset()
 
     if discipline in (Tournament.Discipline.TENNIS, "tennis", "TENNIS"):
         cfg = _context_format_config(context)
@@ -530,6 +534,11 @@ def _apply_match_result(
         "handball",
         "HANDBALL",
     )
+    is_basketball = discipline in (
+        Tournament.Discipline.BASKETBALL,
+        "basketball",
+        "BASKETBALL",
+    )
     is_tennis = discipline in (
         Tournament.Discipline.TENNIS,
         "tennis",
@@ -561,6 +570,27 @@ def _apply_match_result(
             home.points += points_home
             away.points += points_away
 
+        return
+
+    if is_basketball:
+        if home_score > away_score:
+            home.wins += 1
+            away.losses += 1
+            home.points += 2
+            away.points += 1
+            return
+
+        if home_score < away_score:
+            away.wins += 1
+            home.losses += 1
+            away.points += 2
+            home.points += 1
+            return
+
+        # Koszykówka nie powinna kończyć się remisem, ale pozostawiamy bezpieczny fallback
+        # dla niespójnych danych wejściowych zamiast nadawać piłkarską punktację remisową.
+        home.draws += 1
+        away.draws += 1
         return
 
     if not is_handball:

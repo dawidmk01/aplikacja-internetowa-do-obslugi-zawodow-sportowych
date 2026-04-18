@@ -63,7 +63,10 @@ def _normalize_format_config(discipline: str | None, cfg) -> dict:
     else:
         cfg.pop("tennis_points_mode", None)
 
-    return cfg
+    try:
+        return Tournament.normalize_format_config(discipline, cfg)
+    except ValueError as exc:
+        raise serializers.ValidationError({"format_config": str(exc)}) from exc
 
 
 def _normalize_result_mode(value: str | None) -> str:
@@ -313,6 +316,51 @@ def _normalize_division_config(
             "format_config": format_config,
             "result_mode": Tournament.ResultMode.CUSTOM,
             "result_config": _normalize_result_config(Tournament.ResultMode.CUSTOM, result_config),
+        }
+
+    if discipline == Tournament.Discipline.WRESTLING:
+        if competition_type not in (None, Tournament.CompetitionType.INDIVIDUAL):
+            raise serializers.ValidationError(
+                {
+                    "competition_type": (
+                        "Dla zapasów obsługiwany jest obecnie wyłącznie tryb INDIVIDUAL. "
+                        "Kategorie Women, U20, U17 i U15 należy modelować przez dywizje."
+                    )
+                }
+            )
+
+        if competition_model not in (None, Tournament.CompetitionModel.HEAD_TO_HEAD):
+            raise serializers.ValidationError(
+                {
+                    "competition_model": (
+                        "Dla zapasów obsługiwany jest obecnie model HEAD_TO_HEAD."
+                    )
+                }
+            )
+
+        if result_mode == Tournament.ResultMode.CUSTOM:
+            raise serializers.ValidationError(
+                {
+                    "result_mode": (
+                        "Dla zapasów używany jest klasyczny wynik walki. "
+                        "Tryb CUSTOM nie jest tutaj obsługiwany."
+                    )
+                }
+            )
+
+        allowed = Division.allowed_formats_for_discipline(discipline)
+        if tournament_format not in allowed:
+            raise serializers.ValidationError(
+                {"tournament_format": "Wybrany format nie jest dostępny dla tej dyscypliny."}
+            )
+
+        return {
+            "competition_type": Tournament.CompetitionType.INDIVIDUAL,
+            "competition_model": Tournament.CompetitionModel.HEAD_TO_HEAD,
+            "tournament_format": tournament_format,
+            "format_config": format_config,
+            "result_mode": Tournament.ResultMode.SCORE,
+            "result_config": {},
         }
 
     allowed = Division.allowed_formats_for_discipline(discipline)

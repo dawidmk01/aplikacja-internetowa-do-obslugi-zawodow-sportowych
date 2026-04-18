@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from tournaments.models import Match, Stage
-from tournaments.services.match_outcome import knockout_winner_id, penalty_winner_id
+from tournaments.services.match_outcome import final_score, knockout_winner_id, penalty_winner_id
 
 if TYPE_CHECKING:
     from tournaments.models import Team
@@ -64,12 +64,12 @@ class MatchResultService:
 
     @staticmethod
     def _winner_league_or_group(match: Match, *, discipline: str) -> Optional["Team"]:
-        home_score = int(match.home_score or 0)
-        away_score = int(match.away_score or 0)
+        # Wynik końcowy uwzględnia dogrywkę, jeśli dana dyscyplina ją dopuszcza.
+        home_final, away_final = final_score(match)
 
-        if home_score > away_score:
+        if home_final > away_final:
             return match.home_team
-        if away_score > home_score:
+        if away_final > home_final:
             return match.away_team
 
         # Piłka ręczna może rozstrzygać remis karnymi także poza KO.
@@ -79,16 +79,17 @@ class MatchResultService:
                 return None
             return match.home_team if winner_id == match.home_team_id else match.away_team
 
+        # Koszykówka nie powinna kończyć się remisem po wyniku końcowym.
+        # Pozostawienie None utrzymuje mecz poza stanem FINISHED, jeśli dane są niespójne.
         return None
 
     @staticmethod
     def _winner_knockout_like(match: Match, *, discipline: str) -> Optional["Team"]:
         if discipline == "tennis":
-            home_score = int(match.home_score or 0)
-            away_score = int(match.away_score or 0)
-            if home_score == away_score:
+            home_final, away_final = final_score(match)
+            if home_final == away_final:
                 return None
-            return match.home_team if home_score > away_score else match.away_team
+            return match.home_team if home_final > away_final else match.away_team
 
         winner_id = knockout_winner_id(match)
         if winner_id is None:

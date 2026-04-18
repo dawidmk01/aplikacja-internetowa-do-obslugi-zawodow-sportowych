@@ -9,6 +9,11 @@ from typing import Any, Dict, Tuple
 from rest_framework import serializers
 
 from tournaments.models import Match, MatchCustomResult, Stage, Tournament
+from tournaments.services.match_outcome import (
+    validate_basketball_consistency,
+    validate_extra_time_consistency,
+    validate_penalties_consistency,
+)
 
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
 
@@ -749,6 +754,35 @@ class MatchResultUpdateSerializer(serializers.ModelSerializer):
 
         if is_custom_points_table:
             _apply_resolution_mode(instance, _resolution_mode_for_match(instance))
+            instance.save()
+            return instance
+
+        if discipline == Tournament.Discipline.BASKETBALL:
+            # Koszykówka nie dopuszcza karnych i nie może zakończyć się remisem końcowym.
+            instance.decided_by_penalties = False
+            instance.home_penalty_score = None
+            instance.away_penalty_score = None
+
+            if instance.home_score != instance.away_score:
+                instance.went_to_extra_time = False
+                instance.home_extra_time_score = None
+                instance.away_extra_time_score = None
+            else:
+                # Remis po czasie podstawowym wymaga rozstrzygnięcia dogrywką.
+                instance.went_to_extra_time = True
+
+            penalties_error = validate_penalties_consistency(instance)
+            if penalties_error:
+                raise serializers.ValidationError({"decided_by_penalties": penalties_error})
+
+            extra_time_error = validate_extra_time_consistency(instance)
+            if extra_time_error:
+                raise serializers.ValidationError({"went_to_extra_time": extra_time_error})
+
+            basketball_error = validate_basketball_consistency(instance)
+            if basketball_error:
+                raise serializers.ValidationError({"detail": basketball_error})
+
             instance.save()
             return instance
 

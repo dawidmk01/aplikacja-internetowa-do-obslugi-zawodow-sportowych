@@ -1,7 +1,22 @@
 // Wspólne typy i helpery dla trybu live (zegar, incydenty, komentarze).
 
 export type ClockState = "NOT_STARTED" | "RUNNING" | "PAUSED" | "STOPPED";
-export type ClockPeriod = "NONE" | "FH" | "SH" | "ET1" | "ET2" | "H1" | "H2";
+export type ClockPeriod =
+  | "NONE"
+  | "FH"
+  | "SH"
+  | "ET1"
+  | "ET2"
+  | "H1"
+  | "H2"
+  | "Q1"
+  | "Q2"
+  | "Q3"
+  | "Q4"
+  | "OT1"
+  | "OT2"
+  | "OT3"
+  | "OT4";
 export type BreakLevel = "NORMAL" | "WARN" | "DANGER";
 
 export type MatchClockDTO = {
@@ -116,6 +131,18 @@ export function periodOptions(discipline: string): { value: ClockPeriod; label: 
       { value: "ET2", label: "Dogrywka 2" },
     ];
   }
+  if (isBasketball(discipline)) {
+    return [
+      { value: "Q1", label: "1 kwarta" },
+      { value: "Q2", label: "2 kwarta" },
+      { value: "Q3", label: "3 kwarta" },
+      { value: "Q4", label: "4 kwarta" },
+      { value: "OT1", label: "Dogrywka 1" },
+      { value: "OT2", label: "Dogrywka 2" },
+      { value: "OT3", label: "Dogrywka 3" },
+      { value: "OT4", label: "Dogrywka 4" },
+    ];
+  }
   return [];
 }
 
@@ -178,7 +205,17 @@ export function periodBaseOffsetSeconds(discipline: string, period: ClockPeriod)
     return 0;
   }
 
-  if (isBasketballLike) return 0;
+  if (isBasketballLike) {
+    if (period === "Q2") return 10 * 60;
+    if (period === "Q3") return 20 * 60;
+    if (period === "Q4") return 30 * 60;
+    if (period === "OT1") return 40 * 60;
+    if (period === "OT2") return 45 * 60;
+    if (period === "OT3") return 50 * 60;
+    if (period === "OT4") return 55 * 60;
+    return 0;
+  }
+
   return 0;
 }
 
@@ -191,6 +228,10 @@ export function periodLimitSeconds(discipline: string, period: ClockPeriod): num
   if (isHandball(discipline)) {
     if (period === "H1" || period === "H2") return 30 * 60;
     if (period === "ET1" || period === "ET2") return 5 * 60;
+  }
+  if (isBasketball(discipline)) {
+    if (period === "Q1" || period === "Q2" || period === "Q3" || period === "Q4") return 10 * 60;
+    if (period === "OT1" || period === "OT2" || period === "OT3" || period === "OT4") return 5 * 60;
   }
   return null;
 }
@@ -218,6 +259,17 @@ export function nextPeriodFromIntermission(
     if (current === "H1") return "H2";
     if (current === "H2" && allowExtraTimeStart) return "ET1";
     if (current === "ET1") return "ET2";
+    return null;
+  }
+
+  if (isBasketball(discipline)) {
+    if (current === "Q1") return "Q2";
+    if (current === "Q2") return "Q3";
+    if (current === "Q3") return "Q4";
+    if (current === "Q4" && allowExtraTimeStart) return "OT1";
+    if (current === "OT1") return "OT2";
+    if (current === "OT2") return "OT3";
+    if (current === "OT3") return "OT4";
     return null;
   }
 

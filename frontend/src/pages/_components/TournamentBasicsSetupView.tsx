@@ -113,6 +113,7 @@ export type TournamentResultConfig = {
 export type HandballTableDrawMode = "ALLOW_DRAW" | "PENALTIES" | "OVERTIME_PENALTIES";
 export type HandballKnockoutTiebreak = "OVERTIME_PENALTIES" | "PENALTIES";
 export type HandballPointsMode = "2_1_0" | "3_1_0" | "3_2_1_0";
+export type BasketballResolutionMode = "OVERTIME_ONLY";
 
 export type TennisBestOf = 3 | 5;
 export type TennisPointsMode = "NONE" | "PLT";
@@ -332,6 +333,14 @@ export const HB_KNOCKOUT_TIEBREAK_OPTIONS: SelectOption<HandballKnockoutTiebreak
   { value: "PENALTIES", label: "Od razu karne" },
 ];
 
+export const BASKETBALL_RESOLUTION_OPTIONS: SelectOption<BasketballResolutionMode>[] = [
+  {
+    value: "OVERTIME_ONLY",
+    label: "Dogrywka po remisie",
+    description: "Remis po czasie podstawowym jest rozstrzygany dogrywką. Karne nie są dostępne.",
+  },
+];
+
 export function disciplineLabel(code?: Discipline, customName?: string) {
   switch (code) {
     case "football":
@@ -367,6 +376,11 @@ export function competitionTypeLabel(v?: CompetitionType) {
 export function competitionModelLabel(v?: CompetitionModel) {
   if (v === "HEAD_TO_HEAD") return "Pojedynki / mecze";
   if (v === "MASS_START") return "Wszyscy razem";
+  return "-";
+}
+
+function basketballResolutionModeLabel(v?: BasketballResolutionMode) {
+  if (v === "OVERTIME_ONLY") return "Dogrywka po remisie";
   return "-";
 }
 
@@ -1347,6 +1361,7 @@ export function StructureCard({
   hbTableDrawMode,
   hbPointsMode,
   hbKnockoutTiebreak,
+  basketballResolutionMode,
   cupMatches,
   finalMatches,
   thirdPlace,
@@ -1370,6 +1385,7 @@ export function StructureCard({
   onHbTableDrawModeChange,
   onHbPointsModeChange,
   onHbKnockoutTiebreakChange,
+  onBasketballResolutionModeChange,
   onCupMatchesChange,
   onFinalMatchesChange,
   onThirdPlaceChange,
@@ -1461,6 +1477,7 @@ export function StructureCard({
   hbTableDrawMode: HandballTableDrawMode;
   hbPointsMode: HandballPointsMode;
   hbKnockoutTiebreak: HandballKnockoutTiebreak;
+  basketballResolutionMode: BasketballResolutionMode;
 
   cupMatches: 1 | 2;
   finalMatches: 1 | 2;
@@ -1492,6 +1509,7 @@ export function StructureCard({
   onHbTableDrawModeChange: (v: HandballTableDrawMode) => void;
   onHbPointsModeChange: (v: HandballPointsMode) => void;
   onHbKnockoutTiebreakChange: (v: HandballKnockoutTiebreak) => void;
+  onBasketballResolutionModeChange: (v: BasketballResolutionMode) => void;
 
   onCupMatchesChange: (v: 1 | 2) => void;
   onFinalMatchesChange: (v: 1 | 2) => void;
@@ -1550,6 +1568,7 @@ export function StructureCard({
   onStageChange?: (stageId: string, patch: Partial<CustomStageConfig>) => void;
 }) {
   const isHandball = discipline === "handball";
+  const isBasketball = discipline === "basketball";
   const isTennis = discipline === "tennis";
   const isCustomDiscipline = discipline === "custom";
 
@@ -2521,6 +2540,50 @@ export function StructureCard({
                       </div>
                     </>
                   )}
+
+                  {isBasketball && (
+                    <>
+                      <div className="space-y-2">
+                        <div className="text-xs font-semibold text-slate-300">Rozstrzyganie remisu</div>
+                        <Select<BasketballResolutionMode>
+                          value={basketballResolutionMode}
+                          disabled={disableForm}
+                          onChange={onBasketballResolutionModeChange}
+                          options={BASKETBALL_RESOLUTION_OPTIONS}
+                          ariaLabel="Koszykówka - rozstrzyganie remisu"
+                        />
+                      </div>
+
+                      <div className="space-y-2 md:col-span-2 xl:col-span-2">
+                        <div className="text-xs font-semibold text-slate-300">Zasada</div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-200">
+                          Remis po czasie podstawowym jest rozstrzygany dogrywką. Karne nie są dostępne.
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {isBasketball && (
+                    <>
+                      <div className="space-y-2">
+                        <div className="text-xs font-semibold text-slate-300">Rozstrzyganie remisu</div>
+                        <Select<BasketballResolutionMode>
+                          value={basketballResolutionMode}
+                          disabled={disableForm}
+                          onChange={onBasketballResolutionModeChange}
+                          options={BASKETBALL_RESOLUTION_OPTIONS}
+                          ariaLabel="Koszykówka - rozstrzyganie remisu"
+                        />
+                      </div>
+
+                      <div className="space-y-2 md:col-span-2 xl:col-span-2">
+                        <div className="text-xs font-semibold text-slate-300">Zasada</div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-200">
+                          Remis po czasie podstawowym jest rozstrzygany dogrywką. Karne nie są dostępne.
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -2690,6 +2753,22 @@ export function StructureCard({
                       />
                     </div>
                   )}
+
+                  {isBasketball && (
+                    <div className="space-y-2 md:col-span-2 xl:col-span-3">
+                      <div className="text-xs font-semibold text-slate-300">Rozstrzyganie remisów</div>
+                      <Select<BasketballResolutionMode>
+                        value={basketballResolutionMode}
+                        disabled={disableForm}
+                        onChange={onBasketballResolutionModeChange}
+                        options={BASKETBALL_RESOLUTION_OPTIONS}
+                        ariaLabel="Koszykówka - KO rozstrzyganie remisów"
+                      />
+                      <div className="text-xs text-slate-400">
+                        Remis po czasie podstawowym jest rozstrzygany dogrywką. Karne nie są dostępne.
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -2711,6 +2790,7 @@ export function SummaryCard({
   competitionModel = "MASS_START",
   customDisciplineName = "",
   resultConfig = getDefaultResultConfig(),
+  basketballResolutionMode = "OVERTIME_ONLY",
 }: {
   isTournamentCreated: boolean;
   discipline: Discipline;
@@ -2722,6 +2802,7 @@ export function SummaryCard({
   competitionModel?: CompetitionModel;
   customDisciplineName?: string;
   resultConfig?: TournamentResultConfig;
+  basketballResolutionMode?: BasketballResolutionMode;
 }) {
   const isCustomDiscipline = discipline === "custom";
   const isHeadToHead = competitionModel === "HEAD_TO_HEAD";
@@ -2768,6 +2849,9 @@ export function SummaryCard({
               )}
               {format !== "CUP" && <StatRow label="Mecze fazy tabeli" value={preview.groupTotal} />}
               {format !== "LEAGUE" && <StatRow label="Mecze fazy KO" value={preview.koTotal} />}
+              {discipline === "basketball" ? (
+                <StatRow label="Rozstrzyganie remisu" value={basketballResolutionModeLabel(basketballResolutionMode)} />
+              ) : null}
               <StatRow label="Szac. łączna liczba meczów" value={preview.total} />
             </>
           ) : (

@@ -51,8 +51,21 @@ class Tournament(models.Model):
         RUNNING = "RUNNING", "W trakcie"
         FINISHED = "FINISHED", "Zakończony"
 
+    class WrestlingStyle(models.TextChoices):
+        FREESTYLE = "FREESTYLE", "Styl wolny"
+        GRECO_ROMAN = "GRECO_ROMAN", "Styl klasyczny"
+
+    class WrestlingCompetitionMode(models.TextChoices):
+        AUTO = "AUTO", "Automatyczny"
+        NORDIC = "NORDIC", "Nordic"
+        TWO_POOLS = "TWO_POOLS", "Dwie grupy"
+        ELIMINATION_REPECHAGE = "ELIMINATION_REPECHAGE", "Eliminacja + repasaże"
+
     FORMATCFG_LEAGUE_LEGS_KEY = "league_matches"
     DEFAULT_LEAGUE_LEGS = 1
+
+    FORMATCFG_WRESTLING_STYLE_KEY = "wrestling_style"
+    FORMATCFG_WRESTLING_MODE_KEY = "wrestling_competition_mode"
 
     RESULTCFG_CUSTOM_MODE_KEY = "custom_mode"
     RESULTCFG_VALUE_KIND_KEY = "value_kind"
@@ -252,6 +265,50 @@ class Tournament(models.Model):
             Tournament.TournamentFormat.MIXED,
         }
 
+    @classmethod
+    def normalize_format_config(cls, discipline: str, cfg) -> dict:
+        normalized = dict(cfg or {})
+
+        if discipline != cls.Discipline.WRESTLING:
+            normalized.pop(cls.FORMATCFG_WRESTLING_STYLE_KEY, None)
+            normalized.pop(cls.FORMATCFG_WRESTLING_MODE_KEY, None)
+            return normalized
+
+        style = str(
+            normalized.get(cls.FORMATCFG_WRESTLING_STYLE_KEY)
+            or cls.WrestlingStyle.FREESTYLE
+        ).upper()
+        if style not in (
+            cls.WrestlingStyle.FREESTYLE,
+            cls.WrestlingStyle.GRECO_ROMAN,
+        ):
+            raise ValueError("wrestling_style musi mieć wartość FREESTYLE albo GRECO_ROMAN.")
+        normalized[cls.FORMATCFG_WRESTLING_STYLE_KEY] = style
+
+        mode = str(
+            normalized.get(cls.FORMATCFG_WRESTLING_MODE_KEY)
+            or cls.WrestlingCompetitionMode.AUTO
+        ).upper()
+        if mode not in (
+            cls.WrestlingCompetitionMode.AUTO,
+            cls.WrestlingCompetitionMode.NORDIC,
+            cls.WrestlingCompetitionMode.TWO_POOLS,
+            cls.WrestlingCompetitionMode.ELIMINATION_REPECHAGE,
+        ):
+            raise ValueError(
+                "wrestling_competition_mode musi mieć wartość AUTO, NORDIC, TWO_POOLS albo ELIMINATION_REPECHAGE."
+            )
+        normalized[cls.FORMATCFG_WRESTLING_MODE_KEY] = mode
+        return normalized
+
+    def get_wrestling_style(self) -> str:
+        cfg = self.normalize_format_config(self.discipline, self.format_config)
+        return str(cfg.get(self.FORMATCFG_WRESTLING_STYLE_KEY) or self.WrestlingStyle.FREESTYLE)
+
+    def get_wrestling_competition_mode(self) -> str:
+        cfg = self.normalize_format_config(self.discipline, self.format_config)
+        return str(cfg.get(self.FORMATCFG_WRESTLING_MODE_KEY) or self.WrestlingCompetitionMode.AUTO)
+
     def get_default_division(self):
         return self.divisions.filter(is_default=True).order_by("order", "id").first() or self.divisions.order_by(
             "order", "id"
@@ -267,6 +324,28 @@ class Tournament(models.Model):
             "result_config": dict(self.result_config or {}),
             "status": self.status,
         }
+
+    def clean(self) -> None:
+        allowed_formats = self.allowed_formats_for_discipline(self.discipline)
+        if self.tournament_format not in allowed_formats:
+            raise ValidationError("Wybrany format nie jest dostępny dla wskazanej dyscypliny.")
+
+        if not isinstance(self.format_config or {}, dict):
+            raise ValidationError("format_config musi być obiektem JSON (dict).")
+
+        try:
+            self.format_config = self.normalize_format_config(self.discipline, self.format_config)
+        except ValueError as exc:
+            raise ValidationError({"format_config": str(exc)}) from exc
+
+        try:
+            self.result_config = self.normalize_result_config(self.result_mode, self.result_config)
+        except ValueError as exc:
+            raise ValidationError({"result_config": str(exc)}) from exc
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
     def get_league_legs(self) -> int:
         raw = (self.format_config or {}).get(
@@ -1194,6 +1273,18 @@ class Division(models.Model):
     def normalize_result_config(cls, result_mode: str, cfg) -> dict:
         return Tournament.normalize_result_config(result_mode, cfg)
 
+    @classmethod
+    def normalize_format_config(cls, discipline: str, cfg) -> dict:
+        return Tournament.normalize_format_config(discipline, cfg)
+
+    def get_wrestling_style(self) -> str:
+        cfg = self.normalize_format_config(self.tournament.discipline, self.format_config)
+        return str(cfg.get(Tournament.FORMATCFG_WRESTLING_STYLE_KEY) or Tournament.WrestlingStyle.FREESTYLE)
+
+    def get_wrestling_competition_mode(self) -> str:
+        cfg = self.normalize_format_config(self.tournament.discipline, self.format_config)
+        return str(cfg.get(Tournament.FORMATCFG_WRESTLING_MODE_KEY) or Tournament.WrestlingCompetitionMode.AUTO)
+
     def get_league_legs(self) -> int:
         raw = (self.format_config or {}).get(
             Tournament.FORMATCFG_LEAGUE_LEGS_KEY,
@@ -1274,6 +1365,11 @@ class Division(models.Model):
 
         if not isinstance(self.format_config or {}, dict):
             raise ValidationError("format_config musi być obiektem JSON (dict).")
+
+        try:
+            self.format_config = self.normalize_format_config(self.tournament.discipline, self.format_config)
+        except ValueError as exc:
+            raise ValidationError({"format_config": str(exc)}) from exc
 
         try:
             self.result_config = self.normalize_result_config(self.result_mode, self.result_config)
@@ -1616,6 +1712,25 @@ class Match(models.Model):
     decided_by_penalties = models.BooleanField(default=False)
     home_penalty_score = models.PositiveSmallIntegerField(null=True, blank=True)
     away_penalty_score = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    wrestling_result_method = models.CharField(
+        max_length=24,
+        blank=True,
+        default="",
+        help_text="Kod sposobu zwycięstwa w zapasach, np. VFA, VSU, VPO, VIN, VFO, DSQ.",
+    )
+
+    home_classification_points = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Punkty klasyfikacyjne strony czerwonej / home w zapasach.",
+    )
+
+    away_classification_points = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Punkty klasyfikacyjne strony niebieskiej / away w zapasach.",
+    )
 
     result_entered = models.BooleanField(default=False)
 
@@ -2293,6 +2408,16 @@ class MatchIncident(models.Model):
         TENNIS_POINT = "TENNIS_POINT", "Punkt (tenis)"
         TENNIS_CODE_VIOLATION = "TENNIS_CODE_VIOLATION", "Naruszenie przepisów (tenis)"
         TIMEOUT = "TIMEOUT", "Przerwa/timeout"
+        WRESTLING_POINT_1 = "WRESTLING_POINT_1", "Punkt techniczny 1 (zapasy)"
+        WRESTLING_POINT_2 = "WRESTLING_POINT_2", "Punkty techniczne 2 (zapasy)"
+        WRESTLING_POINT_4 = "WRESTLING_POINT_4", "Punkty techniczne 4 (zapasy)"
+        WRESTLING_POINT_5 = "WRESTLING_POINT_5", "Punkty techniczne 5 (zapasy)"
+        WRESTLING_PASSIVITY = "WRESTLING_PASSIVITY", "Pasywność (zapasy)"
+        WRESTLING_CAUTION = "WRESTLING_CAUTION", "Ostrzeżenie (zapasy)"
+        WRESTLING_FALL = "WRESTLING_FALL", "Tusz (zapasy)"
+        WRESTLING_INJURY = "WRESTLING_INJURY", "Kontuzja (zapasy)"
+        WRESTLING_FORFEIT = "WRESTLING_FORFEIT", "Walkower (zapasy)"
+        WRESTLING_DISQUALIFICATION = "WRESTLING_DISQUALIFICATION", "Dyskwalifikacja (zapasy)"
 
     class TimeSource(models.TextChoices):
         CLOCK = "CLOCK", "Zegar meczu"

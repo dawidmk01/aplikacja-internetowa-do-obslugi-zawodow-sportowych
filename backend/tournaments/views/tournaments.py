@@ -94,7 +94,10 @@ def normalize_format_config(discipline: str | None, cfg: dict | None) -> dict:
     else:
         cfg.pop("tennis_points_mode", None)
 
-    return cfg
+    try:
+        return Tournament.normalize_format_config(discipline, cfg)
+    except ValueError as exc:
+        raise serializers.ValidationError({"format_config": str(exc)}) from exc
 
 
 def normalize_result_config(result_mode: str | None, cfg: dict | None) -> dict:
@@ -712,6 +715,14 @@ class ChangeDisciplineSerializer(serializers.Serializer):
                 Tournament.ResultMode.CUSTOM,
                 result_config,
             )
+            return attrs
+
+        if discipline == Tournament.Discipline.WRESTLING:
+            attrs["competition_type"] = Tournament.CompetitionType.INDIVIDUAL
+            attrs["competition_model"] = Tournament.CompetitionModel.HEAD_TO_HEAD
+            attrs["result_mode"] = Tournament.ResultMode.SCORE
+            attrs["result_config"] = {}
+            attrs["custom_discipline_name"] = None
             return attrs
 
         attrs["competition_type"] = Tournament.infer_default_competition_type(discipline)

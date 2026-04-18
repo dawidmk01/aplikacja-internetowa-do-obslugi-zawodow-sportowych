@@ -39,7 +39,16 @@ def _is_extra_time_period(period: str | None) -> bool:
     value = (period or "").strip()
     if not value:
         return False
-    return value in {_p("ET1", "ET1"), _p("ET2", "ET2"), _p("ET", "ET"), _p("OT", "OT")}
+    return value in {
+        _p("ET1", "ET1"),
+        _p("ET2", "ET2"),
+        _p("ET", "ET"),
+        _p("OT", "OT"),
+        _p("OT1", "OT1"),
+        _p("OT2", "OT2"),
+        _p("OT3", "OT3"),
+        _p("OT4", "OT4"),
+    }
 
 
 def _ensure_went_to_extra_time(match: Match) -> bool:
@@ -70,6 +79,8 @@ def _default_period_for_discipline(match: Match) -> str:
         return _p("FH", "FH")
     if discipline == Tournament.Discipline.HANDBALL:
         return _p("H1", "H1")
+    if discipline == Tournament.Discipline.BASKETBALL:
+        return _p("Q1", "Q1")
     return _p("NONE", "NONE")
 
 
@@ -81,6 +92,18 @@ def _allowed_periods_for_match(match: Match) -> set[str]:
         return allowed
     if discipline == Tournament.Discipline.HANDBALL:
         allowed.update({_p("H1", "H1"), _p("H2", "H2"), _p("ET1", "ET1"), _p("ET2", "ET2")})
+        return allowed
+    if discipline == Tournament.Discipline.BASKETBALL:
+        allowed.update({
+            _p("Q1", "Q1"),
+            _p("Q2", "Q2"),
+            _p("Q3", "Q3"),
+            _p("Q4", "Q4"),
+            _p("OT1", "OT1"),
+            _p("OT2", "OT2"),
+            _p("OT3", "OT3"),
+            _p("OT4", "OT4"),
+        })
         return allowed
     return allowed
 
@@ -117,7 +140,8 @@ def _serialize_clock(match: Match) -> dict:
 
     elapsed_safe = min(MAX_CLOCK_SECONDS, _clock_running_elapsed_seconds(match, now))
     added = max(0, int(match.clock_added_seconds or 0))
-    total_safe = min(MAX_CLOCK_SECONDS, elapsed_safe + added)
+    period_safe = min(MAX_CLOCK_SECONDS, elapsed_safe + added)
+    total_safe = min(MAX_CLOCK_SECONDS, int(match.clock_seconds_total(now=now)))
 
     return {
         "match_id": match.id,
@@ -128,7 +152,7 @@ def _serialize_clock(match: Match) -> dict:
         "clock_started_at": match.clock_started_at.isoformat() if match.clock_started_at else None,
         "clock_elapsed_seconds": int(match.clock_elapsed_seconds or 0),
         "clock_added_seconds": int(match.clock_added_seconds or 0),
-        "seconds_in_period": int(elapsed_safe),
+        "seconds_in_period": int(period_safe),
         "seconds_total": int(total_safe),
         "minute_total": _minute_from_seconds(int(total_safe)),
         "max_clock_seconds": MAX_CLOCK_SECONDS,
