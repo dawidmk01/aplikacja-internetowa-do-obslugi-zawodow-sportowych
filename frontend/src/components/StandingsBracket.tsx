@@ -546,9 +546,13 @@ function TournamentStandingsView({
   const [tab, setTab] = useState<"TABLE" | "BRACKET">("TABLE");
   const [bracketMode, setBracketMode] = useState<"PYRAMID" | "CENTERED">("PYRAMID");
 
-  useEffect(() => {
-    if (tournament?.tournament_format === "CUP") setTab("BRACKET");
-  }, [tournament?.tournament_format]);
+  const resolvedTournamentFormat = useMemo(() => {
+    const metaFormat = String(standings?.meta?.tournament_format ?? "").toUpperCase();
+    if (metaFormat === "CUP" || metaFormat === "LEAGUE" || metaFormat === "MIXED") {
+      return metaFormat as Tournament["tournament_format"];
+    }
+    return tournament.tournament_format ?? "LEAGUE";
+  }, [standings?.meta?.tournament_format, tournament.tournament_format]);
 
   const derived = useMemo(() => {
     const tournamentDiscipline = (tournament.discipline ?? "").toLowerCase();
@@ -563,8 +567,8 @@ function TournamentStandingsView({
     const tennisPointsMode = getTennisPointsMode(tournament, standings);
     const showTennisPoints = isTennis && tennisPointsMode === "PLT";
 
-    const isCup = tournament.tournament_format === "CUP";
-    const isMixed = tournament.tournament_format === "MIXED";
+    const isCup = resolvedTournamentFormat === "CUP";
+    const isMixed = resolvedTournamentFormat === "MIXED";
 
     const hasLeagueTable = (standings?.table?.length ?? 0) > 0;
     const hasGroups = (standings?.groups?.length ?? 0) > 0;
@@ -584,7 +588,7 @@ function TournamentStandingsView({
       hasTableData,
       hasBracketData,
     };
-  }, [standings, tournament]);
+  }, [resolvedTournamentFormat, standings, tournament]);
 
   const resultConfig = useMemo(() => getResultConfig(tournament, standings), [standings, tournament]);
 
@@ -612,7 +616,26 @@ function TournamentStandingsView({
     hasBracketData,
   } = derived;
 
-  const showTabs = isMixed || (hasTableData && hasBracketData);
+  useEffect(() => {
+    if (hasBracketData && !hasTableData) {
+      setTab("BRACKET");
+      return;
+    }
+    if (hasTableData && !hasBracketData) {
+      setTab("TABLE");
+      return;
+    }
+    if (resolvedTournamentFormat === "CUP") {
+      setTab("BRACKET");
+    }
+  }, [hasBracketData, hasTableData, resolvedTournamentFormat]);
+
+  const showTabs = hasTableData && hasBracketData;
+  const activeTab: "TABLE" | "BRACKET" = showTabs
+    ? tab
+    : hasBracketData
+      ? "BRACKET"
+      : "TABLE";
   const tableTitle = isCustom ? "Ranking" : "Tabela";
   const tableSectionTitle = isCustom ? "Klasyfikacja" : "Klasyfikacja";
 
@@ -684,7 +707,7 @@ function TournamentStandingsView({
         </div>
       ) : null}
 
-      {tab === "TABLE" ? (
+      {activeTab === "TABLE" ? (
         hasGroups ? (
           <div className="space-y-4">
             {standings!.groups!.map((group, index) => {
@@ -737,14 +760,51 @@ function TournamentStandingsView({
               standingsMeta={standings?.meta}
             />
           </Card>
+        ) : hasBracketData ? (
+          <Card className="p-5 sm:p-6">
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-xs text-slate-400">Drabinka</div>
+                <div className="mt-1 text-lg font-semibold text-slate-100">Faza pucharowa</div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setBracketMode("PYRAMID")}
+                  aria-pressed={bracketMode === "PYRAMID"}
+                  className={cn(
+                    "h-8 rounded-full px-3 text-xs font-semibold",
+                    bracketMode === "PYRAMID" && "border-white/15 bg-white/10"
+                  )}
+                >
+                  Piramida
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setBracketMode("CENTERED")}
+                  aria-pressed={bracketMode === "CENTERED"}
+                  className={cn(
+                    "h-8 rounded-full px-3 text-xs font-semibold",
+                    bracketMode === "CENTERED" && "border-white/15 bg-white/10"
+                  )}
+                >
+                  Finał w środku
+                </Button>
+              </div>
+            </div>
+
+            <BracketPremium data={standings!.bracket!} discipline={discipline} mode={bracketMode} />
+          </Card>
         ) : (
-          !isCup && (
-            <InlineAlert variant="info">
-              {isCustom
-                ? "Brak danych rankingu dla bieżącej konfiguracji turnieju."
-                : "Brak danych tabeli."}
-            </InlineAlert>
-          )
+          <InlineAlert variant="info">
+            {isCustom
+              ? "Brak danych rankingu dla bieżącej konfiguracji turnieju."
+              : "Brak danych tabeli."}
+          </InlineAlert>
         )
       ) : hasBracketData ? (
         <Card className="p-5 sm:p-6">
@@ -1187,17 +1247,21 @@ type BracketDims = {
 };
 
 function getDefaultDims(): BracketDims {
-  const cardW = 240;
-  const cardH = 80;
-  const colGap = 64;
+  const cardW = 260;
+  const cardH = 84;
+  const colGap = 76;
   const rowUnit = 108;
   const halfUnit = Math.round(rowUnit / 2);
   return { cardW, cardH, colGap, rowUnit, halfUnit };
 }
 
+type BracketNodeSide = "LEFT" | "RIGHT" | "CENTER";
+
 type BracketNode = {
   roundIndex: number;
   itemIndex: number;
+  branchIndex: number;
+  side: BracketNodeSide;
   x: number;
   y: number;
   w: number;
@@ -1233,6 +1297,8 @@ function buildPyramidLayout(rounds: BracketRound[], dims: BracketDims): BracketL
       nodes.push({
         roundIndex,
         itemIndex,
+        branchIndex: itemIndex,
+        side: "CENTER",
         x: colX,
         y,
         w: cardW,
@@ -1246,6 +1312,17 @@ function buildPyramidLayout(rounds: BracketRound[], dims: BracketDims): BracketL
   return { nodes, contentW, contentH, roundCount };
 }
 
+function splitRoundItems(items: BracketDuelItem[]): {
+  leftItems: BracketDuelItem[];
+  rightItems: BracketDuelItem[];
+} {
+  const half = Math.ceil(items.length / 2);
+  return {
+    leftItems: items.slice(0, half),
+    rightItems: items.slice(half),
+  };
+}
+
 function buildCenteredLayout(data: BracketData, dims: BracketDims): BracketLayout | null {
   const rounds = data.rounds;
   if (rounds.length === 0) return null;
@@ -1255,20 +1332,31 @@ function buildCenteredLayout(data: BracketData, dims: BracketDims): BracketLayou
   const finalRound = rounds[finalRoundIndex];
   if (!finalRound || finalRound.items.length === 0) return null;
 
-  const nodes: BracketNode[] = [];
-  const contentH = Math.max(cardH, Math.max(1, finalRound.items.length) * rowUnit);
   const colW = cardW + colGap;
-  const contentW = Math.max(cardW, rounds.length * colW);
+  const centerColumn = rounds.length - 1;
+  const totalColumns = rounds.length * 2 - 1;
+  const contentW = Math.max(cardW, totalColumns * colW);
 
-  const finalX = finalRoundIndex * colW;
+  const maxColumnRows = Math.max(
+    1,
+    ...rounds.map((round, index) => {
+      if (index === finalRoundIndex) return round.items.length;
+      const { leftItems, rightItems } = splitRoundItems(round.items);
+      return Math.max(leftItems.length, rightItems.length);
+    })
+  );
+  const contentH = Math.max(cardH, maxColumnRows * rowUnit);
+  const nodes: BracketNode[] = [];
+
   const finalStartY = Math.max(0, (contentH - finalRound.items.length * rowUnit) / 2);
-
   finalRound.items.forEach((item, itemIndex) => {
     const y = finalStartY + itemIndex * rowUnit + halfUnit - cardH / 2;
     nodes.push({
       roundIndex: finalRoundIndex,
       itemIndex,
-      x: finalX,
+      branchIndex: itemIndex,
+      side: "CENTER",
+      x: centerColumn * colW,
       y,
       w: cardW,
       h: cardH,
@@ -1279,16 +1367,37 @@ function buildCenteredLayout(data: BracketData, dims: BracketDims): BracketLayou
 
   for (let roundIndex = finalRoundIndex - 1; roundIndex >= 0; roundIndex -= 1) {
     const round = rounds[roundIndex];
-    const colX = roundIndex * colW;
-    const totalHeight = round.items.length * rowUnit;
-    const startY = Math.max(0, (contentH - totalHeight) / 2);
+    const distanceToCenter = finalRoundIndex - roundIndex;
+    const leftColumn = centerColumn - distanceToCenter;
+    const rightColumn = centerColumn + distanceToCenter;
+    const { leftItems, rightItems } = splitRoundItems(round.items);
 
-    round.items.forEach((item, itemIndex) => {
-      const y = startY + itemIndex * rowUnit + halfUnit - cardH / 2;
+    const leftStartY = Math.max(0, (contentH - leftItems.length * rowUnit) / 2);
+    leftItems.forEach((item, branchIndex) => {
+      const y = leftStartY + branchIndex * rowUnit + halfUnit - cardH / 2;
       nodes.push({
         roundIndex,
-        itemIndex,
-        x: colX,
+        itemIndex: branchIndex,
+        branchIndex,
+        side: "LEFT",
+        x: leftColumn * colW,
+        y,
+        w: cardW,
+        h: cardH,
+        item,
+        label: round.label,
+      });
+    });
+
+    const rightStartY = Math.max(0, (contentH - rightItems.length * rowUnit) / 2);
+    rightItems.forEach((item, branchIndex) => {
+      const y = rightStartY + branchIndex * rowUnit + halfUnit - cardH / 2;
+      nodes.push({
+        roundIndex,
+        itemIndex: leftItems.length + branchIndex,
+        branchIndex,
+        side: "RIGHT",
+        x: rightColumn * colW,
         y,
         w: cardW,
         h: cardH,
@@ -1311,27 +1420,47 @@ type Connection = {
 function buildConnections(layout: BracketLayout, dims: BracketDims): Connection[] {
   const { cardW, cardH, colGap } = dims;
   const nodeMap = new Map<string, BracketNode>();
-  layout.nodes.forEach((node) => nodeMap.set(`${node.roundIndex}:${node.itemIndex}`, node));
+
+  layout.nodes.forEach((node) => {
+    nodeMap.set(`${node.roundIndex}:${node.side}:${node.branchIndex}`, node);
+  });
 
   const connections: Connection[] = [];
 
   for (const node of layout.nodes) {
     if (node.roundIndex >= layout.roundCount - 1) continue;
 
+    let next: BracketNode | undefined;
     const nextRoundIndex = node.roundIndex + 1;
-    const nextIndex = Math.floor(node.itemIndex / 2);
-    const next = nodeMap.get(`${nextRoundIndex}:${nextIndex}`);
+
+    if (node.side === "CENTER") {
+      next = nodeMap.get(`${nextRoundIndex}:CENTER:${Math.floor(node.branchIndex / 2)}`);
+    } else if (nextRoundIndex === layout.roundCount - 1) {
+      next = nodeMap.get(`${nextRoundIndex}:CENTER:0`);
+    } else {
+      next = nodeMap.get(`${nextRoundIndex}:${node.side}:${Math.floor(node.branchIndex / 2)}`);
+    }
+
     if (!next) continue;
 
-    const x1 = node.x + cardW;
-    const y1 = node.y + cardH / 2;
-    const x2 = next.x;
-    const y2 = next.y + cardH / 2;
-    const midX = x1 + colGap / 2;
+    const nodeCenterY = node.y + cardH / 2;
+    const nextCenterY = next.y + cardH / 2;
 
-    connections.push({ x1, y1, x2: midX, y2: y1 });
-    connections.push({ x1: midX, y1, x2: midX, y2 });
-    connections.push({ x1: midX, y1: y2, x2, y2 });
+    if (node.x < next.x) {
+      const x1 = node.x + cardW;
+      const x2 = next.x;
+      const midX = x1 + colGap / 2;
+      connections.push({ x1, y1: nodeCenterY, x2: midX, y2: nodeCenterY });
+      connections.push({ x1: midX, y1: nodeCenterY, x2: midX, y2: nextCenterY });
+      connections.push({ x1: midX, y1: nextCenterY, x2, y2: nextCenterY });
+    } else {
+      const x1 = node.x;
+      const x2 = next.x + cardW;
+      const midX = x1 - colGap / 2;
+      connections.push({ x1, y1: nodeCenterY, x2: midX, y2: nodeCenterY });
+      connections.push({ x1: midX, y1: nodeCenterY, x2: midX, y2: nextCenterY });
+      connections.push({ x1: midX, y1: nextCenterY, x2, y2: nextCenterY });
+    }
   }
 
   return connections;
@@ -1354,13 +1483,14 @@ function BracketPremium({
   const [fitZoom, setFitZoom] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [zoomMode, setZoomMode] = useState<"FIT" | "MANUAL">("FIT");
 
   const pyramid = useMemo(() => buildPyramidLayout(data.rounds, dims), [data.rounds, dims]);
   const centered = useMemo(() => buildCenteredLayout(data, dims), [data, dims]);
 
-  const contentW = mode === "PYRAMID" ? pyramid.contentW : centered?.contentW ?? pyramid.contentW;
-  const contentH = mode === "PYRAMID" ? pyramid.contentH : centered?.contentH ?? pyramid.contentH;
-  const layout = mode === "PYRAMID" ? pyramid : centered ?? pyramid;
+  const layout = mode === "CENTERED" ? centered ?? pyramid : pyramid;
+  const contentW = layout.contentW;
+  const contentH = layout.contentH;
   const connections = useMemo(() => buildConnections(layout, dims), [layout, dims]);
 
   useEffect(() => {
@@ -1369,15 +1499,14 @@ function BracketPremium({
 
     const compute = () => {
       const width = element.clientWidth;
-      const padding = 12;
+      const padding = isFullscreen ? 32 : 12;
       const available = Math.max(260, width - padding * 2);
-      const fit = contentW > 0 ? clamp(available / contentW, 0.5, 1) : 1;
+      const fit = contentW > 0 ? clamp(available / contentW, 0.45, 1.08) : 1;
 
       setFitZoom(fit);
-
-      if (zoom < 0.55) return;
-      if (zoom > 1.05) return;
-      setZoom(fit);
+      if (zoomMode === "FIT") {
+        setZoom(fit);
+      }
     };
 
     compute();
@@ -1385,26 +1514,101 @@ function BracketPremium({
     const observer = new ResizeObserver(() => compute());
     observer.observe(element);
     return () => observer.disconnect();
-  }, [contentW, zoom]);
+  }, [contentW, isFullscreen, zoomMode]);
 
-  const handleZoom = (delta: number) => setZoom((current) => clamp(current + delta, 0.5, 2));
-  const handleFit = () => setZoom(fitZoom);
+  useEffect(() => {
+    setZoomMode("FIT");
+  }, [mode, contentW]);
 
-  const requestFullscreen = () => {
-    setIsFullscreen(true);
-    setTimeout(() => setZoom(fitZoom), 50);
+  useEffect(() => {
+    const syncFullscreen = () => {
+      const active = document.fullscreenElement === hostRef.current;
+      setIsFullscreen(active);
+      setZoomMode("FIT");
+    };
+
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
+
+  useEffect(() => {
+    const element = viewportRef.current;
+    if (!element) return;
+
+    const centerFocus = () => {
+      let focusNode: BracketNode | undefined;
+
+      if (mode === "CENTERED") {
+        focusNode = [...layout.nodes]
+          .filter((node) => node.roundIndex === layout.roundCount - 1)
+          .sort((left, right) => left.itemIndex - right.itemIndex)[0];
+      } else {
+        focusNode = [...layout.nodes]
+          .sort((left, right) => {
+            if (right.roundIndex !== left.roundIndex) return right.roundIndex - left.roundIndex;
+            return left.itemIndex - right.itemIndex;
+          })[0];
+      }
+
+      if (!focusNode) return;
+
+      const scaledX = (focusNode.x + focusNode.w / 2) * zoom;
+      const scaledY = (focusNode.y + focusNode.h / 2) * zoom;
+
+      element.scrollLeft = Math.max(0, scaledX - element.clientWidth / 2);
+      element.scrollTop = Math.max(0, scaledY - element.clientHeight / 2);
+    };
+
+    const timeout = window.setTimeout(centerFocus, 40);
+    return () => window.clearTimeout(timeout);
+  }, [isFullscreen, layout, mode, zoom]);
+
+  const handleZoom = (delta: number) => {
+    setZoomMode("MANUAL");
+    setZoom((current) => clamp(current + delta, 0.45, 2));
   };
 
-  const exitFullscreen = () => {
-    setIsFullscreen(false);
-    setTimeout(() => setZoom(fitZoom), 50);
+  const handleFit = () => {
+    setZoomMode("FIT");
+    setZoom(fitZoom);
+  };
+
+  const requestFullscreen = async () => {
+    const element = hostRef.current;
+    if (!element) return;
+
+    try {
+      if (document.fullscreenElement !== element) {
+        await element.requestFullscreen();
+      }
+    } catch {
+      setIsFullscreen(true);
+    } finally {
+      setZoomMode("FIT");
+    }
+  };
+
+  const exitFullscreen = async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        setIsFullscreen(false);
+      }
+    } catch {
+      setIsFullscreen(false);
+    } finally {
+      setZoomMode("FIT");
+    }
   };
 
   useEffect(() => {
     if (!isFullscreen) return;
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") exitFullscreen();
+      if (event.key === "Escape") {
+        void exitFullscreen();
+      }
     };
 
     window.addEventListener("keydown", onKeyDown);
@@ -1422,7 +1626,7 @@ function BracketPremium({
     let scrollTop = 0;
 
     const onDown = (event: MouseEvent) => {
-      if (!isFullscreen && event.button !== 0) return;
+      if (event.button !== 0) return;
       isDown = true;
       setDragging(true);
       startX = event.pageX - element.offsetLeft;
@@ -1463,13 +1667,13 @@ function BracketPremium({
       element.removeEventListener("mouseup", onUp);
       element.removeEventListener("mousemove", onMove);
     };
-  }, [isFullscreen]);
+  }, []);
 
   const contentStyle = useMemo<CSSProperties>(() => {
     return {
       width: contentW,
       height: contentH,
-      transform: `scale(${zoom})`,
+      transform: `translate(16px, 16px) scale(${zoom})`,
       transformOrigin: "top left",
     };
   }, [contentH, contentW, zoom]);
@@ -1484,7 +1688,7 @@ function BracketPremium({
     >
       <div
         className={cn(
-          "mb-3 flex flex-wrap items-center justify-between gap-2",
+          "mb-3 flex flex-wrap items-center justify-between gap-3",
           isFullscreen && "px-4 pt-4"
         )}
       >
@@ -1495,6 +1699,9 @@ function BracketPremium({
           </span>
           <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5">
             Drag: przeciągnij aby przesunąć
+          </span>
+          <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5">
+            Zoom: {Math.round(zoom * 100)}%
           </span>
         </div>
 
@@ -1510,11 +1717,11 @@ function BracketPremium({
           </Button>
 
           {!isFullscreen ? (
-            <Button variant="secondary" onClick={requestFullscreen} className="h-9 px-3">
+            <Button variant="secondary" onClick={() => void requestFullscreen()} className="h-9 px-3">
               <Maximize2 className="h-4 w-4" />
             </Button>
           ) : (
-            <Button variant="secondary" onClick={exitFullscreen} className="h-9 px-3">
+            <Button variant="secondary" onClick={() => void exitFullscreen()} className="h-9 px-3">
               <Minimize2 className="h-4 w-4" />
             </Button>
           )}
@@ -1524,27 +1731,26 @@ function BracketPremium({
       <div
         ref={viewportRef}
         className={cn(
-          "relative overflow-auto rounded-2xl border border-white/10 bg-white/[0.03]",
-          dragging && "cursor-grabbing",
-          !dragging && "cursor-grab",
-          isFullscreen ? "h-[calc(100vh-86px)]" : "max-h-[560px]"
+          "relative overflow-auto rounded-2xl border border-white/10 bg-white/[0.03] transition-[height] duration-200",
+          dragging ? "cursor-grabbing select-none" : "cursor-grab",
+          isFullscreen ? "h-[calc(100vh-110px)]" : "max-h-[620px] min-h-[320px]"
         )}
       >
         <div
           className="relative"
           style={{
-            width: contentW * zoom,
-            height: contentH * zoom,
-            padding: 12,
+            width: contentW * zoom + 32,
+            height: contentH * zoom + 32,
+            padding: 16,
           }}
         >
           <svg
             className="absolute left-0 top-0"
-            width={contentW * zoom}
-            height={contentH * zoom}
+            width={contentW * zoom + 32}
+            height={contentH * zoom + 32}
             style={{ pointerEvents: "none" }}
           >
-            <g transform={`scale(${zoom})`}>
+            <g transform={`translate(16, 16) scale(${zoom})`}>
               {connections.map((connection, index) => (
                 <path
                   key={index}
@@ -1561,7 +1767,7 @@ function BracketPremium({
             <div className="relative">
               {layout.nodes.map((node) => (
                 <div
-                  key={`${node.roundIndex}-${node.itemIndex}-${node.item.id}`}
+                  key={`${node.side}-${node.roundIndex}-${node.itemIndex}-${node.item.id}`}
                   className="absolute"
                   style={{ left: node.x, top: node.y, width: node.w, height: node.h }}
                 >
@@ -1622,7 +1828,7 @@ function MatchCard({
   const status = badgeStatus(item.status);
 
   return (
-    <div className="h-full w-full rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+    <div className="h-full w-full rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.06] to-white/[0.03] p-3 shadow-[0_12px_32px_rgba(2,6,23,0.22)]">
       <div className="mb-2 flex items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="truncate text-xs text-slate-400">{roundLabel}</div>

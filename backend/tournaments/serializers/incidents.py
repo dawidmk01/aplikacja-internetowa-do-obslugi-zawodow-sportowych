@@ -50,10 +50,23 @@ def _allowed_kinds_for_discipline(discipline: str) -> set[str]:
             k.GOAL,
             k.FOUL,
             k.TIMEOUT,
+            k.SUBSTITUTION,
         }
 
     if discipline == Tournament.Discipline.WRESTLING:
-        return {k.TIMEOUT}
+        return {
+            k.WRESTLING_POINT_1,
+            k.WRESTLING_POINT_2,
+            k.WRESTLING_POINT_4,
+            k.WRESTLING_POINT_5,
+            k.WRESTLING_PASSIVITY,
+            k.WRESTLING_CAUTION,
+            k.WRESTLING_FALL,
+            k.WRESTLING_INJURY,
+            k.WRESTLING_FORFEIT,
+            k.WRESTLING_DISQUALIFICATION,
+            k.TIMEOUT,
+        }
 
     return {
         k.GOAL,
@@ -92,6 +105,20 @@ def _validate_goal_meta_for_discipline(discipline: str, meta: dict) -> None:
     if points not in (1, 2, 3):
         raise serializers.ValidationError(
             {"meta": "Dla koszykówki meta.points musi być równe 1, 2 albo 3."}
+        )
+
+
+def _validate_clock_mode_available(match: Match) -> None:
+    if (
+        match.clock_state == Match.ClockState.NOT_STARTED
+        and int(match.clock_elapsed_seconds or 0) == 0
+    ):
+        raise serializers.ValidationError(
+            {
+                "time_source": (
+                    "Zegar meczu nie jest uruchomiony - uruchom zegar albo wybierz tryb MANUAL."
+                )
+            }
         )
 
 
@@ -242,7 +269,8 @@ class MatchIncidentCreateSerializer(serializers.Serializer):
         _ensure_player(player_out_id, "player_out")
 
         if time_source == MatchIncident.TimeSource.CLOCK:
-            attrs["period"] = match.clock_period
+            _validate_clock_mode_available(match)
+            attrs["period"] = match.clock_period or Match.ClockPeriod.NONE
             attrs["minute"] = match.clock_minute_total()
             attrs["minute_raw"] = str(attrs["minute"])
         else:

@@ -11,6 +11,10 @@ from tournaments.models import Division, Stage, Team, Tournament
 from tournaments.services.generators.groups import generate_group_stage
 from tournaments.services.generators.knockout import generate_knockout_stage
 from tournaments.services.generators.league import generate_league_stage
+from tournaments.services.generators.wrestling_common import resolve_wrestling_competition_mode
+from tournaments.services.generators.wrestling_nordic import generate_wrestling_nordic_stage
+from tournaments.services.generators.wrestling_repechage import generate_wrestling_repechage_stage
+from tournaments.services.generators.wrestling_two_pools import generate_wrestling_two_pools_stage
 
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
 
@@ -43,6 +47,29 @@ def _build_runtime_tournament(
     return runtime
 
 
+def _generate_wrestling_structure(
+    tournament: Tournament,
+    *,
+    division: Division | None,
+    active_teams_count: int,
+) -> None:
+    mode = resolve_wrestling_competition_mode(tournament, division, active_teams_count)
+
+    if mode == Tournament.WrestlingCompetitionMode.NORDIC:
+        generate_wrestling_nordic_stage(tournament, division=division)
+        return
+
+    if mode == Tournament.WrestlingCompetitionMode.TWO_POOLS:
+        generate_wrestling_two_pools_stage(tournament, division=division)
+        return
+
+    if mode == Tournament.WrestlingCompetitionMode.ELIMINATION_REPECHAGE:
+        generate_wrestling_repechage_stage(tournament, division=division)
+        return
+
+    raise ValueError(f"Nieobsługiwany wrestling_competition_mode: {mode}")
+
+
 @transaction.atomic
 def ensure_matches_generated(
     tournament: Tournament,
@@ -65,6 +92,14 @@ def ensure_matches_generated(
 
     # Reset dotyczy wyłącznie etapu aktywnej dywizji.
     stages_qs.delete()
+
+    if runtime_tournament.discipline == Tournament.Discipline.WRESTLING:
+        _generate_wrestling_structure(
+            tournament,
+            division=division,
+            active_teams_count=len(active_teams),
+        )
+        return
 
     tournament_format = runtime_tournament.tournament_format
 

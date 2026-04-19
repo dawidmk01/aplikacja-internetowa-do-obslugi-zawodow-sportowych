@@ -69,6 +69,14 @@ def _allowed_periods_for_match(match: Match) -> set[str]:
         })
         return allowed
 
+    if discipline == Tournament.Discipline.WRESTLING:
+        allowed.update({
+            _p("P1", "P1"),
+            _p("BREAK", "BREAK"),
+            _p("P2", "P2"),
+        })
+        return allowed
+
     return allowed
 
 

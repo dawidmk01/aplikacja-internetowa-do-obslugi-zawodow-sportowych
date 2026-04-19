@@ -67,12 +67,51 @@ type Props = {
   onRequestClockReload?: () => void;
 };
 
+const WRESTLING_KIND_OPTIONS: SelectOption<string>[] = [
+  { value: "WRESTLING_POINT_1", label: "Punkt techniczny 1" },
+  { value: "WRESTLING_POINT_2", label: "Punkty techniczne 2" },
+  { value: "WRESTLING_POINT_4", label: "Punkty techniczne 4" },
+  { value: "WRESTLING_POINT_5", label: "Punkty techniczne 5" },
+  { value: "WRESTLING_PASSIVITY", label: "Pasywność" },
+  { value: "WRESTLING_CAUTION", label: "Ostrzeżenie" },
+  { value: "WRESTLING_FALL", label: "Tusz" },
+  { value: "WRESTLING_INJURY", label: "Kontuzja" },
+  { value: "WRESTLING_FORFEIT", label: "Walkower" },
+  { value: "WRESTLING_DISQUALIFICATION", label: "Dyskwalifikacja" },
+  { value: "TIMEOUT", label: "Przerwa/timeout" },
+];
+
+const WRESTLING_PLAYER_KINDS = new Set<string>([
+  "WRESTLING_POINT_1",
+  "WRESTLING_POINT_2",
+  "WRESTLING_POINT_4",
+  "WRESTLING_POINT_5",
+  "WRESTLING_PASSIVITY",
+  "WRESTLING_CAUTION",
+  "WRESTLING_FALL",
+  "WRESTLING_INJURY",
+  "WRESTLING_FORFEIT",
+  "WRESTLING_DISQUALIFICATION",
+]);
+
+function isWrestling(discipline: string) {
+  return String(discipline || "").toLowerCase() === "wrestling";
+}
+
+function buildIncidentKinds(discipline: string): SelectOption<string>[] {
+  const base = incidentKindOptions(discipline);
+  if (!isWrestling(discipline)) return base;
+  if (Array.isArray(base) && base.length > 0) return base;
+  return WRESTLING_KIND_OPTIONS;
+}
+
 function supportsSubKind(kind: string) {
   return kind === "SUBSTITUTION";
 }
 
-function supportsPlayerKind(kind: string) {
-  return kind !== "SUBSTITUTION" && kind !== "TENNIS_POINT";
+function supportsPlayerKind(kind: string, discipline: string) {
+  if (isWrestling(discipline)) return false;
+  return kind !== "SUBSTITUTION" && kind !== "TENNIS_POINT" && kind !== "TIMEOUT";
 }
 
 function playerLabel(p: TeamPlayerDTO) {
@@ -131,7 +170,7 @@ export function IncidentsPanel({
   } | null>(null);
   const [updating, setUpdating] = useState<Record<number, boolean>>({});
 
-  const kinds = useMemo(() => incidentKindOptions(discipline), [discipline]);
+  const kinds = useMemo(() => buildIncidentKinds(discipline), [discipline]);
 
   const [minuteTouched, setMinuteTouched] = useState(false);
 
@@ -225,6 +264,13 @@ export function IncidentsPanel({
   const loadPlayers = useCallback(async () => {
     setPlayersError(null);
 
+    if (isWrestling(discipline)) {
+      setHomePlayers([]);
+      setAwayPlayers([]);
+      setPlayersLoading(false);
+      return;
+    }
+
     const tId = Number(tournamentId || 0);
     const hId = Number(homeTeamId || 0);
     const aId = Number(awayTeamId || 0);
@@ -270,7 +316,7 @@ export function IncidentsPanel({
     } finally {
       setPlayersLoading(false);
     }
-  }, [awayTeamId, homeTeamId, tournamentId]);
+  }, [awayTeamId, discipline, homeTeamId, tournamentId]);
 
   useEffect(() => {
     loadIncidents();
@@ -288,13 +334,18 @@ export function IncidentsPanel({
 
   const canUseRoster = selectedTeamPlayers.length > 0;
 
-  const showNoteInput = draft.kind !== "" && draft.kind !== "GOAL" && draft.kind !== "TENNIS_POINT";
-  const showPlayerInput =
+  const showNoteInput =
     draft.kind !== "" &&
-    !isTennis(discipline) &&
-    ["GOAL", "YELLOW_CARD", "RED_CARD", "FOUL", "HANDBALL_TWO_MINUTES"].includes(draft.kind);
+    draft.kind !== "GOAL" &&
+    draft.kind !== "TENNIS_POINT" &&
+    !WRESTLING_PLAYER_KINDS.has(draft.kind);
 
   const showSubInputs = draft.kind === "SUBSTITUTION";
+  const showPlayerInput =
+    draft.kind !== "" &&
+    !showSubInputs &&
+    !isTennis(discipline) &&
+    supportsPlayerKind(draft.kind, discipline);
 
   const pointsOptions = useMemo<SelectOption<1 | 2 | 3>[]>(
     () => [
@@ -552,7 +603,7 @@ export function IncidentsPanel({
       if (supportsSubKind(i.kind)) {
         patch.player_out_id = editDraft.player_out_id.trim() ? Number(editDraft.player_out_id) : null;
         patch.player_in_id = editDraft.player_in_id.trim() ? Number(editDraft.player_in_id) : null;
-      } else if (supportsPlayerKind(i.kind)) {
+      } else if (supportsPlayerKind(i.kind, discipline)) {
         patch.player_id = editDraft.player_id.trim() ? Number(editDraft.player_id) : null;
       }
 
@@ -576,11 +627,12 @@ export function IncidentsPanel({
   }, [sortedIncidents, showAllIncidents]);
 
   const rosterStatusLabel = useMemo(() => {
+    if (isWrestling(discipline)) return "Składy: nie dotyczy";
     if (playersLoading) return "Ładowanie składów...";
     if (playersError) return "Składy: błąd";
     if (homePlayers.length || awayPlayers.length) return "Składy: OK";
     return "Składy: brak";
-  }, [awayPlayers.length, homePlayers.length, playersError, playersLoading]);
+  }, [awayPlayers.length, discipline, homePlayers.length, playersError, playersLoading]);
 
   const showListToggle = sortedIncidents.length > 3;
   const disableActions = !canEdit || loading;
@@ -622,7 +674,16 @@ export function IncidentsPanel({
                       "rounded-full px-3 py-1 text-xs",
                       active && "border-emerald-400/20 bg-emerald-500/15"
                     )}
-                    onClick={() => setDraft((d) => ({ ...d, kind: k.value }))}
+                    onClick={() =>
+                      setDraft((d) => ({
+                        ...d,
+                        kind: k.value,
+                        player_id: "",
+                        player_in_id: "",
+                        player_out_id: "",
+                        note: "",
+                      }))
+                    }
                     disabled={disableActions}
                   >
                     {k.label}
@@ -630,6 +691,12 @@ export function IncidentsPanel({
                 );
               })}
             </div>
+
+            {isWrestling(discipline) ? (
+              <div className="text-xs text-slate-400">
+                Dla zapasów punkty techniczne są dodawane jako osobne typy incydentów 1, 2, 4 i 5.
+              </div>
+            ) : null}
           </div>
 
           <div className="grid gap-2">

@@ -6,6 +6,7 @@ from tournaments.services.standings.rulesets.basketball import BasketballFibaRul
 from tournaments.services.standings.rulesets.football import FootballPZPNRuleset
 from tournaments.services.standings.rulesets.handball import HandballRuleset
 from tournaments.services.standings.rulesets.tennis import TennisRuleset
+from tournaments.services.standings.rulesets.wrestling import WrestlingPZZRuleset
 
 __all__ = [
     "StandingsRuleset",
@@ -13,4 +14,5 @@ __all__ = [
     "FootballPZPNRuleset",
     "HandballRuleset",
     "TennisRuleset",
+    "WrestlingPZZRuleset",
 ]

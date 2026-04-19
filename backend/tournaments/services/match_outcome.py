@@ -16,14 +16,18 @@ def _discipline(match: Match) -> str:
         return ""
 
 
+def _wrestling_method(match: Match) -> str:
+    return str(getattr(match, "wrestling_result_method", "") or "").upper().strip()
+
+
 def _disallows_extra_time(match: Match) -> bool:
     discipline = _discipline(match)
-    return discipline in {"tennis"}
+    return discipline in {"tennis", "wrestling"}
 
 
 def _disallows_penalties(match: Match) -> bool:
     discipline = _discipline(match)
-    return discipline in {"tennis", "basketball"}
+    return discipline in {"tennis", "basketball", "wrestling"}
 
 
 def regular_score(match: Match) -> Tuple[int, int]:
@@ -104,6 +108,15 @@ def validate_penalties_consistency(match: Match) -> Optional[str]:
             return "W koszykówce karne są niedozwolone."
         return None
 
+    if discipline == "wrestling":
+        if (
+            match.decided_by_penalties
+            or match.home_penalty_score is not None
+            or match.away_penalty_score is not None
+        ):
+            return "W zapasach karne są niedozwolone."
+        return None
+
     # Karne mają sens wyłącznie przy remisie po regulaminie i dogrywce.
     if match.decided_by_penalties:
         if not is_draw_after_final(match):
@@ -128,6 +141,15 @@ def validate_extra_time_consistency(match: Match) -> Optional[str]:
             return "W tenisie dogrywka jest niedozwolona."
         return None
 
+    if discipline == "wrestling":
+        if (
+            getattr(match, "went_to_extra_time", False)
+            or match.home_extra_time_score is not None
+            or match.away_extra_time_score is not None
+        ):
+            return "W zapasach dogrywka jest niedozwolona."
+        return None
+
     if getattr(match, "went_to_extra_time", False):
         if match.home_extra_time_score is None or match.away_extra_time_score is None:
             return (
@@ -149,6 +171,40 @@ def validate_basketball_consistency(match: Match) -> Optional[str]:
         return (
             "W koszykówce wynik końcowy nie może pozostać remisowy. "
             "Jeśli po czasie podstawowym był remis, mecz powinien zostać rozstrzygnięty dogrywką."
+        )
+
+    return None
+
+
+def validate_wrestling_consistency(match: Match) -> Optional[str]:
+    if _discipline(match) != "wrestling":
+        return None
+
+    if (
+        match.decided_by_penalties
+        or match.home_penalty_score is not None
+        or match.away_penalty_score is not None
+    ):
+        return "W zapasach karne są niedozwolone."
+
+    if (
+        getattr(match, "went_to_extra_time", False)
+        or match.home_extra_time_score is not None
+        or match.away_extra_time_score is not None
+    ):
+        return "W zapasach dogrywka jest niedozwolona."
+
+    # W zapasach remis punktów technicznych może wystąpić, ale powinien być wtedy
+    # rozstrzygnięty metodą walki albo zapisanym zwycięzcą po kryteriach.
+    if (
+        match.result_entered
+        and int(match.home_score or 0) == int(match.away_score or 0)
+        and match.winner_id is None
+        and not _wrestling_method(match)
+    ):
+        return (
+            "W zapasach przy remisie punktów technicznych należy wskazać metodę rozstrzygnięcia "
+            "lub zwycięzcę wynikającego z kryteriów walki."
         )
 
     return None

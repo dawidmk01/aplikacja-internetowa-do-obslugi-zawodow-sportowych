@@ -23,6 +23,8 @@ import {
   SummaryCard,
   getDefaultResultConfig,
   type BasketballResolutionMode,
+  type WrestlingCompetitionMode,
+  type WrestlingStyle,
   type CompetitionModel,
   type CompetitionType,
   type CustomAggregationMode,
@@ -528,6 +530,9 @@ export default function TournamentBasicsSetup() {
     useState<HandballKnockoutTiebreak>("OVERTIME_PENALTIES");
   const [basketballResolutionMode, setBasketballResolutionMode] =
     useState<BasketballResolutionMode>("OVERTIME_ONLY");
+  const [wrestlingStyle, setWrestlingStyle] = useState<WrestlingStyle>("FREESTYLE");
+  const [wrestlingCompetitionMode, setWrestlingCompetitionMode] =
+    useState<WrestlingCompetitionMode>("AUTO");
 
   const [cupMatches, setCupMatches] = useState<1 | 2>(1);
   const [finalMatches, setFinalMatches] = useState<1 | 2>(1);
@@ -552,6 +557,7 @@ export default function TournamentBasicsSetup() {
   const isHandball = discipline === "handball";
   const isBasketball = discipline === "basketball";
   const isTennis = discipline === "tennis";
+  const isWrestling = discipline === "wrestling";
   const isCustomDiscipline = discipline === "custom";
 
   useEffect(() => {
@@ -740,6 +746,18 @@ export default function TournamentBasicsSetup() {
         setHbKnockoutTiebreak(cfg.handball_knockout_tiebreak ?? "OVERTIME_PENALTIES");
         setHbPointsMode(cfg.handball_points_mode ?? "2_1_0");
         setBasketballResolutionMode(cfg.basketball_resolution_mode ?? "OVERTIME_ONLY");
+        const savedWrestlingStyle = String(cfg.wrestling_style ?? "FREESTYLE").toUpperCase();
+        setWrestlingStyle(savedWrestlingStyle === "GRECO_ROMAN" ? "GRECO_ROMAN" : "FREESTYLE");
+        const savedWrestlingMode = String(cfg.wrestling_competition_mode ?? "AUTO").toUpperCase();
+        setWrestlingCompetitionMode(
+          savedWrestlingMode === "NORDIC"
+            ? "NORDIC"
+            : savedWrestlingMode === "TWO_POOLS"
+              ? "TWO_POOLS"
+              : savedWrestlingMode === "ELIMINATION_REPECHAGE"
+                ? "ELIMINATION_REPECHAGE"
+                : "AUTO"
+        );
 
         setTennisBestOf(cfg.tennis_best_of === 5 ? 5 : 3);
         const tpm = (cfg.tennis_points_mode ?? "NONE").toString().toUpperCase();
@@ -901,6 +919,10 @@ export default function TournamentBasicsSetup() {
       }
     }
 
+    if (isWrestling && (wrestlingStyle !== "FREESTYLE" && wrestlingStyle !== "GRECO_ROMAN")) {
+      return "Zapasy: wybierz poprawny styl.";
+    }
+
     return null;
   };
 
@@ -933,6 +955,11 @@ export default function TournamentBasicsSetup() {
 
     if (isBasketball) {
       rawConfig.basketball_resolution_mode = basketballResolutionMode;
+    }
+
+    if (isWrestling) {
+      rawConfig.wrestling_style = wrestlingStyle;
+      rawConfig.wrestling_competition_mode = wrestlingCompetitionMode;
     }
 
     if (isTennis) {
@@ -971,6 +998,11 @@ export default function TournamentBasicsSetup() {
 
     if (!isBasketball) {
       delete finalConfig.basketball_resolution_mode;
+    }
+
+    if (!isWrestling) {
+      delete finalConfig.wrestling_style;
+      delete finalConfig.wrestling_competition_mode;
     }
 
     return finalConfig;
@@ -1277,9 +1309,12 @@ export default function TournamentBasicsSetup() {
     hbKnockoutTiebreak,
     hbPointsMode,
     basketballResolutionMode,
+    wrestlingStyle,
+    wrestlingCompetitionMode,
     tennisBestOf,
     tennisPointsMode,
     isBasketball,
+    isWrestling,
     isTennis,
     isCustomDiscipline,
     customDisciplineName,
@@ -1674,6 +1709,11 @@ export default function TournamentBasicsSetup() {
           stages: createDefaultStages(participants),
         });
       }
+
+      if (v === "wrestling") {
+        setWrestlingStyle("FREESTYLE");
+        setWrestlingCompetitionMode("AUTO");
+      }
       markDirty();
       clearInlineError();
     },
@@ -1826,6 +1866,8 @@ export default function TournamentBasicsSetup() {
             hbPointsMode={hbPointsMode}
             hbKnockoutTiebreak={hbKnockoutTiebreak}
             basketballResolutionMode={basketballResolutionMode}
+            wrestlingStyle={wrestlingStyle}
+            wrestlingCompetitionMode={wrestlingCompetitionMode}
             cupMatches={cupMatches}
             finalMatches={finalMatches}
             thirdPlace={thirdPlace}
@@ -1922,6 +1964,16 @@ export default function TournamentBasicsSetup() {
             }}
             onBasketballResolutionModeChange={(v) => {
               setBasketballResolutionMode(v);
+              markDirty();
+              clearInlineError();
+            }}
+            onWrestlingStyleChange={(v) => {
+              setWrestlingStyle(v);
+              markDirty();
+              clearInlineError();
+            }}
+            onWrestlingCompetitionModeChange={(v) => {
+              setWrestlingCompetitionMode(v);
               markDirty();
               clearInlineError();
             }}
@@ -2105,6 +2157,8 @@ export default function TournamentBasicsSetup() {
             customDisciplineName={customDisciplineName}
             resultConfig={resultConfig}
             basketballResolutionMode={basketballResolutionMode}
+            wrestlingStyle={wrestlingStyle}
+            wrestlingCompetitionMode={wrestlingCompetitionMode}
           />
         </div>
       </div>

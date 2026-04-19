@@ -13,9 +13,29 @@ from tournaments.services.match_outcome import (
     validate_basketball_consistency,
     validate_extra_time_consistency,
     validate_penalties_consistency,
+    validate_wrestling_consistency,
 )
 
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
+
+
+WRESTLING_RESULT_METHODS = {
+    "VFA",
+    "VIN",
+    "VFO",
+    "DSQ",
+    "VCA",
+    "VSU",
+    "VSU1",
+    "VSU2",
+    "VPO",
+    "VPO1",
+    "VPO2",
+}
+
+
+def _is_wrestling(tournament: Tournament) -> bool:
+    return (getattr(tournament, "discipline", "") or "").lower() == Tournament.Discipline.WRESTLING
 
 
 def _third_place_value() -> str:
@@ -445,6 +465,9 @@ class MatchSerializer(serializers.ModelSerializer):
     group_name = serializers.CharField(source="group.name", read_only=True, allow_null=True)
 
     winner_id = serializers.IntegerField(source="winner.id", read_only=True, allow_null=True)
+    wrestling_result_method = serializers.CharField(read_only=True)
+    home_classification_points = serializers.IntegerField(read_only=True, allow_null=True)
+    away_classification_points = serializers.IntegerField(read_only=True, allow_null=True)
 
     is_technical = serializers.SerializerMethodField()
     custom_results = serializers.SerializerMethodField()
@@ -476,6 +499,9 @@ class MatchSerializer(serializers.ModelSerializer):
             "away_penalty_score",
             "result_entered",
             "winner_id",
+            "wrestling_result_method",
+            "home_classification_points",
+            "away_classification_points",
             "status",
             "scheduled_date",
             "scheduled_time",
@@ -660,6 +686,9 @@ class MatchResultUpdateSerializer(serializers.ModelSerializer):
     home_penalty_score = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     away_penalty_score = serializers.IntegerField(required=False, allow_null=True, min_value=0)
 
+    wrestling_result_method = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    winner_id = serializers.IntegerField(required=False, allow_null=True)
+
     status = serializers.CharField(read_only=True)
 
     class Meta:
@@ -674,6 +703,8 @@ class MatchResultUpdateSerializer(serializers.ModelSerializer):
             "decided_by_penalties",
             "home_penalty_score",
             "away_penalty_score",
+            "wrestling_result_method",
+            "winner_id",
             "status",
         )
 
@@ -693,6 +724,26 @@ class MatchResultUpdateSerializer(serializers.ModelSerializer):
                     )
                 }
             )
+
+        tournament: Tournament = match.tournament
+        if _is_wrestling(tournament):
+            winner_id = attrs.get("winner_id", match.winner_id)
+            if winner_id is not None and winner_id not in {match.home_team_id, match.away_team_id}:
+                raise serializers.ValidationError(
+                    {"winner_id": "Zwycięzca musi być jednym z uczestników tej walki."}
+                )
+
+            raw_method = attrs.get("wrestling_result_method", getattr(match, "wrestling_result_method", ""))
+            method = str(raw_method or "").strip().upper()
+            if method and method not in WRESTLING_RESULT_METHODS:
+                raise serializers.ValidationError(
+                    {
+                        "wrestling_result_method": (
+                            "Nieobsługiwana metoda rozstrzygnięcia walki. "
+                            "Dozwolone: " + ", ".join(sorted(WRESTLING_RESULT_METHODS))
+                        )
+                    }
+                )
 
         return attrs
 
@@ -714,12 +765,19 @@ class MatchResultUpdateSerializer(serializers.ModelSerializer):
             "decided_by_penalties",
             "home_penalty_score",
             "away_penalty_score",
+            "wrestling_result_method",
+            "winner_id",
         }
         if any(key in validated_data for key in touched_keys):
             instance.result_entered = True
 
+        manual_winner_id = validated_data.pop("winner_id", serializers.empty)
+
         for key, value in validated_data.items():
             setattr(instance, key, value)
+
+        if manual_winner_id is not serializers.empty:
+            instance.winner_id = manual_winner_id
 
         if not instance.went_to_extra_time:
             instance.home_extra_time_score = None
@@ -782,6 +840,25 @@ class MatchResultUpdateSerializer(serializers.ModelSerializer):
             basketball_error = validate_basketball_consistency(instance)
             if basketball_error:
                 raise serializers.ValidationError({"detail": basketball_error})
+
+            instance.save()
+            return instance
+
+        if discipline == Tournament.Discipline.WRESTLING:
+            instance.tennis_sets = None
+            instance.went_to_extra_time = False
+            instance.home_extra_time_score = None
+            instance.away_extra_time_score = None
+            instance.decided_by_penalties = False
+            instance.home_penalty_score = None
+            instance.away_penalty_score = None
+
+            raw_method = str(getattr(instance, "wrestling_result_method", "") or "").strip().upper()
+            instance.wrestling_result_method = raw_method
+
+            wrestling_error = validate_wrestling_consistency(instance)
+            if wrestling_error:
+                raise serializers.ValidationError({"detail": wrestling_error})
 
             instance.save()
             return instance

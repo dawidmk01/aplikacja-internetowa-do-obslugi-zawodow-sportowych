@@ -1,3 +1,6 @@
+// frontend/src/components/matchLive/MatchLivePanel.tsx
+// Komponent spina panel live meczu i przekazuje wspólny kontekst zegara do incydentów oraz komentarza.
+
 import { useCallback, useMemo, useState } from "react";
 
 import { cn } from "../../lib/cn";
@@ -116,6 +119,7 @@ export default function MatchLivePanel({
             matchId={match.id}
             canEdit={canEdit}
             minute={commentaryMinute}
+            discipline={discipline}
             homeTeamName={match.homeTeamName}
             awayTeamName={match.awayTeamName}
           />

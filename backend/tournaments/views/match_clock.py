@@ -81,6 +81,8 @@ def _default_period_for_discipline(match: Match) -> str:
         return _p("H1", "H1")
     if discipline == Tournament.Discipline.BASKETBALL:
         return _p("Q1", "Q1")
+    if discipline == Tournament.Discipline.WRESTLING:
+        return _p("P1", "P1")
     return _p("NONE", "NONE")
 
 
@@ -103,6 +105,13 @@ def _allowed_periods_for_match(match: Match) -> set[str]:
             _p("OT2", "OT2"),
             _p("OT3", "OT3"),
             _p("OT4", "OT4"),
+        })
+        return allowed
+    if discipline == Tournament.Discipline.WRESTLING:
+        allowed.update({
+            _p("P1", "P1"),
+            _p("BREAK", "BREAK"),
+            _p("P2", "P2"),
         })
         return allowed
     return allowed

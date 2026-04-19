@@ -38,6 +38,13 @@ type Props = {
   onToast?: (text: string, kind?: ToastKind) => void;
 };
 
+type WrestlingFields = {
+  wrestling_result_method?: string | null;
+  winner_id?: number | null;
+  home_classification_points?: number | null;
+  away_classification_points?: number | null;
+};
+
 type MatchDraft = Partial<
   Pick<
     MatchDTO,
@@ -51,7 +58,10 @@ type MatchDraft = Partial<
     | "home_penalty_score"
     | "away_penalty_score"
   >
->;
+> & {
+  wrestling_result_method?: string | null;
+  winner_id?: number | null;
+};
 
 type ConfirmScoreSyncOp = "SAVE" | "FINISH";
 
@@ -102,6 +112,10 @@ function isBasketball(t: TournamentDTO | null) {
   return lower(t?.discipline) === "basketball";
 }
 
+function isWrestling(t: TournamentDTO | null) {
+  return lower(t?.discipline) === "wrestling";
+}
+
 function usesCustomResults(t: TournamentDTO | null) {
   return String(t?.result_mode ?? "SCORE").toUpperCase() === "CUSTOM";
 }
@@ -150,6 +164,8 @@ function comparableResult(m: MatchDraft) {
     decided_by_penalties: !!m.decided_by_penalties,
     home_penalty_score: m.home_penalty_score ?? null,
     away_penalty_score: m.away_penalty_score ?? null,
+    wrestling_result_method: (m.wrestling_result_method ?? "").trim().toUpperCase(),
+    winner_id: m.winner_id ?? null,
   };
 }
 
@@ -165,6 +181,8 @@ function sameComparableDraft(a: MatchDraft, b: MatchDraft): boolean {
   if (aa.decided_by_penalties !== bb.decided_by_penalties) return false;
   if (aa.home_penalty_score !== bb.home_penalty_score) return false;
   if (aa.away_penalty_score !== bb.away_penalty_score) return false;
+  if (aa.wrestling_result_method !== bb.wrestling_result_method) return false;
+  if (aa.winner_id !== bb.winner_id) return false;
 
   const aset = Array.isArray(aa.tennis_sets) ? aa.tennis_sets : null;
   const bset = Array.isArray(bb.tennis_sets) ? bb.tennis_sets : null;
@@ -300,6 +318,8 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
   const tn = isTennis(tournament);
   const hb = isHandball(tournament);
   const bb = isBasketball(tournament);
+  const wt = isWrestling(tournament);
+  const matchExt = match as MatchDTO & WrestlingFields;
   const customMode = usesCustomResults(tournament);
   const competitionModel = getCompetitionModel(tournament);
   const massStartCustomMode = customMode && competitionModel === "MASS_START";
@@ -329,6 +349,8 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
     decided_by_penalties: !!match.decided_by_penalties,
     home_penalty_score: match.home_penalty_score ?? null,
     away_penalty_score: match.away_penalty_score ?? null,
+    wrestling_result_method: matchExt.wrestling_result_method ?? "",
+    winner_id: matchExt.winner_id ?? null,
   }));
 
   const originalDraft = useMemo<MatchDraft>(
@@ -342,6 +364,8 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
       decided_by_penalties: !!match.decided_by_penalties,
       home_penalty_score: match.home_penalty_score ?? null,
       away_penalty_score: match.away_penalty_score ?? null,
+      wrestling_result_method: matchExt.wrestling_result_method ?? "",
+      winner_id: matchExt.winner_id ?? null,
     }),
     [
       match.away_extra_time_score,
@@ -353,6 +377,8 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
       match.home_score,
       match.tennis_sets,
       match.went_to_extra_time,
+      matchExt.wrestling_result_method,
+      matchExt.winner_id,
     ]
   );
 
@@ -418,6 +444,25 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
     });
   }, [bb, draft.home_score, draft.away_score]);
 
+  useEffect(() => {
+    if (!wt) return;
+
+    setDraft((current) => {
+      const next: MatchDraft = {
+        ...current,
+        tennis_sets: null,
+        went_to_extra_time: false,
+        home_extra_time_score: null,
+        away_extra_time_score: null,
+        decided_by_penalties: false,
+        home_penalty_score: null,
+        away_penalty_score: null,
+      };
+
+      return sameComparableDraft(current, next) ? current : next;
+    });
+  }, [wt]);
+
   const pushToast = useCallback(
     (text: string, kind: ToastKind = "info") => {
       if (onToast) {
@@ -459,6 +504,19 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
           decided_by_penalties: false,
           home_penalty_score: null,
           away_penalty_score: null,
+        };
+      } else if (wt) {
+        payload = {
+          home_score: Number(draft.home_score ?? 0) || 0,
+          away_score: Number(draft.away_score ?? 0) || 0,
+          went_to_extra_time: false,
+          home_extra_time_score: null,
+          away_extra_time_score: null,
+          decided_by_penalties: false,
+          home_penalty_score: null,
+          away_penalty_score: null,
+          wrestling_result_method: String(draft.wrestling_result_method ?? "").trim().toUpperCase(),
+          winner_id: draft.winner_id ?? null,
         };
       } else {
         const regularHome = Number(draft.home_score ?? 0) || 0;
@@ -509,7 +567,7 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
 
       return { confirmed: true };
     },
-    [bb, draft, match.id, tn]
+    [bb, draft, match.id, tn, wt]
   );
 
   const saveSingleCustomResult = useCallback(
@@ -716,10 +774,12 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
     const noExtra = !draftComparable.went_to_extra_time;
     const noPen = !draftComparable.decided_by_penalties;
     const noTennis = !Array.isArray(draftComparable.tennis_sets) || draftComparable.tennis_sets.length === 0;
+    const noWrestlingDecision =
+      !String(draftComparable.wrestling_result_method ?? "").trim() && draftComparable.winner_id == null;
 
     const zeroScore =
       (draftComparable.home_score ?? 0) === 0 && (draftComparable.away_score ?? 0) === 0;
-    return noExtra && noPen && noTennis && zeroScore;
+    return noExtra && noPen && noTennis && noWrestlingDecision && zeroScore;
   }, [customMode, draft, match.custom_results]);
 
   const canAttemptSetScheduledSafe = canAttemptSetScheduled && canAttemptSetScheduledHint;
@@ -826,7 +886,10 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
   );
 
   const basketballOvertimeAvailable = bb && Number(draft.home_score ?? 0) === Number(draft.away_score ?? 0);
-  const goalScope = draft.went_to_extra_time ? "EXTRA_TIME" : "REGULAR";
+  const goalScope = wt ? "REGULAR" : draft.went_to_extra_time ? "EXTRA_TIME" : "REGULAR";
+  const wrestlingMethodLabel = String(draft.wrestling_result_method ?? "").trim().toUpperCase();
+  const homeClassificationPoints = matchExt.home_classification_points ?? null;
+  const awayClassificationPoints = matchExt.away_classification_points ?? null;
 
   const scoreInputClass = cn(
     "h-9 w-[72px] rounded-xl border border-white/10 bg-white/[0.04] px-2 text-center text-base font-semibold text-white placeholder:text-slate-500",
@@ -898,6 +961,16 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
             />
           </div>
 
+          {wt ? (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+              <span>Zapasy - wynik techniczny.</span>
+              {wrestlingMethodLabel ? <span>Metoda: {wrestlingMethodLabel}</span> : null}
+              {homeClassificationPoints != null && awayClassificationPoints != null ? (
+                <span>Punkty klasyfikacyjne: {homeClassificationPoints}:{awayClassificationPoints}</span>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className="flex flex-wrap items-center gap-2">
             {supportsLiveMode ? (
               <Button
@@ -938,7 +1011,7 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
                 title={
                   canAttemptSetScheduledSafe
                     ? 'Ustawia status meczu na "Zaplanowany" oraz resetuje zegar. Działa tylko, gdy wynik jest 0:0 oraz nie ma żadnych incydentów.'
-                    : "Dostępne tylko przy wyniku 0:0 (bez dogrywki/karnych/setów). Dodatkowo mecz musi nie mieć żadnych incydentów."
+                    : "Dostępne tylko przy wyniku 0:0 (bez dogrywki, karnych, setów i rozstrzygnięcia walki). Dodatkowo mecz musi nie mieć żadnych incydentów."
                 }
                 variant="secondary"
                 size="sm"
@@ -1194,7 +1267,7 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
         </div>
       )}
 
-      {!customMode && !tn ? (
+      {!customMode && !tn && !wt ? (
         <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-slate-200">
           <Checkbox
             checked={!!draft.went_to_extra_time}
@@ -1302,6 +1375,73 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
               />
             </div>
           ) : null}
+        </div>
+      ) : null}
+
+      {!customMode && wt ? (
+        <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-3 text-sm text-slate-200">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-400">Metoda rozstrzygnięcia:</span>
+            <Input
+              unstyled
+              type="text"
+              name={`match-${match.id}-wrestling_result_method`}
+              aria-label="Kod metody rozstrzygnięcia walki"
+              value={String(draft.wrestling_result_method ?? "")}
+              disabled={!canEditResult}
+              onChange={(e) =>
+                setDraft((d) => ({
+                  ...d,
+                  wrestling_result_method: e.target.value.toUpperCase(),
+                }))
+              }
+              className={cn(
+                "h-8 w-[150px] rounded-lg border border-white/10 bg-white/[0.04] px-2 text-center text-sm font-semibold uppercase text-white placeholder:text-slate-500",
+                "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
+                "disabled:opacity-60",
+                "[color-scheme:dark]"
+              )}
+              placeholder="VPO / VSU / VFA"
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-400">Zwycięzca:</span>
+            <Button
+              type="button"
+              variant={draft.winner_id === match.home_team_id ? "primary" : "secondary"}
+              size="sm"
+              disabled={!canEditResult}
+              className="h-8 rounded-lg"
+              onClick={() =>
+                setDraft((d) => ({
+                  ...d,
+                  winner_id: d.winner_id === match.home_team_id ? null : match.home_team_id,
+                }))
+              }
+            >
+              {homeName}
+            </Button>
+            <Button
+              type="button"
+              variant={draft.winner_id === match.away_team_id ? "primary" : "secondary"}
+              size="sm"
+              disabled={!canEditResult}
+              className="h-8 rounded-lg"
+              onClick={() =>
+                setDraft((d) => ({
+                  ...d,
+                  winner_id: d.winner_id === match.away_team_id ? null : match.away_team_id,
+                }))
+              }
+            >
+              {awayName}
+            </Button>
+          </div>
+
+          <div className="text-xs text-slate-400">
+            Zapasy nie obsługują dogrywki ani rzutów karnych. Przy remisie technicznym wskaż zwycięzcę i metodę rozstrzygnięcia.
+          </div>
         </div>
       ) : null}
 

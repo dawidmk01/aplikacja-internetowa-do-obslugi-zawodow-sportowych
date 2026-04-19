@@ -54,6 +54,21 @@ def _kind_display(kind: str, discipline: str) -> str:
             "TIMEOUT": "Przerwa/timeout",
         }
         return mapping.get(kind, kind)
+    if discipline == Tournament.Discipline.WRESTLING:
+        mapping = {
+            "WRESTLING_POINT_1": "Punkt techniczny 1",
+            "WRESTLING_POINT_2": "Punkty techniczne 2",
+            "WRESTLING_POINT_4": "Punkty techniczne 4",
+            "WRESTLING_POINT_5": "Punkty techniczne 5",
+            "WRESTLING_PASSIVITY": "Pasywność",
+            "WRESTLING_CAUTION": "Ostrzeżenie",
+            "WRESTLING_FALL": "Tusz",
+            "WRESTLING_INJURY": "Kontuzja",
+            "WRESTLING_FORFEIT": "Walkower",
+            "WRESTLING_DISQUALIFICATION": "Dyskwalifikacja",
+            "TIMEOUT": "Przerwa/timeout",
+        }
+        return mapping.get(kind, kind)
     mapping = {
         "GOAL": "Bramka",
         "YELLOW_CARD": "Żółta kartka",
@@ -74,6 +89,20 @@ def _allowed_kinds_for_discipline(discipline: str) -> set[str]:
         return {"GOAL", "FOUL", "TIMEOUT", "SUBSTITUTION"}
     if discipline == Tournament.Discipline.TENNIS:
         return {"TENNIS_POINT", "TENNIS_CODE_VIOLATION", "TIMEOUT"}
+    if discipline == Tournament.Discipline.WRESTLING:
+        return {
+            "WRESTLING_POINT_1",
+            "WRESTLING_POINT_2",
+            "WRESTLING_POINT_4",
+            "WRESTLING_POINT_5",
+            "WRESTLING_PASSIVITY",
+            "WRESTLING_CAUTION",
+            "WRESTLING_FALL",
+            "WRESTLING_INJURY",
+            "WRESTLING_FORFEIT",
+            "WRESTLING_DISQUALIFICATION",
+            "TIMEOUT",
+        }
     return {"GOAL", "FOUL", "TIMEOUT"}
 
 
@@ -99,6 +128,13 @@ def _pause_clock_if_running(match: Match, *, now) -> None:
 
 SCORE_SCOPE_REGULAR = "REGULAR"
 SCORE_SCOPE_EXTRA_TIME = "EXTRA_TIME"
+
+WRESTLING_SCORING_KINDS = {
+    "WRESTLING_POINT_1": 1,
+    "WRESTLING_POINT_2": 2,
+    "WRESTLING_POINT_4": 4,
+    "WRESTLING_POINT_5": 5,
+}
 
 
 def _norm_score_scope(scope: str | None) -> str:
@@ -203,6 +239,43 @@ def _recompute_match_score_from_goal_incidents(match: Match) -> None:
     if (home_et + away_et) > 0 and hasattr(match, "went_to_extra_time") and not getattr(match, "went_to_extra_time", False):
         match.went_to_extra_time = True
         update_fields.append("went_to_extra_time")
+
+    if update_fields:
+        match.save(update_fields=update_fields)
+
+
+def _is_wrestling_scoring_kind(kind: str) -> bool:
+    return kind in WRESTLING_SCORING_KINDS
+
+
+def _sum_wrestling_points_for_team(match_id: int, team_id: int) -> int:
+    qs = MatchIncident.objects.filter(
+        match_id=match_id,
+        team_id=team_id,
+        kind__in=list(WRESTLING_SCORING_KINDS.keys()),
+    ).only("kind")
+    total = 0
+    for incident in qs:
+        total += int(WRESTLING_SCORING_KINDS.get(incident.kind, 0))
+    return total
+
+
+def _recompute_wrestling_score_from_incidents(match: Match) -> None:
+    home_id = match.home_team_id
+    away_id = match.away_team_id
+
+    home_points = _sum_wrestling_points_for_team(match.id, home_id) if home_id else 0
+    away_points = _sum_wrestling_points_for_team(match.id, away_id) if away_id else 0
+
+    update_fields: list[str] = []
+
+    if int(match.home_score or 0) != int(home_points):
+        match.home_score = int(home_points)
+        update_fields.append("home_score")
+
+    if int(match.away_score or 0) != int(away_points):
+        match.away_score = int(away_points)
+        update_fields.append("away_score")
 
     if update_fields:
         match.save(update_fields=update_fields)
@@ -447,6 +520,8 @@ class MatchIncidentListCreateView(APIView):
                     match.save(update_fields=["went_to_extra_time"])
 
                 _recompute_match_score_from_goal_incidents(match)
+            elif discipline == Tournament.Discipline.WRESTLING and _is_wrestling_scoring_kind(kind):
+                _recompute_wrestling_score_from_incidents(match)
 
             ws_emit_tournament(match.tournament_id, _ws_emit_incidents_payload(match))
             ws_emit_tournament(match.tournament_id, _ws_emit_match_payload(match))
@@ -603,6 +678,8 @@ class MatchIncidentDeleteView(APIView):
                         match.save(update_fields=["went_to_extra_time"])
 
                 _recompute_match_score_from_goal_incidents(match)
+            elif discipline == Tournament.Discipline.WRESTLING and incident.kind in WRESTLING_SCORING_KINDS:
+                _recompute_wrestling_score_from_incidents(match)
 
             ws_emit_tournament(match.tournament_id, _ws_emit_incidents_payload(match))
             ws_emit_tournament(match.tournament_id, _ws_emit_match_payload(match))
@@ -628,11 +705,14 @@ class MatchIncidentDeleteView(APIView):
 
             discipline = match.tournament.discipline
             was_goal = incident.kind == "GOAL" and discipline != Tournament.Discipline.TENNIS
+            was_wrestling_scoring = discipline == Tournament.Discipline.WRESTLING and incident.kind in WRESTLING_SCORING_KINDS
 
             incident.delete()
 
             if was_goal:
                 _recompute_match_score_from_goal_incidents(match)
+            elif was_wrestling_scoring:
+                _recompute_wrestling_score_from_incidents(match)
 
             ws_emit_tournament(match.tournament_id, _ws_emit_incidents_payload(match))
             ws_emit_tournament(match.tournament_id, _ws_emit_match_payload(match))
@@ -659,6 +739,18 @@ class MatchIncidentRecomputeScoreView(APIView):
             if discipline == Tournament.Discipline.TENNIS:
                 return Response(
                     {"detail": "Tenis: punkty są przechowywane jako incydenty. Recompute setów/gemów dopniemy osobno."},
+                    status=status.HTTP_200_OK,
+                )
+
+            if discipline == Tournament.Discipline.WRESTLING:
+                _recompute_wrestling_score_from_incidents(match)
+                return Response(
+                    {
+                        "match_id": match.id,
+                        "division_id": _match_division_id(match),
+                        "home_score": int(match.home_score or 0),
+                        "away_score": int(match.away_score or 0),
+                    },
                     status=status.HTTP_200_OK,
                 )
 

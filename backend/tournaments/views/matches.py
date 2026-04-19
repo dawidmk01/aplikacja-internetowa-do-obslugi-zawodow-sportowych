@@ -24,6 +24,7 @@ from tournaments.services.match_outcome import (
     validate_basketball_consistency,
     validate_extra_time_consistency,
     validate_penalties_consistency,
+    validate_wrestling_consistency,
 )
 from tournaments.services.match_result import MatchResultService
 
@@ -92,6 +93,10 @@ def _is_tennis(tournament: Tournament) -> bool:
 
 def _is_basketball(tournament: Tournament) -> bool:
     return (getattr(tournament, "discipline", "") or "").lower() == "basketball"
+
+
+def _is_wrestling(tournament: Tournament) -> bool:
+    return (getattr(tournament, "discipline", "") or "").lower() == "wrestling"
 
 
 def _is_custom_result_mode(match: Match) -> bool:
@@ -270,6 +275,26 @@ def _validate_basketball_match_before_finish(match: Match) -> Optional[str]:
     basketball_error = validate_basketball_consistency(match)
     if basketball_error:
         return basketball_error
+
+    return None
+
+
+def _validate_wrestling_match_before_finish(match: Match) -> Optional[str]:
+    if not match.result_entered:
+        return "Nie można zakończyć walki zapaśniczej bez wprowadzenia wyniku."
+
+    if match.home_score is None or match.away_score is None:
+        return "Brak kompletnego wyniku technicznego - uzupełnij punkty zawodników."
+
+    wrestling_error = validate_wrestling_consistency(match)
+    if wrestling_error:
+        return wrestling_error
+
+    if match.winner_id not in (match.home_team_id, match.away_team_id):
+        return (
+            "W zapasach trzeba wskazać zwycięzcę walki. "
+            "Przy remisie technicznym wynika on z kryteriów lub metody rozstrzygnięcia."
+        )
 
     return None
 
@@ -939,6 +964,8 @@ class MatchResultUpdateView(RetrieveUpdateAPIView):
                 "decided_by_penalties",
                 "home_penalty_score",
                 "away_penalty_score",
+                "wrestling_result_method",
+                "winner_id",
             ):
                 if key in (request.data or {}):
                     touched = True
@@ -1103,6 +1130,11 @@ class FinishMatchView(APIView):
                 if err:
                     return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
+            if _is_wrestling(tournament):
+                err = _validate_wrestling_match_before_finish(match)
+                if err:
+                    return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
+
             try:
                 MatchResultService.apply_result(match)
             except Exception:
@@ -1154,6 +1186,11 @@ class FinishMatchView(APIView):
                 if err:
                     return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
+            if _is_wrestling(tournament):
+                err = _validate_wrestling_match_before_finish(match)
+                if err:
+                    return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
+
             if match.home_score is None or match.away_score is None:
                 return Response(
                     {"detail": "Brak kompletnego wyniku - uzupełnij bramki/punkty."},
@@ -1162,12 +1199,14 @@ class FinishMatchView(APIView):
 
             if cup_matches == 1:
                 err = validate_extra_time_consistency(match) or validate_penalties_consistency(match)
-                if err and not (_is_tennis(tournament) or _is_basketball(tournament)):
+                if err and not (_is_tennis(tournament) or _is_basketball(tournament) or _is_wrestling(tournament)):
                     return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
                 winner_id = (
                     _tennis_winner_id_from_sets(match)
                     if _is_tennis(tournament)
+                    else match.winner_id
+                    if _is_wrestling(tournament)
                     else knockout_winner_id(match)
                 )
                 if winner_id is None:
@@ -1358,6 +1397,12 @@ class SetScheduledMatchView(APIView):
         match.status = Match.Status.SCHEDULED
         match.result_entered = False
         match.winner = None
+        if hasattr(match, "wrestling_result_method"):
+            match.wrestling_result_method = ""
+        if hasattr(match, "home_classification_points"):
+            match.home_classification_points = None
+        if hasattr(match, "away_classification_points"):
+            match.away_classification_points = None
         match.clock_state = Match.ClockState.NOT_STARTED
         match.clock_started_at = None
         match.clock_elapsed_seconds = 0
@@ -1374,6 +1419,12 @@ class SetScheduledMatchView(APIView):
             "clock_elapsed_seconds",
             "clock_period",
         ]
+        if hasattr(match, "wrestling_result_method"):
+            update_fields.append("wrestling_result_method")
+        if hasattr(match, "home_classification_points"):
+            update_fields.append("home_classification_points")
+        if hasattr(match, "away_classification_points"):
+            update_fields.append("away_classification_points")
         if hasattr(match, "clock_added_seconds"):
             update_fields.append("clock_added_seconds")
 

@@ -9,6 +9,7 @@ from django.db import transaction
 
 from tournaments.models import Division, Match, Stage, Team, Tournament
 from tournaments.services.generators.knockout import generate_knockout_stage
+from tournaments.services.generators.wrestling_common import resolve_wrestling_competition_mode
 from tournaments.services.standings.compute import compute_stage_standings
 
 
@@ -40,6 +41,57 @@ def _build_runtime_tournament(
     return runtime
 
 
+
+def _active_teams_count(
+    tournament: Tournament,
+    division: Division | None,
+) -> int:
+    teams_qs = Team.objects.filter(tournament=tournament, is_active=True).exclude(name="__SYSTEM_BYE__")
+    if division is not None:
+        teams_qs = teams_qs.filter(division=division)
+    return int(teams_qs.count())
+
+
+def _is_wrestling_two_pools_runtime(
+    tournament: Tournament,
+    division: Division | None,
+) -> bool:
+    if tournament.discipline != Tournament.Discipline.WRESTLING:
+        return False
+
+    mode = resolve_wrestling_competition_mode(
+        tournament,
+        division,
+        _active_teams_count(tournament, division),
+    )
+    return mode == Tournament.WrestlingCompetitionMode.TWO_POOLS
+
+
+def _collect_wrestling_two_pools_advancers(
+    tournament: Tournament,
+    division: Division | None,
+    group_stage: Stage,
+) -> list[int]:
+    groups = list(group_stage.groups.all().order_by("id"))
+    if len(groups) != 2:
+        raise ValueError("System TWO_POOLS w zapasach wymaga dokładnie 2 grup.")
+
+    standings_by_group: list[list[int]] = []
+    for group in groups:
+        standings = compute_stage_standings(
+            tournament=tournament,
+            stage=group_stage,
+            group=group,
+        )
+        if len(standings) < 2:
+            raise ValueError(f"Grupa {group.name} ma za mało zawodników do wyłonienia półfinalistów.")
+        standings_by_group.append([row.team_id for row in standings[:2]])
+
+    group_a, group_b = standings_by_group
+    # Oficjalny układ półfinałów: A1 vs B2 oraz A2 vs B1.
+    return [group_a[0], group_b[1], group_a[1], group_b[0]]
+
+
 @transaction.atomic
 def advance_from_groups_to_knockout(
     tournament: Tournament,
@@ -48,27 +100,34 @@ def advance_from_groups_to_knockout(
     division = _resolve_division(tournament, division)
     runtime_tournament = _build_runtime_tournament(tournament, division)
 
-    _ensure_mixed_format(runtime_tournament)
+    _ensure_format_allows_advance(runtime_tournament, division)
     _ensure_status_allows_generation(runtime_tournament, division)
 
     group_stage = _get_group_stage(tournament, division)
     _ensure_all_group_matches_finished(group_stage)
     _ensure_no_existing_knockout(tournament, division)
 
-    advance_per_group = _get_advance_config(runtime_tournament)
-
-    groups = group_stage.groups.all().order_by("id")
-
-    advancing_ids: list[int] = []
-    for group in groups:
-        standings = compute_stage_standings(
-            tournament=runtime_tournament,
-            stage=group_stage,
-            group=group,
+    if _is_wrestling_two_pools_runtime(runtime_tournament, division):
+        advancing_ids = _collect_wrestling_two_pools_advancers(
+            runtime_tournament,
+            division,
+            group_stage,
         )
-        if len(standings) < advance_per_group:
-            raise ValueError(f"Grupa {group.name} ma za mało uczestników do awansu.")
-        advancing_ids.extend([row.team_id for row in standings[:advance_per_group]])
+    else:
+        advance_per_group = _get_advance_config(runtime_tournament)
+
+        groups = group_stage.groups.all().order_by("id")
+
+        advancing_ids: list[int] = []
+        for group in groups:
+            standings = compute_stage_standings(
+                tournament=runtime_tournament,
+                stage=group_stage,
+                group=group,
+            )
+            if len(standings) < advance_per_group:
+                raise ValueError(f"Grupa {group.name} ma za mało uczestników do awansu.")
+            advancing_ids.extend([row.team_id for row in standings[:advance_per_group]])
 
     if not advancing_ids:
         raise ValueError("Nie udało się wyznaczyć zespołów awansujących z grup.")
@@ -107,9 +166,15 @@ def advance_from_groups(
     return advance_from_groups_to_knockout(tournament, division=division)
 
 
-def _ensure_mixed_format(tournament: Tournament) -> None:
+def _ensure_format_allows_advance(
+    tournament: Tournament,
+    division: Division | None,
+) -> None:
+    if _is_wrestling_two_pools_runtime(tournament, division):
+        return
+
     if tournament.tournament_format != Tournament.TournamentFormat.MIXED:
-        raise ValueError("Awans z grup do KO jest dostępny tylko dla formatu MIXED.")
+        raise ValueError("Awans z grup do KO jest dostępny tylko dla formatu MIXED lub zapasów w trybie TWO_POOLS.")
 
 
 def _ensure_status_allows_generation(

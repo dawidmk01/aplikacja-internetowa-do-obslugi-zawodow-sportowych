@@ -52,11 +52,40 @@ type Props = {
   matchId: number;
   canEdit: boolean;
   minute: number;
+  discipline: string;
   homeTeamName: string;
   awayTeamName: string;
 };
 
-function defaultPhrases(): DictState {
+function isWrestlingDiscipline(discipline: string): boolean {
+  return String(discipline || "").toLowerCase() === "wrestling";
+}
+
+function defaultPhrases(discipline: string): DictState {
+  if (isWrestlingDiscipline(discipline)) {
+    return {
+      words: [
+        { id: null, kind: "TOKEN", text: "atak" },
+        { id: null, kind: "TOKEN", text: "obrona" },
+        { id: null, kind: "TOKEN", text: "parter" },
+        { id: null, kind: "TOKEN", text: "pasywność" },
+        { id: null, kind: "TOKEN", text: "ostrzeżenie" },
+        { id: null, kind: "TOKEN", text: "tusz" },
+        { id: null, kind: "TOKEN", text: "przewaga techniczna" },
+        { id: null, kind: "TOKEN", text: "chwyt" },
+        { id: null, kind: "TOKEN", text: "kontra" },
+      ],
+      templates: [
+        { id: null, kind: "TEMPLATE", text: "Dobry atak - ale bez punktu." },
+        { id: null, kind: "TEMPLATE", text: "Akcja przenosi się do parteru." },
+        { id: null, kind: "TEMPLATE", text: "Zawodnik przejmuje inicjatywę w środku maty." },
+        { id: null, kind: "TEMPLATE", text: "Sędzia zwraca uwagę na pasywność." },
+        { id: null, kind: "TEMPLATE", text: "Groźna akcja - zawodnik blisko tuszu." },
+        { id: null, kind: "TEMPLATE", text: "Kontrola walki po stronie atakującego." },
+      ],
+    };
+  }
+
   return {
     words: [
       { id: null, kind: "TOKEN", text: "strzał" },
@@ -78,6 +107,22 @@ function defaultPhrases(): DictState {
       { id: null, kind: "TEMPLATE", text: "Szybka kontra - obrona wraca." },
     ],
   };
+}
+
+function periodLabel(period?: string | null): string {
+  const value = String(period || "").trim().toUpperCase();
+  if (value === "P1") return "1 okres";
+  if (value === "BREAK") return "Przerwa";
+  if (value === "P2") return "2 okres";
+  if (value === "Q1") return "1 kwarta";
+  if (value === "Q2") return "2 kwarta";
+  if (value === "Q3") return "3 kwarta";
+  if (value === "Q4") return "4 kwarta";
+  if (value === "OT1" || value === "ET1") return "Dogrywka 1";
+  if (value === "OT2" || value === "ET2") return "Dogrywka 2";
+  if (value === "FH" || value === "H1") return "1 połowa";
+  if (value === "SH" || value === "H2") return "2 połowa";
+  return "";
 }
 
 function uniqByText(list: UiPhrase[]): UiPhrase[] {
@@ -136,13 +181,14 @@ export function CommentaryPanel({
   matchId,
   canEdit,
   minute,
+  discipline,
   homeTeamName,
   awayTeamName,
 }: Props) {
   const [entries, setEntries] = useState<LiveCommentaryEntryDTO[]>([]);
   const [entriesLoading, setEntriesLoading] = useState(false);
 
-  const [dict, setDict] = useState<DictState>(() => defaultPhrases());
+  const [dict, setDict] = useState<DictState>(() => defaultPhrases(discipline));
   const [dictLoading, setDictLoading] = useState(false);
 
   const [draft, setDraft] = useState("");
@@ -163,10 +209,15 @@ export function CommentaryPanel({
   }, [homeTeamName, awayTeamName]);
 
   const minuteSafe = useMemo(() => Math.max(0, Number(minute || 0)), [minute]);
+  const commentaryHeaderLabel = isWrestlingDiscipline(discipline) ? "Czas walki" : "Minuta";
+  const commentaryPlaceholder = isWrestlingDiscipline(discipline)
+    ? "Np. Dobry chwyt w środku maty, zawodnik przechodzi do parteru..."
+    : "Np. Lewandowski biegnie do bramki, nieudany strzał, Real rozpoczyna z pola...";
 
   useEffect(() => {
     setDraft("");
-  }, [matchId]);
+    setDict(defaultPhrases(discipline));
+  }, [matchId, discipline]);
 
   useEffect(() => {
     let alive = true;
@@ -243,7 +294,7 @@ export function CommentaryPanel({
       } catch (e: any) {
         if (!alive) return;
         toast.error(e?.message ?? "Nie udało się pobrać słownika.", { title: "Komentarz LIVE" });
-        setDict(defaultPhrases());
+        setDict(defaultPhrases(discipline));
       } finally {
         if (alive) setDictLoading(false);
       }
@@ -446,7 +497,7 @@ export function CommentaryPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-base font-extrabold text-white">Komentarz LIVE</div>
         <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-white">
-          Minuta: <span className="font-bold">{minuteSafe}'</span>
+          {commentaryHeaderLabel}: <span className="font-bold">{minuteSafe}'</span>
         </span>
       </div>
 
@@ -462,7 +513,7 @@ export function CommentaryPanel({
             )}
             aria-label="Treść komentarza"
             name="live_commentary_draft"
-            placeholder="Np. Lewandowski biegnie do bramki, nieudany strzał, Real rozpoczyna z pola..."
+            placeholder={commentaryPlaceholder}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -642,12 +693,19 @@ export function CommentaryPanel({
           ) : (
             sortedEntries.map((e) => {
               const busy = !!deletingEntryIds[e.id];
+              const periodText = periodLabel(e.period);
 
               return (
                 <Card key={e.id} className="bg-white/[0.03] p-3">
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
                     <div className="min-w-0 text-sm text-slate-200">
                       <span className="font-bold text-white">{Math.max(0, Number(e.minute ?? 0))}'</span>
+                      {periodText ? (
+                        <>
+                          <span className="mx-2 text-slate-500">|</span>
+                          <span className="text-slate-400">{periodText}</span>
+                        </>
+                      ) : null}
                       <span className="mx-2 text-slate-500">|</span>
                       <span className="break-words text-slate-200">{e.text}</span>
                     </div>

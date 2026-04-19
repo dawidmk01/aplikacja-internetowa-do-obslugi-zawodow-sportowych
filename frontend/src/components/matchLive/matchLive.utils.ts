@@ -1,3 +1,4 @@
+// frontend/src/components/matchLive/matchLive.utils.ts
 // Wspólne typy i helpery dla trybu live (zegar, incydenty, komentarze).
 
 export type ClockState = "NOT_STARTED" | "RUNNING" | "PAUSED" | "STOPPED";
@@ -9,6 +10,9 @@ export type ClockPeriod =
   | "ET2"
   | "H1"
   | "H2"
+  | "P1"
+  | "BREAK"
+  | "P2"
   | "Q1"
   | "Q2"
   | "Q3"
@@ -65,30 +69,34 @@ export type IncidentDTO = {
   player_out_id: number | null;
   player_out_name: string | null;
 
-  meta: Record<string, any>;
+  meta: Record<string, unknown>;
   created_at: string | null;
 };
 
 export type MatchStatus = "SCHEDULED" | "IN_PROGRESS" | "RUNNING" | "FINISHED";
 
-export function lower(s: string | null | undefined) {
+export function lower(s: string | null | undefined): string {
   return (s ?? "").toLowerCase();
 }
 
-export function isFootball(discipline: string) {
+export function isFootball(discipline: string): boolean {
   return lower(discipline) === "football";
 }
 
-export function isHandball(discipline: string) {
+export function isHandball(discipline: string): boolean {
   return lower(discipline) === "handball";
 }
 
-export function isBasketball(discipline: string) {
+export function isBasketball(discipline: string): boolean {
   return lower(discipline) === "basketball";
 }
 
-export function isTennis(discipline: string) {
+export function isTennis(discipline: string): boolean {
   return lower(discipline) === "tennis";
+}
+
+export function isWrestling(discipline: string): boolean {
+  return lower(discipline) === "wrestling";
 }
 
 export function formatClock(totalSeconds: number): string {
@@ -98,7 +106,7 @@ export function formatClock(totalSeconds: number): string {
   return `${mm}:${String(ss).padStart(2, "0")}`;
 }
 
-export function fmtClockState(s: ClockState) {
+export function fmtClockState(s: ClockState): string {
   if (s === "NOT_STARTED") return "Nie rozpoczęty";
   if (s === "RUNNING") return "W trakcie";
   if (s === "PAUSED") return "Wstrzymany";
@@ -123,6 +131,7 @@ export function periodOptions(discipline: string): { value: ClockPeriod; label: 
       { value: "ET2", label: "Dogrywka 2" },
     ];
   }
+
   if (isHandball(discipline)) {
     return [
       { value: "H1", label: "1 połowa" },
@@ -131,6 +140,7 @@ export function periodOptions(discipline: string): { value: ClockPeriod; label: 
       { value: "ET2", label: "Dogrywka 2" },
     ];
   }
+
   if (isBasketball(discipline)) {
     return [
       { value: "Q1", label: "1 kwarta" },
@@ -143,6 +153,15 @@ export function periodOptions(discipline: string): { value: ClockPeriod; label: 
       { value: "OT4", label: "Dogrywka 4" },
     ];
   }
+
+  if (isWrestling(discipline)) {
+    return [
+      { value: "P1", label: "1 okres" },
+      { value: "BREAK", label: "Przerwa" },
+      { value: "P2", label: "2 okres" },
+    ];
+  }
+
   return [];
 }
 
@@ -173,6 +192,22 @@ export function incidentKindOptions(discipline: string): { value: string; label:
     ];
   }
 
+  if (isWrestling(discipline)) {
+    return [
+      { value: "WRESTLING_POINT_1", label: "Punkt techniczny 1" },
+      { value: "WRESTLING_POINT_2", label: "Punkty techniczne 2" },
+      { value: "WRESTLING_POINT_4", label: "Punkty techniczne 4" },
+      { value: "WRESTLING_POINT_5", label: "Punkty techniczne 5" },
+      { value: "WRESTLING_PASSIVITY", label: "Pasywność" },
+      { value: "WRESTLING_CAUTION", label: "Ostrzeżenie" },
+      { value: "WRESTLING_FALL", label: "Tusz" },
+      { value: "WRESTLING_INJURY", label: "Kontuzja" },
+      { value: "WRESTLING_FORFEIT", label: "Walkower" },
+      { value: "WRESTLING_DISQUALIFICATION", label: "Dyskwalifikacja" },
+      { value: "TIMEOUT", label: "Przerwa / timeout" },
+    ];
+  }
+
   return [
     { value: "GOAL", label: "Bramka" },
     { value: "YELLOW_CARD", label: "Żółta kartka" },
@@ -190,6 +225,7 @@ export function periodBaseOffsetSeconds(discipline: string, period: ClockPeriod)
   const isFootballLike = d === "football" || d === "ice_hockey";
   const isHandballLike = d === "handball";
   const isBasketballLike = d === "basketball";
+  const isWrestlingLike = d === "wrestling";
 
   if (isFootballLike) {
     if (period === "SH") return 45 * 60;
@@ -216,6 +252,12 @@ export function periodBaseOffsetSeconds(discipline: string, period: ClockPeriod)
     return 0;
   }
 
+  if (isWrestlingLike) {
+    if (period === "BREAK") return 3 * 60;
+    if (period === "P2") return 3 * 60;
+    return 0;
+  }
+
   return 0;
 }
 
@@ -225,14 +267,22 @@ export function periodLimitSeconds(discipline: string, period: ClockPeriod): num
     if (period === "FH" || period === "SH") return 45 * 60;
     if (period === "ET1" || period === "ET2") return 15 * 60;
   }
+
   if (isHandball(discipline)) {
     if (period === "H1" || period === "H2") return 30 * 60;
     if (period === "ET1" || period === "ET2") return 5 * 60;
   }
+
   if (isBasketball(discipline)) {
     if (period === "Q1" || period === "Q2" || period === "Q3" || period === "Q4") return 10 * 60;
     if (period === "OT1" || period === "OT2" || period === "OT3" || period === "OT4") return 5 * 60;
   }
+
+  if (isWrestling(discipline)) {
+    if (period === "P1" || period === "P2") return 3 * 60;
+    if (period === "BREAK") return 30;
+  }
+
   return null;
 }
 
@@ -247,6 +297,11 @@ export function nextPeriodFromIntermission(
   opts: { allowExtraTimeStart: boolean }
 ): ClockPeriod | null {
   const allowExtraTimeStart = !!opts.allowExtraTimeStart;
+
+  if (isWrestling(discipline)) {
+    if (current === "P1" || current === "BREAK") return "P2";
+    return null;
+  }
 
   if (isFootball(discipline)) {
     if (current === "FH") return "SH";

@@ -19,6 +19,18 @@ import { Input } from "../../ui/Input";
 import { Portal } from "../../ui/Portal";
 import { Select, type SelectOption } from "../../ui/Select";
 import { Textarea } from "../../ui/Textarea";
+const WRESTLING_STYLE_OPTIONS = [
+  { value: "FREESTYLE", label: "Styl wolny" },
+  { value: "GRECO_ROMAN", label: "Styl klasyczny" },
+] as const;
+
+const WRESTLING_COMPETITION_MODE_OPTIONS = [
+  { value: "AUTO", label: "Automatyczny" },
+  { value: "NORDIC", label: "Nordic" },
+  { value: "TWO_POOLS", label: "Dwie grupy" },
+  { value: "ELIMINATION_REPECHAGE", label: "Eliminacja + repasaże" },
+] as const;
+
 
 export type Discipline =
   | "football"
@@ -26,6 +38,7 @@ export type Discipline =
   | "basketball"
   | "handball"
   | "tennis"
+  | "wrestling"
   | "custom";
 
 export type TournamentFormat = "LEAGUE" | "CUP" | "MIXED";
@@ -114,6 +127,8 @@ export type HandballTableDrawMode = "ALLOW_DRAW" | "PENALTIES" | "OVERTIME_PENAL
 export type HandballKnockoutTiebreak = "OVERTIME_PENALTIES" | "PENALTIES";
 export type HandballPointsMode = "2_1_0" | "3_1_0" | "3_2_1_0";
 export type BasketballResolutionMode = "OVERTIME_ONLY";
+export type WrestlingStyle = "FREESTYLE" | "GRECO_ROMAN";
+export type WrestlingCompetitionMode = "AUTO" | "NORDIC" | "TWO_POOLS" | "ELIMINATION_REPECHAGE";
 
 export type TennisBestOf = 3 | 5;
 export type TennisPointsMode = "NONE" | "PLT";
@@ -168,6 +183,11 @@ export const DISCIPLINE_OPTIONS: SelectOption<Discipline>[] = [
   { value: "basketball", label: "Koszykówka" },
   { value: "volleyball", label: "Siatkówka" },
   { value: "tennis", label: "Tenis" },
+  {
+    value: "wrestling",
+    label: "Zapasy",
+    description: "Styl wolny lub klasyczny z konfiguracją trybu zawodów.",
+  },
   {
     value: "custom",
     label: "Inna / niestandardowa",
@@ -1362,6 +1382,8 @@ export function StructureCard({
   hbPointsMode,
   hbKnockoutTiebreak,
   basketballResolutionMode,
+  wrestlingStyle = "FREESTYLE",
+  wrestlingCompetitionMode = "AUTO",
   cupMatches,
   finalMatches,
   thirdPlace,
@@ -1386,6 +1408,8 @@ export function StructureCard({
   onHbPointsModeChange,
   onHbKnockoutTiebreakChange,
   onBasketballResolutionModeChange,
+  onWrestlingStyleChange,
+  onWrestlingCompetitionModeChange,
   onCupMatchesChange,
   onFinalMatchesChange,
   onThirdPlaceChange,
@@ -1570,6 +1594,7 @@ export function StructureCard({
   const isHandball = discipline === "handball";
   const isBasketball = discipline === "basketball";
   const isTennis = discipline === "tennis";
+  const isWrestling = discipline === "wrestling";
   const isCustomDiscipline = discipline === "custom";
 
   const isHeadToHead = competitionModel === "HEAD_TO_HEAD";
@@ -1755,7 +1780,7 @@ export function StructureCard({
             />
           </div>
 
-          {!isCustomDiscipline && (
+          {!isCustomDiscipline && !isWrestling && (
             <>
               <div className="space-y-2">
                 <div className="text-xs font-semibold text-slate-300">Format turnieju</div>
@@ -2190,7 +2215,7 @@ export function StructureCard({
 
           {format === "LEAGUE" && (
             <div className="mt-4 rounded-2xl border border-white/10 bg-black/10 p-4">
-              <div className="text-sm font-semibold text-white">Liga</div>
+              <div className="text-sm font-semibold text-white">{isWrestling ? "Zapasy" : "Liga"}</div>
               <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 <div className="space-y-2">
                   <div className="text-xs font-semibold text-slate-300">Mecze każdy z każdym</div>
@@ -2467,24 +2492,26 @@ export function StructureCard({
           </div>
 
           <div className="mt-4 space-y-4">
-            {showLeagueOrGroupConfig && format === "LEAGUE" && (
+            {((showLeagueOrGroupConfig && format === "LEAGUE") || isWrestling) && (
               <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
                 <div className="text-sm font-semibold text-white">Liga</div>
 
                 <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                  <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Mecze każdy z każdym</div>
-                    <Select<1 | 2>
-                      value={leagueMatches}
-                      disabled={disableForm}
-                      onChange={onLeagueMatchesChange}
-                      options={[
-                        { value: 1, label: "1 mecz (bez rewanżu)" },
-                        { value: 2, label: "2 mecze (rewanż)" },
-                      ]}
-                      ariaLabel="Liga - liczba meczów"
-                    />
-                  </div>
+                  {!isWrestling ? (
+                    <div className="space-y-2">
+                      <div className="text-xs font-semibold text-slate-300">Mecze każdy z każdym</div>
+                      <Select<1 | 2>
+                        value={leagueMatches}
+                        disabled={disableForm}
+                        onChange={onLeagueMatchesChange}
+                        options={[
+                          { value: 1, label: "1 mecz (bez rewanżu)" },
+                          { value: 2, label: "2 mecze (rewanż)" },
+                        ]}
+                        ariaLabel="Liga - liczba meczów"
+                      />
+                    </div>
+                  ) : null}
 
                   {isTennis && (
                     <>
@@ -2558,6 +2585,38 @@ export function StructureCard({
                         <div className="text-xs font-semibold text-slate-300">Zasada</div>
                         <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-200">
                           Remis po czasie podstawowym jest rozstrzygany dogrywką. Karne nie są dostępne.
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  {isWrestling && (
+                    <>
+                      <div className="space-y-2">
+                        <div className="text-xs font-semibold text-slate-300">Styl</div>
+                        <Select<WrestlingStyle>
+                          value={wrestlingStyle}
+                          disabled={disableForm}
+                          onChange={(value) => onWrestlingStyleChange?.(value)}
+                          options={WRESTLING_STYLE_OPTIONS}
+                          ariaLabel="Zapasy - styl"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="text-xs font-semibold text-slate-300">Tryb zawodów</div>
+                        <Select<WrestlingCompetitionMode>
+                          value={wrestlingCompetitionMode}
+                          disabled={disableForm}
+                          onChange={(value) => onWrestlingCompetitionModeChange?.(value)}
+                          options={WRESTLING_COMPETITION_MODE_OPTIONS}
+                          ariaLabel="Zapasy - tryb zawodów"
+                        />
+                      </div>
+
+                      <div className="space-y-2 md:col-span-2 xl:col-span-2">
+                        <div className="text-xs font-semibold text-slate-300">Zasada</div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-200">
+                          Zapasy działają jako dyscyplina indywidualna w modelu pojedynków. Klasyczny format turnieju nie jest tu wybierany osobno - strukturę zawodów definiuje tryb zawodów. Kategorie Women, U20, U17 i U15 konfiguruj przez dywizje.
                         </div>
                       </div>
                     </>
@@ -2791,6 +2850,8 @@ export function SummaryCard({
   customDisciplineName = "",
   resultConfig = getDefaultResultConfig(),
   basketballResolutionMode = "OVERTIME_ONLY",
+  wrestlingStyle = "FREESTYLE",
+  wrestlingCompetitionMode = "AUTO",
 }: {
   isTournamentCreated: boolean;
   discipline: Discipline;
@@ -2803,8 +2864,11 @@ export function SummaryCard({
   customDisciplineName?: string;
   resultConfig?: TournamentResultConfig;
   basketballResolutionMode?: BasketballResolutionMode;
+  wrestlingStyle?: WrestlingStyle;
+  wrestlingCompetitionMode?: WrestlingCompetitionMode;
 }) {
   const isCustomDiscipline = discipline === "custom";
+  const isWrestling = discipline === "wrestling";
   const isHeadToHead = competitionModel === "HEAD_TO_HEAD";
   const isMassStart = competitionModel === "MASS_START";
 
@@ -2851,6 +2915,21 @@ export function SummaryCard({
               {format !== "LEAGUE" && <StatRow label="Mecze fazy KO" value={preview.koTotal} />}
               {discipline === "basketball" ? (
                 <StatRow label="Rozstrzyganie remisu" value={basketballResolutionModeLabel(basketballResolutionMode)} />
+              ) : null}
+              {isWrestling ? <StatRow label="Styl" value={wrestlingStyle === "GRECO_ROMAN" ? "Styl klasyczny" : "Styl wolny"} /> : null}
+              {isWrestling ? (
+                <StatRow
+                  label="Tryb zawodów"
+                  value={
+                    wrestlingCompetitionMode === "NORDIC"
+                      ? "Nordic"
+                      : wrestlingCompetitionMode === "TWO_POOLS"
+                        ? "Dwie grupy"
+                        : wrestlingCompetitionMode === "ELIMINATION_REPECHAGE"
+                          ? "Eliminacja + repasaże"
+                          : "Automatyczny"
+                  }
+                />
               ) : null}
               <StatRow label="Szac. łączna liczba meczów" value={preview.total} />
             </>

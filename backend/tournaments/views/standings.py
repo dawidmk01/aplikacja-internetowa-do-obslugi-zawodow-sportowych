@@ -64,6 +64,28 @@ def _runtime_tournament_for_division(tournament: Tournament, division: Division 
     return runtime
 
 
+def _effective_tournament_format(
+    *,
+    fallback_format: str,
+    has_league_stage: bool,
+    has_group_stage: bool,
+    has_knockout_stage: bool,
+) -> str:
+    if has_knockout_stage and (has_league_stage or has_group_stage):
+        return Tournament.TournamentFormat.MIXED
+
+    if has_knockout_stage:
+        return Tournament.TournamentFormat.CUP
+
+    if has_group_stage:
+        return Tournament.TournamentFormat.MIXED
+
+    if has_league_stage:
+        return Tournament.TournamentFormat.LEAGUE
+
+    return fallback_format
+
+
 class TournamentStandingsView(APIView):
     permission_classes = [AllowAny]
 
@@ -81,10 +103,26 @@ class TournamentStandingsView(APIView):
         discipline = (getattr(tournament, "discipline", "") or "").lower()
         result_mode = getattr(context_obj, "result_mode", Tournament.ResultMode.SCORE)
         competition_model = getattr(context_obj, "competition_model", None)
-        tournament_format = context_obj.tournament_format
 
         result_config = dict(getattr(context_obj, "result_config", None) or {})
         format_config = dict(getattr(context_obj, "format_config", None) or {})
+
+        stages_qs = tournament.stages.all()
+        if division is not None:
+            stages_qs = stages_qs.filter(division=division)
+
+        league_stage = stages_qs.filter(stage_type=Stage.StageType.LEAGUE).order_by("order", "id").first()
+        group_stage = stages_qs.filter(stage_type=Stage.StageType.GROUP).order_by("order", "id").first()
+        has_knockout_stage = stages_qs.filter(
+            stage_type__in=(Stage.StageType.KNOCKOUT, Stage.StageType.THIRD_PLACE)
+        ).exists()
+
+        tournament_format = _effective_tournament_format(
+            fallback_format=context_obj.tournament_format,
+            has_league_stage=league_stage is not None,
+            has_group_stage=group_stage is not None,
+            has_knockout_stage=has_knockout_stage,
+        )
 
         response_data: dict = {
             "meta": self._build_meta(
@@ -99,51 +137,40 @@ class TournamentStandingsView(APIView):
             )
         }
 
-        stages_qs = tournament.stages.all()
-        if division is not None:
-            stages_qs = stages_qs.filter(division=division)
+        if group_stage is not None:
+            groups_payload = []
 
-        if tournament_format == Tournament.TournamentFormat.LEAGUE:
-            stage = stages_qs.filter(stage_type=Stage.StageType.LEAGUE).first()
-            if stage:
-                response_data["table"] = self._serialize_stage_table(
-                    tournament=runtime_tournament,
-                    stage=stage,
-                    discipline=discipline,
-                    result_mode=result_mode,
-                    competition_model=competition_model,
-                    result_config=result_config,
+            for group in group_stage.groups.all().order_by("name"):
+                groups_payload.append(
+                    {
+                        "group_id": group.id,
+                        "group_name": group.name,
+                        "table": self._serialize_stage_table(
+                            tournament=runtime_tournament,
+                            stage=group_stage,
+                            group=group,
+                            discipline=discipline,
+                            result_mode=result_mode,
+                            competition_model=competition_model,
+                            result_config=result_config,
+                        ),
+                    }
                 )
 
-        elif tournament_format == Tournament.TournamentFormat.MIXED:
-            stage = stages_qs.filter(stage_type=Stage.StageType.GROUP).first()
-            if stage:
-                groups_payload = []
+            response_data["groups"] = groups_payload
 
-                for group in stage.groups.all().order_by("name"):
-                    groups_payload.append(
-                        {
-                            "group_id": group.id,
-                            "group_name": group.name,
-                            "table": self._serialize_stage_table(
-                                tournament=runtime_tournament,
-                                stage=stage,
-                                group=group,
-                                discipline=discipline,
-                                result_mode=result_mode,
-                                competition_model=competition_model,
-                                result_config=result_config,
-                            ),
-                        }
-                    )
+        elif league_stage is not None:
+            response_data["table"] = self._serialize_stage_table(
+                tournament=runtime_tournament,
+                stage=league_stage,
+                discipline=discipline,
+                result_mode=result_mode,
+                competition_model=competition_model,
+                result_config=result_config,
+            )
 
-                response_data["groups"] = groups_payload
-
-        if tournament_format in (
-            Tournament.TournamentFormat.CUP,
-            Tournament.TournamentFormat.MIXED,
-        ):
-            bracket_data = get_knockout_bracket(runtime_tournament)
+        if has_knockout_stage:
+            bracket_data = get_knockout_bracket(runtime_tournament, division=division)
             if bracket_data and bracket_data.get("rounds"):
                 response_data["bracket"] = bracket_data
 

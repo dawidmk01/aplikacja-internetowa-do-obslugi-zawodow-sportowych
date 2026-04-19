@@ -1649,6 +1649,17 @@ class Match(models.Model):
         ET2 = "ET2", "Dogrywka 2"
         H1 = "H1", "1 połowa (ręczna)"
         H2 = "H2", "2 połowa (ręczna)"
+        P1 = "P1", "1 okres (zapasy)"
+        BREAK = "BREAK", "Przerwa (zapasy)"
+        P2 = "P2", "2 okres (zapasy)"
+        Q1 = "Q1", "1 kwarta"
+        Q2 = "Q2", "2 kwarta"
+        Q3 = "Q3", "3 kwarta"
+        Q4 = "Q4", "4 kwarta"
+        OT1 = "OT1", "Dogrywka 1 (koszykówka)"
+        OT2 = "OT2", "Dogrywka 2 (koszykówka)"
+        OT3 = "OT3", "Dogrywka 3 (koszykówka)"
+        OT4 = "OT4", "Dogrywka 4 (koszykówka)"
 
     tournament = models.ForeignKey(
         Tournament,
@@ -1861,6 +1872,29 @@ class Match(models.Model):
             mapping = {
                 self.ClockPeriod.H1: 0,
                 self.ClockPeriod.H2: 30 * 60,
+                self.ClockPeriod.ET1: 60 * 60,
+                self.ClockPeriod.ET2: 65 * 60,
+            }
+            return mapping.get(period, 0)
+
+        if discipline == Tournament.Discipline.BASKETBALL:
+            mapping = {
+                self.ClockPeriod.Q1: 0,
+                self.ClockPeriod.Q2: 10 * 60,
+                self.ClockPeriod.Q3: 20 * 60,
+                self.ClockPeriod.Q4: 30 * 60,
+                self.ClockPeriod.OT1: 40 * 60,
+                self.ClockPeriod.OT2: 45 * 60,
+                self.ClockPeriod.OT3: 50 * 60,
+                self.ClockPeriod.OT4: 55 * 60,
+            }
+            return mapping.get(period, 0)
+
+        if discipline == Tournament.Discipline.WRESTLING:
+            mapping = {
+                self.ClockPeriod.P1: 0,
+                self.ClockPeriod.BREAK: 3 * 60,
+                self.ClockPeriod.P2: 3 * 60,
             }
             return mapping.get(period, 0)
 

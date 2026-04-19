@@ -13,11 +13,17 @@ from tournaments.services.standings.rulesets.basketball import BasketballFibaRul
 from tournaments.services.standings.rulesets.football import FootballPZPNRuleset
 from tournaments.services.standings.rulesets.handball import HandballSuperligaRuleset
 from tournaments.services.standings.rulesets.tennis import TennisRuleset
+from tournaments.services.standings.rulesets.wrestling import WrestlingPZZRuleset
 from tournaments.services.standings.types import StandingRow
 
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
 
 TennisPointsMode = Literal["NONE", "PLT"]
+
+
+WRESTLING_DOMINANT_RESULT_CODES = {"VFA", "VIN", "VFO", "DSQ", "VCA"}
+WRESTLING_TECH_SUPERIORITY_CODES = {"VSU", "VSU1", "VSU2"}
+WRESTLING_POINTS_WIN_CODES = {"VPO", "VPO1", "VPO2"}
 
 
 def _stage_context(tournament: Tournament, stage: Stage):
@@ -31,6 +37,14 @@ def _context_result_mode(context) -> str:
 
 def _context_format_config(context) -> dict:
     return dict(getattr(context, "format_config", None) or {})
+
+
+def _context_wrestling_style(context) -> str:
+    cfg = _context_format_config(context)
+    return str(
+        cfg.get(Tournament.FORMATCFG_WRESTLING_STYLE_KEY)
+        or Tournament.WrestlingStyle.FREESTYLE
+    ).upper()
 
 
 def _context_result_config(context) -> dict:
@@ -81,6 +95,9 @@ def _get_ruleset(context) -> StandingsRuleset:
         cfg = _context_format_config(context)
         mode = (cfg.get("tennis_points_mode") or "NONE").upper()
         return TennisRuleset(points_mode="PLT" if mode == "PLT" else "NONE")
+
+    if discipline in (Tournament.Discipline.WRESTLING, "wrestling", "WRESTLING"):
+        return WrestlingPZZRuleset()
 
     return FootballPZPNRuleset()
 
@@ -260,6 +277,155 @@ def _compute_custom_measured_stage_standings(
     unranked_rows.sort(key=lambda row: (row.team_name.strip().lower(), row.team_id))
 
     return ranked_rows + unranked_rows
+
+
+def _wrestling_superiority_threshold(context) -> int:
+    style = _context_wrestling_style(context)
+    if style == Tournament.WrestlingStyle.GRECO_ROMAN:
+        return 8
+    return 10
+
+
+def _resolve_wrestling_match_winner(match: Match) -> int | None:
+    if match.winner_id:
+        return match.winner_id
+
+    home_score, away_score = final_score(match)
+    if home_score > away_score:
+        return match.home_team_id
+    if away_score > home_score:
+        return match.away_team_id
+    return None
+
+
+def _resolve_wrestling_classification_points(
+    match: Match,
+    context,
+    home_score: int,
+    away_score: int,
+    winner_id: int | None,
+) -> tuple[int, int]:
+    if (
+        match.home_classification_points is not None
+        and match.away_classification_points is not None
+    ):
+        return int(match.home_classification_points), int(match.away_classification_points)
+
+    if winner_id is None:
+        return (0, 0)
+
+    method = str(getattr(match, "wrestling_result_method", "") or "").upper().strip()
+    home_won = winner_id == match.home_team_id
+    loser_points = away_score if home_won else home_score
+
+    if method in WRESTLING_DOMINANT_RESULT_CODES:
+        return (5, 0) if home_won else (0, 5)
+
+    if method in WRESTLING_TECH_SUPERIORITY_CODES:
+        winner_cp = 4
+        loser_cp = 1 if loser_points > 0 else 0
+        return (winner_cp, loser_cp) if home_won else (loser_cp, winner_cp)
+
+    if method in WRESTLING_POINTS_WIN_CODES:
+        winner_cp = 3
+        loser_cp = 1 if loser_points > 0 else 0
+        return (winner_cp, loser_cp) if home_won else (loser_cp, winner_cp)
+
+    threshold = _wrestling_superiority_threshold(context)
+    diff = abs(home_score - away_score)
+
+    if diff >= threshold:
+        winner_cp = 4
+        loser_cp = 1 if loser_points > 0 else 0
+        return (winner_cp, loser_cp) if home_won else (loser_cp, winner_cp)
+
+    winner_cp = 3
+    loser_cp = 1 if loser_points > 0 else 0
+    return (winner_cp, loser_cp) if home_won else (loser_cp, winner_cp)
+
+
+def _apply_wrestling_match_result(
+    rows: dict[int, StandingRow],
+    match: Match,
+    context,
+) -> None:
+    home = rows.get(match.home_team_id)
+    away = rows.get(match.away_team_id)
+    if not home or not away:
+        return
+
+    home_score, away_score = final_score(match)
+    winner_id = _resolve_wrestling_match_winner(match)
+    home_cp, away_cp = _resolve_wrestling_classification_points(
+        match,
+        context,
+        home_score,
+        away_score,
+        winner_id,
+    )
+
+    home.played += 1
+    away.played += 1
+
+    # W zapasach traktujemy klasyczny wynik jako punkty techniczne zawodnika.
+    home.goals_for += home_score
+    home.goals_against += away_score
+    away.goals_for += away_score
+    away.goals_against += home_score
+
+    home.points += home_cp
+    away.points += away_cp
+
+    if winner_id == match.home_team_id:
+        home.wins += 1
+        away.losses += 1
+        return
+
+    if winner_id == match.away_team_id:
+        away.wins += 1
+        away.away_wins += 1
+        home.losses += 1
+        return
+
+    home.draws += 1
+    away.draws += 1
+
+
+def _compute_wrestling_stage_standings(
+    context,
+    stage: Stage,
+    group: Group | None,
+    rows: dict[int, StandingRow],
+) -> list[StandingRow]:
+    finished_matches = list(_get_finished_matches(stage, group))
+
+    for match in finished_matches:
+        _apply_wrestling_match_result(rows, match, context)
+
+    ranked = list(rows.values())
+    for row in ranked:
+        row.goal_difference = row.goals_for - row.goals_against
+        row.games_difference = row.games_for - row.games_against
+
+    # To jest pierwszy ruleset PZZ/UWW core dla grup i formatu Nordic:
+    # najpierw punkty klasyfikacyjne walk, potem zwycięstwa i bilans punktów technicznych.
+    ranked.sort(
+        key=lambda row: (
+            row.points,
+            row.wins,
+            row.goal_difference,
+            row.goals_for,
+            -row.losses,
+            row.team_name.strip().lower(),
+            row.team_id,
+        ),
+        reverse=True,
+    )
+
+    for index, row in enumerate(ranked, start=1):
+        row.rank = index
+
+    return ranked
 
 
 def _get_custom_results_for_context(stage: Stage, group: Group | None):
@@ -539,6 +705,11 @@ def _apply_match_result(
         "basketball",
         "BASKETBALL",
     )
+    is_wrestling = discipline in (
+        Tournament.Discipline.WRESTLING,
+        "wrestling",
+        "WRESTLING",
+    )
     is_tennis = discipline in (
         Tournament.Discipline.TENNIS,
         "tennis",
@@ -589,6 +760,33 @@ def _apply_match_result(
 
         # Koszykówka nie powinna kończyć się remisem, ale pozostawiamy bezpieczny fallback
         # dla niespójnych danych wejściowych zamiast nadawać piłkarską punktację remisową.
+        home.draws += 1
+        away.draws += 1
+        return
+
+    if is_wrestling:
+        home_cp, away_cp = _resolve_wrestling_classification_points(
+            match,
+            context,
+            home_score,
+            away_score,
+            _resolve_wrestling_match_winner(match),
+        )
+
+        home.points += home_cp
+        away.points += away_cp
+
+        if home_score > away_score or match.winner_id == match.home_team_id:
+            home.wins += 1
+            away.losses += 1
+            return
+
+        if home_score < away_score or match.winner_id == match.away_team_id:
+            away.wins += 1
+            away.away_wins += 1
+            home.losses += 1
+            return
+
         home.draws += 1
         away.draws += 1
         return

@@ -16,10 +16,10 @@ import {
   computeBreakLevel,
   formatClock,
   isKnockoutLike,
-  nextPeriodFromIntermission,
-  periodBaseOffsetSeconds,
-  periodLimitSeconds,
-  periodOptions,
+  nextPeriodFromIntermission as utilNextPeriodFromIntermission,
+  periodBaseOffsetSeconds as utilPeriodBaseOffsetSeconds,
+  periodLimitSeconds as utilPeriodLimitSeconds,
+  periodOptions as utilPeriodOptions,
   readBreakMode,
   readBreakStartedAt,
   writeBreakMode,
@@ -78,6 +78,53 @@ type Props = {
   onAfterRecompute?: () => Promise<void> | void;
   onRequestIncidentsReload?: () => void;
 };
+
+const WRESTLING_PERIOD_OPTIONS: Array<{ value: ClockPeriod; label: string }> = [
+  { value: "P1" as ClockPeriod, label: "1 okres" },
+  { value: "BREAK" as ClockPeriod, label: "Przerwa" },
+  { value: "P2" as ClockPeriod, label: "2 okres" },
+];
+
+function isWrestlingDiscipline(discipline: string): boolean {
+  return String(discipline || "").toLowerCase() === "wrestling";
+}
+
+function getPeriodOptions(discipline: string): Array<{ value: ClockPeriod; label: string }> {
+  if (isWrestlingDiscipline(discipline)) return WRESTLING_PERIOD_OPTIONS;
+  return utilPeriodOptions(discipline) as Array<{ value: ClockPeriod; label: string }>;
+}
+
+function getPeriodBaseOffsetSeconds(discipline: string, period: ClockPeriod): number {
+  if (!isWrestlingDiscipline(discipline)) return utilPeriodBaseOffsetSeconds(discipline, period);
+
+  if (period === ("BREAK" as ClockPeriod)) return 3 * 60;
+  if (period === ("P2" as ClockPeriod)) return 3 * 60;
+  return 0;
+}
+
+function getPeriodLimitSeconds(discipline: string, period: ClockPeriod): number | null {
+  if (!isWrestlingDiscipline(discipline)) return utilPeriodLimitSeconds(discipline, period);
+
+  if (period === ("BREAK" as ClockPeriod)) return 30;
+  if (period === ("P1" as ClockPeriod) || period === ("P2" as ClockPeriod)) return 3 * 60;
+  return null;
+}
+
+function getNextPeriodFromIntermission(
+  discipline: string,
+  currentPeriod: ClockPeriod,
+  options: { allowExtraTimeStart: boolean }
+): ClockPeriod | null {
+  if (!isWrestlingDiscipline(discipline)) {
+    return utilNextPeriodFromIntermission(discipline, currentPeriod, options) as ClockPeriod | null;
+  }
+
+  if (currentPeriod === ("P1" as ClockPeriod) || currentPeriod === ("BREAK" as ClockPeriod)) {
+    return "P2" as ClockPeriod;
+  }
+
+  return null;
+}
 
 /** ClockPanel odpowiada za sterowanie zegarem i publikuje `ClockMeta` jako kontrakt dla reszty widoku live. */
 export function ClockPanel({
@@ -198,7 +245,7 @@ export function ClockPanel({
 
   const baseOffsetSeconds = useMemo(() => {
     const p = (clock?.clock_period || "NONE") as ClockPeriod;
-    return periodBaseOffsetSeconds(discipline, p);
+    return getPeriodBaseOffsetSeconds(discipline, p);
   }, [clock?.clock_period, discipline]);
 
   const matchDisplaySeconds = useMemo(() => {
@@ -226,7 +273,7 @@ export function ClockPanel({
 
   const timeLimitSeconds = useMemo(() => {
     if (!clock) return null;
-    return periodLimitSeconds(discipline, clock.clock_period);
+    return getPeriodLimitSeconds(discipline, clock.clock_period);
   }, [clock, discipline]);
 
   const timeOverLimit = useMemo(() => {
@@ -281,11 +328,12 @@ export function ClockPanel({
         Number(scoreContext.home || 0) === Number(scoreContext.away || 0) &&
         !scoreContext.wentToExtraTime;
 
-      const next = nextPeriodFromIntermission(discipline, clock.clock_period, { allowExtraTimeStart });
+      const next = getNextPeriodFromIntermission(discipline, clock.clock_period, { allowExtraTimeStart });
       if (next === "SH" || next === "H2") return "Rozpocznij 2 połowę";
       if (next === "Q2") return "Rozpocznij 2 kwartę";
       if (next === "Q3") return "Rozpocznij 3 kwartę";
       if (next === "Q4") return "Rozpocznij 4 kwartę";
+      if (next === "P2") return "Rozpocznij 2 okres";
       if (next === "ET1" || next === "OT1") return "Rozpocznij dogrywkę";
       if (next === "ET2") return "Rozpocznij 2 połowę dogrywki";
       if (next === "OT2") return "Rozpocznij 2 dogrywkę";
@@ -320,7 +368,7 @@ export function ClockPanel({
         Number(scoreContext.home || 0) === Number(scoreContext.away || 0) &&
         !scoreContext.wentToExtraTime;
 
-      const next = nextPeriodFromIntermission(discipline, clock.clock_period, { allowExtraTimeStart });
+      const next = getNextPeriodFromIntermission(discipline, clock.clock_period, { allowExtraTimeStart });
       if (next) {
         await postClock("period/", { period: next });
         if (next === "ET1") onEnterExtraTime?.();
@@ -380,7 +428,7 @@ export function ClockPanel({
       clearBreak(matchId);
       setBreakMode(BreakMode.NONE);
 
-      const periodFallback = periodOptions(discipline)[0]?.value || "NONE";
+      const periodFallback = getPeriodOptions(discipline)[0]?.value || "NONE";
       const currentPeriod = clock.clock_period && clock.clock_period !== "NONE" ? clock.clock_period : periodFallback;
 
       await postClock("period/", { period: currentPeriod });
@@ -450,7 +498,7 @@ export function ClockPanel({
     return over ? "border-red-500/50 bg-red-500/15" : "border-white/10 bg-white/[0.04]";
   }, [timeOverLimit, clock?.cap_reached]);
 
-  const periodOpts = useMemo(() => periodOptions(discipline), [discipline]);
+  const periodOpts = useMemo(() => getPeriodOptions(discipline), [discipline]);
   const periodSelectOptions = useMemo<SelectOption<ClockPeriod>[]>(() => {
     return periodOpts.map((o) => ({ value: o.value as ClockPeriod, label: o.label }));
   }, [periodOpts]);

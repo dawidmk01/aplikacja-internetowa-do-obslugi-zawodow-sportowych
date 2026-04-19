@@ -39,6 +39,9 @@ type MatchPublicExtendedDTO = MatchPublicDTO & {
   decided_by_penalties?: boolean;
   home_penalty_score?: number | null;
   away_penalty_score?: number | null;
+  wrestling_result_method?: string | null;
+  home_classification_points?: number | null;
+  away_classification_points?: number | null;
   clock_period?: string | null;
 };
 
@@ -108,14 +111,44 @@ function isBasketball(match: MatchPublicDTO): boolean {
   return false;
 }
 
-function kindPl(kind: string, fallback?: string, incident?: IncidentPublicDTO): string {
+function isWrestling(match: MatchPublicDTO): boolean {
+  const discipline = readString(match, "discipline").toLowerCase();
+  if (discipline === "wrestling") return true;
+
+  const period = readString(match, "clock_period").toUpperCase();
+  if (period === "P1" || period === "BREAK" || period === "P2") return true;
+
+  return false;
+}
+
+function wrestlingMethodLabel(methodRaw: string | null | undefined): string {
+  const method = String(methodRaw || "").trim().toUpperCase();
+  if (method === "VFA") return "Tusz";
+  if (method === "VIN") return "Kontuzja";
+  if (method === "VFO") return "Walkower";
+  if (method === "DSQ") return "Dyskwalifikacja";
+  if (method === "VCA") return "3 ostrzeżenia";
+  if (method === "VSU" || method === "VSU1" || method === "VSU2") return "Przewaga techniczna";
+  if (method === "VPO" || method === "VPO1" || method === "VPO2") return "Na punkty";
+  return method || "-";
+}
+
+function kindPl(
+  kind: string,
+  fallback?: string,
+  incident?: IncidentPublicDTO,
+  options?: { basketballMode?: boolean; wrestlingMode?: boolean }
+): string {
   const normalized = (kind || "").toUpperCase();
 
   if (normalized === "GOAL") {
     const points = readNumber(incident?.meta, "points");
-    if (points === 3) return "Punkt za 3";
-    if (points === 2) return "Punkt za 2";
-    if (points === 1 && isBasketball({} as MatchPublicDTO)) return "Rzut wolny";
+    if (options?.basketballMode) {
+      if (points === 3) return "Punkt za 3";
+      if (points === 2) return "Punkt za 2";
+      if (points === 1) return "Rzut wolny";
+      return fallback || "Punkt";
+    }
     return fallback || "Gol";
   }
   if (normalized === "OWN_GOAL") return "Gol samobójczy";
@@ -128,6 +161,16 @@ function kindPl(kind: string, fallback?: string, incident?: IncidentPublicDTO): 
   if (normalized === "SET_POINT") return "Punkt (set)";
   if (normalized === "TIMEOUT") return "Timeout";
   if (normalized === "FOUL") return "Faul";
+  if (normalized === "WRESTLING_POINT_1") return "Punkt techniczny 1";
+  if (normalized === "WRESTLING_POINT_2") return "Punkty techniczne 2";
+  if (normalized === "WRESTLING_POINT_4") return "Punkty techniczne 4";
+  if (normalized === "WRESTLING_POINT_5") return "Punkty techniczne 5";
+  if (normalized === "WRESTLING_PASSIVITY") return "Pasywność";
+  if (normalized === "WRESTLING_CAUTION") return "Ostrzeżenie";
+  if (normalized === "WRESTLING_FALL") return "Tusz";
+  if (normalized === "WRESTLING_INJURY") return "Kontuzja";
+  if (normalized === "WRESTLING_FORFEIT") return "Walkower";
+  if (normalized === "WRESTLING_DISQUALIFICATION") return "Dyskwalifikacja";
 
   return fallback || kind || "Incydent";
 }
@@ -139,6 +182,9 @@ function periodLabel(period: string | null | undefined): string {
   if (normalized === "Q2") return "2 kwarta";
   if (normalized === "Q3") return "3 kwarta";
   if (normalized === "Q4") return "4 kwarta";
+  if (normalized === "P1") return "1 okres";
+  if (normalized === "BREAK") return "Przerwa";
+  if (normalized === "P2") return "2 okres";
   if (normalized === "OT1") return "Dogrywka 1";
   if (normalized === "OT2") return "Dogrywka 2";
   if (normalized === "OT3") return "Dogrywka 3";
@@ -175,13 +221,16 @@ function latestKnownPeriod(
   return null;
 }
 
-function formatIncidentLine(incident: IncidentPublicDTO, basketballMode: boolean): string {
+function formatIncidentLine(
+  incident: IncidentPublicDTO,
+  options: { basketballMode: boolean; showPeriods: boolean; wrestlingMode: boolean }
+): string {
   const minute = incidentMinute(incident);
   const minuteText = typeof minute === "number" ? `${minute}'` : "";
-  const periodText = basketballMode ? periodLabel(incident.period) : "";
+  const periodText = options.showPeriods ? periodLabel(incident.period) : "";
   const periodPrefix = periodText && periodText !== "-" ? `[${periodText}]` : "";
 
-  const label = kindPl(incident.kind, incident.kind_display, incident);
+  const label = kindPl(incident.kind, incident.kind_display, incident, options);
   const player = (incident.player_name || "").trim();
   const playerIn = (incident.player_in_name || "").trim();
   const playerOut = (incident.player_out_name || "").trim();
@@ -192,10 +241,10 @@ function formatIncidentLine(incident: IncidentPublicDTO, basketballMode: boolean
   return `${periodPrefix} ${minuteText} ${label}`.trim();
 }
 
-function formatCommentaryLine(entry: CommentaryEntryPublicDTO, basketballMode: boolean): string {
+function formatCommentaryLine(entry: CommentaryEntryPublicDTO, showPeriods: boolean): string {
   const minute = commentaryMinute(entry);
   const minuteText = typeof minute === "number" ? `${minute}'` : "";
-  const periodText = basketballMode ? periodLabel(entry.period) : "";
+  const periodText = showPeriods ? periodLabel(entry.period) : "";
   const periodPrefix = periodText && periodText !== "-" ? `[${periodText}]` : "";
   const text = (entry.text || "").trim();
 
