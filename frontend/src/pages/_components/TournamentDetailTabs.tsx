@@ -169,6 +169,13 @@ function formatDisciplineLabel(discipline: string | null | undefined): string {
   return discipline || "Brak";
 }
 
+function formatTournamentFormatLabel(format: Tournament["tournament_format"] | string | null | undefined): string {
+  if (format === "LEAGUE") return "Liga";
+  if (format === "CUP") return "Puchar";
+  if (format === "MIXED") return "Grupy + puchar";
+  return format || "Brak";
+}
+
 async function copyToClipboard(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {
@@ -529,7 +536,7 @@ export function TournamentDetailTabs(props: Props) {
             lines={[
               { label: "Status", value: panelStats?.status_label ?? formatStatusLabel(tournament.status) },
               { label: "Dyscyplina", value: formatDisciplineLabel(tournament.discipline) },
-              { label: "Format", value: tournament.tournament_format },
+              { label: "Format", value: formatTournamentFormatLabel(tournament.tournament_format) },
               { label: "Widoczność", value: isPublishedDraft ? "Publiczny" : "Prywatny" },
               { label: "Dywizje", value: panelStats?.divisions_count ?? 0 },
             ]}
@@ -665,7 +672,7 @@ export function TournamentDetailTabs(props: Props) {
           <Card className="bg-white/[0.04] p-4">
             <KeyValue k="Status" v={panelStats?.status_label ?? formatStatusLabel(tournament.status)} />
             <KeyValue k="Dyscyplina" v={formatDisciplineLabel(tournament.discipline)} />
-            <KeyValue k="Format" v={tournament.tournament_format} />
+            <KeyValue k="Format" v={formatTournamentFormatLabel(tournament.tournament_format)} />
             <KeyValue k="Widoczność" v={isPublishedDraft ? "Publiczny" : "Prywatny"} />
             <KeyValue k="Dywizje" v={panelStats?.divisions_count ?? 0} />
           </Card>
@@ -875,7 +882,7 @@ export function TournamentDetailTabs(props: Props) {
                 checked={includeShareCodeInLink}
                 onCheckedChange={setIncludeShareCodeInLink}
                 label="Kod w linku"
-                description={!shareAccessCodeValue ? "Aby dopinać kod, ustaw go w publikacji i widoczności." : "Dodaje parametr code do URL."}
+                description={!shareAccessCodeValue ? "Aby dopinać kod, ustaw go w publikacji i widoczności." : "Dodaje kod dostępu do adresu linku."}
                 disabled={!shareAccessCodeValue}
                 className="shrink-0"
               />
@@ -956,7 +963,7 @@ export function TournamentDetailTabs(props: Props) {
                 checked={includeJoinCodeInLink}
                 onCheckedChange={setIncludeJoinCodeInLink}
                 label="Kod w linku"
-                description={!joinCodeDraft.trim() ? "Aby dopinać kod, ustaw go w rejestracji zawodników." : "Dodaje parametr join_code do URL."}
+                description={!joinCodeDraft.trim() ? "Aby dopinać kod, ustaw go w rejestracji zawodników." : "Dodaje kod rejestracyjny do adresu linku."}
                 disabled={!joinCodeDraft.trim()}
                 className="shrink-0"
               />

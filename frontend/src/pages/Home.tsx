@@ -446,7 +446,7 @@ export default function Home() {
               <Pill>Wszyscy razem</Pill>
               <Pill>Tryby niestandardowe</Pill>
               <Pill>Dywizje i kategorie</Pill>
-              <Pill>Publiczny link / QR</Pill>
+              <Pill>Publiczny link / kod QR</Pill>
             </div>
           </Reveal>
 
@@ -547,7 +547,7 @@ export default function Home() {
 
                   <Card className="bg-white/[0.04] p-4">
                     <div className="text-xs text-slate-400">Publiczny dostęp</div>
-                    <div className="mt-1 text-sm font-semibold text-white">Link, QR i przejrzysty podgląd</div>
+                    <div className="mt-1 text-sm font-semibold text-white">Link, kod QR i przejrzysty podgląd</div>
                   </Card>
 
                   <Card className="bg-white/[0.04] p-4">
@@ -599,7 +599,7 @@ export default function Home() {
                   <Pill>poziomy zaawansowania</Pill>
                   <Pill>kategorie wagowe</Pill>
                   <Pill>konkurencje</Pill>
-                  <Pill>solo / duo / team</Pill>
+                  <Pill>indywidualne / duety / drużyny</Pill>
                   <Pill>własny podział organizacyjny</Pill>
                 </div>
 

@@ -37,9 +37,9 @@ class Tournament(models.Model):
         MASS_START = "MASS_START", "Wszyscy razem"
 
     class TournamentFormat(models.TextChoices):
-        CUP = "CUP", "Puchar"
+        CUP = "CUP", "Faza pucharowa"
         LEAGUE = "LEAGUE", "Liga"
-        MIXED = "MIXED", "Mieszany"
+        MIXED = "MIXED", "Grupy + puchar"
 
     class EntryMode(models.TextChoices):
         MANAGER = "MANAGER", "Organizator + asystenci"
@@ -57,12 +57,18 @@ class Tournament(models.Model):
 
     class WrestlingCompetitionMode(models.TextChoices):
         AUTO = "AUTO", "Automatyczny"
-        NORDIC = "NORDIC", "Nordic"
+        NORDIC = "NORDIC", "System nordycki"
         TWO_POOLS = "TWO_POOLS", "Dwie grupy"
         ELIMINATION_REPECHAGE = "ELIMINATION_REPECHAGE", "Eliminacja + repasaże"
 
     FORMATCFG_LEAGUE_LEGS_KEY = "league_matches"
     DEFAULT_LEAGUE_LEGS = 1
+
+    FORMATCFG_TENNIS_BEST_OF_KEY = "tennis_best_of"
+    DEFAULT_TENNIS_BEST_OF = 3
+    FORMATCFG_TENNIS_POINTS_MODE_KEY = "tennis_points_mode"
+    TENNIS_POINTS_MODE_NONE = "NONE"
+    TENNIS_POINTS_MODE_PLT = "PLT"
 
     FORMATCFG_WRESTLING_STYLE_KEY = "wrestling_style"
     FORMATCFG_WRESTLING_MODE_KEY = "wrestling_competition_mode"
@@ -194,14 +200,14 @@ class Tournament(models.Model):
     join_enabled = models.BooleanField(
         default=False,
         db_index=True,
-        help_text="Czy użytkownicy mogą dołączać do turnieju przez konto + kod (join link + code).",
+        help_text="Czy użytkownicy mogą dołączać do turnieju przez konto i kod dołączania.",
     )
 
     # Flaga aktywuje podgląd publiczny dla uczestników przed publikacją.
     participants_public_preview_enabled = models.BooleanField(
         default=False,
         db_index=True,
-        help_text="Czy zarejestrowani uczestnicy mogą oglądać TournamentPublic przed publikacją turnieju.",
+        help_text="Czy zarejestrowani uczestnicy mogą oglądać widok publiczny przed publikacją turnieju.",
     )
 
     # Flaga rozdziela samodzielną zmianę nazwy od kolejki akceptacyjnej.
@@ -231,7 +237,7 @@ class Tournament(models.Model):
         max_length=32,
         blank=True,
         null=True,
-        help_text="Kod dołączania uczestników (JOIN) używany, gdy join_enabled=true.",
+        help_text="Kod dołączania uczestników używany, gdy dołączanie przez konto jest włączone.",
     )
 
     description = models.TextField(blank=True, null=True)
@@ -268,6 +274,33 @@ class Tournament(models.Model):
     @classmethod
     def normalize_format_config(cls, discipline: str, cfg) -> dict:
         normalized = dict(cfg or {})
+
+        if discipline == cls.Discipline.TENNIS:
+            raw_best_of = normalized.get(
+                cls.FORMATCFG_TENNIS_BEST_OF_KEY,
+                cls.DEFAULT_TENNIS_BEST_OF,
+            )
+            try:
+                tennis_best_of = int(raw_best_of)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("tennis_best_of musi mieć wartość 3 albo 5.") from exc
+            if tennis_best_of not in (3, 5):
+                raise ValueError("tennis_best_of musi mieć wartość 3 albo 5.")
+            normalized[cls.FORMATCFG_TENNIS_BEST_OF_KEY] = tennis_best_of
+
+            tennis_points_mode = str(
+                normalized.get(cls.FORMATCFG_TENNIS_POINTS_MODE_KEY)
+                or cls.TENNIS_POINTS_MODE_NONE
+            ).upper()
+            if tennis_points_mode not in (
+                cls.TENNIS_POINTS_MODE_NONE,
+                cls.TENNIS_POINTS_MODE_PLT,
+            ):
+                raise ValueError("tennis_points_mode musi mieć wartość NONE albo PLT.")
+            normalized[cls.FORMATCFG_TENNIS_POINTS_MODE_KEY] = tennis_points_mode
+        else:
+            normalized.pop(cls.FORMATCFG_TENNIS_BEST_OF_KEY, None)
+            normalized.pop(cls.FORMATCFG_TENNIS_POINTS_MODE_KEY, None)
 
         if discipline != cls.Discipline.WRESTLING:
             normalized.pop(cls.FORMATCFG_WRESTLING_STYLE_KEY, None)
@@ -308,6 +341,14 @@ class Tournament(models.Model):
     def get_wrestling_competition_mode(self) -> str:
         cfg = self.normalize_format_config(self.discipline, self.format_config)
         return str(cfg.get(self.FORMATCFG_WRESTLING_MODE_KEY) or self.WrestlingCompetitionMode.AUTO)
+
+    def get_tennis_best_of(self) -> int:
+        cfg = self.normalize_format_config(self.discipline, self.format_config)
+        return int(cfg.get(self.FORMATCFG_TENNIS_BEST_OF_KEY) or self.DEFAULT_TENNIS_BEST_OF)
+
+    def get_tennis_points_mode(self) -> str:
+        cfg = self.normalize_format_config(self.discipline, self.format_config)
+        return str(cfg.get(self.FORMATCFG_TENNIS_POINTS_MODE_KEY) or self.TENNIS_POINTS_MODE_NONE)
 
     def get_default_division(self):
         return self.divisions.filter(is_default=True).order_by("order", "id").first() or self.divisions.order_by(
@@ -360,7 +401,7 @@ class Tournament(models.Model):
 
     def set_league_legs(self, legs: int) -> None:
         if legs not in (1, 2):
-            raise ValueError("league_legs musi wynosić 1 albo 2")
+            raise ValueError("league_matches musi wynosić 1 albo 2.")
         cfg = dict(self.format_config or {})
         cfg[self.FORMATCFG_LEAGUE_LEGS_KEY] = legs
         self.format_config = cfg
@@ -1285,6 +1326,14 @@ class Division(models.Model):
         cfg = self.normalize_format_config(self.tournament.discipline, self.format_config)
         return str(cfg.get(Tournament.FORMATCFG_WRESTLING_MODE_KEY) or Tournament.WrestlingCompetitionMode.AUTO)
 
+    def get_tennis_best_of(self) -> int:
+        cfg = self.normalize_format_config(self.tournament.discipline, self.format_config)
+        return int(cfg.get(Tournament.FORMATCFG_TENNIS_BEST_OF_KEY) or Tournament.DEFAULT_TENNIS_BEST_OF)
+
+    def get_tennis_points_mode(self) -> str:
+        cfg = self.normalize_format_config(self.tournament.discipline, self.format_config)
+        return str(cfg.get(Tournament.FORMATCFG_TENNIS_POINTS_MODE_KEY) or Tournament.TENNIS_POINTS_MODE_NONE)
+
     def get_league_legs(self) -> int:
         raw = (self.format_config or {}).get(
             Tournament.FORMATCFG_LEAGUE_LEGS_KEY,
@@ -1298,7 +1347,7 @@ class Division(models.Model):
 
     def set_league_legs(self, legs: int) -> None:
         if legs not in (1, 2):
-            raise ValueError("league_legs musi wynosić 1 albo 2")
+            raise ValueError("league_matches musi wynosić 1 albo 2.")
         cfg = dict(self.format_config or {})
         cfg[Tournament.FORMATCFG_LEAGUE_LEGS_KEY] = legs
         self.format_config = cfg
@@ -1498,7 +1547,7 @@ class Stage(models.Model):
     class StageType(models.TextChoices):
         LEAGUE = "LEAGUE", "Liga"
         GROUP = "GROUP", "Faza grupowa"
-        KNOCKOUT = "KNOCKOUT", "Puchar (KO)"
+        KNOCKOUT = "KNOCKOUT", "Faza pucharowa"
         THIRD_PLACE = "THIRD_PLACE", "Mecz o 3. miejsce"
         MASS_START = "MASS_START", "Etap wszyscy razem"
 
@@ -2441,7 +2490,7 @@ class MatchIncident(models.Model):
         HANDBALL_TWO_MINUTES = "HANDBALL_TWO_MINUTES", "Kara 2 min (ręczna)"
         TENNIS_POINT = "TENNIS_POINT", "Punkt (tenis)"
         TENNIS_CODE_VIOLATION = "TENNIS_CODE_VIOLATION", "Naruszenie przepisów (tenis)"
-        TIMEOUT = "TIMEOUT", "Przerwa/timeout"
+        TIMEOUT = "TIMEOUT", "Przerwa na żądanie"
         WRESTLING_POINT_1 = "WRESTLING_POINT_1", "Punkt techniczny 1 (zapasy)"
         WRESTLING_POINT_2 = "WRESTLING_POINT_2", "Punkty techniczne 2 (zapasy)"
         WRESTLING_POINT_4 = "WRESTLING_POINT_4", "Punkty techniczne 4 (zapasy)"

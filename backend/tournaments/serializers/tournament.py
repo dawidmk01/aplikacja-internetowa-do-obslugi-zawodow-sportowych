@@ -26,6 +26,8 @@ User = get_user_model()
 TENIS_POINTS_MODES = ("NONE", "PLT")
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
 ACTIVE_ENTRY_MODES = (Tournament.EntryMode.MANAGER, Tournament.EntryMode.ORGANIZER_ONLY)
+
+# ===== Helpery walidacji i wyboru aktywnej dywizji =====
 DIVISION_CONFIG_FIELDS = {
     "competition_type",
     "competition_model",
@@ -55,7 +57,7 @@ def _normalize_format_config(discipline: str | None, cfg) -> dict:
             raise serializers.ValidationError(
                 {
                     "format_config": {
-                        "tennis_points_mode": f"Dozwolone: {', '.join(TENIS_POINTS_MODES)}"
+                        "tennis_points_mode": "Dozwolone wartości: standardowy zapis tenisa albo skrócony zapis punktowy."
                     }
                 }
             )
@@ -74,7 +76,7 @@ def _normalize_result_mode(value: str | None) -> str:
     allowed = {Tournament.ResultMode.SCORE, Tournament.ResultMode.CUSTOM}
     if mode not in allowed:
         raise serializers.ValidationError(
-            {"result_mode": "Dozwolone wartości: SCORE, CUSTOM."}
+            {"result_mode": "Dozwolone wartości: klasyczny wynik albo wynik niestandardowy."}
         )
     return mode
 
@@ -280,8 +282,7 @@ def _normalize_division_config(
             raise serializers.ValidationError(
                 {
                     "competition_type": (
-                        "Dla dyscypliny niestandardowej wybierz typ uczestnictwa: "
-                        "INDIVIDUAL albo TEAM."
+                        "Dla dyscypliny niestandardowej wybierz tryb indywidualny albo drużynowy."
                     )
                 }
             )
@@ -293,8 +294,7 @@ def _normalize_division_config(
             raise serializers.ValidationError(
                 {
                     "competition_model": (
-                        "Dla dyscypliny niestandardowej wybierz model rywalizacji: "
-                        "HEAD_TO_HEAD albo MASS_START."
+                        "Dla dyscypliny niestandardowej wybierz model pojedynków albo wspólnego startu."
                     )
                 }
             )
@@ -304,7 +304,7 @@ def _normalize_division_config(
                 {
                     "result_mode": (
                         "Dla w pełni skonfigurowanej dyscypliny niestandardowej wymagany jest "
-                        "result_mode=CUSTOM."
+                        "niestandardowy tryb wyniku."
                     )
                 }
             )
@@ -333,7 +333,7 @@ def _normalize_division_config(
             raise serializers.ValidationError(
                 {
                     "competition_model": (
-                        "Dla zapasów obsługiwany jest obecnie model HEAD_TO_HEAD."
+                        "Dla zapasów obsługiwany jest obecnie model pojedynków."
                     )
                 }
             )
@@ -373,7 +373,7 @@ def _normalize_division_config(
         raise serializers.ValidationError(
             {
                 "result_mode": (
-                    "Tryb CUSTOM jest obecnie dostępny tylko dla dyscypliny niestandardowej."
+                    "Tryb wyniku niestandardowego jest obecnie dostępny tylko dla dyscypliny niestandardowej."
                 )
             }
         )
@@ -410,6 +410,25 @@ class GroupScheduleEntrySerializer(serializers.Serializer):
     scheduled_time = serializers.TimeField(required=False, allow_null=True)
     location = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
 
+
+def _mass_start_stage_name_from_context(context_obj, stage_order: int) -> str | None:
+    if not hasattr(context_obj, "get_mass_start_stages"):
+        return None
+
+    stage_cfgs = list(context_obj.get_mass_start_stages() or [])
+    index = max(0, int(stage_order or 1) - 1)
+    if index >= len(stage_cfgs):
+        return None
+
+    stage_cfg = stage_cfgs[index]
+    if not isinstance(stage_cfg, dict):
+        return None
+
+    raw_name = str(stage_cfg.get(Tournament.RESULTCFG_STAGE_NAME_KEY) or "").strip()
+    return raw_name or None
+
+
+# ===== Reprezentacja i walidacja turnieju =====
 
 class TournamentSerializer(serializers.ModelSerializer):
     my_role = serializers.SerializerMethodField()
@@ -555,7 +574,7 @@ class TournamentSerializer(serializers.ModelSerializer):
     def validate_entry_mode(self, value: str):
         if value not in ACTIVE_ENTRY_MODES:
             raise serializers.ValidationError(
-                "Nieprawidłowy tryb panelu. Dozwolone: MANAGER, ORGANIZER_ONLY."
+                "Nieprawidłowy tryb panelu. Dozwolone ustawienia to organizator z asystentami albo tylko organizator."
             )
         return value
 
@@ -930,6 +949,7 @@ class TournamentSerializer(serializers.ModelSerializer):
         return dict(Tournament.Status.choices).get(status_value, str(status_value or "-"))
 
     def _mass_start_stage_rounds_count(self, context_obj, stage: Stage) -> int:
+        # Odczyt liczby rund z konfiguracji etapu zapewnia zgodność postępu z konfiguracją custom.
         if not hasattr(context_obj, "get_mass_start_stages"):
             return 1
 
@@ -1078,7 +1098,8 @@ class TournamentSerializer(serializers.ModelSerializer):
         if stage.stage_type == getattr(stage.StageType, "THIRD_PLACE", "THIRD_PLACE"):
             return "Mecz o 3. miejsce"
         if stage.stage_type == getattr(stage.StageType, "MASS_START", "MASS_START"):
-            return f"Etap {stage.order}"
+            context_obj = getattr(stage, "division", None) or getattr(stage, "tournament", None)
+            return _mass_start_stage_name_from_context(context_obj, stage.order) or f"Etap {stage.order}"
         return f"Etap {stage.order}"
 
     def get_matches_started(self, obj: Tournament) -> bool:
@@ -1090,6 +1111,8 @@ class TournamentSerializer(serializers.ModelSerializer):
 
         return qs.filter(status__in=(Match.Status.IN_PROGRESS, Match.Status.FINISHED)).exists()
 
+
+# ===== Aktualizacja metadanych i harmonogramu =====
 
 class TournamentMetaUpdateSerializer(serializers.ModelSerializer):
     stage_schedule = StageScheduleEntrySerializer(many=True, required=False, write_only=True)

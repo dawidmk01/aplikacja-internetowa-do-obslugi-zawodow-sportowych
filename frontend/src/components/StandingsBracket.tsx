@@ -503,6 +503,13 @@ function formatCustomResultDisplay(
   return "-";
 }
 
+function getTimeFormatLabel(format: string): string {
+  if (format === "HH:MM:SS") return "godziny:minuty:sekundy";
+  if (format === "MM:SS") return "minuty:sekundy";
+  if (format === "SS.hh") return "sekundy:setne";
+  return "minuty:sekundy:setne";
+}
+
 function getCustomTypeLabel(row: StandingRow, resultConfig: Record<string, any>, meta?: StandingsMeta | null): string {
   const valueKind = getCustomValueKind(resultConfig, meta);
   if (valueKind === "TIME") return "Czas";
@@ -517,7 +524,7 @@ function getCustomRankingDescription(resultConfig: Record<string, any>, meta?: S
 
   if (valueKind === "TIME") {
     const format = String(resultConfig.time_format ?? "MM:SS.hh");
-    return `Ranking według czasu. Lepszy jest wynik niższy. Format prezentacji: ${format}.`;
+    return `Ranking według czasu. Lepszy jest wynik niższy. Format prezentacji: ${getTimeFormatLabel(format)}.`;
   }
 
   if (valueKind === "PLACE") {
@@ -665,7 +672,7 @@ function TournamentStandingsView({
               ) : (
                 <Gauge className="h-4 w-4 text-slate-200" />
               )}
-              {customMode === "HEAD_TO_HEAD_POINTS" ? "Tabela punktowa" : "Ranking custom"}
+              {customMode === "HEAD_TO_HEAD_POINTS" ? "Klasyfikacja punktowa" : "Klasyfikacja niestandardowa"}
             </div>
           </div>
         </Card>
@@ -1095,7 +1102,7 @@ function StandingsTableDesktop({
               <th className="py-3 pr-3">Gemy +</th>
               <th className="py-3 pr-3">Gemy -</th>
               <th className="py-3 pr-3">RG</th>
-              {showTennisPoints ? <th className="py-3 pr-3">Pkt (PLT)</th> : null}
+              {showTennisPoints ? <th className="py-3 pr-3">Punkty (skrócony zapis)</th> : null}
               <th className="py-3 pr-2">Forma</th>
             </tr>
           ) : (

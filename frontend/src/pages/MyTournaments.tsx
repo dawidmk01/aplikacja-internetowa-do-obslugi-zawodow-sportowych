@@ -24,6 +24,13 @@ import {
 
 import { acceptAssistantInvite, apiFetch, apiGet, declineAssistantInvite, getAccess } from "../api";
 import { cn } from "../lib/cn";
+import {
+  DISCIPLINE_LABELS,
+  TOURNAMENT_FORMAT_LABELS,
+  TOURNAMENT_STATUS_LABELS,
+  USER_ROLE_LABELS,
+  getLabel,
+} from "../lib/sportLabels";
 
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
@@ -94,44 +101,19 @@ function buildMeWsUrl() {
 }
 
 function disciplineLabel(code: string | undefined) {
-  switch (code) {
-    case "football":
-      return "Piłka nożna";
-    case "volleyball":
-      return "Siatkówka";
-    case "basketball":
-      return "Koszykówka";
-    case "handball":
-      return "Piłka ręczna";
-    case "tennis":
-      return "Tenis";
-    case "wrestling":
-      return "Zapasy";
-    default:
-      return code ?? "-";
-  }
+  return getLabel(DISCIPLINE_LABELS, code, "-");
 }
 
 function formatLabel(v?: Tournament["tournament_format"]) {
-  if (v === "LEAGUE") return "Liga";
-  if (v === "CUP") return "Puchar";
-  if (v === "MIXED") return "Mieszany";
-  return "-";
+  return getLabel(TOURNAMENT_FORMAT_LABELS, v, "-");
 }
 
 function statusLabel(v?: Tournament["status"]) {
-  if (v === "DRAFT") return "Szkic";
-  if (v === "CONFIGURED") return "Skonfigurowany";
-  if (v === "RUNNING") return "W trakcie";
-  if (v === "FINISHED") return "Zakończony";
-  return "-";
+  return getLabel(TOURNAMENT_STATUS_LABELS, v, "-");
 }
 
 function roleLabel(v: Tournament["my_role"]) {
-  if (v === "ORGANIZER") return "Organizator";
-  if (v === "ASSISTANT") return "Asystent";
-  if (v === "PARTICIPANT") return "Zawodnik";
-  return "-";
+  return getLabel(USER_ROLE_LABELS, v, "-");
 }
 
 function normalizePL(s: string) {

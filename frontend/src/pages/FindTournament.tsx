@@ -81,8 +81,7 @@ export default function FindTournament() {
       <div className="mb-4">
         <h1 className="text-2xl font-bold tracking-tight text-white">Wyszukaj turniej</h1>
         <p className="mt-1 text-sm text-slate-300">
-          Wklej link z QR, ścieżkę lub wpisz ID. Parametry typu{" "}
-          <span className="text-slate-200">?code=</span> zostaną zachowane.
+          Wklej link z kodu QR, ścieżkę lub wpisz ID. Parametry linku, takie jak kod dostępu, zostaną zachowane.
         </p>
       </div>
 
@@ -104,7 +103,7 @@ export default function FindTournament() {
               <Input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="np. 12 lub /tournaments/12?code=ABCD"
+                placeholder="np. 12 lub link do turnieju"
                 className="pl-9"
                 autoComplete="off"
               />

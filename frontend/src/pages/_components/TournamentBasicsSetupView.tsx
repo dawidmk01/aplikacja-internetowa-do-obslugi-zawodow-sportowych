@@ -11,6 +11,22 @@ import {
 } from "lucide-react";
 
 import { cn } from "../../lib/cn";
+import {
+  AGGREGATION_MODE_LABELS,
+  BETTER_RESULT_LABELS,
+  COMPETITION_MODEL_LABELS,
+  COMPETITION_TYPE_LABELS,
+  DISCIPLINE_LABELS,
+  HEAD_TO_HEAD_MODE_LABELS,
+  RESULT_VALUE_KIND_LABELS,
+  TENNIS_POINTS_MODE_LABELS,
+  TIME_FORMAT_LABELS,
+  TOURNAMENT_FORMAT_LABELS,
+  UNIT_PRESET_LABELS,
+  WRESTLING_COMPETITION_MODE_LABELS,
+  WRESTLING_STYLE_LABELS,
+  getLabel,
+} from "../../lib/sportLabels";
 
 import { Button } from "../../ui/Button";
 import { Card } from "../../ui/Card";
@@ -20,15 +36,15 @@ import { Portal } from "../../ui/Portal";
 import { Select, type SelectOption } from "../../ui/Select";
 import { Textarea } from "../../ui/Textarea";
 const WRESTLING_STYLE_OPTIONS = [
-  { value: "FREESTYLE", label: "Styl wolny" },
-  { value: "GRECO_ROMAN", label: "Styl klasyczny" },
+  { value: "FREESTYLE", label: WRESTLING_STYLE_LABELS.FREESTYLE },
+  { value: "GRECO_ROMAN", label: WRESTLING_STYLE_LABELS.GRECO_ROMAN },
 ] as const;
 
 const WRESTLING_COMPETITION_MODE_OPTIONS = [
-  { value: "AUTO", label: "Automatyczny" },
-  { value: "NORDIC", label: "Nordic" },
-  { value: "TWO_POOLS", label: "Dwie grupy" },
-  { value: "ELIMINATION_REPECHAGE", label: "Eliminacja + repasaże" },
+  { value: "AUTO", label: WRESTLING_COMPETITION_MODE_LABELS.AUTO },
+  { value: "NORDIC", label: WRESTLING_COMPETITION_MODE_LABELS.NORDIC },
+  { value: "TWO_POOLS", label: WRESTLING_COMPETITION_MODE_LABELS.TWO_POOLS },
+  { value: "ELIMINATION_REPECHAGE", label: WRESTLING_COMPETITION_MODE_LABELS.ELIMINATION_REPECHAGE },
 ] as const;
 
 
@@ -172,9 +188,9 @@ type CustomKnockoutResolutionMode =
   | "OVERTIME_DECIDING_SHOTS";
 
 export const FORMAT_OPTIONS: SelectOption<TournamentFormat>[] = [
-  { value: "LEAGUE", label: "Liga" },
-  { value: "CUP", label: "Puchar (KO)" },
-  { value: "MIXED", label: "Grupy + puchar" },
+  { value: "LEAGUE", label: TOURNAMENT_FORMAT_LABELS.LEAGUE },
+  { value: "CUP", label: TOURNAMENT_FORMAT_LABELS.CUP },
+  { value: "MIXED", label: TOURNAMENT_FORMAT_LABELS.MIXED },
 ];
 
 export const DISCIPLINE_OPTIONS: SelectOption<Discipline>[] = [
@@ -196,19 +212,19 @@ export const DISCIPLINE_OPTIONS: SelectOption<Discipline>[] = [
 ];
 
 export const COMPETITION_TYPE_OPTIONS: SelectOption<CompetitionType>[] = [
-  { value: "TEAM", label: "Drużynowa" },
-  { value: "INDIVIDUAL", label: "Indywidualna" },
+  { value: "TEAM", label: COMPETITION_TYPE_LABELS.TEAM },
+  { value: "INDIVIDUAL", label: COMPETITION_TYPE_LABELS.INDIVIDUAL },
 ];
 
 export const COMPETITION_MODEL_OPTIONS: SelectOption<CompetitionModel>[] = [
   {
     value: "HEAD_TO_HEAD",
-    label: "Pojedynki / mecze",
-    description: "A vs B lub drużyna vs drużyna.",
+    label: COMPETITION_MODEL_LABELS.HEAD_TO_HEAD,
+    description: "Uczestnik przeciwko uczestnikowi albo drużyna przeciwko drużynie.",
   },
   {
     value: "MASS_START",
-    label: "Wszyscy razem",
+    label: COMPETITION_MODEL_LABELS.MASS_START,
     description: "Bez meczów 1 na 1, klasyfikacja etapowa lub globalna.",
   },
 ];
@@ -216,60 +232,60 @@ export const COMPETITION_MODEL_OPTIONS: SelectOption<CompetitionModel>[] = [
 export const HEAD_TO_HEAD_MODE_OPTIONS: SelectOption<CustomHeadToHeadMode>[] = [
   {
     value: "POINTS_TABLE",
-    label: "System punktowy",
+    label: HEAD_TO_HEAD_MODE_LABELS.POINTS_TABLE,
     description: "Punkty za wynik i różne typy rozstrzygnięcia.",
   },
   {
     value: "MEASURED_RESULT",
-    label: "Wynik mierzalny",
+    label: HEAD_TO_HEAD_MODE_LABELS.MEASURED_RESULT,
     description: "Np. czas, liczba, miejsce w pojedynku.",
   },
 ];
 
 export const MASS_START_VALUE_KIND_OPTIONS: SelectOption<CustomMassStartValueKind>[] = [
-  { value: "TIME", label: "Czas" },
-  { value: "NUMBER", label: "Liczba" },
-  { value: "POINTS", label: "Punkty" },
-  { value: "PLACE", label: "Miejsce" },
+  { value: "TIME", label: RESULT_VALUE_KIND_LABELS.TIME },
+  { value: "NUMBER", label: RESULT_VALUE_KIND_LABELS.NUMBER },
+  { value: "POINTS", label: RESULT_VALUE_KIND_LABELS.POINTS },
+  { value: "PLACE", label: RESULT_VALUE_KIND_LABELS.PLACE },
 ];
 
 export const MEASURED_VALUE_KIND_OPTIONS: SelectOption<CustomMeasuredValueKind>[] = [
-  { value: "TIME", label: "Czas" },
-  { value: "NUMBER", label: "Liczba" },
-  { value: "PLACE", label: "Miejsce" },
+  { value: "TIME", label: RESULT_VALUE_KIND_LABELS.TIME },
+  { value: "NUMBER", label: RESULT_VALUE_KIND_LABELS.NUMBER },
+  { value: "PLACE", label: RESULT_VALUE_KIND_LABELS.PLACE },
 ];
 
 export const CUSTOM_BETTER_RESULT_OPTIONS: SelectOption<CustomBetterResult>[] = [
-  { value: "HIGHER", label: "Wyższy wynik jest lepszy" },
-  { value: "LOWER", label: "Niższy wynik jest lepszy" },
+  { value: "HIGHER", label: BETTER_RESULT_LABELS.HIGHER },
+  { value: "LOWER", label: BETTER_RESULT_LABELS.LOWER },
 ];
 
 export const CUSTOM_TIME_FORMAT_OPTIONS: SelectOption<CustomTimeFormat>[] = [
-  { value: "HH:MM:SS", label: "HH:MM:SS" },
-  { value: "MM:SS", label: "MM:SS" },
-  { value: "MM:SS.hh", label: "MM:SS.hh" },
-  { value: "SS.hh", label: "SS.hh" },
+  { value: "HH:MM:SS", label: TIME_FORMAT_LABELS["HH:MM:SS"] },
+  { value: "MM:SS", label: TIME_FORMAT_LABELS["MM:SS"] },
+  { value: "MM:SS.hh", label: TIME_FORMAT_LABELS["MM:SS.hh"] },
+  { value: "SS.hh", label: TIME_FORMAT_LABELS["SS.hh"] },
 ];
 
 export const AGGREGATION_MODE_OPTIONS: SelectOption<CustomAggregationMode>[] = [
-  { value: "SUM", label: "Suma" },
-  { value: "AVERAGE", label: "Średnia" },
-  { value: "BEST", label: "Najlepszy wynik" },
-  { value: "LAST_ROUND", label: "Tylko ostatnia runda" },
+  { value: "SUM", label: AGGREGATION_MODE_LABELS.SUM },
+  { value: "AVERAGE", label: AGGREGATION_MODE_LABELS.AVERAGE },
+  { value: "BEST", label: AGGREGATION_MODE_LABELS.BEST },
+  { value: "LAST_ROUND", label: AGGREGATION_MODE_LABELS.LAST_ROUND },
 ];
 
 export const UNIT_PRESET_OPTIONS: SelectOption<CustomUnitPreset>[] = [
-  { value: "POINTS", label: "Punkty" },
-  { value: "SECONDS", label: "Sekundy" },
-  { value: "MILLISECONDS", label: "Milisekundy" },
-  { value: "MINUTES", label: "Minuty" },
-  { value: "METERS", label: "Metry" },
-  { value: "CENTIMETERS", label: "Centymetry" },
-  { value: "KILOGRAMS", label: "Kilogramy" },
-  { value: "GRAMS", label: "Gramy" },
-  { value: "REPS", label: "Powtórzenia" },
-  { value: "PLACE", label: "Miejsce" },
-  { value: "CUSTOM", label: "Własna" },
+  { value: "POINTS", label: UNIT_PRESET_LABELS.POINTS },
+  { value: "SECONDS", label: UNIT_PRESET_LABELS.SECONDS },
+  { value: "MILLISECONDS", label: UNIT_PRESET_LABELS.MILLISECONDS },
+  { value: "MINUTES", label: UNIT_PRESET_LABELS.MINUTES },
+  { value: "METERS", label: UNIT_PRESET_LABELS.METERS },
+  { value: "CENTIMETERS", label: UNIT_PRESET_LABELS.CENTIMETERS },
+  { value: "KILOGRAMS", label: UNIT_PRESET_LABELS.KILOGRAMS },
+  { value: "GRAMS", label: UNIT_PRESET_LABELS.GRAMS },
+  { value: "REPS", label: UNIT_PRESET_LABELS.REPS },
+  { value: "PLACE", label: UNIT_PRESET_LABELS.PLACE },
+  { value: "CUSTOM", label: UNIT_PRESET_LABELS.CUSTOM },
 ];
 
 export const DECIMAL_PLACES_OPTIONS: SelectOption<number>[] = [
@@ -299,23 +315,23 @@ export const THIRD_PLACE_OPTIONS: SelectOption<ThirdPlaceSelectValue>[] = [
 export const CUSTOM_MATCH_SERIES_OPTIONS: SelectOption<CustomMatchSeriesMode>[] = [
   { value: "ONE_MATCH", label: "1 mecz" },
   { value: "TWO_MATCHES", label: "2 mecze (dwumecz)" },
-  { value: "BEST_OF_3", label: "Best of 3" },
-  { value: "BEST_OF_5", label: "Best of 5" },
-  { value: "BEST_OF_7", label: "Best of 7" },
-  { value: "BEST_OF_9", label: "Best of 9" },
+  { value: "BEST_OF_3", label: "Do 2 wygranych" },
+  { value: "BEST_OF_5", label: "Do 3 wygranych" },
+  { value: "BEST_OF_7", label: "Do 4 wygranych" },
+  { value: "BEST_OF_9", label: "Do 5 wygranych" },
 ];
 
 export const CUSTOM_GROUP_RESOLUTION_OPTIONS: SelectOption<CustomGroupResolutionMode>[] = [
   { value: "DRAW_ALLOWED", label: "Remis" },
   { value: "OVERTIME_ONLY", label: "Dogrywka (możliwy remis)" },
-  { value: "DECIDING_SHOTS_ONLY", label: "Rzuty rozstrzygające / shootout (pewny zwycięzca)" },
-  { value: "OVERTIME_DECIDING_SHOTS", label: "Dogrywka + rzuty rozstrzygające / shootout (pewny zwycięzca)" },
+  { value: "DECIDING_SHOTS_ONLY", label: "Rzuty rozstrzygające (pewny zwycięzca)" },
+  { value: "OVERTIME_DECIDING_SHOTS", label: "Dogrywka + rzuty rozstrzygające (pewny zwycięzca)" },
 ];
 
 export const CUSTOM_KNOCKOUT_RESOLUTION_OPTIONS: SelectOption<CustomKnockoutResolutionMode>[] = [
   { value: "OVERTIME_ONLY", label: "Dogrywka" },
-  { value: "DECIDING_SHOTS_ONLY", label: "Rzuty rozstrzygające / shootout (pewny zwycięzca)" },
-  { value: "OVERTIME_DECIDING_SHOTS", label: "Dogrywka + rzuty rozstrzygające / shootout (pewny zwycięzca)" },
+  { value: "DECIDING_SHOTS_ONLY", label: "Rzuty rozstrzygające (pewny zwycięzca)" },
+  { value: "OVERTIME_DECIDING_SHOTS", label: "Dogrywka + rzuty rozstrzygające (pewny zwycięzca)" },
 ];
 
 export const HB_POINTS_OPTIONS: SelectOption<HandballPointsMode>[] = [
@@ -325,20 +341,20 @@ export const HB_POINTS_OPTIONS: SelectOption<HandballPointsMode>[] = [
 ];
 
 export const TENNIS_BEST_OF_OPTIONS: SelectOption<TennisBestOf>[] = [
-  { value: 3, label: "Best of 3 (do 2 wygranych setów)" },
-  { value: 5, label: "Best of 5 (do 3 wygranych setów)" },
+  { value: 3, label: "Do 2 wygranych setów" },
+  { value: 5, label: "Do 3 wygranych setów" },
 ];
 
 export const TENNIS_POINTS_MODE_OPTIONS: SelectOption<TennisPointsMode>[] = [
   {
     value: "NONE",
-    label: "Bez punktów (ranking: zwycięstwa, RS, RG, H2H)",
-    description: "Tabela bez kolumny Pkt.",
+    label: TENNIS_POINTS_MODE_LABELS.NONE,
+    description: "Tabela bez osobnej kolumny punktów. O kolejności decydują zwycięstwa, sety, gemy i bezpośredni mecz.",
   },
   {
     value: "PLT",
-    label: "Punktacja PLT (np. 10/8/4/2/0)",
-    description: "Backend liczy i zwraca Pkt.",
+    label: TENNIS_POINTS_MODE_LABELS.PLT,
+    description: "System wylicza punkty klasyfikacyjne w tabeli turniejowej.",
   },
 ];
 
@@ -362,41 +378,23 @@ export const BASKETBALL_RESOLUTION_OPTIONS: SelectOption<BasketballResolutionMod
 ];
 
 export function disciplineLabel(code?: Discipline, customName?: string) {
-  switch (code) {
-    case "football":
-      return "Piłka nożna";
-    case "volleyball":
-      return "Siatkówka";
-    case "basketball":
-      return "Koszykówka";
-    case "handball":
-      return "Piłka ręczna";
-    case "tennis":
-      return "Tenis";
-    case "custom":
-      return customName?.trim() || "Dyscyplina niestandardowa";
-    default:
-      return code ?? "-";
+  if (code === "custom") {
+    return customName?.trim() || DISCIPLINE_LABELS.custom;
   }
+
+  return getLabel(DISCIPLINE_LABELS, code, "-");
 }
 
 export function formatLabel(v?: TournamentFormat) {
-  if (v === "LEAGUE") return "Liga";
-  if (v === "CUP") return "Puchar (KO)";
-  if (v === "MIXED") return "Grupy + puchar";
-  return "-";
+  return getLabel(TOURNAMENT_FORMAT_LABELS, v, "-");
 }
 
 export function competitionTypeLabel(v?: CompetitionType) {
-  if (v === "TEAM") return "Drużynowa";
-  if (v === "INDIVIDUAL") return "Indywidualna";
-  return "-";
+  return getLabel(COMPETITION_TYPE_LABELS, v, "-");
 }
 
 export function competitionModelLabel(v?: CompetitionModel) {
-  if (v === "HEAD_TO_HEAD") return "Pojedynki / mecze";
-  if (v === "MASS_START") return "Wszyscy razem";
-  return "-";
+  return getLabel(COMPETITION_MODEL_LABELS, v, "-");
 }
 
 function basketballResolutionModeLabel(v?: BasketballResolutionMode) {
@@ -405,33 +403,32 @@ function basketballResolutionModeLabel(v?: BasketballResolutionMode) {
 }
 
 function headToHeadModeLabel(v?: CustomHeadToHeadMode) {
-  if (v === "POINTS_TABLE") return "System punktowy";
-  if (v === "MEASURED_RESULT") return "Wynik mierzalny";
-  return "-";
+  return getLabel(HEAD_TO_HEAD_MODE_LABELS, v, "-");
 }
 
 function massStartValueKindLabel(v?: CustomMassStartValueKind) {
-  if (v === "TIME") return "Czas";
-  if (v === "NUMBER") return "Liczba";
-  if (v === "POINTS") return "Punkty";
-  if (v === "PLACE") return "Miejsce";
-  return "-";
+  return getLabel(RESULT_VALUE_KIND_LABELS, v, "-");
 }
 
 function betterResultLabel(v?: CustomBetterResult) {
-  if (v === "HIGHER") return "Wyższy lepszy";
-  if (v === "LOWER") return "Niższy lepszy";
-  return "-";
+  return getLabel(BETTER_RESULT_LABELS, v, "-");
+}
+
+function timeFormatLabel(v?: CustomTimeFormat | null) {
+  return getLabel(TIME_FORMAT_LABELS, v, TIME_FORMAT_LABELS["MM:SS.hh"]);
+}
+
+function wrestlingCompetitionModeLabel(v?: WrestlingCompetitionMode) {
+  return getLabel(WRESTLING_COMPETITION_MODE_LABELS, v, WRESTLING_COMPETITION_MODE_LABELS.AUTO);
 }
 
 function unitPresetLabel(v?: CustomUnitPreset, customLabel?: string) {
-  const found = UNIT_PRESET_OPTIONS.find((item) => item.value === v)?.label;
-  if (v === "CUSTOM") return customLabel?.trim() || "Własna";
-  return found ?? "-";
+  if (v === "CUSTOM") return customLabel?.trim() || UNIT_PRESET_LABELS.CUSTOM;
+  return getLabel(UNIT_PRESET_LABELS, v, "-");
 }
 
 function aggregationModeLabel(v?: CustomAggregationMode) {
-  return AGGREGATION_MODE_OPTIONS.find((item) => item.value === v)?.label ?? "-";
+  return getLabel(AGGREGATION_MODE_LABELS, v, "-");
 }
 
 function measuredSummary(config: TournamentResultConfig) {
@@ -441,11 +438,11 @@ function measuredSummary(config: TournamentResultConfig) {
   );
 
   if (config.measuredValueKind === "TIME") {
-    return `Czas, ${unit}, format ${config.measuredTimeFormat ?? "MM:SS.hh"}, niższy lepszy`;
+    return `${RESULT_VALUE_KIND_LABELS.TIME}, ${unit}, format ${timeFormatLabel(config.measuredTimeFormat)}, ${BETTER_RESULT_LABELS.LOWER.toLowerCase()}`;
   }
 
   if (config.measuredValueKind === "PLACE") {
-    return "Miejsce, niższy lepszy";
+    return `${RESULT_VALUE_KIND_LABELS.PLACE}, ${BETTER_RESULT_LABELS.LOWER.toLowerCase()}`;
   }
 
   return `${unit}, ${betterResultLabel(config.measuredBetterResult)}, dokładność ${config.measuredDecimalPlaces ?? 0}`;
@@ -458,11 +455,11 @@ function massStartSummary(config: TournamentResultConfig) {
   );
 
   if (config.massStartValueKind === "TIME") {
-    return `Czas, ${unit}, format ${config.massStartTimeFormat ?? "MM:SS.hh"}, niższy lepszy`;
+    return `${RESULT_VALUE_KIND_LABELS.TIME}, ${unit}, format ${timeFormatLabel(config.massStartTimeFormat)}, ${BETTER_RESULT_LABELS.LOWER.toLowerCase()}`;
   }
 
   if (config.massStartValueKind === "PLACE") {
-    return "Miejsce, niższy lepszy";
+    return `${RESULT_VALUE_KIND_LABELS.PLACE}, ${BETTER_RESULT_LABELS.LOWER.toLowerCase()}`;
   }
 
   return `${massStartValueKindLabel(config.massStartValueKind)}, ${unit}, ${betterResultLabel(config.massStartBetterResult)}`;
@@ -477,7 +474,7 @@ function groupResolutionModeLabel(mode?: CustomGroupResolutionMode) {
 }
 
 function knockoutResolutionModeLabel(mode?: CustomKnockoutResolutionMode) {
-  return CUSTOM_KNOCKOUT_RESOLUTION_OPTIONS.find((option) => option.value === mode)?.label ?? "Dogrywka + rzuty rozstrzygające / shootout (pewny zwycięzca)";
+  return CUSTOM_KNOCKOUT_RESOLUTION_OPTIONS.find((option) => option.value === mode)?.label ?? "Dogrywka + rzuty rozstrzygające (pewny zwycięzca)";
 }
 
 function bestOfFromSeriesMode(mode?: CustomMatchSeriesMode): number | null {
@@ -648,7 +645,7 @@ function getStructureValidationMessages(params: {
   if (discipline === "custom" && competitionModel === "HEAD_TO_HEAD") {
     if (resultConfig.headToHeadMode === "POINTS_TABLE") {
       if (resultConfig.bestOf != null && ![3, 5, 7, 9].includes(resultConfig.bestOf)) {
-        messages.push("Best of może mieć tylko wartości 3, 5, 7 lub 9.");
+        messages.push("Tryb serii do określonej liczby zwycięstw może mieć tylko wartości 3, 5, 7 lub 9.");
       }
 
       if (resultConfig.legsCount != null && (resultConfig.legsCount < 1 || resultConfig.legsCount > 2)) {
@@ -2312,7 +2309,7 @@ export function StructureCard({
                       disabled={disableForm}
                       onChange={onCupMatchesChange}
                       options={MATCHES_COUNT_ROUNDS_OPTIONS}
-                      ariaLabel="KO - rundy"
+                      ariaLabel="Puchar - liczba meczów"
                     />
                   </div>
 
@@ -2326,7 +2323,7 @@ export function StructureCard({
                         { value: 1, label: "1 mecz" },
                         { value: 2, label: "2 mecze" },
                       ]}
-                      ariaLabel="KO - finał"
+                      ariaLabel="Puchar - finał"
                     />
                   </div>
 
@@ -2337,7 +2334,7 @@ export function StructureCard({
                       disabled={disableForm}
                       onChange={handleThirdPlaceSelectChange}
                       options={THIRD_PLACE_OPTIONS}
-                      ariaLabel="KO - mecz o 3. miejsce"
+                      ariaLabel="Puchar - mecz o 3. miejsce"
                     />
                   </div>
 
@@ -2367,7 +2364,7 @@ export function StructureCard({
                     disabled={disableForm}
                     onChange={onCupMatchesChange}
                     options={MATCHES_COUNT_ROUNDS_OPTIONS}
-                    ariaLabel="KO - rundy"
+                    ariaLabel="Puchar - liczba meczów"
                   />
                 </div>
 
@@ -2381,7 +2378,7 @@ export function StructureCard({
                       { value: 1, label: "1 mecz" },
                       { value: 2, label: "2 mecze" },
                     ]}
-                    ariaLabel="KO - finał"
+                    ariaLabel="Puchar - finał"
                   />
                 </div>
 
@@ -2392,7 +2389,7 @@ export function StructureCard({
                     disabled={disableForm}
                     onChange={handleThirdPlaceSelectChange}
                     options={THIRD_PLACE_OPTIONS}
-                    ariaLabel="KO - mecz o 3. miejsce"
+                    ariaLabel="Puchar - mecz o 3. miejsce"
                   />
                 </div>
 
@@ -2758,7 +2755,7 @@ export function StructureCard({
                       disabled={disableForm || isTennis}
                       onChange={onCupMatchesChange}
                       options={MATCHES_COUNT_ROUNDS_OPTIONS}
-                      ariaLabel="KO - rundy"
+                      ariaLabel="Puchar - liczba meczów"
                     />
                   </div>
 
@@ -2772,7 +2769,7 @@ export function StructureCard({
                         { value: 1, label: "1 mecz" },
                         { value: 2, label: "2 mecze" },
                       ]}
-                      ariaLabel="KO - finał"
+                      ariaLabel="Puchar - finał"
                     />
                   </div>
 
@@ -2783,7 +2780,7 @@ export function StructureCard({
                       disabled={disableForm || isTennis}
                       onChange={handleThirdPlaceSelectChange}
                       options={THIRD_PLACE_OPTIONS}
-                      ariaLabel="KO - mecz o 3. miejsce"
+                      ariaLabel="Puchar - mecz o 3. miejsce"
                     />
                   </div>
 
@@ -2795,7 +2792,7 @@ export function StructureCard({
                         disabled={disableForm}
                         onChange={onTennisBestOfChange}
                         options={TENNIS_BEST_OF_OPTIONS}
-                        ariaLabel="Tenis - best of KO"
+                        ariaLabel="Tenis - format meczu w pucharze"
                       />
                     </div>
                   )}
@@ -2808,7 +2805,7 @@ export function StructureCard({
                         disabled={disableForm}
                         onChange={onHbKnockoutTiebreakChange}
                         options={HB_KNOCKOUT_TIEBREAK_OPTIONS}
-                        ariaLabel="KO - rozstrzyganie remisów"
+                        ariaLabel="Puchar - rozstrzyganie remisów"
                       />
                     </div>
                   )}
@@ -2821,7 +2818,7 @@ export function StructureCard({
                         disabled={disableForm}
                         onChange={onBasketballResolutionModeChange}
                         options={BASKETBALL_RESOLUTION_OPTIONS}
-                        ariaLabel="Koszykówka - KO rozstrzyganie remisów"
+                        ariaLabel="Koszykówka - rozstrzyganie remisów w pucharze"
                       />
                       <div className="text-xs text-slate-400">
                         Remis po czasie podstawowym jest rozstrzygany dogrywką. Karne nie są dostępne.
@@ -2908,27 +2905,19 @@ export function SummaryCard({
               {format === "MIXED" && (
                 <>
                   <StatRow label="Liczba grup" value={preview.groups} />
-                  <StatRow label="Awansujących do KO" value={preview.advancing} />
+                  <StatRow label="Awansujących do pucharu" value={preview.advancing} />
                 </>
               )}
               {format !== "CUP" && <StatRow label="Mecze fazy tabeli" value={preview.groupTotal} />}
-              {format !== "LEAGUE" && <StatRow label="Mecze fazy KO" value={preview.koTotal} />}
+              {format !== "LEAGUE" && <StatRow label="Mecze fazy pucharowej" value={preview.koTotal} />}
               {discipline === "basketball" ? (
                 <StatRow label="Rozstrzyganie remisu" value={basketballResolutionModeLabel(basketballResolutionMode)} />
               ) : null}
-              {isWrestling ? <StatRow label="Styl" value={wrestlingStyle === "GRECO_ROMAN" ? "Styl klasyczny" : "Styl wolny"} /> : null}
+              {isWrestling ? <StatRow label="Styl" value={getLabel(WRESTLING_STYLE_LABELS, wrestlingStyle, WRESTLING_STYLE_LABELS.FREESTYLE)} /> : null}
               {isWrestling ? (
                 <StatRow
                   label="Tryb zawodów"
-                  value={
-                    wrestlingCompetitionMode === "NORDIC"
-                      ? "Nordic"
-                      : wrestlingCompetitionMode === "TWO_POOLS"
-                        ? "Dwie grupy"
-                        : wrestlingCompetitionMode === "ELIMINATION_REPECHAGE"
-                          ? "Eliminacja + repasaże"
-                          : "Automatyczny"
-                  }
+                  value={wrestlingCompetitionModeLabel(wrestlingCompetitionMode)}
                 />
               ) : null}
               <StatRow label="Szac. łączna liczba meczów" value={preview.total} />

@@ -1,3 +1,6 @@
+// frontend/src/components/matchLive/CommentaryPanel.tsx
+// Komponent obsługuje komentarz tekstowy LIVE oraz sportowo zależny słownik gotowych fraz dla wybranego meczu.
+
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetch } from "../../api";
@@ -6,8 +9,8 @@ import { cn } from "../../lib/cn";
 import { Button } from "../../ui/Button";
 import { Card } from "../../ui/Card";
 import { Input } from "../../ui/Input";
-import { Textarea } from "../../ui/Textarea";
 import { Select, type SelectOption } from "../../ui/Select";
+import { Textarea } from "../../ui/Textarea";
 import { toast } from "../../ui/Toast";
 
 type LiveCommentaryEntryDTO = {
@@ -46,6 +49,15 @@ type DictState = {
 };
 
 type PhraseUiType = "WORD" | "TEMPLATE";
+type PhrasePresetMode = "SPORT" | "GENERAL";
+type SupportedDiscipline =
+  | "football"
+  | "basketball"
+  | "handball"
+  | "tennis"
+  | "wrestling"
+  | "custom"
+  | "unknown";
 
 type Props = {
   tournamentId: number;
@@ -57,56 +69,208 @@ type Props = {
   awayTeamName: string;
 };
 
-function isWrestlingDiscipline(discipline: string): boolean {
-  return String(discipline || "").toLowerCase() === "wrestling";
-}
+const PHRASE_TYPE_OPTIONS: SelectOption<PhraseUiType>[] = [
+  { value: "WORD", label: "Słowo" },
+  { value: "TEMPLATE", label: "Zwrot" },
+];
 
-function defaultPhrases(discipline: string): DictState {
-  if (isWrestlingDiscipline(discipline)) {
-    return {
-      words: [
-        { id: null, kind: "TOKEN", text: "atak" },
-        { id: null, kind: "TOKEN", text: "obrona" },
-        { id: null, kind: "TOKEN", text: "parter" },
-        { id: null, kind: "TOKEN", text: "pasywność" },
-        { id: null, kind: "TOKEN", text: "ostrzeżenie" },
-        { id: null, kind: "TOKEN", text: "tusz" },
-        { id: null, kind: "TOKEN", text: "przewaga techniczna" },
-        { id: null, kind: "TOKEN", text: "chwyt" },
-        { id: null, kind: "TOKEN", text: "kontra" },
-      ],
-      templates: [
-        { id: null, kind: "TEMPLATE", text: "Dobry atak - ale bez punktu." },
-        { id: null, kind: "TEMPLATE", text: "Akcja przenosi się do parteru." },
-        { id: null, kind: "TEMPLATE", text: "Zawodnik przejmuje inicjatywę w środku maty." },
-        { id: null, kind: "TEMPLATE", text: "Sędzia zwraca uwagę na pasywność." },
-        { id: null, kind: "TEMPLATE", text: "Groźna akcja - zawodnik blisko tuszu." },
-        { id: null, kind: "TEMPLATE", text: "Kontrola walki po stronie atakującego." },
-      ],
-    };
+const PHRASE_PRESET_OPTIONS: SelectOption<PhrasePresetMode>[] = [
+  { value: "SPORT", label: "Dopasowane do dyscypliny" },
+  { value: "GENERAL", label: "Zwroty ogólne" },
+];
+
+function normalizeDiscipline(value: string): SupportedDiscipline {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (
+    normalized === "football" ||
+    normalized === "basketball" ||
+    normalized === "handball" ||
+    normalized === "tennis" ||
+    normalized === "wrestling" ||
+    normalized === "custom"
+  ) {
+    return normalized;
   }
 
+  return "unknown";
+}
+
+function isWrestlingDiscipline(discipline: SupportedDiscipline): boolean {
+  return discipline === "wrestling";
+}
+
+function supportsSportPreset(discipline: SupportedDiscipline): boolean {
+  return discipline !== "custom" && discipline !== "unknown";
+}
+
+function generalPhrases(): DictState {
   return {
     words: [
-      { id: null, kind: "TOKEN", text: "strzał" },
-      { id: null, kind: "TOKEN", text: "faul" },
-      { id: null, kind: "TOKEN", text: "kontra" },
-      { id: null, kind: "TOKEN", text: "rzut rożny" },
-      { id: null, kind: "TOKEN", text: "spalony" },
-      { id: null, kind: "TOKEN", text: "podanie" },
-      { id: null, kind: "TOKEN", text: "pressing" },
+      { id: null, kind: "TOKEN", text: "atak" },
       { id: null, kind: "TOKEN", text: "obrona" },
-      { id: null, kind: "TOKEN", text: "bramka" },
+      { id: null, kind: "TOKEN", text: "tempo" },
+      { id: null, kind: "TOKEN", text: "pressing" },
+      { id: null, kind: "TOKEN", text: "kontra" },
+      { id: null, kind: "TOKEN", text: "przewaga" },
+      { id: null, kind: "TOKEN", text: "interwencja" },
+      { id: null, kind: "TOKEN", text: "niedokładność" },
+      { id: null, kind: "TOKEN", text: "faul" },
+      { id: null, kind: "TOKEN", text: "przerwa" },
     ],
     templates: [
-      { id: null, kind: "TEMPLATE", text: "Dobra akcja - ale bez efektu." },
-      { id: null, kind: "TEMPLATE", text: "Nieudany strzał - piłka obok bramki." },
-      { id: null, kind: "TEMPLATE", text: "Groźna sytuacja - bramkarz broni." },
-      { id: null, kind: "TEMPLATE", text: "Faul w środku pola." },
-      { id: null, kind: "TEMPLATE", text: "Rzut rożny - dośrodkowanie w pole karne." },
-      { id: null, kind: "TEMPLATE", text: "Szybka kontra - obrona wraca." },
+      { id: null, kind: "TEMPLATE", text: "Dobra akcja - ale bez końcowego efektu." },
+      { id: null, kind: "TEMPLATE", text: "Zespół buduje przewagę i utrzymuje piłkę." },
+      { id: null, kind: "TEMPLATE", text: "Szybka zmiana tempa po przejęciu." },
+      { id: null, kind: "TEMPLATE", text: "Udana interwencja w defensywie." },
+      { id: null, kind: "TEMPLATE", text: "Akcja zatrzymana przewinieniem." },
+      { id: null, kind: "TEMPLATE", text: "Rośnie presja po stronie atakującej." },
     ],
   };
+}
+
+function sportSpecificPhrases(discipline: SupportedDiscipline): DictState {
+  switch (discipline) {
+    case "football":
+      return {
+        words: [
+          { id: null, kind: "TOKEN", text: "strzał" },
+          { id: null, kind: "TOKEN", text: "dośrodkowanie" },
+          { id: null, kind: "TOKEN", text: "spalony" },
+          { id: null, kind: "TOKEN", text: "rzut rożny" },
+          { id: null, kind: "TOKEN", text: "stały fragment" },
+          { id: null, kind: "TOKEN", text: "pole karne" },
+          { id: null, kind: "TOKEN", text: "odbiór" },
+          { id: null, kind: "TOKEN", text: "bramka" },
+        ],
+        templates: [
+          { id: null, kind: "TEMPLATE", text: "Dośrodkowanie w pole karne - obrona wybija piłkę." },
+          { id: null, kind: "TEMPLATE", text: "Groźny strzał - bramkarz skutecznie interweniuje." },
+          { id: null, kind: "TEMPLATE", text: "Szybka kontra - akcja przenosi się pod bramkę rywali." },
+          { id: null, kind: "TEMPLATE", text: "Piłka wraca do środka pola po nieudanym rozegraniu." },
+          { id: null, kind: "TEMPLATE", text: "Stały fragment - zespół ustawia się do rozegrania." },
+          { id: null, kind: "TEMPLATE", text: "Dobra wymiana podań, ale bez finalnego uderzenia." },
+        ],
+      };
+    case "basketball":
+      return {
+        words: [
+          { id: null, kind: "TOKEN", text: "trójka" },
+          { id: null, kind: "TOKEN", text: "zbiórka" },
+          { id: null, kind: "TOKEN", text: "asysta" },
+          { id: null, kind: "TOKEN", text: "przechwyt" },
+          { id: null, kind: "TOKEN", text: "strata" },
+          { id: null, kind: "TOKEN", text: "blok" },
+          { id: null, kind: "TOKEN", text: "rzut wolny" },
+          { id: null, kind: "TOKEN", text: "wejście pod kosz" },
+        ],
+        templates: [
+          { id: null, kind: "TEMPLATE", text: "Szybki atak kończy się rzutem spod kosza." },
+          { id: null, kind: "TEMPLATE", text: "Celny rzut z dystansu podnosi tempo spotkania." },
+          { id: null, kind: "TEMPLATE", text: "Dobra zbiórka otwiera kolejną akcję ofensywną." },
+          { id: null, kind: "TEMPLATE", text: "Przechwyt uruchamia kontratak po zmianie posiadania." },
+          { id: null, kind: "TEMPLATE", text: "Faul zatrzymuje akcję i prowadzi do rzutów wolnych." },
+          { id: null, kind: "TEMPLATE", text: "Obrona zamyka środek i wymusza rzut z trudnej pozycji." },
+        ],
+      };
+    case "handball":
+      return {
+        words: [
+          { id: null, kind: "TOKEN", text: "rzut" },
+          { id: null, kind: "TOKEN", text: "kontratak" },
+          { id: null, kind: "TOKEN", text: "koło" },
+          { id: null, kind: "TOKEN", text: "blok" },
+          { id: null, kind: "TOKEN", text: "interwencja" },
+          { id: null, kind: "TOKEN", text: "wykluczenie" },
+          { id: null, kind: "TOKEN", text: "wznowienie" },
+          { id: null, kind: "TOKEN", text: "przewinienie" },
+        ],
+        templates: [
+          { id: null, kind: "TEMPLATE", text: "Szybkie wznowienie otwiera drogę do kontrataku." },
+          { id: null, kind: "TEMPLATE", text: "Mocny rzut z drugiej linii - bramkarz skutecznie broni." },
+          { id: null, kind: "TEMPLATE", text: "Akcja schodzi na koło, ale obrona zamyka dostęp do bramki." },
+          { id: null, kind: "TEMPLATE", text: "Przewinienie przerywa akcję i spowalnia tempo ataku." },
+          { id: null, kind: "TEMPLATE", text: "Dobra interwencja otwiera możliwość szybkiego wyjścia." },
+          { id: null, kind: "TEMPLATE", text: "Zespół cierpliwie buduje pozycję rzutową." },
+        ],
+      };
+    case "tennis":
+      return {
+        words: [
+          { id: null, kind: "TOKEN", text: "serwis" },
+          { id: null, kind: "TOKEN", text: "return" },
+          { id: null, kind: "TOKEN", text: "forhend" },
+          { id: null, kind: "TOKEN", text: "bekhend" },
+          { id: null, kind: "TOKEN", text: "wolej" },
+          { id: null, kind: "TOKEN", text: "przełamanie" },
+          { id: null, kind: "TOKEN", text: "as serwisowy" },
+          { id: null, kind: "TOKEN", text: "podwójny błąd" },
+        ],
+        templates: [
+          { id: null, kind: "TEMPLATE", text: "Mocny serwis ustawia wymianę od pierwszego uderzenia." },
+          { id: null, kind: "TEMPLATE", text: "Długa wymiana kończy się błędem po stronie odbierającego." },
+          { id: null, kind: "TEMPLATE", text: "Dobry return odbiera inicjatywę serwującemu." },
+          { id: null, kind: "TEMPLATE", text: "Zawodnik przejmuje kontrolę wymiany po mocnym forhendu." },
+          { id: null, kind: "TEMPLATE", text: "Błąd serwisowy komplikuje gema serwisowego." },
+          { id: null, kind: "TEMPLATE", text: "Akcja przy siatce przynosi przewagę po agresywnym wejściu." },
+        ],
+      };
+    case "wrestling":
+      return {
+        words: [
+          { id: null, kind: "TOKEN", text: "atak" },
+          { id: null, kind: "TOKEN", text: "obrona" },
+          { id: null, kind: "TOKEN", text: "parter" },
+          { id: null, kind: "TOKEN", text: "pasywność" },
+          { id: null, kind: "TOKEN", text: "ostrzeżenie" },
+          { id: null, kind: "TOKEN", text: "tusz" },
+          { id: null, kind: "TOKEN", text: "przewaga techniczna" },
+          { id: null, kind: "TOKEN", text: "chwyt" },
+          { id: null, kind: "TOKEN", text: "kontra" },
+          { id: null, kind: "TOKEN", text: "mata" },
+        ],
+        templates: [
+          { id: null, kind: "TEMPLATE", text: "Dobry atak - ale bez punktu." },
+          { id: null, kind: "TEMPLATE", text: "Akcja przenosi się do parteru." },
+          { id: null, kind: "TEMPLATE", text: "Zawodnik przejmuje inicjatywę w środku maty." },
+          { id: null, kind: "TEMPLATE", text: "Sędzia zwraca uwagę na pasywność." },
+          { id: null, kind: "TEMPLATE", text: "Groźna akcja - zawodnik blisko tuszu." },
+          { id: null, kind: "TEMPLATE", text: "Kontrola walki po stronie atakującego." },
+        ],
+      };
+    default:
+      return { words: [], templates: [] };
+  }
+}
+
+function defaultPhrases(discipline: SupportedDiscipline, presetMode: PhrasePresetMode): DictState {
+  const general = generalPhrases();
+  if (presetMode === "GENERAL" || !supportsSportPreset(discipline)) {
+    return general;
+  }
+
+  const sportSpecific = sportSpecificPhrases(discipline);
+  return {
+    words: uniqByText([...sportSpecific.words, ...general.words]),
+    templates: uniqByText([...sportSpecific.templates, ...general.templates]),
+  };
+}
+
+function commentaryPlaceholderForDiscipline(discipline: SupportedDiscipline): string {
+  switch (discipline) {
+    case "football":
+      return "Np. Szybkie dośrodkowanie z prawej strony, obrona wybija piłkę poza pole karne...";
+    case "basketball":
+      return "Np. Szybki atak po przechwycie, wejście pod kosz i celny rzut...";
+    case "handball":
+      return "Np. Wznowienie przyspiesza kontratak, rzut z drugiej linii broni bramkarz...";
+    case "tennis":
+      return "Np. Mocny serwis otwiera gema, return ląduje blisko linii końcowej...";
+    case "wrestling":
+      return "Np. Dobry chwyt w środku maty, zawodnik przechodzi do parteru...";
+    default:
+      return "Np. Szybka akcja po przejęciu, obrona przerywa atak faulem...";
+  }
 }
 
 function periodLabel(period?: string | null): string {
@@ -170,12 +334,6 @@ function insertAtCursor(el: HTMLTextAreaElement | null, value: string) {
   el.focus();
 }
 
-const PHRASE_TYPE_OPTIONS: SelectOption<PhraseUiType>[] = [
-  { value: "WORD", label: "Słowo" },
-  { value: "TEMPLATE", label: "Zwrot" },
-];
-
-/** Panel komentarza LIVE obsługuje wpisy minutowe oraz słownik fraz dla szybkiego wprowadzania. */
 export function CommentaryPanel({
   tournamentId,
   matchId,
@@ -185,15 +343,19 @@ export function CommentaryPanel({
   homeTeamName,
   awayTeamName,
 }: Props) {
+  const normalizedDiscipline = useMemo(() => normalizeDiscipline(discipline), [discipline]);
+  const canSwitchPreset = useMemo(() => supportsSportPreset(normalizedDiscipline), [normalizedDiscipline]);
+
   const [entries, setEntries] = useState<LiveCommentaryEntryDTO[]>([]);
   const [entriesLoading, setEntriesLoading] = useState(false);
 
-  const [dict, setDict] = useState<DictState>(() => defaultPhrases(discipline));
+  const [apiDict, setApiDict] = useState<DictState>({ words: [], templates: [] });
   const [dictLoading, setDictLoading] = useState(false);
 
   const [draft, setDraft] = useState("");
   const [newPhrase, setNewPhrase] = useState("");
   const [newPhraseType, setNewPhraseType] = useState<PhraseUiType>("WORD");
+  const [presetMode, setPresetMode] = useState<PhrasePresetMode>(canSwitchPreset ? "SPORT" : "GENERAL");
 
   const [entrySubmitting, setEntrySubmitting] = useState(false);
   const [dictSubmitting, setDictSubmitting] = useState(false);
@@ -209,15 +371,33 @@ export function CommentaryPanel({
   }, [homeTeamName, awayTeamName]);
 
   const minuteSafe = useMemo(() => Math.max(0, Number(minute || 0)), [minute]);
-  const commentaryHeaderLabel = isWrestlingDiscipline(discipline) ? "Czas walki" : "Minuta";
-  const commentaryPlaceholder = isWrestlingDiscipline(discipline)
-    ? "Np. Dobry chwyt w środku maty, zawodnik przechodzi do parteru..."
-    : "Np. Lewandowski biegnie do bramki, nieudany strzał, Real rozpoczyna z pola...";
+  const commentaryHeaderLabel = isWrestlingDiscipline(normalizedDiscipline) ? "Czas walki" : "Minuta";
+  const commentaryPlaceholder = useMemo(
+    () => commentaryPlaceholderForDiscipline(normalizedDiscipline),
+    [normalizedDiscipline]
+  );
+
+  const fallbackDict = useMemo(
+    () => defaultPhrases(normalizedDiscipline, presetMode),
+    [normalizedDiscipline, presetMode]
+  );
+
+  const dict = useMemo<DictState>(() => {
+    return {
+      words: uniqByText([...apiDict.words, ...fallbackDict.words]),
+      templates: uniqByText([...apiDict.templates, ...fallbackDict.templates]),
+    };
+  }, [apiDict, fallbackDict]);
+
+  useEffect(() => {
+    setPresetMode(canSwitchPreset ? "SPORT" : "GENERAL");
+  }, [canSwitchPreset, normalizedDiscipline]);
 
   useEffect(() => {
     setDraft("");
-    setDict(defaultPhrases(discipline));
-  }, [matchId, discipline]);
+  }, [matchId, normalizedDiscipline]);
+
+  // ===== Odczyt wpisów komentarza =====
 
   useEffect(() => {
     let alive = true;
@@ -240,7 +420,7 @@ export function CommentaryPanel({
         setEntries(list);
       } catch (e: any) {
         if (!alive) return;
-        toast.error(e?.message ?? "Nie udało się pobrać komentarzy.", { title: "Komentarz LIVE" });
+        toast.error(e?.message ?? "Nie udało się pobrać komentarzy.", { title: "Komentarz na żywo" });
         setEntries([]);
       } finally {
         if (alive) setEntriesLoading(false);
@@ -253,6 +433,8 @@ export function CommentaryPanel({
       alive = false;
     };
   }, [matchId]);
+
+  // ===== Odczyt i scalanie słownika fraz =====
 
   useEffect(() => {
     let alive = true;
@@ -283,18 +465,15 @@ export function CommentaryPanel({
           .map((x) => ({ id: x.id, kind: "TEMPLATE" as const, text: String(x.text || "").trim() }))
           .filter((x) => x.text);
 
-        const fallback = defaultPhrases();
-        const merged: DictState = {
-          words: uniqByText([...apiWords, ...fallback.words]),
-          templates: uniqByText([...apiTemplates, ...fallback.templates]),
-        };
-
         if (!alive) return;
-        setDict(merged);
+        setApiDict({
+          words: uniqByText(apiWords),
+          templates: uniqByText(apiTemplates),
+        });
       } catch (e: any) {
         if (!alive) return;
-        toast.error(e?.message ?? "Nie udało się pobrać słownika.", { title: "Komentarz LIVE" });
-        setDict(defaultPhrases(discipline));
+        toast.error(e?.message ?? "Nie udało się pobrać słownika.", { title: "Komentarz na żywo" });
+        setApiDict({ words: [], templates: [] });
       } finally {
         if (alive) setDictLoading(false);
       }
@@ -313,6 +492,8 @@ export function CommentaryPanel({
     insertAtCursor(el, text);
     setDraft(el.value);
   }, []);
+
+  // ===== Operacje na wpisach komentarza =====
 
   const addEntry = useCallback(async () => {
     const text = (draft || "").trim();
@@ -344,7 +525,7 @@ export function CommentaryPanel({
       setEntries((prev) => [created, ...prev]);
       setDraft("");
     } catch (e: any) {
-      toast.error(e?.message ?? "Nie udało się dodać wpisu.", { title: "Komentarz LIVE" });
+      toast.error(e?.message ?? "Nie udało się dodać wpisu.", { title: "Komentarz na żywo" });
     } finally {
       setEntrySubmitting(false);
     }
@@ -367,7 +548,7 @@ export function CommentaryPanel({
         }
       } catch (e: any) {
         setEntries(prev);
-        toast.error(e?.message ?? "Nie udało się usunąć wpisu.", { title: "Komentarz LIVE" });
+        toast.error(e?.message ?? "Nie udało się usunąć wpisu.", { title: "Komentarz na żywo" });
       } finally {
         setDeletingEntryIds((m) => {
           const n = { ...m };
@@ -378,6 +559,8 @@ export function CommentaryPanel({
     },
     [canEdit, entries]
   );
+
+  // ===== Operacje na słowniku fraz =====
 
   const addToDictionary = useCallback(async () => {
     const text = (newPhrase || "").trim();
@@ -405,11 +588,11 @@ export function CommentaryPanel({
       const created = data as PhraseDTO;
       const phrase: UiPhrase = {
         id: created.id,
-        kind: kind as any,
+        kind: kind as "TOKEN" | "TEMPLATE",
         text: String(created.text || "").trim(),
       };
 
-      setDict((prev) => {
+      setApiDict((prev) => {
         if (phrase.kind === "TOKEN") {
           return { ...prev, words: uniqByText([phrase, ...prev.words]) };
         }
@@ -418,7 +601,7 @@ export function CommentaryPanel({
 
       setNewPhrase("");
     } catch (e: any) {
-      toast.error(e?.message ?? "Nie udało się dodać frazy.", { title: "Komentarz LIVE" });
+      toast.error(e?.message ?? "Nie udało się dodać frazy.", { title: "Komentarz na żywo" });
     } finally {
       setDictSubmitting(false);
     }
@@ -430,11 +613,11 @@ export function CommentaryPanel({
       if (!phrase.id) return;
 
       const id = phrase.id;
-      const prev = dict;
+      const prev = apiDict;
 
       setDeletingPhraseIds((m) => ({ ...m, [id]: true }));
 
-      setDict((d) => {
+      setApiDict((d) => {
         if (phrase.kind === "TOKEN") {
           return { ...d, words: d.words.filter((x) => x.id !== id) };
         }
@@ -448,8 +631,8 @@ export function CommentaryPanel({
           throw new Error(getApiErrorMessage(data, "Nie udało się usunąć frazy."));
         }
       } catch (e: any) {
-        setDict(prev);
-        toast.error(e?.message ?? "Nie udało się usunąć frazy.", { title: "Komentarz LIVE" });
+        setApiDict(prev);
+        toast.error(e?.message ?? "Nie udało się usunąć frazy.", { title: "Komentarz na żywo" });
       } finally {
         setDeletingPhraseIds((m) => {
           const n = { ...m };
@@ -458,7 +641,7 @@ export function CommentaryPanel({
         });
       }
     },
-    [canEdit, dict]
+    [apiDict, canEdit]
   );
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -489,13 +672,23 @@ export function CommentaryPanel({
     return parts.join(" ");
   }, [entriesLoading]);
 
+  const presetDescription = useMemo(() => {
+    if (!canSwitchPreset) {
+      return "Dla dyscypliny niestandardowej używany jest ogólny zestaw słów i gotowych zwrotów.";
+    }
+
+    return presetMode === "SPORT"
+      ? "Widoczne są frazy dopasowane do bieżącej dyscypliny oraz zwroty ogólne."
+      : "Widoczne są wyłącznie ogólne frazy, niezależne od konkretnej dyscypliny.";
+  }, [canSwitchPreset, presetMode]);
+
   const addEntryDisabled = !canEdit || !draft.trim() || entrySubmitting;
   const addPhraseDisabled = !newPhrase.trim() || dictSubmitting;
 
   return (
     <Card className="p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="text-base font-extrabold text-white">Komentarz LIVE</div>
+        <div className="text-base font-extrabold text-white">Komentarz na żywo</div>
         <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-white">
           {commentaryHeaderLabel}: <span className="font-bold">{minuteSafe}'</span>
         </span>
@@ -537,6 +730,21 @@ export function CommentaryPanel({
 
         <Card className="bg-white/[0.03] p-3">
           <div className="grid gap-3">
+            <div className="grid gap-2 md:grid-cols-[280px_1fr] md:items-end">
+              <div className="grid gap-1">
+                <div className="text-xs text-slate-300">Zestaw gotowych fraz</div>
+                <Select<PhrasePresetMode>
+                  value={presetMode}
+                  onChange={setPresetMode}
+                  options={PHRASE_PRESET_OPTIONS}
+                  disabled={dictLoading || !canSwitchPreset}
+                  ariaLabel="Zestaw gotowych fraz"
+                />
+              </div>
+
+              <div className="text-xs text-slate-400">{presetDescription}</div>
+            </div>
+
             <div className="grid gap-2">
               <div className="text-xs font-semibold text-slate-300">Drużyny</div>
               <div className="flex flex-wrap gap-2">

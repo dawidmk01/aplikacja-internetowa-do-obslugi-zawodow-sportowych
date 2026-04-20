@@ -78,7 +78,7 @@ const WRESTLING_KIND_OPTIONS: SelectOption<string>[] = [
   { value: "WRESTLING_INJURY", label: "Kontuzja" },
   { value: "WRESTLING_FORFEIT", label: "Walkower" },
   { value: "WRESTLING_DISQUALIFICATION", label: "Dyskwalifikacja" },
-  { value: "TIMEOUT", label: "Przerwa/timeout" },
+  { value: "TIMEOUT", label: "Przerwa techniczna" },
 ];
 
 const WRESTLING_PLAYER_KINDS = new Set<string>([

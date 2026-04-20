@@ -7,6 +7,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle } from "lucide-react";
 
 import { apiFetch } from "../api";
+import { getLabel, DIVISION_STATUS_LABELS } from "../lib/sportLabels";
 import { useTournamentFlowGuard } from "../flow/TournamentFlowGuardContext";
 
 import { Button } from "../ui/Button";
@@ -101,10 +102,7 @@ function withDivisionPayload<T extends Record<string, any>>(payload: T, division
 }
 
 function getDivisionStatusLabel(status: DivisionStatus | null | undefined) {
-  if (status === "RUNNING") return "W trakcie";
-  if (status === "FINISHED") return "Zakończona";
-  if (status === "CONFIGURED") return "Skonfigurowana";
-  return "Szkic";
+  return getLabel(DIVISION_STATUS_LABELS, status, "Szkic");
 }
 
 function clampInt(value: number, min: number, max: number) {

@@ -159,7 +159,7 @@ function kindPl(
   if (normalized === "SUBSTITUTION") return "Zmiana";
   if (normalized === "POINT") return "Punkt";
   if (normalized === "SET_POINT") return "Punkt (set)";
-  if (normalized === "TIMEOUT") return "Timeout";
+  if (normalized === "TIMEOUT") return "Przerwa na żądanie";
   if (normalized === "FOUL") return "Faul";
   if (normalized === "WRESTLING_POINT_1") return "Punkt techniczny 1";
   if (normalized === "WRESTLING_POINT_2") return "Punkty techniczne 2";
@@ -269,7 +269,7 @@ function stageTypeLabel(stageType: MatchPublicDTO["stage_type"]): string {
   if (stageType === "GROUP") return "Etap grupowy";
   if (stageType === "LEAGUE") return "Liga";
   if (stageType === "KNOCKOUT") return "Faza pucharowa";
-  if (stageType === "THIRD_PLACE") return "Mecz o 3 miejsce";
+  if (stageType === "THIRD_PLACE") return "Mecz o 3. miejsce";
   return "Etap";
 }
 

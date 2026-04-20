@@ -15,6 +15,8 @@ import {
   clearBreak,
   computeBreakLevel,
   formatClock,
+  fmtClockPeriod,
+  fmtClockState,
   isKnockoutLike,
   nextPeriodFromIntermission as utilNextPeriodFromIntermission,
   periodBaseOffsetSeconds as utilPeriodBaseOffsetSeconds,
@@ -659,10 +661,10 @@ export function ClockPanel({
           <div className="min-w-0 text-xs text-slate-300">
             {clock ? (
               <>
-                Stan: <span className="font-semibold text-white">{clock.clock_state}</span>
+                Stan: <span className="font-semibold text-white">{fmtClockState(clock.clock_state)}</span>
                 {clock.clock_period && clock.clock_period !== "NONE" ? (
                   <>
-                    {" "} - okres: <span className="font-semibold text-white">{clock.clock_period}</span>
+                    {" "} - okres: <span className="font-semibold text-white">{fmtClockPeriod(clock.clock_period)}</span>
                   </>
                 ) : null}
               </>

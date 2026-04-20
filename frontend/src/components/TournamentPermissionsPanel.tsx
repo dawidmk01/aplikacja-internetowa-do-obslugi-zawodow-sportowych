@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetch } from "../api";
 import { cn } from "../lib/cn";
+import { ENTRY_MODE_LABELS, ROLE_LABELS, getLabel } from "../lib/sportLabels";
 
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
@@ -39,10 +40,11 @@ function normalizeEntryMode(v: TournamentDTO["entry_mode"]): EntryMode {
 }
 
 function entryModeLabel(v: TournamentDTO["entry_mode"]) {
-  const m = normalizeEntryMode(v);
-  if (m === "MANAGER") return "Organizator + asystenci";
-  if (m === "ORGANIZER_ONLY") return "Tylko organizator";
-  return "-";
+  return getLabel(ENTRY_MODE_LABELS, normalizeEntryMode(v));
+}
+
+function roleLabel(v: TournamentDTO["my_role"]) {
+  return getLabel(ROLE_LABELS, v);
 }
 
 function genCode(len = 8) {
@@ -63,8 +65,8 @@ function genCode(len = 8) {
 }
 
 const entryModeOptions: SelectOption<EntryMode>[] = [
-  { value: "MANAGER", label: "MANAGER" },
-  { value: "ORGANIZER_ONLY", label: "ORGANIZER_ONLY" },
+  { value: "MANAGER", label: getLabel(ENTRY_MODE_LABELS, "MANAGER") },
+  { value: "ORGANIZER_ONLY", label: getLabel(ENTRY_MODE_LABELS, "ORGANIZER_ONLY") },
 ];
 
 
@@ -318,7 +320,7 @@ export default function TournamentPermissionsPanel({ tournamentId }: { tournamen
           <div className="mt-4 space-y-5">
             <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
               <div className="text-sm font-semibold text-white">{t.name}</div>
-              <div className="mt-1 text-xs text-slate-300">Rola: {t.my_role ?? "-"}</div>
+              <div className="mt-1 text-xs text-slate-300">Rola: {roleLabel(t.my_role)}</div>
             </div>
 
             <section className="space-y-3 border-t border-white/10 pt-4">
@@ -357,7 +359,7 @@ export default function TournamentPermissionsPanel({ tournamentId }: { tournamen
               <div className={sectionTitle}>Dołączanie uczestników (konto + kod)</div>
 
               <div className={helperText}>
-                To nie jest entry_mode. To osobny przełącznik: użytkownik (zalogowany) może wejść przez link + kod.
+                To nie jest tryb panelu. To osobny przełącznik: zalogowany użytkownik może dołączyć przez link i kod.
               </div>
 
               <Checkbox

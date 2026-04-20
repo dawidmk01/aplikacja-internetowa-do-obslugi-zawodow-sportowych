@@ -29,15 +29,29 @@ function incidentTypeLabel(value?: string): string {
 
   if (normalized === "GOAL") return "Gol";
   if (normalized === "OWN_GOAL") return "Gol samobójczy";
+  if (normalized === "PENALTY_GOAL" || normalized === "PENALTY_SCORED") return "Gol z rzutu karnego";
+  if (normalized === "PENALTY_MISSED") return "Niewykorzystany rzut karny";
   if (normalized === "YELLOW_CARD") return "Żółta kartka";
   if (normalized === "RED_CARD") return "Czerwona kartka";
-  if (normalized === "PENALTY_GOAL") return "Gol z karnego";
-  if (normalized === "PENALTY_MISSED") return "Niewykorzystany karny";
+  if (normalized === "FOUL") return "Faul";
   if (normalized === "SUBSTITUTION") return "Zmiana";
-  if (normalized === "POINT") return "Punkt";
+  if (normalized === "HANDBALL_TWO_MINUTES") return "Kara dwóch minut";
+  if (normalized === "TENNIS_POINT" || normalized === "POINT") return "Punkt";
   if (normalized === "SET_POINT") return "Punkt setowy";
+  if (normalized === "TENNIS_CODE_VIOLATION") return "Naruszenie przepisów";
+  if (normalized === "TIMEOUT") return "Przerwa na żądanie";
+  if (normalized === "WRESTLING_POINT_1") return "Punkt techniczny za 1";
+  if (normalized === "WRESTLING_POINT_2") return "Punkty techniczne za 2";
+  if (normalized === "WRESTLING_POINT_4") return "Punkty techniczne za 4";
+  if (normalized === "WRESTLING_POINT_5") return "Punkty techniczne za 5";
+  if (normalized === "WRESTLING_PASSIVITY") return "Pasywność";
+  if (normalized === "WRESTLING_CAUTION") return "Ostrzeżenie";
+  if (normalized === "WRESTLING_FALL") return "Tusz";
+  if (normalized === "WRESTLING_INJURY") return "Kontuzja";
+  if (normalized === "WRESTLING_FORFEIT") return "Walkower";
+  if (normalized === "WRESTLING_DISQUALIFICATION") return "Dyskwalifikacja";
 
-  return value?.trim() || "Incydent";
+  return "Incydent";
 }
 
 export default function ConfirmIncidentDeleteModal({

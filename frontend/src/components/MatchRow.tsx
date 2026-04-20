@@ -985,9 +985,9 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
                     : "border-white/12 bg-white/[0.05] hover:bg-white/[0.08]"
                 )}
               >
-                <span className="sm:hidden">LIVE</span>
+                <span className="sm:hidden">Na żywo</span>
                 <span className="hidden sm:inline">
-                  {openLive ? "Ukryj LIVE (zegar + incydenty)" : "Pokaż LIVE (zegar + incydenty)"}
+                  {openLive ? "Ukryj panel na żywo (zegar + incydenty)" : "Pokaż panel na żywo (zegar + incydenty)"}
                 </span>
               </Button>
             ) : null}
@@ -1190,9 +1190,9 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
                     : "border-white/12 bg-white/[0.05] hover:bg-white/[0.08]"
                 )}
               >
-                <span className="sm:hidden">LIVE</span>
+                <span className="sm:hidden">Na żywo</span>
                 <span className="hidden sm:inline">
-                  {openLive ? "Ukryj LIVE (zegar + incydenty)" : "Pokaż LIVE (zegar + incydenty)"}
+                  {openLive ? "Ukryj panel na żywo (zegar + incydenty)" : "Pokaż panel na żywo (zegar + incydenty)"}
                 </span>
               </Button>
             ) : null}
@@ -1625,7 +1625,7 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
 
       <ConfirmScoreSyncModal
         open={!!confirmScoreSync}
-        title="Synchronizacja LIVE z wynikiem"
+        title="Synchronizacja panelu na żywo z wynikiem"
         message={confirmScoreSync?.message ?? ""}
         code={confirmScoreSync?.code}
         deleteCount={confirmScoreSync?.deleteCount ?? 0}

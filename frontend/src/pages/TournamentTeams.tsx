@@ -17,6 +17,7 @@ import { toast } from "../ui/Toast";
 import { useAutosave } from "../hooks/useAutosave";
 import { AutosaveIndicator } from "../components/AutosaveIndicator";
 import ConfirmActionModal from "../components/ConfirmActionModal";
+import { PERMISSION_LABELS } from "../lib/sportLabels";
 
 type Team = {
   id: number;
@@ -171,6 +172,10 @@ function getRoleAndPerms(
   const role: MyRole = t?.my_role ?? null;
   const perms = (t?.my_permissions as MyPermissions | undefined) ?? null;
   return { role, perms };
+}
+
+function getPermissionLabel(permission: keyof typeof PERMISSION_LABELS): string {
+  return PERMISSION_LABELS[permission];
 }
 
 function clonePlayers(rows: PlayerRow[]): PlayerRow[] {
@@ -350,7 +355,7 @@ export default function TournamentTeams() {
 
       const { role, perms } = getRoleAndPerms(tournamentRef.current);
       if (role === "ASSISTANT" && !Boolean(perms?.roster_edit)) {
-        throw new Error("Brak uprawnień do edycji składów (roster_edit = false).");
+        throw new Error("Brak uprawnień do edycji składów.");
       }
 
       const endpoint = canEditRosterAsManagerRef.current
@@ -727,7 +732,7 @@ export default function TournamentTeams() {
       const t = tournamentRef.current;
       const { role, perms } = getRoleAndPerms(t);
       if (role === "ASSISTANT" && !Boolean(perms?.roster_edit)) {
-        toast.error("Brak uprawnień do edycji składów (roster_edit = false).");
+        toast.error("Brak uprawnień do edycji składów.");
         return;
       }
 
@@ -884,7 +889,7 @@ export default function TournamentTeams() {
     if (!canChangeTeamsCount) {
       if (isAssistant) {
         if (!myPerms?.tournament_edit) {
-          toast.error("Brak uprawnień: asystent nie ma tournament_edit.");
+          toast.error(`Brak uprawnień - wymagane jest uprawnienie do ${getPermissionLabel("tournament_edit")}.`);
         } else if (matchesStarted) {
           toast.error(
             "Asystent nie może zmieniać liczby uczestników po starcie dywizji."
@@ -1078,9 +1083,7 @@ export default function TournamentTeams() {
         {isAssistant && !myPerms && (
           <Card className="p-4">
             <div className="text-sm text-amber-200/90">
-              Uwaga: backend nie zwrócił{" "}
-              <code className="text-amber-100">my_permissions</code>. UI traktuje uprawnienia
-              asystenta jako wyłączone.
+              Uwaga: backend nie zwrócił konfiguracji uprawnień asystenta. UI traktuje uprawnienia asystenta jako wyłączone.
             </div>
           </Card>
         )}
@@ -1143,7 +1146,7 @@ export default function TournamentTeams() {
 
           {isAssistant && !canChangeTeamsCount && (
             <div className="mt-3 text-xs text-slate-300">
-              Wymaga <code className="text-slate-100">tournament_edit</code> i braku rozpoczętych rozgrywek.
+              {`Wymaga uprawnienia do ${getPermissionLabel("tournament_edit")} i braku rozpoczętych rozgrywek.`}
             </div>
           )}
         </Card>
@@ -1261,8 +1264,7 @@ export default function TournamentTeams() {
             <div className="mt-4">
               {isAssistant && !canEditRosterAsManager ? (
                 <div className="text-sm text-slate-300">
-                  Brak uprawnień do składów (wymagane:{" "}
-                  <code className="text-slate-100">roster_edit</code>).
+                  {`Brak uprawnień do składów - wymagane jest uprawnienie do ${getPermissionLabel("roster_edit")}.`}
                 </div>
               ) : (
                 <div className="flex flex-wrap items-center gap-2">
@@ -1407,7 +1409,7 @@ export default function TournamentTeams() {
             </div>
             {!canEditTeams && (isOrganizer || isAssistant) && (
               <div className="mt-1 text-xs text-slate-400">
-                Edycja nazw zablokowana - wymagane <code className="text-slate-100">teams_edit</code>.
+                {`Edycja nazw jest zablokowana - wymagane jest uprawnienie do ${getPermissionLabel("teams_edit")}.`}
               </div>
             )}
           </div>

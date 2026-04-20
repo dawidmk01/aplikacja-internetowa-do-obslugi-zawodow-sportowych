@@ -29,9 +29,12 @@ from tournaments.permissions import IsTournamentOrganizer
 from tournaments.serializers import TournamentMetaUpdateSerializer, TournamentSerializer
 from tournaments.services.match_generation import ensure_matches_generated
 
+from ._helpers import resolve_request_division
 
 TENIS_POINTS_MODES = ("NONE", "PLT")
 
+
+# ===== Helpery współdzielone widoków konfiguracji =====
 
 def get_model_any(app_label: str, names: list[str]):
     for name in names:
@@ -42,33 +45,8 @@ def get_model_any(app_label: str, names: list[str]):
     raise LookupError(f"Nie znaleziono żadnego modelu z listy: {names}")
 
 
-def _resolve_division_from_request(request, tournament: Tournament) -> Division | None:
-    raw_id = (
-        request.query_params.get("division_id")
-        or request.query_params.get("active_division_id")
-        or request.query_params.get("division")
-    )
-    raw_slug = (
-        request.query_params.get("division_slug")
-        or request.query_params.get("active_division_slug")
-    )
-
-    divisions_qs = tournament.divisions.all().order_by("order", "id")
-
-    if raw_id:
-        try:
-            division_id = int(raw_id)
-        except (TypeError, ValueError):
-            return None
-        return divisions_qs.filter(pk=division_id).first()
-
-    if raw_slug:
-        return divisions_qs.filter(slug=str(raw_slug).strip()).first()
-
-    return tournament.get_default_division()
-
-
 def normalize_format_config(discipline: str | None, cfg: dict | None) -> dict:
+    # Normalizacja skupia walidację konfiguracji formatu przed zapisem do dywizji i generatorów.
     disc = (discipline or "").lower()
 
     if cfg is None:
@@ -86,7 +64,7 @@ def normalize_format_config(discipline: str | None, cfg: dict | None) -> dict:
             raise serializers.ValidationError(
                 {
                     "format_config": {
-                        "tennis_points_mode": f"Dozwolone: {', '.join(TENIS_POINTS_MODES)}"
+                        "tennis_points_mode": "Dozwolone wartości: standardowy zapis tenisa albo skrócony zapis punktowy."
                     }
                 }
             )
@@ -101,6 +79,7 @@ def normalize_format_config(discipline: str | None, cfg: dict | None) -> dict:
 
 
 def normalize_result_config(result_mode: str | None, cfg: dict | None) -> dict:
+    # Normalizacja wyniku zabezpiecza zgodność konfiguracji dyscypliny niestandardowej.
     try:
         return Tournament.normalize_result_config(result_mode, cfg)
     except ValueError as exc:
@@ -416,6 +395,8 @@ def sync_custom_mass_start_structure(tournament: Tournament, *, division: Divisi
         sync_custom_mass_start_structure_for_division(tournament, current_division)
 
 
+# ===== Widoki listy i szczegółu turnieju =====
+
 class TournamentListView(ListCreateAPIView):
     queryset = Tournament.objects.all()
     serializer_class = TournamentSerializer
@@ -488,7 +469,7 @@ class TournamentDetailView(RetrieveUpdateAPIView):
     serializer_class = TournamentSerializer
 
     def _ensure_mass_start_structure(self, tournament: Tournament) -> None:
-        division = _resolve_division_from_request(self.request, tournament)
+        division = resolve_request_division(self.request, tournament)
         if division is None:
             return
 
@@ -507,7 +488,7 @@ class TournamentDetailView(RetrieveUpdateAPIView):
 
     def perform_update(self, serializer):
         tournament = serializer.instance
-        division = _resolve_division_from_request(self.request, tournament)
+        division = resolve_request_division(self.request, tournament)
         previous_competition_type = division.competition_type if division else tournament.competition_type
 
         tournament = serializer.save()
@@ -625,6 +606,8 @@ class UnarchiveTournamentView(APIView):
         )
 
 
+# ===== Zmiana dyscypliny i konfiguracji bazowej =====
+
 class ChangeDisciplineSerializer(serializers.Serializer):
     discipline = serializers.ChoiceField(choices=Tournament.Discipline.choices, required=True)
     custom_discipline_name = serializers.CharField(
@@ -670,8 +653,7 @@ class ChangeDisciplineSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {
                         "competition_type": (
-                            "Dla dyscypliny niestandardowej wybierz typ uczestnictwa: "
-                            "INDIVIDUAL albo TEAM."
+                            "Dla dyscypliny niestandardowej wybierz tryb indywidualny albo drużynowy."
                         )
                     }
                 )
@@ -683,8 +665,7 @@ class ChangeDisciplineSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {
                         "competition_model": (
-                            "Dla dyscypliny niestandardowej wybierz model rywalizacji: "
-                            "HEAD_TO_HEAD albo MASS_START."
+                            "Dla dyscypliny niestandardowej wybierz model pojedynków albo wspólnego startu."
                         )
                     }
                 )
@@ -693,7 +674,7 @@ class ChangeDisciplineSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {
                         "result_mode": (
-                            "Dla dyscypliny niestandardowej wymagany jest result_mode=CUSTOM."
+                            "Dla dyscypliny niestandardowej wymagany jest niestandardowy tryb wyniku."
                         )
                     }
                 )
@@ -755,6 +736,7 @@ class ChangeDisciplineView(APIView):
             tournament.discipline,
             tournament.custom_discipline_name,
             tournament.competition_type,
+            tournament.competition_model,
             tournament.result_mode,
             tournament.result_config or {},
         )
@@ -762,10 +744,12 @@ class ChangeDisciplineView(APIView):
             new_discipline,
             new_custom_name,
             new_comp_type,
+            new_comp_model,
             new_result_mode,
             new_result_config or {},
         )
 
+        # Sygnatura obejmuje także model rywalizacji, aby nie pomijać zmiany HEAD_TO_HEAD/MASS_START.
         if new_signature == old_signature:
             return Response(
                 {"detail": "Dyscyplina nie uległa zmianie."},
@@ -924,6 +908,8 @@ class ChangeDisciplineView(APIView):
         )
 
 
+# ===== Zmiana konfiguracji formatu aktywnej dywizji =====
+
 class ChangeSetupSerializer(serializers.Serializer):
     tournament_format = serializers.ChoiceField(choices=Tournament.TournamentFormat.choices)
     format_config = serializers.JSONField(required=False)
@@ -952,7 +938,7 @@ class ChangeSetupView(APIView):
         tournament: Tournament = get_object_or_404(Tournament, pk=pk)
         self.check_object_permissions(request, tournament)
 
-        division = _resolve_division_from_request(request, tournament)
+        division = resolve_request_division(request, tournament)
         if division is None:
             return Response(
                 {"detail": "Nie znaleziono aktywnej dywizji dla tej operacji."},
@@ -996,6 +982,7 @@ class ChangeSetupView(APIView):
             or StageMassStartEntry.objects.filter(stage__tournament=tournament, stage__division=division).exists()
         )
 
+        # Tryb dry_run pozwala frontendowi potwierdzić reset przed wykonaniem operacji destrukcyjnej.
         if dry_run:
             return Response(
                 {

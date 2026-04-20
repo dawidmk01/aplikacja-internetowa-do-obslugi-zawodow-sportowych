@@ -8,6 +8,7 @@ import { Calendar, ChevronUp, Clock, Eraser, MapPin } from "lucide-react";
 import { apiFetch } from "../api";
 import { useTournamentWs } from "../hooks/useTournamentWs";
 import { cn } from "../lib/cn";
+import { getLabel, STAGE_TYPE_LABELS } from "../lib/sportLabels";
 import { Card } from "../ui/Card";
 import { Input } from "../ui/Input";
 import { toast } from "../ui/Toast";
@@ -907,14 +908,17 @@ export default function TournamentSchedule() {
   };
 
   const stageTitle = (stageType: StageType, allMatchesForStage: MatchScheduleDTO[]) => {
-    if (stageType === "LEAGUE") return "Liga - terminarz";
-    if (stageType === "GROUP") return "Faza grupowa - terminarz";
-    if (stageType === "THIRD_PLACE") return "Mecz o 3 miejsce";
+    if (stageType === "LEAGUE" || stageType === "GROUP") {
+      return `${getLabel(STAGE_TYPE_LABELS, stageType)} - terminarz`;
+    }
+    if (stageType === "THIRD_PLACE") {
+      return getLabel(STAGE_TYPE_LABELS, stageType);
+    }
     const matchesCount = allMatchesForStage.length;
     if (matchesCount === 1) return "Finał";
     if (matchesCount === 2) return "Półfinał";
     if (matchesCount === 4) return "Ćwierćfinał";
-    return `1/${matchesCount * 2} Finału`;
+    return `1/${matchesCount * 2} finału`;
   };
 
   const renderMatchRow = (m: MatchScheduleDTO) => {

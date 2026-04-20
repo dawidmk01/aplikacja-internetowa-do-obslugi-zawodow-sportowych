@@ -1,5 +1,5 @@
 // frontend/src/components/PublicMassStartStandings.tsx
-// Komponent renderuje publiczny, tylko do odczytu, ranking etapów MASS_START z wyborem etapu i nowoczesnym widokiem tabeli.
+// Komponent renderuje publiczną, tylko do odczytu, klasyfikację etapową z wyborem etapu i nowoczesnym widokiem tabeli.
 
 import { useEffect, useMemo, useState } from "react";
 import { Gauge, Sparkles, TimerReset, Users } from "lucide-react";
@@ -191,7 +191,7 @@ function groupName(group: MassStartGroupDTO, index: number) {
 
 function valueKindLabel(valueKind: CustomResultValueKind, unitLabel: string) {
   if (valueKind === "TIME") return "Wynik czasowy";
-  if (valueKind === "PLACE") return "Wynik miejscowy";
+  if (valueKind === "PLACE") return "Wynik według miejsca";
   return unitLabel ? `Wynik liczbowy (${unitLabel})` : "Wynik liczbowy";
 }
 
@@ -340,7 +340,7 @@ export default function PublicMassStartStandings({
                 <Sparkles className="h-3.5 w-3.5" />
                 Klasyfikacja etapowa
               </div>
-              <div className="mt-3 text-xl font-bold text-white">Publiczny ranking MASS_START</div>
+              <div className="mt-3 text-xl font-bold text-white">Publiczna klasyfikacja etapowa</div>
               <div className="mt-1 max-w-3xl text-sm leading-relaxed text-slate-300">
                 Wybierz etap, aby zobaczyć miejsca, sumę wyników i rezultaty rund bez przeładowywania całej strony.
               </div>

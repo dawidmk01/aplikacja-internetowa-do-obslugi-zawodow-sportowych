@@ -10,6 +10,7 @@ import { apiFetch } from "../api";
 import MassStartStageCard from "../components/MassStartStageCard";
 import MatchRow from "../components/MatchRow";
 import { useTournamentWs } from "../hooks/useTournamentWs";
+import { getLabel, RESULT_VALUE_KIND_LABELS, TIME_FORMAT_LABELS } from "../lib/sportLabels";
 
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
@@ -75,8 +76,9 @@ function getCustomResultHint(config: TournamentResultConfigDTO): string {
   const valueKind = String(config.value_kind ?? "").toUpperCase();
 
   if (valueKind === "TIME") {
-    const format = config.time_format ?? "MM:SS.hh";
-    return `Wynik wpisywany jako czas. Format prezentacji: ${format}.`;
+    const formatCode = String(config.time_format ?? "MM:SS.hh");
+    const formatLabel = getLabel(TIME_FORMAT_LABELS, formatCode, formatCode);
+    return `Wynik wpisywany jako czas. Format prezentacji: ${formatLabel}.`;
   }
 
   if (valueKind === "PLACE") {
@@ -88,8 +90,9 @@ function getCustomResultHint(config: TournamentResultConfigDTO): string {
   const decimals = typeof config.decimal_places === "number" ? config.decimal_places : 0;
   const betterLabel = better === "LOWER" ? "niższy lepszy" : "wyższy lepszy";
   const unitLabel = unit ? ` Jednostka: ${unit}.` : "";
+  const valueKindLabel = getLabel(RESULT_VALUE_KIND_LABELS, valueKind, "Wynik liczbowy").toLowerCase();
 
-  return `Wynik wpisywany jako liczba, dokładność: ${decimals} miejsce po przecinku.${unitLabel} Zasada rankingu: ${betterLabel}.`;
+  return `${valueKindLabel}, dokładność: ${decimals} miejsce po przecinku.${unitLabel} Zasada rankingu: ${betterLabel}.`;
 }
 
 function draftKey(stageId: number, groupId: number | null, teamId: number, roundNumber: number) {
@@ -443,10 +446,10 @@ export default function TournamentResults() {
         | null;
 
       if (!res.ok) {
-        throw new Error(String(data?.detail || "Nie udało się wygenerować kolejnego etapu MASS_START."));
+        throw new Error(String(data?.detail || "Nie udało się wygenerować kolejnego etapu."));
       }
 
-      pushToast(data?.detail || "Wygenerowano kolejny etap MASS_START.", "success");
+      pushToast(data?.detail || "Wygenerowano kolejny etap.", "success");
       return true;
     } catch (e) {
       pushToast(

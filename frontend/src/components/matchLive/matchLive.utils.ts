@@ -113,6 +113,24 @@ export function fmtClockState(s: ClockState): string {
   return "Zatrzymany";
 }
 
+export function fmtClockPeriod(period: ClockPeriod | null | undefined): string {
+  const value = String(period || "").trim().toUpperCase();
+  if (value === "P1") return "1 okres";
+  if (value === "BREAK") return "Przerwa";
+  if (value === "P2") return "2 okres";
+  if (value === "Q1") return "1 kwarta";
+  if (value === "Q2") return "2 kwarta";
+  if (value === "Q3") return "3 kwarta";
+  if (value === "Q4") return "4 kwarta";
+  if (value === "OT1" || value === "ET1") return "Dogrywka 1";
+  if (value === "OT2" || value === "ET2") return "Dogrywka 2";
+  if (value === "OT3") return "Dogrywka 3";
+  if (value === "OT4") return "Dogrywka 4";
+  if (value === "FH" || value === "H1") return "1 połowa";
+  if (value === "SH" || value === "H2") return "2 połowa";
+  return "-";
+}
+
 export function safeInt(v: string): number | null {
   const t = (v ?? "").trim();
   if (!t) return null;
@@ -170,7 +188,7 @@ export function incidentKindOptions(discipline: string): { value: string; label:
     return [
       { value: "TENNIS_POINT", label: "Punkt (tenis)" },
       { value: "TENNIS_CODE_VIOLATION", label: "Naruszenie przepisów (tenis)" },
-      { value: "TIMEOUT", label: "Przerwa / timeout" },
+      { value: "TIMEOUT", label: "Przerwa techniczna" },
     ];
   }
 
@@ -178,7 +196,7 @@ export function incidentKindOptions(discipline: string): { value: string; label:
     return [
       { value: "GOAL", label: "Punkt" },
       { value: "FOUL", label: "Faul" },
-      { value: "TIMEOUT", label: "Timeout" },
+      { value: "TIMEOUT", label: "Przerwa techniczna" },
     ];
   }
 
@@ -188,7 +206,7 @@ export function incidentKindOptions(discipline: string): { value: string; label:
       { value: "HANDBALL_TWO_MINUTES", label: "Kara 2 min" },
       { value: "SUBSTITUTION", label: "Zmiana" },
       { value: "FOUL", label: "Faul" },
-      { value: "TIMEOUT", label: "Przerwa / timeout" },
+      { value: "TIMEOUT", label: "Przerwa techniczna" },
     ];
   }
 
@@ -204,7 +222,7 @@ export function incidentKindOptions(discipline: string): { value: string; label:
       { value: "WRESTLING_INJURY", label: "Kontuzja" },
       { value: "WRESTLING_FORFEIT", label: "Walkower" },
       { value: "WRESTLING_DISQUALIFICATION", label: "Dyskwalifikacja" },
-      { value: "TIMEOUT", label: "Przerwa / timeout" },
+      { value: "TIMEOUT", label: "Przerwa techniczna" },
     ];
   }
 
@@ -214,7 +232,7 @@ export function incidentKindOptions(discipline: string): { value: string; label:
     { value: "RED_CARD", label: "Czerwona kartka" },
     { value: "SUBSTITUTION", label: "Zmiana" },
     { value: "FOUL", label: "Faul" },
-    { value: "TIMEOUT", label: "Przerwa / timeout" },
+    { value: "TIMEOUT", label: "Przerwa techniczna" },
   ];
 }
 

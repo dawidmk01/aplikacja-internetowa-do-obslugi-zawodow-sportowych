@@ -21,6 +21,14 @@ import {
 import { apiFetch, hasAuthTokens } from "../api";
 import { useTournamentWs } from "../hooks/useTournamentWs";
 import { cn } from "../lib/cn";
+import {
+  BETTER_RESULT_LABELS,
+  DISCIPLINE_LABELS,
+  MATCH_STATUS_LABELS,
+  RESULT_VALUE_KIND_LABELS,
+  TIME_FORMAT_LABELS,
+  getLabel,
+} from "../lib/sportLabels";
 
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
@@ -231,17 +239,7 @@ function getPublicDisciplineLabel(tournament: TournamentPublicDTO | null): strin
   const raw = String(tournament.discipline ?? "").trim();
   if (!raw) return null;
 
-  const map: Record<string, string> = {
-    football: "Piłka nożna",
-    volleyball: "Siatkówka",
-    basketball: "Koszykówka",
-    handball: "Piłka ręczna",
-    tennis: "Tenis",
-    wrestling: "Zapasy",
-    custom: "Dyscyplina niestandardowa",
-  };
-
-  return map[raw.toLowerCase()] ?? raw;
+  return getLabel(DISCIPLINE_LABELS, raw.toLowerCase(), raw);
 }
 
 function getPublicResultModeSummary(tournament: TournamentPublicDTO | null): string | null {
@@ -254,30 +252,33 @@ function getPublicResultModeSummary(tournament: TournamentPublicDTO | null): str
   const unitLabel = String(config.unit_label ?? config.unit ?? "").trim();
 
   if (competitionModel === "HEAD_TO_HEAD" && headToHeadMode === "POINTS_TABLE") {
-    return "Klasyfikacja punktowa oparta na wynikach meczów. Relacja LIVE pozostaje dostępna dla pojedynków.";
+    return "Klasyfikacja punktowa oparta na wynikach meczów. Relacja na żywo pozostaje dostępna dla pojedynków.";
   }
 
   if (valueKind === "TIME") {
-    const format = String(config.time_format ?? "MM:SS.hh");
+    const format = getLabel(TIME_FORMAT_LABELS, String(config.time_format ?? "MM:SS.hh"), "minuty:sekundy:setne");
+    const valueKindLabel = getLabel(RESULT_VALUE_KIND_LABELS, valueKind, "Wynik czasowy").toLowerCase();
     return competitionModel === "MASS_START"
-      ? `Ranking etapowy według czasu - lepszy jest wynik niższy. Format: ${format}.`
-      : `Wynik meczowy według czasu - lepszy jest wynik niższy. Format: ${format}.`;
+      ? `Ranking etapowy według czasu. Typ wyniku: ${valueKindLabel}. Format czasu: ${format}. Lepszy jest wynik niższy.`
+      : `Wynik meczowy według czasu. Typ wyniku: ${valueKindLabel}. Format czasu: ${format}. Lepszy jest wynik niższy.`;
   }
 
   if (valueKind === "PLACE") {
+    const valueKindLabel = getLabel(RESULT_VALUE_KIND_LABELS, valueKind, "Miejsce").toLowerCase();
     return competitionModel === "MASS_START"
-      ? "Ranking etapowy według miejsc - niższa wartość oznacza lepszy rezultat."
-      : "Wynik meczowy według miejsc - niższa wartość oznacza lepszy rezultat.";
+      ? `Ranking etapowy według miejsc. Typ wyniku: ${valueKindLabel}. Niższa wartość oznacza lepszy rezultat.`
+      : `Wynik meczowy według miejsc. Typ wyniku: ${valueKindLabel}. Niższa wartość oznacza lepszy rezultat.`;
   }
 
   const better = String(config.better_result ?? "HIGHER").toUpperCase();
-  const betterLabel = better === "LOWER" ? "niższy lepszy" : "wyższy lepszy";
+  const betterLabel = getLabel(BETTER_RESULT_LABELS, better, "Wyższy wynik jest lepszy").toLowerCase();
   const decimals = typeof config.decimal_places === "number" ? config.decimal_places : 0;
   const unitPart = unitLabel ? ` Jednostka: ${unitLabel}.` : "";
+  const valueKindLabel = getLabel(RESULT_VALUE_KIND_LABELS, valueKind || "NUMBER", "Wynik liczbowy").toLowerCase();
 
   return competitionModel === "MASS_START"
-    ? `Ranking etapowy - ${betterLabel}. Dokładność: ${decimals} miejsce po przecinku.${unitPart}`
-    : `Wynik meczowy - ${betterLabel}. Dokładność: ${decimals} miejsce po przecinku.${unitPart}`;
+    ? `Ranking etapowy. Typ wyniku: ${valueKindLabel}. ${betterLabel}. Dokładność: ${decimals} miejsc po przecinku.${unitPart}`
+    : `Wynik meczowy. Typ wyniku: ${valueKindLabel}. ${betterLabel}. Dokładność: ${decimals} miejsc po przecinku.${unitPart}`;
 }
 
 function incidentMinute(i: IncidentPublicDTO): number | null {
@@ -302,10 +303,7 @@ function getMatchTimestamp(match: MatchPublicDTO): number {
 
 function getStatusLabel(status: string | null | undefined): string {
   const raw = String(status ?? "").toUpperCase();
-  if (raw === "IN_PROGRESS") return "Na żywo";
-  if (raw === "FINISHED") return "Zakończony";
-  if (raw === "PLANNED") return "Zaplanowany";
-  return raw || "Bez statusu";
+  return getLabel(MATCH_STATUS_LABELS, raw, raw || "Bez statusu");
 }
 
 type RevealProps = {
