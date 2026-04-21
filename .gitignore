@@ -1,64 +1,114 @@
-# Root environment files
+# Pliki środowiskowe (root)
 .env
 .env.*
 !.env.example
+.envrc
 
-# Root npm wrapper artifacts
+# Root npm (brak package.json w roocie - zabezpieczenie)
 node_modules/
 /package-lock.json
 
 # Python / Django
+__pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+*.egg
+*.egg-info/
+.eggs/
 *.sqlite3
 *.db
+
+# Cache i narzędzia testowe
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.tox/
+.nox/
 .coverage
 htmlcov/
+coverage.xml
+pip-log.txt
+.python-version
 
-# Python virtual environments
+# Jupyter (gdyby pojawiły się notatniki badawcze/testowe)
+.ipynb_checkpoints/
+
+# Django - lokalne overridy (gdyby powstały)
+backend/local_settings.py
+
+# Python - środowiska wirtualne
 venv/
 .venv/
 
-# Backend local artifacts
-backend/*.sqlite3
-backend/media/
-backend/staticfiles/
+# Backend - artefakty lokalne (zachowanie struktury katalogów przez .gitkeep)
+backend/media/*
+!backend/media/.gitkeep
+backend/staticfiles/*
+!backend/staticfiles/.gitkeep
 
-# Frontend dependencies and build outputs
+# Frontend - zależności i buildy
 frontend/node_modules/
 frontend/dist/
 frontend/dist-ssr/
 frontend/coverage/
 
-# Frontend local environment and cache
+# Frontend - środowisko i cache
 frontend/.env
 frontend/.env.*
 !frontend/.env.example
 frontend/.vite/
 frontend/.eslintcache
+*.tsbuildinfo
 
-# Generic JS logs
+# Alternatywne menadżery pakietów (zabezpieczenie)
+.pnpm-store/
+
+# Logi JS / npm / yarn / pnpm
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-# Global logs
+# Logi globalne
 *.log
 logs/
 
-# IDE / OS
-.DS_Store
+# Docker - lokalne overridy
+docker-compose.override.yml
+docker-compose.*.local.yml
+
+# Certyfikaty i klucze (profilaktycznie)
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Kopie zapasowe i pliki tymczasowe
+*.bak
+*.tmp
+*.orig
+*~
+.history/
+
+# IDE
 .idea/
 .vscode/
+*.swp
+*.swo
+
+# Visual Studio (opcjonalnie - na wypadek pracy na Windows)
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
-*.swp
-*.swo
+
+# System - macOS
+.DS_Store
+
+# System - Windows
+Thumbs.db
+ehthumbs.db
+desktop.ini
