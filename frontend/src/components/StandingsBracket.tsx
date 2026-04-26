@@ -510,7 +510,7 @@ function getTimeFormatLabel(format: string): string {
   return "minuty:sekundy:setne";
 }
 
-function getCustomTypeLabel(row: StandingRow, resultConfig: Record<string, any>, meta?: StandingsMeta | null): string {
+function getCustomTypeLabel(_row: StandingRow, resultConfig: Record<string, any>, meta?: StandingsMeta | null): string {
   const valueKind = getCustomValueKind(resultConfig, meta);
   if (valueKind === "TIME") return "Czas";
   if (valueKind === "PLACE") return "Miejsce";
@@ -574,8 +574,6 @@ function TournamentStandingsView({
     const tennisPointsMode = getTennisPointsMode(tournament, standings);
     const showTennisPoints = isTennis && tennisPointsMode === "PLT";
 
-    const isCup = resolvedTournamentFormat === "CUP";
-    const isMixed = resolvedTournamentFormat === "MIXED";
 
     const hasLeagueTable = (standings?.table?.length ?? 0) > 0;
     const hasGroups = (standings?.groups?.length ?? 0) > 0;
@@ -588,8 +586,6 @@ function TournamentStandingsView({
       isCustom,
       customMode: String(standings?.meta?.custom_mode ?? "").toUpperCase(),
       showTennisPoints,
-      isCup,
-      isMixed,
       hasLeagueTable,
       hasGroups,
       hasTableData,
@@ -615,8 +611,6 @@ function TournamentStandingsView({
     isCustom,
     customMode,
     showTennisPoints,
-    isCup,
-    isMixed,
     hasLeagueTable,
     hasGroups,
     hasTableData,

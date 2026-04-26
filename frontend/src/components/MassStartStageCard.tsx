@@ -17,6 +17,7 @@ import { Input } from "../ui/Input";
 import { cn } from "../lib/cn";
 
 type ValueInputKind = "text" | "number";
+type ValueInputMode = "numeric" | "decimal";
 
 type Props = {
   stage: MassStartStageDTO;
@@ -90,7 +91,7 @@ function getValueMeta(config: TournamentResultConfigDTO) {
   const unitLabel = String(config.unit_label ?? config.unit ?? "").trim();
 
   const inputType: ValueInputKind = valueKind === "TIME" ? "number" : "text";
-  const inputMode = valueKind === "TIME" ? "numeric" : "decimal";
+  const inputMode: ValueInputMode = valueKind === "TIME" ? "numeric" : "decimal";
 
   const placeholder =
     valueKind === "TIME"

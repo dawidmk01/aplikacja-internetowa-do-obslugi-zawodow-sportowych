@@ -1965,12 +1965,12 @@ export default function TournamentBasicsSetup() {
               markDirty();
               clearInlineError();
             }}
-            onWrestlingStyleChange={(v) => {
+            onWrestlingStyleChange={(v: WrestlingStyle) => {
               setWrestlingStyle(v);
               markDirty();
               clearInlineError();
             }}
-            onWrestlingCompetitionModeChange={(v) => {
+            onWrestlingCompetitionModeChange={(v: WrestlingCompetitionMode) => {
               setWrestlingCompetitionMode(v);
               markDirty();
               clearInlineError();

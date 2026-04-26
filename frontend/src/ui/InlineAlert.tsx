@@ -2,11 +2,11 @@
 // Komponent wyświetla komunikaty kontekstowe w obrębie widoku bez użycia toastów.
 
 import type { ReactNode } from "react";
-import { CheckCircle2, Info, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, XCircle } from "lucide-react";
 
 import { cn } from "../lib/cn";
 
-export type InlineAlertVariant = "info" | "success" | "error";
+export type InlineAlertVariant = "info" | "success" | "warning" | "error";
 
 type Props = {
   variant?: InlineAlertVariant;
@@ -45,6 +45,8 @@ function getVariantConfig(variant: InlineAlertVariant) {
   switch (variant) {
     case "success":
       return { Icon: CheckCircle2, border: "border-emerald-400/20", iconColor: "text-emerald-300" };
+    case "warning":
+      return { Icon: AlertTriangle, border: "border-amber-400/20", iconColor: "text-amber-300" };
     case "error":
       return { Icon: XCircle, border: "border-rose-400/20", iconColor: "text-rose-300" };
     default:

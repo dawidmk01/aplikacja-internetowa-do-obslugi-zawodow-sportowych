@@ -387,12 +387,14 @@ export default function PublicMatchRow({
   const commentary = commentaryByMatch?.[match.id] ?? [];
 
   const basketballMode = isBasketball(match);
+  const wrestlingMode = isWrestling(match);
   const wentToExtraTime = readBoolean(match, "went_to_extra_time");
   const homeEt = readNumber(match, "home_extra_time_score");
   const awayEt = readNumber(match, "away_extra_time_score");
   const penalties = readBoolean(match, "decided_by_penalties");
   const homePen = readNumber(match, "home_penalty_score");
   const awayPen = readNumber(match, "away_penalty_score");
+  const wrestlingMethod = readString(match, "wrestling_result_method");
   const period = latestKnownPeriod(match, incidents, commentary);
 
   const hasScore = typeof match.home_score === "number" && typeof match.away_score === "number";
@@ -406,8 +408,10 @@ export default function PublicMatchRow({
     ? leadingCustomResult?.rank
       ? `Najlepszy wynik - miejsce ${leadingCustomResult.rank}`
       : "Najlepszy zapisany wynik"
-    : basketballMode && wentToExtraTime
-      ? "Wynik po dogrywce"
+    : wrestlingMode && wrestlingMethod
+      ? `Wynik przez: ${wrestlingMethodLabel(wrestlingMethod)}`
+      : basketballMode && wentToExtraTime
+        ? "Wynik po dogrywce"
       : penalties && homePen != null && awayPen != null
         ? `Karne ${homePen} : ${awayPen}`
         : "Wynik";
@@ -455,6 +459,9 @@ export default function PublicMatchRow({
     { label: "Miejsce", value: locationLabel || "-" },
     { label: basketballMode ? "Bieżący okres" : "Okres", value: periodLabel(period) },
     { label: customMode ? "Typ wyniku" : "Wynik", value: customMode ? "Rezultat niestandardowy" : scoreLabel },
+    ...(wrestlingMode && wrestlingMethod
+      ? [{ label: "Sposób rozstrzygnięcia", value: wrestlingMethodLabel(wrestlingMethod) }]
+      : []),
     ...(basketballMode
       ? [
           { label: "Dogrywka", value: wentToExtraTime ? "Tak" : "Nie" },
@@ -617,7 +624,7 @@ export default function PublicMatchRow({
                       <div className="space-y-1.5">
                         {sortedIncidents.map((incident) => (
                           <div key={incident.id} className="text-sm text-slate-200">
-                            {formatIncidentLine(incident, basketballMode)}
+                            {formatIncidentLine(incident, { basketballMode, showPeriods: basketballMode || wrestlingMode, wrestlingMode })}
                           </div>
                         ))}
                       </div>
@@ -635,7 +642,7 @@ export default function PublicMatchRow({
                     <div className="space-y-1.5">
                       {sortedIncidents.map((incident) => (
                         <div key={incident.id} className="text-sm text-slate-200">
-                          {formatIncidentLine(incident, basketballMode)}
+                          {formatIncidentLine(incident, { basketballMode, showPeriods: basketballMode || wrestlingMode, wrestlingMode })}
                         </div>
                       ))}
                     </div>
@@ -654,7 +661,7 @@ export default function PublicMatchRow({
                 <div className="space-y-1.5">
                   {sortedCommentary.map((entry) => (
                     <div key={entry.id} className="whitespace-pre-wrap text-sm text-slate-200">
-                      {formatCommentaryLine(entry, basketballMode)}
+                      {formatCommentaryLine(entry, basketballMode || wrestlingMode)}
                     </div>
                   ))}
                 </div>

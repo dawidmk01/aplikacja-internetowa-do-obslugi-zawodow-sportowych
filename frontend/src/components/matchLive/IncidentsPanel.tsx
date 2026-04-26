@@ -1074,7 +1074,7 @@ export function IncidentsPanel({
                             />
                           </label>
                         </div>
-                      ) : supportsPlayerKind(i.kind) ? (
+                      ) : supportsPlayerKind(i.kind, discipline) ? (
                         <label className="grid gap-1 text-sm text-slate-200">
                           ID zawodnika
                           <Input

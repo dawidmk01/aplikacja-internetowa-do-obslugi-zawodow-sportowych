@@ -473,10 +473,6 @@ function groupResolutionModeLabel(mode?: CustomGroupResolutionMode) {
   return CUSTOM_GROUP_RESOLUTION_OPTIONS.find((option) => option.value === mode)?.label ?? "Remis";
 }
 
-function knockoutResolutionModeLabel(mode?: CustomKnockoutResolutionMode) {
-  return CUSTOM_KNOCKOUT_RESOLUTION_OPTIONS.find((option) => option.value === mode)?.label ?? "Dogrywka + rzuty rozstrzygające (pewny zwycięzca)";
-}
-
 function bestOfFromSeriesMode(mode?: CustomMatchSeriesMode): number | null {
   if (mode === "BEST_OF_3") return 3;
   if (mode === "BEST_OF_5") return 5;
@@ -989,60 +985,6 @@ function StatRow({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-function ToggleRow({
-  checked,
-  disabled,
-  title,
-  desc,
-  onChange,
-}: {
-  checked: boolean;
-  disabled?: boolean;
-  title: string;
-  desc: string;
-  onChange: (next: boolean) => void;
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={cn(
-        "w-full rounded-2xl border px-4 py-3 text-left transition",
-        "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
-        "disabled:pointer-events-none disabled:opacity-60",
-        checked
-          ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
-          : "border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.06]"
-      )}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-sm font-semibold">
-            {title}: {checked ? "Włączone" : "Wyłączone"}
-          </div>
-          <div className="mt-1 text-sm text-slate-300">{desc}</div>
-        </div>
-
-        <span
-          className={cn(
-            "mt-0.5 inline-flex h-6 w-11 items-center rounded-full border p-0.5 transition",
-            checked ? "border-emerald-400/30 bg-emerald-400/20" : "border-white/10 bg-white/[0.06]"
-          )}
-          aria-hidden
-        >
-          <span
-            className={cn(
-              "block h-5 w-5 rounded-full transition",
-              checked ? "translate-x-5 bg-white" : "translate-x-0 bg-white/80"
-            )}
-          />
-        </span>
-      </div>
-    </button>
-  );
-}
-
 function NumberInput({
   value,
   min,
@@ -1499,6 +1441,8 @@ export function StructureCard({
   hbPointsMode: HandballPointsMode;
   hbKnockoutTiebreak: HandballKnockoutTiebreak;
   basketballResolutionMode: BasketballResolutionMode;
+  wrestlingStyle?: WrestlingStyle;
+  wrestlingCompetitionMode?: WrestlingCompetitionMode;
 
   cupMatches: 1 | 2;
   finalMatches: 1 | 2;
@@ -1531,6 +1475,8 @@ export function StructureCard({
   onHbPointsModeChange: (v: HandballPointsMode) => void;
   onHbKnockoutTiebreakChange: (v: HandballKnockoutTiebreak) => void;
   onBasketballResolutionModeChange: (v: BasketballResolutionMode) => void;
+  onWrestlingStyleChange?: (v: WrestlingStyle) => void;
+  onWrestlingCompetitionModeChange?: (v: WrestlingCompetitionMode) => void;
 
   onCupMatchesChange: (v: 1 | 2) => void;
   onFinalMatchesChange: (v: 1 | 2) => void;
@@ -2871,7 +2817,6 @@ export function SummaryCard({
 
   const customSeriesMode = deriveSeriesMode(resultConfig);
   const customGroupResolutionMode = deriveGroupResolutionMode(resultConfig);
-  const customKnockoutResolutionMode = deriveKnockoutResolutionMode(resultConfig);
 
   return (
     <Card

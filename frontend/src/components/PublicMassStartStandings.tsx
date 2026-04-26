@@ -2,7 +2,7 @@
 // Komponent renderuje publiczną, tylko do odczytu, klasyfikację etapową z wyborem etapu i nowoczesnym widokiem tabeli.
 
 import { useEffect, useMemo, useState } from "react";
-import { Gauge, Sparkles, TimerReset, Users } from "lucide-react";
+import { Sparkles, Users } from "lucide-react";
 
 import { apiFetch } from "../api";
 import { cn } from "../lib/cn";
@@ -220,6 +220,17 @@ function resultMetaText(valueKind: CustomResultValueKind, unitLabel: string) {
   return unitLabel ? `Prezentacja w jednostce ${unitLabel}.` : "Prezentacja wyników liczbowych.";
 }
 
+function readApiDetail(data: unknown, fallback: string): string {
+  if (data && typeof data === "object" && "detail" in data) {
+    const detail = (data as { detail?: unknown }).detail;
+    if (typeof detail === "string" && detail.trim()) {
+      return detail;
+    }
+  }
+
+  return fallback;
+}
+
 export default function PublicMassStartStandings({
   tournamentId,
   divisionId,
@@ -266,7 +277,7 @@ export default function PublicMassStartStandings({
           | null;
 
         if (!res.ok) {
-          throw new Error(String(data?.detail || "Nie udało się pobrać rankingu etapowego."));
+          throw new Error(readApiDetail(data, "Nie udało się pobrać rankingu etapowego."));
         }
 
         if (!alive) return;

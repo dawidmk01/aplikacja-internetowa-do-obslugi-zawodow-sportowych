@@ -25,7 +25,7 @@ type SelectAlign = "start" | "end";
 type Props<T extends string | number = string> = {
   value: T | null;
   onChange: (value: T) => void;
-  options: SelectOption<T>[];
+  options: readonly SelectOption<T>[];
 
   placeholder?: string;
   disabled?: boolean;

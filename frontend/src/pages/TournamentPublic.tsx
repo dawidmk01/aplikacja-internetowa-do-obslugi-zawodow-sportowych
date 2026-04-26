@@ -14,8 +14,6 @@ import {
   LayoutGrid,
   MapPin,
   Medal,
-  TimerReset,
-  Users,
 } from "lucide-react";
 
 import { apiFetch, hasAuthTokens } from "../api";
@@ -421,15 +419,6 @@ function SummaryCard({
   );
 }
 
-function SpotlightCard({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <Card className="h-full bg-white/[0.04] p-5">
-      <div className="text-sm font-semibold text-white">{title}</div>
-      <div className="mt-3">{children}</div>
-    </Card>
-  );
-}
-
 function StatusBadge({ children }: { children: ReactNode }) {
   return (
     <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.06] px-2.5 py-1 text-xs font-medium text-slate-200">
@@ -739,16 +728,10 @@ export default function TournamentPublic({
     () => customMode && competitionModel === "MASS_START",
     [competitionModel, customMode]
   );
-  const isCustomHeadToHeadMode = useMemo(
-    () => customMode && competitionModel !== "MASS_START",
-    [competitionModel, customMode]
-  );
   const publicLiveEnabled = useMemo(() => !isCustomMassStartMode, [isCustomMassStartMode]);
   const customDisciplineLabel = useMemo(() => getPublicDisciplineLabel(tournament), [tournament]);
   const customResultSummary = useMemo(() => getPublicResultModeSummary(tournament), [tournament]);
   const customResultConfig = useMemo(() => getResultConfig(tournament), [tournament]);
-  const customValueKind = useMemo(() => getResolvedCustomValueKind(tournament), [tournament]);
-  const customTimeMode = useMemo(() => customValueKind === "TIME", [customValueKind]);
   const dateRange = formatDateRange(tournament?.start_date ?? null, tournament?.end_date ?? null);
 
   const matchesSectionLabel = isCustomMassStartMode
