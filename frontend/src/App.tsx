@@ -28,7 +28,7 @@ import TournamentSchedule from "./pages/TournamentSchedule";
 import TournamentTeams from "./pages/TournamentTeams";
 
 export default function App() {
-  const [username, setUsername] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState(false);
 
   const loadMe = useCallback(async () => {
@@ -36,7 +36,7 @@ export default function App() {
 
     const token = await bootstrapSession();
     if (!token) {
-      setUsername(null);
+      setUserEmail(null);
       setAuthReady(true);
       return;
     }
@@ -49,15 +49,17 @@ export default function App() {
 
       if (!res.ok) {
         clearTokens();
-        setUsername(null);
+        setUserEmail(null);
         setAuthReady(true);
         return;
       }
 
       const data = await res.json().catch(() => null);
-      setUsername(data?.username ?? null);
+      const email = typeof data?.email === "string" ? data.email : null;
+
+      setUserEmail(email);
     } catch {
-      setUsername(null);
+      setUserEmail(null);
     } finally {
       setAuthReady(true);
     }
@@ -74,7 +76,7 @@ export default function App() {
     }
 
     clearTokens();
-    setUsername(null);
+    setUserEmail(null);
   }, []);
 
   useEffect(() => {
@@ -86,11 +88,11 @@ export default function App() {
       <div className="min-h-dvh bg-slate-950 text-slate-100">
         <div className="pointer-events-none fixed inset-0 -z-10">
           <div className="absolute -top-28 left-1/2 h-72 w-[44rem] -translate-x-1/2 rounded-full bg-indigo-500/15 blur-3xl" />
-          <div className="absolute top-40 left-1/3 h-72 w-[44rem] -translate-x-1/2 rounded-full bg-purple-500/10 blur-3xl" />
+          <div className="absolute left-1/3 top-40 h-72 w-[44rem] -translate-x-1/2 rounded-full bg-purple-500/10 blur-3xl" />
           <div className="absolute -bottom-28 left-1/2 h-72 w-[44rem] -translate-x-1/2 rounded-full bg-sky-500/10 blur-3xl" />
         </div>
 
-        <NavBar username={username} onLogout={handleLogout} />
+        <NavBar userEmail={userEmail} onLogout={handleLogout} />
         <Toaster />
 
         <main className="w-full px-4 py-6 sm:px-6 lg:px-8 xl:px-10 2xl:px-12">
@@ -109,7 +111,10 @@ export default function App() {
               <Route path="/find-tournament" element={<FindTournament />} />
 
               <Route path="/tournaments/:id" element={<TournamentPublic />} />
-              <Route path="/tournaments/:id/standings" element={<TournamentPublic initialView="STANDINGS" />} />
+              <Route
+                path="/tournaments/:id/standings"
+                element={<TournamentPublic initialView="STANDINGS" />}
+              />
 
               <Route
                 path="/my-tournaments"

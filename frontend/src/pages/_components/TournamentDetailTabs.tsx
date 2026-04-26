@@ -31,7 +31,7 @@ import { Switch } from "../../ui/Switch";
 import { Textarea } from "../../ui/Textarea";
 import { toast } from "../../ui/Toast";
 
-import AddAssistantForm from "../../components/AddAssistantForm";
+import AssistantInviteForm from "../../components/AssistantInviteForm";
 
 export type MyPermissions = {
   teams_edit: boolean;
@@ -88,8 +88,8 @@ export type Tournament = {
 
 export type AssistantListItem = {
   user_id: number;
+  invite_id?: number | null;
   email: string;
-  username?: string | null;
   status?: "PENDING" | "ACCEPTED";
   permissions?: AssistantPermissionsPayload | null;
 };
@@ -403,7 +403,6 @@ export function TournamentDetailTabs(props: Props) {
     activeTab,
     setTab,
     allowedTabs,
-    isOrganizer,
     loadError,
     nameDraft,
     setNameDraft,
@@ -494,8 +493,8 @@ export function TournamentDetailTabs(props: Props) {
   );
 
   const assistantDisplayName = (assistant: AssistantListItem): string => {
-    const username = typeof assistant.username === "string" ? assistant.username.trim() : "";
-    return username || assistant.email;
+    const email = String(assistant.email || "").trim();
+    return email.split("@")[0] || email || "Asystent";
   };
 
   const pendingPermissionsCount = (assistant: AssistantListItem): number => {
@@ -1059,7 +1058,7 @@ export function TournamentDetailTabs(props: Props) {
           </div>
 
           <div className="mt-5">
-            <AddAssistantForm tournamentId={tournament.id} onAdded={() => onLoadAssistants(false)} />
+            <AssistantInviteForm tournamentId={tournament.id} onAdded={() => onLoadAssistants(false)} />
           </div>
 
           <div className="mt-6 space-y-5">

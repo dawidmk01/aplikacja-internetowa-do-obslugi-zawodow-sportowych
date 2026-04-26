@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Eye, EyeOff, Loader2, Lock, LogIn, Mail, User, UserPlus } from "lucide-react";
+import { Eye, EyeOff, Loader2, Lock, LogIn, Mail, UserPlus } from "lucide-react";
 
 import { apiFetch, setAccess } from "../api";
 import { cn } from "../lib/cn";
@@ -19,6 +19,10 @@ type Props = {
   onLogin?: () => Promise<void>;
 };
 
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
 function pickFirstError(data: unknown): string | null {
   if (!data) return null;
   if (typeof data === "string") return data;
@@ -30,7 +34,7 @@ function pickFirstError(data: unknown): string | null {
       return record.detail;
     }
 
-    for (const key of ["username", "email", "password", "non_field_errors"]) {
+    for (const key of ["email", "password", "non_field_errors"]) {
       const value = record[key];
       if (Array.isArray(value) && value.length) {
         return String(value[0]);
@@ -39,6 +43,54 @@ function pickFirstError(data: unknown): string | null {
   }
 
   return null;
+}
+
+function translateAuthError(message?: string | null, mode: "login" | "register" = "login"): string {
+  if (!message) {
+    return mode === "login"
+      ? "Nieprawidłowy adres e-mail lub hasło."
+      : "Błąd rejestracji. Sprawdź dane i spróbuj ponownie.";
+  }
+
+  const normalized = message.toLowerCase();
+
+  if (normalized.includes("no active account") || normalized.includes("invalid credentials")) {
+    return "Nieprawidłowy adres e-mail lub hasło.";
+  }
+
+  if (normalized.includes("unauthorized")) {
+    return "Brak dostępu. Zaloguj się ponownie.";
+  }
+
+  if (normalized.includes("enter a valid email") || normalized.includes("valid email address")) {
+    return "Nieprawidłowy adres e-mail.";
+  }
+
+  if (normalized.includes("this field may not be blank") || normalized.includes("this field is required")) {
+    return "Uzupełnij wymagane pola.";
+  }
+
+  if (normalized.includes("password is too common")) {
+    return "Hasło jest zbyt popularne.";
+  }
+
+  if (normalized.includes("password is entirely numeric")) {
+    return "Hasło nie może składać się wyłącznie z cyfr.";
+  }
+
+  if (normalized.includes("password is too short")) {
+    return "Hasło jest zbyt krótkie.";
+  }
+
+  if (normalized.includes("password is too similar")) {
+    return "Hasło jest zbyt podobne do danych konta.";
+  }
+
+  if (normalized.includes("user with this email") || normalized.includes("already exists")) {
+    return "Użytkownik z tym adresem e-mail już istnieje.";
+  }
+
+  return message;
 }
 
 export default function Login({ onLogin }: Props) {
@@ -50,7 +102,6 @@ export default function Login({ onLogin }: Props) {
 
   const [mode, setMode] = useState<"login" | "register">(urlMode === "register" ? "register" : "login");
 
-  const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
@@ -77,31 +128,51 @@ export default function Login({ onLogin }: Props) {
     navigate(nextQs ? `/login?mode=register&${nextQs}` : "/login?mode=register");
   };
 
-  const translateLoginError = (msg?: string) => {
-    if (!msg) return "Błąd logowania.";
-    if (msg.includes("No active account")) return "Nieprawidłowy login lub hasło.";
-    if (msg.toLowerCase().includes("unauthorized")) return "Brak dostępu. Zaloguj się ponownie.";
-    return msg;
+  const validateForm = () => {
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (!normalizedEmail) {
+      return "Adres e-mail jest wymagany.";
+    }
+
+    if (!isValidEmail(normalizedEmail)) {
+      return "Nieprawidłowy adres e-mail.";
+    }
+
+    if (!password) {
+      return "Hasło jest wymagane.";
+    }
+
+    return null;
   };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
+
+    const validationError = validateForm();
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
     setLoading(true);
+
+    const normalizedEmail = email.trim().toLowerCase();
 
     try {
       if (mode === "login") {
         const res = await apiFetch("/api/auth/login/", {
           method: "POST",
-          body: JSON.stringify({ username, password }),
+          body: JSON.stringify({ email: normalizedEmail, password }),
           toastOnError: false,
         });
 
         const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {
-          setError(translateLoginError(pickFirstError(data) || (data as Record<string, unknown>)?.detail?.toString()));
+          setError(translateAuthError(pickFirstError(data), "login"));
           return;
         }
 
@@ -109,7 +180,7 @@ export default function Login({ onLogin }: Props) {
         if (typeof access === "string" && access.trim()) {
           setAccess(access);
         } else {
-          setError("Brak access tokena w odpowiedzi logowania.");
+          setError("Brak tokena dostępu w odpowiedzi logowania.");
           return;
         }
 
@@ -123,14 +194,14 @@ export default function Login({ onLogin }: Props) {
       } else {
         const res = await apiFetch("/api/auth/register/", {
           method: "POST",
-          body: JSON.stringify({ username, email, password }),
+          body: JSON.stringify({ email: normalizedEmail, password }),
           toastOnError: false,
         });
 
         const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {
-          setError(pickFirstError(data) || "Błąd rejestracji. Sprawdź dane i spróbuj ponownie.");
+          setError(translateAuthError(pickFirstError(data), "register"));
           return;
         }
 
@@ -166,7 +237,7 @@ export default function Login({ onLogin }: Props) {
               </h1>
               <div className="mt-2 break-words text-sm leading-relaxed text-slate-300">
                 {mode === "login"
-                  ? "Zaloguj się, aby zarządzać turniejami lub dołączyć jako zawodnik, jeśli organizator włączył dołączanie."
+                  ? "Zaloguj się adresem e-mail, aby zarządzać turniejami lub dołączyć do rozgrywek."
                   : "Załóż konto, aby tworzyć turnieje lub dołączać do rozgrywek."}
               </div>
             </div>
@@ -219,51 +290,28 @@ export default function Login({ onLogin }: Props) {
             </div>
           ) : null}
 
-          <form onSubmit={submit} className="mt-5 space-y-4">
+          <form onSubmit={submit} noValidate className="mt-5 space-y-4">
             <div>
-              <label htmlFor="login_username" className="text-sm font-medium text-slate-200">
-                Login
+              <label htmlFor="login_email" className="text-sm font-medium text-slate-200">
+                Adres e-mail
               </label>
               <div className="relative mt-2">
-                <User
+                <Mail
                   className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
                   aria-hidden="true"
                 />
                 <Input
-                  id="login_username"
+                  id="login_email"
+                  type="text"
+                  inputMode="email"
                   className={inputBase}
-                  value={username}
-                  required
-                  autoComplete="username"
-                  placeholder="np. nazwa_użytkownika"
-                  onChange={(e) => setUsername(e.target.value)}
+                  value={email}
+                  autoComplete="email"
+                  placeholder="np. user@example.com"
+                  onChange={(e) => setEmail(e.target.value)}
                 />
               </div>
             </div>
-
-            {mode === "register" ? (
-              <div>
-                <label htmlFor="login_email" className="text-sm font-medium text-slate-200">
-                  Email
-                </label>
-                <div className="relative mt-2">
-                  <Mail
-                    className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
-                    aria-hidden="true"
-                  />
-                  <Input
-                    id="login_email"
-                    type="email"
-                    className={inputBase}
-                    value={email}
-                    required
-                    autoComplete="email"
-                    placeholder="np. user@example.com"
-                    onChange={(e) => setEmail(e.target.value)}
-                  />
-                </div>
-              </div>
-            ) : null}
 
             <div>
               <label htmlFor="login_password" className="text-sm font-medium text-slate-200">
@@ -279,7 +327,6 @@ export default function Login({ onLogin }: Props) {
                   type={showPassword ? "text" : "password"}
                   className={cn(inputBase, "pr-10")}
                   value={password}
-                  required
                   autoComplete={mode === "login" ? "current-password" : "new-password"}
                   placeholder="••••••••"
                   onChange={(e) => setPassword(e.target.value)}

@@ -1,5 +1,5 @@
-// frontend/src/components/AddAssistantForm.tsx
-// Komponent obsługuje dodawanie zaproszeń asystenta wraz z wstępnym zestawem uprawnień.
+// frontend/src/components/AssistantInviteForm.tsx
+// Komponent obsługuje utworzenie zaproszenia asystenta oraz nadanie wstępnych uprawnień.
 
 import type { FormEvent } from "react";
 import { useCallback, useMemo, useState } from "react";
@@ -28,7 +28,7 @@ const DEFAULT_PERMISSIONS: Required<AssistantInvitePermissions> = {
 
 const PERMISSION_OPTIONS: Array<{ key: keyof Required<AssistantInvitePermissions>; label: string }> = [
   { key: "teams_edit", label: "Edycja drużyn" },
-  { key: "roster_edit", label: "Składy: zawodnicy" },
+  { key: "roster_edit", label: "Składy zawodników" },
   { key: "schedule_edit", label: "Edycja harmonogramu" },
   { key: "results_edit", label: "Wprowadzanie wyników" },
   { key: "bracket_edit", label: "Edycja drabinki" },
@@ -40,7 +40,11 @@ function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
 }
 
-export default function AddAssistantForm({ tournamentId, onAdded }: Props) {
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+export default function AssistantInviteForm({ tournamentId, onAdded }: Props) {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [permissions, setPermissions] = useState<Required<AssistantInvitePermissions>>(DEFAULT_PERMISSIONS);
@@ -48,7 +52,6 @@ export default function AddAssistantForm({ tournamentId, onAdded }: Props) {
   const [success, setSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const normalized = useMemo(() => normalizeEmail(email), [email]);
   const selectedCount = useMemo(
     () => Object.values(permissions).filter(Boolean).length,
     [permissions]
@@ -62,26 +65,37 @@ export default function AddAssistantForm({ tournamentId, onAdded }: Props) {
   );
 
   const submit = useCallback(
-    async (e: FormEvent) => {
+    async (e: FormEvent<HTMLFormElement>) => {
       e.preventDefault();
 
-      setLoading(true);
+      const nextEmail = normalizeEmail(email);
+
       setError(null);
       setSuccess(null);
 
-      try {
-        const nextEmail = normalizeEmail(email);
-        if (!nextEmail) {
-          setError("Podaj adres email.");
-          return;
-        }
+      if (!nextEmail) {
+        setError("Adres e-mail jest wymagany.");
+        return;
+      }
 
+      if (!isValidEmail(nextEmail)) {
+        setError("Nieprawidłowy adres e-mail.");
+        return;
+      }
+
+      setLoading(true);
+
+      try {
         const message = await addAssistant(tournamentId, nextEmail, permissions);
         setSuccess(message);
         setEmail("");
         onAdded?.();
-      } catch (err: any) {
-        const msg = typeof err?.message === "string" && err.message.trim() ? err.message : "Błąd połączenia z serwerem.";
+      } catch (err: unknown) {
+        const msg =
+          err instanceof Error && err.message.trim()
+            ? err.message
+            : "Błąd połączenia z serwerem.";
+
         setError(msg);
       } finally {
         setLoading(false);
@@ -95,29 +109,27 @@ export default function AddAssistantForm({ tournamentId, onAdded }: Props) {
       <div>
         <div className="text-sm font-semibold text-white">Dodaj asystenta</div>
         <div className="mt-1 text-xs text-slate-300">
-          Wpisz email użytkownika i wybierz uprawnienia, które zostaną aktywowane po akceptacji zaproszenia.
+          Wpisz adres e-mail użytkownika i wybierz uprawnienia, które zostaną aktywowane
+          po akceptacji zaproszenia.
         </div>
       </div>
 
-      <form onSubmit={submit} className="space-y-3">
+      <form onSubmit={submit} noValidate className="space-y-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <div className="min-w-0 flex-1">
             <label className="block">
-              <span className="sr-only">Adres email użytkownika</span>
+              <span className="sr-only">Adres e-mail użytkownika</span>
               <Input
-                type="email"
+                type="text"
+                inputMode="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="Email użytkownika"
+                placeholder="Adres e-mail użytkownika"
                 autoComplete="email"
                 disabled={loading}
-                aria-label="Adres email użytkownika"
+                aria-label="Adres e-mail użytkownika"
               />
             </label>
-
-            {normalized && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized) ? (
-              <div className="mt-1 text-xs text-amber-200">To nie wygląda jak poprawny adres email.</div>
-            ) : null}
           </div>
 
           <Button type="submit" disabled={loading} variant="secondary" className="h-10 rounded-2xl px-4">
@@ -128,7 +140,9 @@ export default function AddAssistantForm({ tournamentId, onAdded }: Props) {
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
           <div className="mb-2 flex items-center justify-between gap-3">
             <div className="text-xs font-semibold text-slate-200">Uprawnienia po akceptacji</div>
-            <div className="text-[11px] text-slate-300/80">Wybrane: {selectedCount}/{PERMISSION_OPTIONS.length}</div>
+            <div className="text-[11px] text-slate-300/80">
+              Wybrane: {selectedCount}/{PERMISSION_OPTIONS.length}
+            </div>
           </div>
 
           <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">

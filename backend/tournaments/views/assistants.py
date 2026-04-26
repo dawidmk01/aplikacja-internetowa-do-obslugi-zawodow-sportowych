@@ -17,7 +17,11 @@ from ..models import Tournament, TournamentAssistantInvite, TournamentMembership
 from ..permissions import CanAccessAssistantPermissions, CanManageAssistants, CanViewTournament
 from ..realtime import ws_emit_tournament, ws_emit_user
 from ..serializers import AddAssistantSerializer, TournamentAssistantSerializer
-from ..serializers.assistants import AssistantPermissionsSerializer, normalize_assistant_permissions, normalize_email
+from ..serializers.assistants import (
+    AssistantPermissionsSerializer,
+    normalize_assistant_permissions,
+    normalize_email,
+)
 
 User = get_user_model()
 
@@ -38,16 +42,16 @@ class TournamentAssistantListView(ListAPIView):
 
         payload: list[dict] = []
 
-        invites = tournament.assistant_invites.filter(status=TournamentAssistantInvite.Status.PENDING).order_by(
-            "-created_at", "-id"
-        )
+        invites = tournament.assistant_invites.filter(
+            status=TournamentAssistantInvite.Status.PENDING
+        ).order_by("-created_at", "-id")
+
         for invite in invites:
             payload.append(
                 {
                     "user_id": -int(invite.id),
                     "invite_id": int(invite.id),
                     "email": invite.invited_email,
-                    "username": None,
                     "role": TournamentMembership.Role.ASSISTANT,
                     "status": TournamentAssistantInvite.Status.PENDING,
                     "permissions": invite.normalized_permissions(),
@@ -55,17 +59,21 @@ class TournamentAssistantListView(ListAPIView):
                 }
             )
 
-        memberships = tournament.memberships.filter(
-            role=TournamentMembership.Role.ASSISTANT,
-            status=TournamentMembership.Status.ACCEPTED,
-        ).select_related("user").order_by("-created_at", "id")
+        memberships = (
+            tournament.memberships.filter(
+                role=TournamentMembership.Role.ASSISTANT,
+                status=TournamentMembership.Status.ACCEPTED,
+            )
+            .select_related("user")
+            .order_by("-created_at", "id")
+        )
+
         for membership in memberships:
             payload.append(
                 {
                     "user_id": int(membership.user_id),
                     "invite_id": None,
                     "email": membership.user.email,
-                    "username": membership.user.username,
                     "role": membership.role,
                     "status": membership.status,
                     "permissions": membership.effective_permissions(),
@@ -90,7 +98,8 @@ class AddAssistantView(APIView):
         matched_user = serializer.validated_data.get("matched_user")
 
         generic_detail = (
-            "Zaproszenie zostało zapisane. Jeśli konto z tym adresem istnieje albo zostanie utworzone później, użytkownik zobaczy je na liście swoich turniejów."
+            "Zaproszenie zostało zapisane. Jeśli konto z tym adresem istnieje albo zostanie "
+            "utworzone później, użytkownik zobaczy je na liście swoich turniejów."
         )
 
         if matched_user and TournamentMembership.objects.filter(
@@ -121,7 +130,17 @@ class AddAssistantView(APIView):
             if not created:
                 invite.invited_email = email
                 invite.mark_pending(invited_by=request.user, permissions=permissions)
-                invite.save(update_fields=["invited_email", "normalized_email", "status", "invited_by", "permissions", "responded_at", "updated_at"])
+                invite.save(
+                    update_fields=[
+                        "invited_email",
+                        "normalized_email",
+                        "status",
+                        "invited_by",
+                        "permissions",
+                        "responded_at",
+                        "updated_at",
+                    ]
+                )
 
         transaction.on_commit(
             lambda: ws_emit_tournament(
@@ -135,7 +154,12 @@ class AddAssistantView(APIView):
             transaction.on_commit(
                 lambda: ws_emit_user(
                     matched_user.id,
-                    {"v": 1, "type": "membership.changed", "tournamentId": tournament.id, "action": action},
+                    {
+                        "v": 1,
+                        "type": "membership.changed",
+                        "tournamentId": tournament.id,
+                        "action": action,
+                    },
                 )
             )
 
@@ -160,7 +184,10 @@ class AcceptAssistantInviteView(APIView):
             .first()
         )
         if not invite:
-            return Response({"detail": "Nie znaleziono oczekującego zaproszenia."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Nie znaleziono oczekującego zaproszenia."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         membership, _created = TournamentMembership.objects.select_for_update().get_or_create(
             tournament=tournament,
@@ -192,7 +219,12 @@ class AcceptAssistantInviteView(APIView):
         transaction.on_commit(
             lambda: ws_emit_user(
                 request.user.id,
-                {"v": 1, "type": "membership.changed", "tournamentId": tournament.id, "action": "assistant_accepted"},
+                {
+                    "v": 1,
+                    "type": "membership.changed",
+                    "tournamentId": tournament.id,
+                    "action": "assistant_accepted",
+                },
             )
         )
 
@@ -217,7 +249,10 @@ class DeclineAssistantInviteView(APIView):
             .first()
         )
         if not invite:
-            return Response({"detail": "Nie znaleziono oczekującego zaproszenia."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Nie znaleziono oczekującego zaproszenia."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         invite.mark_declined()
         invite.save(update_fields=["status", "responded_at", "updated_at"])
@@ -232,7 +267,12 @@ class DeclineAssistantInviteView(APIView):
         transaction.on_commit(
             lambda: ws_emit_user(
                 request.user.id,
-                {"v": 1, "type": "membership.changed", "tournamentId": tournament.id, "action": "assistant_declined"},
+                {
+                    "v": 1,
+                    "type": "membership.changed",
+                    "tournamentId": tournament.id,
+                    "action": "assistant_declined",
+                },
             )
         )
 
@@ -251,7 +291,10 @@ class CancelAssistantInviteView(APIView):
             .first()
         )
         if not invite:
-            return Response({"detail": "Nie znaleziono oczekującego zaproszenia."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Nie znaleziono oczekującego zaproszenia."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         matched_user = User.objects.filter(email__iexact=invite.normalized_email).first()
         invite.mark_canceled()
@@ -268,7 +311,12 @@ class CancelAssistantInviteView(APIView):
             transaction.on_commit(
                 lambda: ws_emit_user(
                     matched_user.id,
-                    {"v": 1, "type": "membership.changed", "tournamentId": tournament.id, "action": "assistant_invite_canceled"},
+                    {
+                        "v": 1,
+                        "type": "membership.changed",
+                        "tournamentId": tournament.id,
+                        "action": "assistant_invite_canceled",
+                    },
                 )
             )
 
@@ -372,11 +420,20 @@ class AssistantPermissionsView(APIView):
         transaction.on_commit(
             lambda: ws_emit_user(
                 int(user_id),
-                {"v": 1, "type": "membership.changed", "tournamentId": tournament.id, "action": "assistant_permissions_updated"},
+                {
+                    "v": 1,
+                    "type": "membership.changed",
+                    "tournamentId": tournament.id,
+                    "action": "assistant_permissions_updated",
+                },
             )
         )
 
         return Response(
-            {"status": membership.status, "raw": membership.permissions or {}, "effective": membership.effective_permissions()},
+            {
+                "status": membership.status,
+                "raw": membership.permissions or {},
+                "effective": membership.effective_permissions(),
+            },
             status=status.HTTP_200_OK,
         )

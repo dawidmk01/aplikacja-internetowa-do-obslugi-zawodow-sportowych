@@ -23,12 +23,6 @@ import {
   type Tournament,
 } from "./_components/TournamentDetailTabs";
 
-type DivisionStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
-
-type DivisionSummaryDTO = {
-  status?: DivisionStatus;
-};
-
 function parseDivisionId(value: string | null | undefined): number | null {
   if (!value) return null;
   const parsed = Number(value);
@@ -83,9 +77,7 @@ export default function TournamentDetail() {
   }, [searchParams]);
 
   const [tournament, setTournament] = useState<Tournament | null>(null);
-  const [divisions, setDivisions] = useState<DivisionSummaryDTO[]>([]);
   const [activeDivisionId, setActiveDivisionId] = useState<number | null>(requestedDivisionId);
-  const [activeDivisionName, setActiveDivisionName] = useState<string | null>(null);
   const effectiveDivisionId = requestedDivisionId ?? activeDivisionId;
 
   const [loading, setLoading] = useState(true);
@@ -192,15 +184,13 @@ export default function TournamentDetail() {
       if (!data) throw new Error("Nie udało się odczytać danych turnieju.");
 
       setTournament(data);
-      setDivisions(Array.isArray((data as any).divisions) ? ((data as any).divisions as DivisionSummaryDTO[]) : []);
       setActiveDivisionId((data as any).active_division_id ?? effectiveDivisionId ?? null);
-      setActiveDivisionName((data as any).active_division_name ?? null);
 
       if (
         !requestedDivisionId &&
         (data as any).active_division_id &&
         Array.isArray((data as any).divisions) &&
-        ((data as any).divisions as DivisionSummaryDTO[]).length > 1
+        (data as any).divisions.length > 1
       ) {
         const next = new URLSearchParams(searchParams);
         next.set("division_id", String((data as any).active_division_id));

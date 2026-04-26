@@ -12,13 +12,17 @@ import { cn } from "../lib/cn";
 import { Button } from "../ui/Button";
 
 type Props = {
-  username: string | null;
+  userEmail: string | null;
   onLogout: () => void;
 };
 
 function isActivePath(current: string, target: string) {
   if (target === "/") return current === "/";
   return current === target || current.startsWith(target + "/");
+}
+
+function getAccountEmailLabel(email: string | null): string {
+  return String(email || "").trim();
 }
 
 function DesktopNavLink({
@@ -38,8 +42,8 @@ function DesktopNavLink({
         "flex items-center rounded-full px-3.5 py-2 text-sm font-medium transition",
         "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
         active
-          ? "bg-white/10 text-white border border-white/15 shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
-          : "text-slate-300 hover:text-white hover:bg-white/10"
+          ? "border border-white/15 bg-white/10 text-white shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
+          : "text-slate-300 hover:bg-white/10 hover:text-white"
       )}
     >
       {children}
@@ -47,7 +51,7 @@ function DesktopNavLink({
   );
 }
 
-export default function NavBar({ username, onLogout }: Props) {
+export default function NavBar({ userEmail, onLogout }: Props) {
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -55,6 +59,9 @@ export default function NavBar({ username, onLogout }: Props) {
   const [scrolled, setScrolled] = useState(false);
 
   const mobileMenuId = "app-mobile-nav";
+  const isAuthenticated = Boolean(userEmail);
+  const accountLabel = getAccountEmailLabel(userEmail);
+  const accountInitial = (accountLabel || "?").slice(0, 1).toUpperCase();
 
   const authedLinks = useMemo(
     () =>
@@ -80,15 +87,15 @@ export default function NavBar({ username, onLogout }: Props) {
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
-  // CSS var wysokości - spójne pozycjonowanie elementów pod NavBarem.
+  // CSS var wysokości utrzymuje spójne pozycjonowanie elementów pod NavBarem.
   useEffect(() => {
     const h = scrolled ? 72 : 84;
     document.documentElement.style.setProperty("--app-navbar-h", `${h}px`);
   }, [scrolled]);
 
   useEffect(() => {
-    if (!username && mobileMenuOpen) setMobileMenuOpen(false);
-  }, [username, mobileMenuOpen]);
+    if (!isAuthenticated && mobileMenuOpen) setMobileMenuOpen(false);
+  }, [isAuthenticated, mobileMenuOpen]);
 
   useEffect(() => {
     if (!mobileMenuOpen) return;
@@ -106,7 +113,7 @@ export default function NavBar({ username, onLogout }: Props) {
   }, [location.pathname]);
 
   const handleAccountClick = () => {
-    if (!username) {
+    if (!isAuthenticated) {
       navigate("/login");
       return;
     }
@@ -120,8 +127,8 @@ export default function NavBar({ username, onLogout }: Props) {
         className={cn(
           "fixed left-0 right-0 top-0 z-50 border-b transition-all duration-300",
           scrolled
-            ? "bg-slate-950/65 backdrop-blur-xl border-white/10 py-3 shadow-lg shadow-indigo-500/5"
-            : "bg-transparent border-transparent py-5"
+            ? "border-white/10 bg-slate-950/65 py-3 shadow-lg shadow-indigo-500/5 backdrop-blur-xl"
+            : "border-transparent bg-transparent py-5"
         )}
       >
         <div className="mx-auto flex w-full max-w-[1400px] items-center justify-between px-4 sm:px-6 lg:px-8">
@@ -154,17 +161,17 @@ export default function NavBar({ username, onLogout }: Props) {
           </Link>
 
           <nav className="hidden items-center gap-1 md:flex" aria-label="Nawigacja główna">
-            {username
-              ? authedLinks.map((l) => (
-                  <DesktopNavLink key={l.to} to={l.to} active={isActive(l.to)}>
-                    {l.label}
+            {isAuthenticated
+              ? authedLinks.map((link) => (
+                  <DesktopNavLink key={link.to} to={link.to} active={isActive(link.to)}>
+                    {link.label}
                   </DesktopNavLink>
                 ))
               : null}
           </nav>
 
           <div className="flex items-center gap-3">
-            {!username ? (
+            {!isAuthenticated ? (
               <>
                 <Link to="/login">
                   <Button variant="secondary">Zaloguj</Button>
@@ -186,18 +193,18 @@ export default function NavBar({ username, onLogout }: Props) {
                       : "hover:border-indigo-500/40 hover:bg-indigo-500/10",
                     "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
                   )}
-                  title="Moje konto"
+                  title={accountLabel || "Moje konto"}
                   aria-label="Moje konto"
                 >
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-tr from-indigo-500 to-violet-500 shadow-inner">
-                    <span className="text-xs font-bold text-white">
-                      {username.slice(0, 1).toUpperCase()}
-                    </span>
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-tr from-indigo-500 to-violet-500 shadow-inner">
+                    <span className="text-xs font-bold text-white">{accountInitial}</span>
                   </div>
 
-                  <div className="flex flex-col text-left">
-                    <span className="mb-0.5 text-xs leading-none text-slate-400">Witaj,</span>
-                    <span className="text-sm font-semibold leading-none text-white">{username}</span>
+                  <div className="flex min-w-0 flex-col text-left">
+                    <span className="mb-0.5 text-xs leading-none text-slate-400">Konto</span>
+                    <span className="max-w-[260px] break-all text-sm font-semibold leading-tight text-white">
+                      {accountLabel}
+                    </span>
                   </div>
                 </button>
 
@@ -224,7 +231,7 @@ export default function NavBar({ username, onLogout }: Props) {
                 "hover:bg-white/10",
                 "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
               )}
-              onClick={() => setMobileMenuOpen((v) => !v)}
+              onClick={() => setMobileMenuOpen((value) => !value)}
               aria-label={mobileMenuOpen ? "Zamknij menu" : "Otwórz menu"}
               aria-expanded={mobileMenuOpen}
               aria-controls={mobileMenuId}
@@ -236,7 +243,7 @@ export default function NavBar({ username, onLogout }: Props) {
       </header>
 
       <AnimatePresence>
-        {mobileMenuOpen && username ? (
+        {mobileMenuOpen && isAuthenticated ? (
           <motion.div
             id={mobileMenuId}
             initial={{ opacity: 0, height: 0 }}
@@ -256,26 +263,31 @@ export default function NavBar({ username, onLogout }: Props) {
                   "flex w-full items-center justify-between rounded-xl px-4 py-3 text-base font-medium transition",
                   "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
                   isActive("/account")
-                    ? "bg-white/10 text-white border border-white/10"
+                    ? "border border-white/10 bg-white/10 text-white"
                     : "text-slate-300 hover:bg-white/5 hover:text-white"
                 )}
                 aria-current={isActive("/account") ? "page" : undefined}
               >
-                <span>Moje konto</span>
+                <span className="flex min-w-0 flex-col items-start gap-1">
+                  <span>Moje konto</span>
+                  <span className="max-w-full break-all text-left text-xs font-normal text-slate-400">
+                    {accountLabel}
+                  </span>
+                </span>
                 {isActive("/account") ? (
-                  <div className="h-2 w-2 rounded-full bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.7)]" />
+                  <div className="h-2 w-2 shrink-0 rounded-full bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.7)]" />
                 ) : null}
               </button>
 
-              {authedLinks.map((l) => {
-                const active = isActive(l.to);
+              {authedLinks.map((link) => {
+                const active = isActive(link.to);
 
                 const icon =
-                  l.to === "/" ? (
+                  link.to === "/" ? (
                     <Trophy className="h-4 w-4 opacity-70" />
-                  ) : l.to === "/find-tournament" ? (
+                  ) : link.to === "/find-tournament" ? (
                     <Search className="h-4 w-4 opacity-80" />
-                  ) : l.to === "/tournaments/new" ? (
+                  ) : link.to === "/tournaments/new" ? (
                     <Plus className="h-4 w-4 opacity-80" />
                   ) : (
                     <Trophy className="h-4 w-4 opacity-70" />
@@ -283,21 +295,21 @@ export default function NavBar({ username, onLogout }: Props) {
 
                 return (
                   <Link
-                    key={l.to}
-                    to={l.to}
+                    key={link.to}
+                    to={link.to}
                     onClick={() => setMobileMenuOpen(false)}
                     aria-current={active ? "page" : undefined}
                     className={cn(
                       "flex items-center justify-between rounded-xl px-4 py-3 text-base font-medium transition",
                       "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
                       active
-                        ? "bg-white/10 text-white border border-white/10"
+                        ? "border border-white/10 bg-white/10 text-white"
                         : "text-slate-300 hover:bg-white/5 hover:text-white"
                     )}
                   >
                     <span className="flex items-center gap-2">
                       {icon}
-                      {l.label}
+                      {link.label}
                     </span>
 
                     {active ? (

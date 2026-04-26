@@ -42,7 +42,6 @@ class TournamentAssistantSerializer(serializers.Serializer):
     user_id = serializers.IntegerField(required=False, allow_null=True)
     invite_id = serializers.IntegerField(required=False, allow_null=True)
     email = serializers.EmailField()
-    username = serializers.CharField(required=False, allow_null=True)
     role = serializers.CharField(required=False, allow_null=True)
     status = serializers.CharField()
     permissions = serializers.DictField(child=serializers.BooleanField(), required=False)
