@@ -31,6 +31,10 @@ def _stage_context(tournament: Tournament, stage: Stage):
     return getattr(stage, "division", None) or tournament
 
 
+def _context_discipline(context) -> str | None:
+    return getattr(context, "discipline", None) or getattr(getattr(context, "tournament", None), "discipline", None)
+
+
 def _context_result_mode(context) -> str:
     return getattr(context, "result_mode", Tournament.ResultMode.SCORE)
 
@@ -80,7 +84,7 @@ def _is_custom_result_mode(context) -> bool:
 
 def _get_ruleset(context) -> StandingsRuleset:
     # Dobór rulesetu korzysta z konfiguracji etapu lub dywizji zamiast globalnego turnieju.
-    discipline = getattr(context, "discipline", None)
+    discipline = _context_discipline(context)
 
     if discipline in (Tournament.Discipline.FOOTBALL, "football", "FOOTBALL"):
         return FootballPZPNRuleset()
@@ -694,7 +698,7 @@ def _apply_match_result(
     away.goals_for += away_score
     away.goals_against += home_score
 
-    discipline = getattr(context, "discipline", None)
+    discipline = _context_discipline(context)
     is_handball = discipline in (
         Tournament.Discipline.HANDBALL,
         "handball",

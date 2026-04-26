@@ -463,6 +463,7 @@ class TournamentSerializer(serializers.ModelSerializer):
         read_only_fields = (
             "organizer",
             "status",
+            "is_archived",
             "created_at",
             "my_role",
             "matches_started",
@@ -628,10 +629,20 @@ class TournamentSerializer(serializers.ModelSerializer):
         if instance:
             division = _resolve_division_for_serializer(self, instance, required=False)
 
-        division_source = self._division_config_source_for_validation(
-            instance if instance else Tournament(discipline=discipline),
-            division,
-        )
+        if instance:
+            division_source = self._division_config_source_for_validation(
+                instance,
+                division,
+            )
+        else:
+            division_source = {
+                "competition_type": None,
+                "competition_model": None,
+                "tournament_format": Tournament.TournamentFormat.LEAGUE,
+                "format_config": {},
+                "result_mode": Tournament.ResultMode.SCORE,
+                "result_config": {},
+            }
 
         for field in DIVISION_CONFIG_FIELDS:
             if field in attrs:

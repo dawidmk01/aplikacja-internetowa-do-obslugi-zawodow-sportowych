@@ -559,14 +559,21 @@ export default function MyTournaments() {
       setError(null);
 
       try {
-        const res = await apiFetch(`/api/tournaments/${t.id}/`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ is_archived: !t.is_archived }),
-        });
+        const endpoint = t.is_archived
+          ? `/api/tournaments/${t.id}/unarchive/`
+          : `/api/tournaments/${t.id}/archive/`;
+
+        const res = await apiFetch(endpoint, { method: "POST" });
 
         if (!res.ok) {
-          toast.error("Błąd archiwizacji.", { title: "System" });
+          let message = "Nie udało się zmienić stanu archiwum turnieju.";
+          try {
+            const data = await res.json();
+            if (typeof data?.detail === "string") message = data.detail;
+          } catch {
+            // brak
+          }
+          toast.error(message, { title: "System" });
           return;
         }
 

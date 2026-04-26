@@ -224,6 +224,10 @@ class TournamentDivisionDetailView(APIView):
 
             if division.is_default:
                 tournament.divisions.filter(is_default=True).update(is_default=False)
+                division.is_default = False
+                if "is_default" not in update_fields:
+                    update_fields.append("is_default")
+
                 replacement.is_default = True
                 replacement.save(update_fields=["is_default"])
                 _sync_legacy_tournament_config(tournament, replacement)

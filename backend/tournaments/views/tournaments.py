@@ -564,15 +564,16 @@ class ArchiveTournamentView(APIView):
         tournament = get_object_or_404(Tournament, pk=pk)
         self.check_object_permissions(request, tournament)
 
-        if tournament.status == Tournament.Status.FINISHED:
+        if tournament.is_archived:
             return Response(
                 {"detail": "Turniej jest już zarchiwizowany."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         tournament.status = Tournament.Status.FINISHED
+        tournament.is_archived = True
         tournament.is_published = False
-        tournament.save(update_fields=["status", "is_published"])
+        tournament.save(update_fields=["status", "is_archived", "is_published"])
 
         tournament.divisions.update(status=Tournament.Status.FINISHED)
 
@@ -589,14 +590,15 @@ class UnarchiveTournamentView(APIView):
         tournament = get_object_or_404(Tournament, pk=pk)
         self.check_object_permissions(request, tournament)
 
-        if tournament.status != Tournament.Status.FINISHED:
+        if not tournament.is_archived and tournament.status != Tournament.Status.FINISHED:
             return Response(
                 {"detail": "Turniej nie znajduje się w archiwum."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         tournament.status = Tournament.Status.CONFIGURED
-        tournament.save(update_fields=["status"])
+        tournament.is_archived = False
+        tournament.save(update_fields=["status", "is_archived"])
 
         tournament.divisions.filter(is_archived=False).update(status=Tournament.Status.CONFIGURED)
 
