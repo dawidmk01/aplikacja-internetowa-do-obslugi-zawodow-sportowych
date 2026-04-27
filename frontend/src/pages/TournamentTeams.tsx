@@ -93,6 +93,25 @@ type NameChangeRequestListResponse = {
   results: NameChangeRequestItem[];
 };
 
+type DivisionChangeRequestItem = {
+  id: number;
+  registration_id?: number | null;
+  team_id: number;
+  team_name?: string | null;
+  requested_by_id?: number | null;
+  from_division_id: number;
+  from_division_name?: string | null;
+  to_division_id: number;
+  to_division_name?: string | null;
+  created_at: string;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+};
+
+type DivisionChangeRequestListResponse = {
+  count: number;
+  results: DivisionChangeRequestItem[];
+};
+
 type PlayerRow = {
   id?: number;
   display_name: string;
@@ -267,6 +286,7 @@ export default function TournamentTeams() {
   const [pendingRequests, setPendingRequests] = useState<NameChangeRequestItem[]>(
     []
   );
+  const [pendingDivisionRequests, setPendingDivisionRequests] = useState<DivisionChangeRequestItem[]>([]);
 
   // ===== Edytor składu =====
   const [rosterOpen, setRosterOpen] = useState(true);
@@ -591,6 +611,7 @@ export default function TournamentTeams() {
 
       if (!canViewOrApproveQueue()) {
         setPendingRequests([]);
+        setPendingDivisionRequests([]);
         return;
       }
 
@@ -608,8 +629,25 @@ export default function TournamentTeams() {
         }
         const data: NameChangeRequestListResponse = await res.json();
         setPendingRequests(Array.isArray(data?.results) ? data.results : []);
+
+        const divisionRes = await apiFetch(
+          withDivisionQuery(
+            `/api/tournaments/${id}/teams/division-change-requests/`,
+            divisionId
+          )
+        );
+
+        if (divisionRes.ok) {
+          const divisionData: DivisionChangeRequestListResponse = await divisionRes.json();
+          setPendingDivisionRequests(
+            Array.isArray(divisionData?.results) ? divisionData.results : []
+          );
+        } else {
+          setPendingDivisionRequests([]);
+        }
       } catch {
         setPendingRequests([]);
+        setPendingDivisionRequests([]);
       } finally {
         setQueueLoading(false);
       }
@@ -681,6 +719,69 @@ export default function TournamentTeams() {
       await loadPendingQueue(effectiveDivisionId);
     } catch (e: any) {
       toast.error(e?.message || "Błąd odrzucenia prośby.");
+    } finally {
+      setQueueBusy(false);
+    }
+  };
+
+  const approveDivisionRequest = async (requestId: number) => {
+    if (!id) return;
+
+    if (!canViewOrApproveQueue()) {
+      toast.error("Brak uprawnień do obsługi kolejki zmian dywizji.");
+      return;
+    }
+
+    setQueueBusy(true);
+    try {
+      const res = await apiFetch(
+        withDivisionQuery(
+          `/api/tournaments/${id}/teams/division-change-requests/${requestId}/approve/`,
+          effectiveDivisionId
+        ),
+        { method: "POST" }
+      );
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || "Nie udało się zaakceptować prośby o zmianę dywizji.");
+      }
+
+      await loadPendingQueue(effectiveDivisionId);
+      await loadTeams(effectiveDivisionId).catch(() => null);
+    } catch (e: any) {
+      toast.error(e?.message || "Błąd akceptacji prośby o zmianę dywizji.");
+    } finally {
+      setQueueBusy(false);
+    }
+  };
+
+  const rejectDivisionRequest = async (requestId: number) => {
+    if (!id) return;
+
+    if (!canViewOrApproveQueue()) {
+      toast.error("Brak uprawnień do obsługi kolejki zmian dywizji.");
+      return;
+    }
+
+    setQueueBusy(true);
+    try {
+      const res = await apiFetch(
+        withDivisionQuery(
+          `/api/tournaments/${id}/teams/division-change-requests/${requestId}/reject/`,
+          effectiveDivisionId
+        ),
+        { method: "POST" }
+      );
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || "Nie udało się odrzucić prośby o zmianę dywizji.");
+      }
+
+      await loadPendingQueue(effectiveDivisionId);
+    } catch (e: any) {
+      toast.error(e?.message || "Błąd odrzucenia prośby o zmianę dywizji.");
     } finally {
       setQueueBusy(false);
     }
@@ -1084,6 +1185,60 @@ export default function TournamentTeams() {
           <Card className="p-4">
             <div className="text-sm text-amber-200/90">
               Uwaga: backend nie zwrócił konfiguracji uprawnień asystenta. UI traktuje uprawnienia asystenta jako wyłączone.
+            <div className="mt-5 border-t border-white/10 pt-4">
+              <div className="mb-3 text-sm font-semibold text-slate-100">Zmiany dywizji</div>
+
+              {pendingDivisionRequests.length === 0 && !queueLoading ? (
+                <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] px-4 py-4 text-sm italic text-slate-300">
+                  Brak oczekujących próśb o zmianę dywizji.
+                </div>
+              ) : (
+                <div className="grid gap-2">
+                  {pendingDivisionRequests.map((r) => (
+                    <div key={r.id} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-slate-100">
+                            {r.team_name || `${entityLabels.queueItemLabel} #${r.team_id}`}
+                          </div>
+                          <div className="mt-1 break-words text-xs text-slate-300">
+                            <div>
+                              <span className="text-slate-400">Z dywizji:</span>{" "}
+                              {r.from_division_name ?? `#${r.from_division_id}`}
+                            </div>
+                            <div>
+                              <span className="text-slate-400">Do dywizji:</span>{" "}
+                              {r.to_division_name ?? `#${r.to_division_id}`}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex shrink-0 items-center gap-2">
+                          <Button
+                            variant="secondary"
+                            disabled={queueBusy}
+                            onClick={() => {
+                              void approveDivisionRequest(r.id);
+                            }}
+                          >
+                            Akceptuj
+                          </Button>
+                          <Button
+                            variant="danger"
+                            disabled={queueBusy}
+                            onClick={() => {
+                              void rejectDivisionRequest(r.id);
+                            }}
+                          >
+                            Odrzuć
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             </div>
           </Card>
         )}
@@ -1155,14 +1310,14 @@ export default function TournamentTeams() {
           <Card className="p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-base font-extrabold text-slate-100">Kolejka zmian nazw</div>
+                <div className="text-base font-extrabold text-slate-100">Kolejka próśb uczestników</div>
                 <div className="mt-1 text-sm text-slate-300/90">
                   W tym miejscu pojawiają się zgłoszenia wymagające akceptacji.
                 </div>
               </div>
 
               <div className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-slate-200">
-                Oczekuje: {pendingRequests.length}
+                Oczekuje: {pendingRequests.length + pendingDivisionRequests.length}
               </div>
             </div>
 

@@ -1203,6 +1203,109 @@ class TeamNameChangeRequest(models.Model):
         )
 
 
+class DivisionChangeRequest(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Oczekuje"
+        APPROVED = "APPROVED", "Zaakceptowana"
+        REJECTED = "REJECTED", "Odrzucona"
+
+    tournament = models.ForeignKey(
+        Tournament,
+        on_delete=models.CASCADE,
+        related_name="division_change_requests",
+    )
+
+    registration = models.ForeignKey(
+        TournamentRegistration,
+        on_delete=models.CASCADE,
+        related_name="division_change_requests",
+    )
+
+    team = models.ForeignKey(
+        "Team",
+        on_delete=models.CASCADE,
+        related_name="division_change_requests",
+    )
+
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="team_division_change_requests",
+    )
+
+    from_division = models.ForeignKey(
+        "Division",
+        on_delete=models.CASCADE,
+        related_name="outgoing_division_change_requests",
+    )
+
+    to_division = models.ForeignKey(
+        "Division",
+        on_delete=models.CASCADE,
+        related_name="incoming_division_change_requests",
+    )
+
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="team_division_change_decisions",
+    )
+
+    decided_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["registration"],
+                condition=Q(status="PENDING"),
+                name="uniq_pending_division_change_per_registration",
+            ),
+        ]
+
+    def clean(self) -> None:
+        if self.registration.tournament_id != self.tournament_id:
+            raise ValidationError("Wniosek o zmianę dywizji musi dotyczyć rejestracji z tego samego turnieju.")
+
+        if self.team.tournament_id != self.tournament_id:
+            raise ValidationError("Wniosek o zmianę dywizji musi wskazywać uczestnika z tego samego turnieju.")
+
+        if self.from_division.tournament_id != self.tournament_id:
+            raise ValidationError("Dywizja źródłowa musi należeć do tego samego turnieju.")
+
+        if self.to_division.tournament_id != self.tournament_id:
+            raise ValidationError("Dywizja docelowa musi należeć do tego samego turnieju.")
+
+        if self.from_division_id == self.to_division_id:
+            raise ValidationError("Dywizja docelowa musi być inna niż bieżąca.")
+
+        if self.registration.team_id and self.registration.team_id != self.team_id:
+            raise ValidationError("Uczestnik wniosku musi być zgodny z rejestracją.")
+
+        if self.registration.division_id and self.registration.division_id != self.from_division_id:
+            raise ValidationError("Dywizja źródłowa musi być zgodna z bieżącą rejestracją.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return (
+            f"{self.tournament_id}:{self.team_id} "
+            f"{self.status} {self.from_division_id} -> {self.to_division_id}"
+        )
+
+
 class Division(models.Model):
     tournament = models.ForeignKey(
         Tournament,

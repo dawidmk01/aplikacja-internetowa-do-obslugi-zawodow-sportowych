@@ -26,6 +26,7 @@ from tournaments.access import (
 )
 from tournaments.models import (
     Division,
+    DivisionChangeRequest,
     Match,
     Stage,
     Team,
@@ -1013,3 +1014,315 @@ class TournamentTeamNameChangeRequestRejectView(APIView):
         req.save(update_fields=["status", "decided_by", "decided_at"])
 
         return Response({"detail": "Prośba została odrzucona."}, status=status.HTTP_200_OK)
+
+
+
+# ===== Operacje wniosków o zmianę dywizji =====
+
+
+def _division_change_request_payload(req: DivisionChangeRequest) -> dict[str, Any]:
+    return {
+        "id": req.id,
+        "registration_id": req.registration_id,
+        "team_id": req.team_id,
+        "team_name": req.team.name if req.team_id else None,
+        "requested_by_id": req.requested_by_id,
+        "from_division_id": req.from_division_id,
+        "from_division_name": req.from_division.name if req.from_division_id else None,
+        "to_division_id": req.to_division_id,
+        "to_division_name": req.to_division.name if req.to_division_id else None,
+        "status": req.status,
+        "created_at": req.created_at,
+        "decided_by_id": req.decided_by_id,
+        "decided_at": req.decided_at,
+    }
+
+
+def _free_team_in_division(tournament: Tournament, division: Division) -> Optional[Team]:
+    return (
+        Team.objects.select_for_update()
+        .filter(
+            tournament_id=tournament.id,
+            division_id=division.id,
+            is_active=True,
+            registered_user_id__isnull=True,
+        )
+        .exclude(name=BYE_TEAM_NAME)
+        .order_by("id")
+        .first()
+    )
+
+
+def _released_slot_name(tournament: Tournament, division: Division, team: Team) -> str:
+    slot_index = (
+        Team.objects.filter(
+            tournament=tournament,
+            division=division,
+            is_active=True,
+            id__lte=team.id,
+        )
+        .exclude(name=BYE_TEAM_NAME)
+        .count()
+    )
+    return f"{_team_name_prefix(tournament, division)} {max(slot_index, 1)}"
+
+
+class TournamentDivisionChangeRequestListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk: int):
+        tournament = get_object_or_404(Tournament, pk=pk)
+        division = _current_division(request, tournament)
+
+        status_q = _norm_name(str(request.query_params.get("status") or "")).upper() or None
+
+        qs = (
+            DivisionChangeRequest.objects.filter(tournament=tournament)
+            .select_related("registration", "team", "requested_by", "from_division", "to_division")
+            .order_by("-created_at", "-id")
+        )
+
+        if can_edit_teams(request.user, tournament):
+            if division is not None:
+                qs = qs.filter(Q(from_division=division) | Q(to_division=division))
+
+            if status_q:
+                qs = qs.filter(status=status_q)
+            else:
+                qs = qs.filter(status=DivisionChangeRequest.Status.PENDING)
+
+            items = [_division_change_request_payload(req) for req in qs]
+            return Response({"count": len(items), "results": items}, status=status.HTTP_200_OK)
+
+        if not user_is_registered_participant(request.user, tournament):
+            return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
+
+        qs = qs.filter(requested_by=request.user)
+        if division is not None:
+            qs = qs.filter(from_division=division)
+        if status_q:
+            qs = qs.filter(status=status_q)
+
+        items = [_division_change_request_payload(req) for req in qs]
+        return Response({"count": len(items), "results": items}, status=status.HTTP_200_OK)
+
+    @transaction.atomic
+    def post(self, request, pk: int):
+        tournament = get_object_or_404(Tournament, pk=pk)
+        division = _current_division(request, tournament)
+
+        if getattr(tournament, "is_archived", False) or tournament.status == Tournament.Status.FINISHED:
+            return Response(
+                {"detail": "Nie można składać próśb w zarchiwizowanym albo zakończonym turnieju."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not user_can_view_tournament(request.user, tournament):
+            return Response({"detail": "Brak dostępu do turnieju."}, status=status.HTTP_403_FORBIDDEN)
+
+        if not user_is_registered_participant(request.user, tournament):
+            return Response(
+                {"detail": "Tylko zarejestrowany uczestnik może złożyć prośbę."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if division is None:
+            return Response({"detail": "Brak aktywnej dywizji źródłowej."}, status=status.HTTP_400_BAD_REQUEST)
+
+        raw_target_id = request.data.get("target_division_id") or request.data.get("to_division_id")
+        try:
+            target_division_id = int(raw_target_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"target_division_id": "target_division_id musi być liczbą całkowitą."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        target_division = tournament.divisions.select_for_update().filter(
+            pk=target_division_id,
+            is_archived=False,
+        ).first()
+        if target_division is None:
+            return Response(
+                {"target_division_id": "Wskazana dywizja docelowa nie należy do tego turnieju albo jest zarchiwizowana."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if target_division.id == division.id:
+            return Response(
+                {"detail": "Dywizja docelowa musi być inna niż bieżąca."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if _tournament_real_started(tournament, division) or _tournament_real_started(tournament, target_division):
+            return Response(
+                {"detail": "Nie można zmienić dywizji po rozpoczęciu rozgrywek w dywizji źródłowej albo docelowej."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        registration = (
+            TournamentRegistration.objects.select_for_update()
+            .filter(tournament=tournament, division=division, user=request.user)
+            .first()
+        )
+        if registration is None or registration.team_id is None:
+            return Response({"detail": "Brak rejestracji w bieżącej dywizji."}, status=status.HTTP_400_BAD_REQUEST)
+
+        team = (
+            Team.objects.select_for_update()
+            .filter(pk=registration.team_id, tournament=tournament)
+            .first()
+        )
+        if team is None or team.name == BYE_TEAM_NAME or not team.is_active:
+            return Response({"detail": "Nieprawidłowy uczestnik rejestracji."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if TournamentRegistration.objects.filter(
+            tournament=tournament,
+            division=target_division,
+            user=request.user,
+        ).exists():
+            return Response(
+                {"detail": "Masz już rejestrację w wybranej dywizji."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if DivisionChangeRequest.objects.filter(
+            registration=registration,
+            status=DivisionChangeRequest.Status.PENDING,
+        ).exists():
+            return Response(
+                {"detail": "Istnieje już oczekująca prośba o zmianę dywizji."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if _free_team_in_division(tournament, target_division) is None:
+            return Response(
+                {"detail": "Brak wolnych miejsc w dywizji docelowej."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        req = DivisionChangeRequest.objects.create(
+            tournament=tournament,
+            registration=registration,
+            team=team,
+            requested_by=request.user,
+            from_division=division,
+            to_division=target_division,
+            status=DivisionChangeRequest.Status.PENDING,
+        )
+
+        return Response(
+            {
+                "detail": "Prośba o zmianę dywizji została złożona.",
+                "request": _division_change_request_payload(req),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class TournamentDivisionChangeRequestApproveView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, pk: int, request_id: int):
+        tournament = get_object_or_404(Tournament, pk=pk)
+
+        if not can_edit_teams(request.user, tournament):
+            return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
+
+        req = get_object_or_404(
+            DivisionChangeRequest.objects.select_for_update().select_related(
+                "registration",
+                "team",
+                "requested_by",
+                "from_division",
+                "to_division",
+            ),
+            pk=request_id,
+            tournament=tournament,
+        )
+
+        if req.status != DivisionChangeRequest.Status.PENDING:
+            return Response({"detail": "Ta prośba nie jest w statusie oczekującym."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if _tournament_real_started(tournament, req.from_division) or _tournament_real_started(tournament, req.to_division):
+            return Response(
+                {"detail": "Nie można zaakceptować zmiany po rozpoczęciu rozgrywek w dywizji źródłowej albo docelowej."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        registration = TournamentRegistration.objects.select_for_update().get(pk=req.registration_id)
+
+        if TournamentRegistration.objects.filter(
+            tournament=tournament,
+            division=req.to_division,
+            user=req.requested_by,
+        ).exclude(pk=registration.pk).exists():
+            return Response(
+                {"detail": "Uczestnik ma już rejestrację w dywizji docelowej."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        target_team = _free_team_in_division(tournament, req.to_division)
+        if target_team is None:
+            return Response(
+                {"detail": "Brak wolnych miejsc w dywizji docelowej."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        old_team = Team.objects.select_for_update().filter(pk=req.team_id, tournament=tournament).first()
+        display_name = registration.display_name or (old_team.name if old_team else "")
+
+        target_team.registered_user = req.requested_by
+        target_team.name = display_name
+        target_team.save(update_fields=["registered_user", "name"])
+
+        if old_team is not None and old_team.id != target_team.id:
+            old_team.registered_user = None
+            old_team.name = _released_slot_name(tournament, req.from_division, old_team)
+            old_team.save(update_fields=["registered_user", "name"])
+
+        registration.division = req.to_division
+        registration.team = target_team
+        registration.save(update_fields=["division", "team", "updated_at"])
+
+        req.status = DivisionChangeRequest.Status.APPROVED
+        req.decided_by = request.user
+        req.decided_at = timezone.now()
+        req.save(update_fields=["status", "decided_by", "decided_at"])
+
+        return Response(
+            {
+                "detail": "Prośba o zmianę dywizji została zaakceptowana.",
+                "request": _division_change_request_payload(req),
+                "team": TeamSerializer(target_team).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class TournamentDivisionChangeRequestRejectView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, pk: int, request_id: int):
+        tournament = get_object_or_404(Tournament, pk=pk)
+
+        if not can_edit_teams(request.user, tournament):
+            return Response({"detail": "Brak uprawnień."}, status=status.HTTP_403_FORBIDDEN)
+
+        req = get_object_or_404(
+            DivisionChangeRequest,
+            pk=request_id,
+            tournament=tournament,
+        )
+
+        if req.status != DivisionChangeRequest.Status.PENDING:
+            return Response({"detail": "Ta prośba nie jest w statusie oczekującym."}, status=status.HTTP_400_BAD_REQUEST)
+
+        req.status = DivisionChangeRequest.Status.REJECTED
+        req.decided_by = request.user
+        req.decided_at = timezone.now()
+        req.save(update_fields=["status", "decided_by", "decided_at"])
+
+        return Response({"detail": "Prośba o zmianę dywizji została odrzucona."}, status=status.HTTP_200_OK)

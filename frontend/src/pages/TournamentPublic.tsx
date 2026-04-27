@@ -32,6 +32,7 @@ import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { InlineAlert } from "../ui/InlineAlert";
 import { Input } from "../ui/Input";
+import { Select, type SelectOption } from "../ui/Select";
 
 import PublicMatchesBar from "../components/PublicMatchesBar";
 import PublicMatchesPanel from "../components/PublicMatchesPanel";
@@ -98,6 +99,8 @@ type TournamentPublicDTO = {
 type RegistrationMeDTO = {
   display_name: string;
   team_id: number | null;
+  division_id?: number | null;
+  division_name?: string | null;
 };
 
 type NameChangeRequestDTO = {
@@ -105,6 +108,16 @@ type NameChangeRequestDTO = {
   status?: "PENDING" | "APPROVED" | "REJECTED" | string;
   old_name?: string;
   requested_name?: string;
+  created_at?: string;
+};
+
+type DivisionChangeRequestDTO = {
+  id?: number;
+  status?: "PENDING" | "APPROVED" | "REJECTED" | string;
+  team_name?: string | null;
+  from_division_name?: string | null;
+  to_division_id?: number | null;
+  to_division_name?: string | null;
   created_at?: string;
 };
 
@@ -652,6 +665,9 @@ export default function TournamentPublic({
   const [displayName, setDisplayName] = useState("");
   const [joinDisabledByServer, setJoinDisabledByServer] = useState(false);
   const [pendingNameReq, setPendingNameReq] = useState<NameChangeRequestDTO | null>(null);
+  const [pendingDivisionReq, setPendingDivisionReq] =
+    useState<DivisionChangeRequestDTO | null>(null);
+  const [targetDivisionId, setTargetDivisionId] = useState<number | null>(null);
 
   const [selectedMatchId, setSelectedMatchId] = useState<number | null>(null);
   const [selectedSection, setSelectedSection] = useState<string | null>(null);
@@ -733,6 +749,40 @@ export default function TournamentPublic({
   const customResultSummary = useMemo(() => getPublicResultModeSummary(tournament), [tournament]);
   const customResultConfig = useMemo(() => getResultConfig(tournament), [tournament]);
   const dateRange = formatDateRange(tournament?.start_date ?? null, tournament?.end_date ?? null);
+
+  const activeDivisionOptions = useMemo<SelectOption<number>[]>(() => {
+    return divisions
+      .filter((division) => !(division as any).is_archived)
+      .sort((left, right) => {
+        const orderDiff = ((left as any).order ?? 0) - ((right as any).order ?? 0);
+        if (orderDiff !== 0) return orderDiff;
+        return left.id - right.id;
+      })
+      .map((division) => ({
+        value: division.id,
+        label: division.name,
+      }));
+  }, [divisions]);
+
+  const currentDivisionValue =
+    effectiveDivisionId ?? activeDivisionOptions[0]?.value ?? 0;
+
+  const targetDivisionOptions = useMemo<SelectOption<number>[]>(() => {
+    return activeDivisionOptions.filter((option) => option.value !== currentDivisionValue);
+  }, [activeDivisionOptions, currentDivisionValue]);
+
+  useEffect(() => {
+    if (targetDivisionOptions.length === 0) {
+      setTargetDivisionId(null);
+      return;
+    }
+
+    setTargetDivisionId((current) =>
+      current && targetDivisionOptions.some((option) => option.value === current)
+        ? current
+        : targetDivisionOptions[0]?.value ?? null
+    );
+  }, [targetDivisionOptions]);
 
   const matchesSectionLabel = isCustomMassStartMode
     ? "Rezultaty etapowe"
@@ -1061,6 +1111,47 @@ export default function TournamentPublic({
     [effectiveDivisionId, id]
   );
 
+  const loadMyPendingDivisionChange = useCallback(async () => {
+    if (!id) {
+      setPendingDivisionReq(null);
+      return;
+    }
+
+    try {
+      const res = await apiFetch(
+        appendQueryParams(`/api/tournaments/${id}/teams/division-change-requests/`, {
+          status: "PENDING",
+          division_id: effectiveDivisionId ?? undefined,
+        }),
+        { toastOnError: false }
+      );
+
+      if (!res.ok) {
+        setPendingDivisionReq(null);
+        return;
+      }
+
+      const data = await res.json().catch(() => null);
+      const first = extractList(data)?.[0] ?? null;
+
+      if (first) {
+        setPendingDivisionReq({
+          id: first.id,
+          status: first.status,
+          team_name: first.team_name ?? null,
+          from_division_name: first.from_division_name ?? null,
+          to_division_id: first.to_division_id ?? null,
+          to_division_name: first.to_division_name ?? null,
+          created_at: first.created_at,
+        });
+      } else {
+        setPendingDivisionReq(null);
+      }
+    } catch {
+      setPendingDivisionReq(null);
+    }
+  }, [effectiveDivisionId, id]);
+
   const loadTournamentAndMatches = useCallback(async () => {
     if (!id) return;
 
@@ -1242,10 +1333,16 @@ export default function TournamentPublic({
 
     const data = (await res.json().catch(() => null)) as RegistrationMeDTO | null;
     if (data?.display_name) {
-      setRegMe({ display_name: data.display_name, team_id: data.team_id ?? null });
+      setRegMe({
+        display_name: data.display_name,
+        team_id: data.team_id ?? null,
+        division_id: data.division_id ?? effectiveDivisionId ?? null,
+        division_name: data.division_name ?? activeDivisionName ?? null,
+      });
       setDisplayName(data.display_name);
       loadMyMatches();
       await loadMyPendingNameChange(data.team_id ?? null);
+      await loadMyPendingDivisionChange();
     } else {
       setRegMe(null);
       setPendingNameReq(null);
@@ -1470,6 +1567,50 @@ export default function TournamentPublic({
 
     setRegInfo("Wysłano prośbę o zmianę nazwy.");
     await loadMyPendingNameChange(regMe?.team_id ?? null);
+  };
+
+  const requestDivisionChange = async () => {
+    if (!id || !isLogged) return;
+
+    if (!targetDivisionId) {
+      setRegError("Wybierz dywizję docelową.");
+      return;
+    }
+
+    if (pendingDivisionReq?.status === "PENDING") {
+      setRegInfo("Masz już oczekującą prośbę o zmianę dywizji. Poczekaj na decyzję organizatora.");
+      return;
+    }
+
+    setRegBusy(true);
+    setRegError(null);
+    setRegInfo(null);
+
+    try {
+      const res = await apiFetch(
+        appendQueryParams(`/api/tournaments/${id}/teams/division-change-requests/`, {
+          division_id: effectiveDivisionId ?? undefined,
+        }),
+        {
+          toastOnError: false,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target_division_id: targetDivisionId }),
+        }
+      );
+
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(data?.detail ?? "Nie udało się wysłać prośby o zmianę dywizji.");
+      }
+
+      setRegInfo("Wysłano prośbę o zmianę dywizji.");
+      await loadMyPendingDivisionChange();
+    } catch (e: any) {
+      setRegError(e?.message ?? "Błąd wysyłania prośby o zmianę dywizji.");
+    } finally {
+      setRegBusy(false);
+    }
   };
 
   const handleRenameOrRequest = async () => {
@@ -1827,6 +1968,40 @@ export default function TournamentPublic({
                     : "Zmień nazwę"}
               </Button>
             </div>
+
+            {activeDivisionOptions.length > 1 ? (
+              <Card className="bg-white/[0.04] p-4">
+                <div className="text-sm font-semibold text-slate-100">Zmiana dywizji</div>
+                <div className="mt-1 text-xs leading-relaxed text-slate-400">
+                  Obecna dywizja: {activeDivisionName ?? regMe.division_name ?? "aktywna dywizja"}.
+                </div>
+
+                {pendingDivisionReq?.status === "PENDING" ? (
+                  <div className="mt-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-3 text-sm text-amber-100">
+                    Oczekuje prośba o przeniesienie do dywizji: {pendingDivisionReq.to_division_name ?? "wybrana dywizja"}.
+                  </div>
+                ) : targetDivisionOptions.length > 0 ? (
+                  <div className="mt-3 grid gap-2">
+                    <Select<number>
+                      value={targetDivisionId ?? targetDivisionOptions[0]?.value ?? 0}
+                      onChange={(nextId) => setTargetDivisionId(nextId || null)}
+                      options={targetDivisionOptions}
+                      disabled={regBusy || targetDivisionOptions.length === 0}
+                      ariaLabel="Wybierz dywizję docelową"
+                      buttonClassName="rounded-2xl border border-white/10 bg-white/[0.06] px-3 py-2 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10"
+                      menuClassName="rounded-2xl"
+                      size="md"
+                      align="start"
+                    />
+                    <Button type="button" variant="secondary" onClick={requestDivisionChange} disabled={regBusy || !targetDivisionId}>
+                      {regBusy ? "Wysyłanie..." : "Poproś o zmianę dywizji"}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="mt-3 text-sm text-slate-400">Brak innej aktywnej dywizji do wyboru.</div>
+                )}
+              </Card>
+            ) : null}
 
             {shouldShowMyMatchesSection ? (
               <SectionShell

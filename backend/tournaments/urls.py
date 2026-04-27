@@ -60,6 +60,11 @@ from .views import (
     UnarchiveTournamentView,
 )
 from .views.divisions import TournamentDivisionDetailView, TournamentDivisionListCreateView
+from .views.teams import (
+    TournamentDivisionChangeRequestApproveView,
+    TournamentDivisionChangeRequestListCreateView,
+    TournamentDivisionChangeRequestRejectView,
+)
 from .views.mass_start_results import TournamentPublicMassStartResultListView
 
 
@@ -111,6 +116,18 @@ urlpatterns = [
     path(
         "tournaments/<int:pk>/teams/name-change-requests/<int:request_id>/reject/",
         TournamentTeamNameChangeRequestRejectView.as_view(),
+    ),
+    path(
+        "tournaments/<int:pk>/teams/division-change-requests/",
+        TournamentDivisionChangeRequestListCreateView.as_view(),
+    ),
+    path(
+        "tournaments/<int:pk>/teams/division-change-requests/<int:request_id>/approve/",
+        TournamentDivisionChangeRequestApproveView.as_view(),
+    ),
+    path(
+        "tournaments/<int:pk>/teams/division-change-requests/<int:request_id>/reject/",
+        TournamentDivisionChangeRequestRejectView.as_view(),
     ),
     path("tournaments/<int:pk>/matches/", TournamentMatchListView.as_view()),
     path("tournaments/<int:pk>/mass-start-results/", TournamentMassStartResultListCreateView.as_view()),
