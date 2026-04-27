@@ -12,7 +12,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from tournaments.access import can_edit_results, can_edit_schedule
+from tournaments.access import tournament_allows_mutation, can_edit_results, can_edit_schedule
 from tournaments.models import Match, Tournament
 
 from ..realtime import ws_emit_tournament
@@ -167,6 +167,15 @@ def _serialize_clock(match: Match) -> dict:
         "max_clock_seconds": MAX_CLOCK_SECONDS,
         "server_time": now.isoformat(),
     }
+
+
+def _reject_archived_tournament(match: Match) -> Response | None:
+    if not tournament_allows_mutation(match.tournament):
+        return Response(
+            {"detail": "Nie można edytować zegara w zarchiwizowanym turnieju."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return None
 
 
 class MatchClockGetView(APIView):
@@ -347,6 +356,10 @@ class MatchClockSetPeriodView(APIView):
                 int(match.clock_elapsed_seconds or 0) + max(0, int(delta.total_seconds())),
             )
 
+        archived_response = _reject_archived_tournament(match)
+        if archived_response is not None:
+            return archived_response
+
         match.clock_period = period
         match.clock_elapsed_seconds = 0
         match.clock_started_at = now if match.clock_state == Match.ClockState.RUNNING else None
@@ -395,6 +408,10 @@ class MatchClockResetPeriodView(APIView):
                 Match.objects.select_related("tournament", "stage").select_for_update(),
                 pk=match_id,
             )
+
+            archived_response = _reject_archived_tournament(match)
+            if archived_response is not None:
+                return archived_response
 
             try:
                 _require_can_manage_clock(request.user, match)

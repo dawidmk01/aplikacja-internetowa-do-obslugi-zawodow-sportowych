@@ -177,6 +177,10 @@ def assistant_has_perm(user, tournament: Tournament, perm_key: str) -> bool:
     return _raw_permission_enabled(membership, perm_key)
 
 
+def tournament_allows_mutation(tournament: Tournament) -> bool:
+    return not bool(getattr(tournament, "is_archived", False))
+
+
 def user_can_manage_tournament(user_or_tournament, tournament_or_user) -> bool:
     user, tournament = _normalize_args(user_or_tournament, tournament_or_user)
 
@@ -193,39 +197,67 @@ def user_can_manage_tournament(user_or_tournament, tournament_or_user) -> bool:
 
 
 def can_edit_teams(user, tournament: Tournament) -> bool:
-    return assistant_has_perm(user, tournament, TournamentMembership.PERM_TEAMS_EDIT)
+    return tournament_allows_mutation(tournament) and assistant_has_perm(
+        user,
+        tournament,
+        TournamentMembership.PERM_TEAMS_EDIT,
+    )
 
 
 def can_edit_schedule(user, tournament: Tournament) -> bool:
-    return assistant_has_perm(user, tournament, TournamentMembership.PERM_SCHEDULE_EDIT)
+    return tournament_allows_mutation(tournament) and assistant_has_perm(
+        user,
+        tournament,
+        TournamentMembership.PERM_SCHEDULE_EDIT,
+    )
 
 
 def can_edit_results(user, tournament: Tournament) -> bool:
-    return assistant_has_perm(user, tournament, TournamentMembership.PERM_RESULTS_EDIT)
+    return tournament_allows_mutation(tournament) and assistant_has_perm(
+        user,
+        tournament,
+        TournamentMembership.PERM_RESULTS_EDIT,
+    )
 
 
 def can_edit_bracket(user, tournament: Tournament) -> bool:
-    return assistant_has_perm(user, tournament, TournamentMembership.PERM_BRACKET_EDIT)
+    return tournament_allows_mutation(tournament) and assistant_has_perm(
+        user,
+        tournament,
+        TournamentMembership.PERM_BRACKET_EDIT,
+    )
 
 
 def can_edit_tournament_detail(user, tournament: Tournament) -> bool:
-    return assistant_has_perm(user, tournament, TournamentMembership.PERM_TOURNAMENT_EDIT)
+    return tournament_allows_mutation(tournament) and assistant_has_perm(
+        user,
+        tournament,
+        TournamentMembership.PERM_TOURNAMENT_EDIT,
+    )
 
 
 def can_edit_roster(user, tournament: Tournament) -> bool:
-    return assistant_has_perm(user, tournament, TournamentMembership.PERM_ROSTER_EDIT)
+    return tournament_allows_mutation(tournament) and assistant_has_perm(
+        user,
+        tournament,
+        TournamentMembership.PERM_ROSTER_EDIT,
+    )
 
 
 def can_approve_name_changes(user, tournament: Tournament) -> bool:
-    return assistant_has_perm(user, tournament, TournamentMembership.PERM_NAME_CHANGE_APPROVE)
+    return tournament_allows_mutation(tournament) and assistant_has_perm(
+        user,
+        tournament,
+        TournamentMembership.PERM_NAME_CHANGE_APPROVE,
+    )
 
 
 def can_manage_assistants(user, tournament: Tournament) -> bool:
-    return user_is_organizer(user, tournament)
+    return tournament_allows_mutation(tournament) and user_is_organizer(user, tournament)
 
 
 def can_manage_join_settings(user, tournament: Tournament) -> bool:
-    return user_is_organizer(user, tournament)
+    return tournament_allows_mutation(tournament) and user_is_organizer(user, tournament)
 
 
 def can_view_assistant_permissions(user, tournament: Tournament, target_user_id: int) -> bool:

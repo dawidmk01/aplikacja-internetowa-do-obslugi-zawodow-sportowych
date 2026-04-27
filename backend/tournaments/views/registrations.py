@@ -28,8 +28,18 @@ def _norm_name(value: str) -> str:
 
 
 def _join_enabled_or_400(tournament: Tournament) -> Optional[Response]:
+    if getattr(tournament, "is_archived", False) or tournament.status == Tournament.Status.FINISHED:
+        return Response(
+            {"detail": "Dołączanie do tego turnieju jest niedostępne."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     if not getattr(tournament, "join_enabled", False):
-        return Response({"detail": "Dołączanie przez konto i kod jest wyłączone dla tego turnieju."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"detail": "Dołączanie do turnieju jest wyłączone."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     return None
 
 

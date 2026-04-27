@@ -383,6 +383,13 @@ class AssistantPermissionsView(APIView):
         )
 
     def patch(self, request, pk: int, user_id: int):
+        tournament_for_archive_guard = Tournament.objects.filter(pk=pk).first()
+        if tournament_for_archive_guard is not None and getattr(tournament_for_archive_guard, "is_archived", False):
+            return Response(
+                {"detail": "Nie można zmieniać uprawnień asystenta w zarchiwizowanym turnieju."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         tournament = _get_permission_tournament(self, pk)
         serializer = AssistantPermissionsSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)

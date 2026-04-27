@@ -16,7 +16,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from tournaments.access import user_is_assistant
+from tournaments.access import tournament_allows_mutation, user_is_assistant
 from tournaments.models import (
     Division,
     Group,
@@ -525,6 +525,18 @@ class TournamentMassStartResultListCreateView(APIView):
             return Response(
                 {"detail": str(exc)},
                 status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not tournament_allows_mutation(tournament):
+            return Response(
+                {"detail": "Nie można zapisywać wyników w zarchiwizowanym turnieju."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not tournament_allows_mutation(tournament):
+            return Response(
+                {"detail": "Nie można zapisywać wyników w zarchiwizowanym turnieju."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         division = _resolve_division_from_request(request, tournament)

@@ -355,6 +355,12 @@ def _ws_emit_incidents_payload(match: Match) -> dict:
     }
 
 
+def _match_accepts_incident_mutations(match: Match) -> None:
+    tournament = match.tournament
+    if getattr(tournament, "is_archived", False) or tournament.status == Tournament.Status.FINISHED:
+        raise ValueError("Nie można edytować incydentów w zakończonym lub zarchiwizowanym turnieju.")
+
+
 class MatchIncidentListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -410,8 +416,11 @@ class MatchIncidentListCreateView(APIView):
 
             try:
                 _require_can_manage_incidents(request.user, match)
+                _match_accepts_incident_mutations(match)
             except PermissionError as exc:
                 return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
             data = request.data or {}
             discipline = match.tournament.discipline
@@ -459,6 +468,8 @@ class MatchIncidentListCreateView(APIView):
 
                 if player_id:
                     player = get_object_or_404(TeamPlayer, pk=player_id)
+                    if not getattr(player, "is_active", True):
+                        raise ValueError("Zawodnik jest nieaktywny.")
                     _player_must_belong_to_team(player, team_id)
 
                 if kind == MatchIncident.Kind.SUBSTITUTION:
@@ -467,6 +478,11 @@ class MatchIncidentListCreateView(APIView):
 
                     player_in = get_object_or_404(TeamPlayer, pk=player_in_id)
                     player_out = get_object_or_404(TeamPlayer, pk=player_out_id)
+
+                    if not getattr(player_in, "is_active", True):
+                        raise ValueError("Zawodnik wchodzący jest nieaktywny.")
+                    if not getattr(player_out, "is_active", True):
+                        raise ValueError("Zawodnik schodzący jest nieaktywny.")
 
                     _player_must_belong_to_team(player_in, team_id)
                     _player_must_belong_to_team(player_out, team_id)

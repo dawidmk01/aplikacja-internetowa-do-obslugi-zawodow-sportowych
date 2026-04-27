@@ -464,6 +464,15 @@ class MyTournamentListView(ListAPIView):
         return context
 
 
+def _archived_tournament_write_response(tournament: Tournament) -> Response | None:
+    if getattr(tournament, "is_archived", False):
+        return Response(
+            {"detail": "Nie można edytować zarchiwizowanego turnieju."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return None
+
+
 class TournamentDetailView(RetrieveUpdateAPIView):
     queryset = Tournament.objects.all()
     serializer_class = TournamentSerializer
@@ -485,6 +494,14 @@ class TournamentDetailView(RetrieveUpdateAPIView):
     def get_serializer_context(self):
         context = super().get_serializer_context()
         return context
+
+    def update(self, request, *args, **kwargs):
+        tournament = self.get_object()
+        archived_response = _archived_tournament_write_response(tournament)
+        if archived_response is not None:
+            return archived_response
+
+        return super().update(request, *args, **kwargs)
 
     def perform_update(self, serializer):
         tournament = serializer.instance
