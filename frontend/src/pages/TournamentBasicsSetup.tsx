@@ -32,6 +32,7 @@ import {
   type CustomBetterResult,
   type CustomHeadToHeadMode,
   type CustomMassStartValueKind,
+  type CustomStageStructureMode,
   type CustomMeasuredValueKind,
   type CustomStageConfig,
   type CustomTimeFormat,
@@ -168,6 +169,8 @@ type BackendCustomStageConfig = {
   aggregation_mode?: CustomAggregationMode | null;
 };
 
+const MAX_CUSTOM_STAGE_LEVELS = 12;
+
 const RESULT_CONFIG_KEY_MAP = {
   headToHeadMode: "custom_mode",
   customMatchSeriesMode: "custom_match_series_mode",
@@ -203,15 +206,14 @@ const RESULT_CONFIG_KEY_MAP = {
   massStartAllowTies: "mass_start_allow_ties",
   massStartRoundsCount: "mass_start_rounds_count",
   massStartAggregationMode: "mass_start_aggregation_mode",
+  stageStructureMode: "stage_structure_mode",
 } as const;
 
-function getActiveCustomStagesCount(stages: CustomStageConfig[]): 1 | 2 | 3 {
-  const stage3 = stages[2];
-  if (stage3?.participantsCount != null) return 3;
-
-  const stage2 = stages[1];
-  if (stage2?.participantsCount != null) return 2;
-
+function getActiveCustomStagesCount(stages: CustomStageConfig[]): number {
+  for (let index = Math.min(stages.length, MAX_CUSTOM_STAGE_LEVELS) - 1; index >= 0; index -= 1) {
+    const stage = stages[index];
+    if (stage?.participantsCount != null || stage?.advanceCount != null) return index + 1;
+  }
   return 1;
 }
 
@@ -254,6 +256,7 @@ function serializeCustomResultConfig(config: TournamentResultConfig) {
     payload.allow_ties = config.massStartAllowTies;
     payload.rounds_count = config.massStartRoundsCount;
     payload.aggregation_mode = config.massStartAggregationMode;
+    payload.stage_structure_mode = config.stageStructureMode;
     payload.stages = Array.isArray(config.stages)
       ? config.stages.slice(0, getActiveCustomStagesCount(config.stages)).map(serializeCustomStage)
       : [];
@@ -295,9 +298,11 @@ function deserializeCustomResultConfig(rawConfig: any, participants: number): To
       raw.aggregation_mode ?? raw.mass_start_aggregation_mode ?? defaults.massStartAggregationMode;
   }
 
+  const stageStructureMode: CustomStageStructureMode = raw.stage_structure_mode === "MULTI_EVENT" ? "MULTI_EVENT" : "REDUCTION";
+  mapped.stageStructureMode = stageStructureMode;
   const baseStages = createDefaultStages(safeParticipants);
-  const incomingStages: BackendCustomStageConfig[] = Array.isArray(raw.stages) ? raw.stages.slice(0, 3) : [];
-  const activeStagesCount = Math.max(1, Math.min(3, incomingStages.length || 1));
+  const incomingStages: BackendCustomStageConfig[] = Array.isArray(raw.stages) ? raw.stages.slice(0, MAX_CUSTOM_STAGE_LEVELS) : [];
+  const activeStagesCount = Math.max(1, Math.min(MAX_CUSTOM_STAGE_LEVELS, incomingStages.length || 1));
 
   let previousAdvance: number | null = safeParticipants;
   mapped.stages = baseStages.map((baseStage, index) => {

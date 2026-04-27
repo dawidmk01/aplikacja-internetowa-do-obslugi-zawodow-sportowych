@@ -18,7 +18,7 @@ import {
   COMPETITION_TYPE_LABELS,
   DISCIPLINE_LABELS,
   HEAD_TO_HEAD_MODE_LABELS,
-  RESULT_VALUE_KIND_LABELS,
+  RESULT_VALUE_KIND_LABELS, STAGE_STRUCTURE_MODE_LABELS,
   TENNIS_POINTS_MODE_LABELS,
   TIME_FORMAT_LABELS,
   TOURNAMENT_FORMAT_LABELS,
@@ -69,6 +69,7 @@ export type CustomMeasuredValueKind = "TIME" | "NUMBER" | "PLACE";
 export type CustomBetterResult = "HIGHER" | "LOWER";
 export type CustomTimeFormat = "HH:MM:SS" | "MM:SS" | "MM:SS.hh" | "SS.hh";
 export type CustomAggregationMode = "SUM" | "AVERAGE" | "BEST" | "LAST_ROUND";
+export type CustomStageStructureMode = "REDUCTION" | "MULTI_EVENT";
 export type CustomUnitPreset =
   | "POINTS"
   | "SECONDS"
@@ -136,6 +137,7 @@ export type TournamentResultConfig = {
   massStartAllowTies: boolean;
   massStartRoundsCount: number;
   massStartAggregationMode: CustomAggregationMode;
+  stageStructureMode: CustomStageStructureMode;
   stages: CustomStageConfig[];
 };
 
@@ -407,7 +409,7 @@ function headToHeadModeLabel(v?: CustomHeadToHeadMode) {
 }
 
 function massStartValueKindLabel(v?: CustomMassStartValueKind) {
-  return getLabel(RESULT_VALUE_KIND_LABELS, v, "-");
+  return getLabel(STAGE_STRUCTURE_MODE_LABELS, v, "-");
 }
 
 function betterResultLabel(v?: CustomBetterResult) {
@@ -520,16 +522,16 @@ function getThirdPlaceSelectValue(
 
 type BooleanSelectValue = "NO" | "YES";
 
+const MAX_CUSTOM_STAGE_LEVELS = 12;
+
 const BOOLEAN_SELECT_OPTIONS: SelectOption<BooleanSelectValue>[] = [
   { value: "NO", label: "Nie" },
   { value: "YES", label: "Tak" },
 ];
 
-const ACTIVE_STAGES_OPTIONS: SelectOption<1 | 2 | 3>[] = [
-  { value: 1, label: "1 etap" },
-  { value: 2, label: "2 etapy" },
-  { value: 3, label: "3 etapy" },
-];
+const ACTIVE_STAGES_OPTIONS: SelectOption<number>[] = Array.from({ length: MAX_CUSTOM_STAGE_LEVELS }, (_, i) => ({ value: i + 1, label: `${i + 1} ${i === 0 ? "etap" : i < 4 ? "etapy" : "etapów"}` }));
+const STAGE_STRUCTURE_MODE_OPTIONS: SelectOption<CustomStageStructureMode>[] = [{ value: "REDUCTION", label: STAGE_STRUCTURE_MODE_LABELS.REDUCTION }, { value: "MULTI_EVENT", label: STAGE_STRUCTURE_MODE_LABELS.MULTI_EVENT }];
+void STAGE_STRUCTURE_MODE_OPTIONS;
 
 function boolToSelectValue(value: boolean): BooleanSelectValue {
   return value ? "YES" : "NO";
@@ -1643,7 +1645,7 @@ export function StructureCard({
     onThirdPlaceMatchesChange(2);
   };
 
-  const handleActiveStagesChange = (value: 1 | 2 | 3) => {
+  const handleActiveStagesChange = (value: number) => {
     const defaults = getDefaultStages();
 
     if (!onStageChange) {
@@ -2362,7 +2364,7 @@ export function StructureCard({
           <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className="space-y-2">
               <div className="text-xs font-semibold text-slate-300">Liczba aktywnych etapów</div>
-              <Select<1 | 2 | 3>
+              <Select<number>
                 value={activeStagesCount}
                 disabled={disableForm}
                 onChange={handleActiveStagesChange}
@@ -3038,6 +3040,7 @@ export function getDefaultResultConfig(): TournamentResultConfig {
     massStartAllowTies: true,
     massStartRoundsCount: 1,
     massStartAggregationMode: "BEST",
+    stageStructureMode: "REDUCTION",
     stages: [
       {
         id: "stage-1",

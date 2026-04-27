@@ -19,6 +19,7 @@ export type CustomBetterResult = "HIGHER" | "LOWER";
 export type CustomTimeFormat = "HH:MM:SS" | "MM:SS" | "MM:SS.hh" | "SS.hh";
 export type CustomHeadToHeadMode = "HEAD_TO_HEAD_POINTS" | "MASS_START_MEASURED";
 export type CustomAggregationMode = "BEST" | "LAST_ROUND" | "SUM" | "AVERAGE";
+export type CustomStageStructureMode = "REDUCTION" | "MULTI_EVENT";
 export type CustomStandingsMode =
   | "HEAD_TO_HEAD_POINTS"
   | "MASS_START_MEASURED";
@@ -66,6 +67,7 @@ export type TournamentResultConfigDTO = {
   decimal_places?: number | null;
   time_format?: CustomTimeFormat | null;
   allow_ties?: boolean;
+  stage_structure_mode?: CustomStageStructureMode;
   aggregation_mode?: CustomAggregationMode;
 };
 
@@ -165,6 +167,7 @@ export type MassStartStageDTO = {
   stage_order: number;
   stage_name: string;
   stage_status?: MassStartStageStatus;
+  stage_structure_mode: CustomStageStructureMode;
   groups_count: number;
   participants_count?: number | null;
   advance_count?: number | null;
@@ -179,6 +182,7 @@ export type TournamentMassStartResultsResponseDTO = {
   value_kind?: CustomResultValueKind;
   unit_label?: string;
   allow_ties?: boolean;
+  stage_structure_mode?: CustomStageStructureMode;
   stages: MassStartStageDTO[];
 };
 

@@ -73,6 +73,11 @@ export const TIME_FORMAT_LABELS = {
   "SS.hh": "sekundy:setne",
 } as const;
 
+export const STAGE_STRUCTURE_MODE_LABELS = {
+  REDUCTION: "Etapy redukcyjne",
+  MULTI_EVENT: "Konkurencje / wielobój",
+} as const;
+
 export const AGGREGATION_MODE_LABELS = {
   SUM: "Suma",
   AVERAGE: "Średnia",
