@@ -9,9 +9,11 @@ from typing import Any, Optional
 from .models import Tournament, TournamentMembership, TournamentRegistration
 
 
-STRICT_EXPLICIT_KEYS: set[str] = {
-    TournamentMembership.PERM_ROSTER_EDIT,
-    TournamentMembership.PERM_NAME_CHANGE_APPROVE,
+ORGANIZER_ONLY_PERMISSION_KEYS: set[str] = {
+    TournamentMembership.PERM_PUBLISH,
+    TournamentMembership.PERM_ARCHIVE,
+    TournamentMembership.PERM_MANAGE_ASSISTANTS,
+    TournamentMembership.PERM_JOIN_SETTINGS,
 }
 
 PERMISSIONS_RESPONSE_KEYS: list[str] = [
@@ -40,6 +42,7 @@ def _normalize_args(user_or_tournament: Any, tournament_or_user: Any) -> tuple[A
     else:
         user = user_or_tournament
         tournament = tournament_or_user
+
     return user, tournament
 
 
@@ -125,10 +128,9 @@ def user_can_view_tournament(user, tournament: Tournament) -> bool:
     return False
 
 
-def _apply_strict_keys_from_raw(perms: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any]:
-    for key in STRICT_EXPLICIT_KEYS:
-        perms[key] = bool(raw.get(key, False))
-    return perms
+def _raw_permission_enabled(membership: TournamentMembership, perm_key: str) -> bool:
+    raw_permissions = dict(membership.permissions or {})
+    return bool(raw_permissions.get(perm_key, False))
 
 
 def get_my_permissions(
@@ -146,21 +148,13 @@ def get_my_permissions(
         return {key: False for key in keys}
 
     # W organizer-only asystent zachowuje podgląd, ale bez akcji edycyjnych.
-    if tournament.entry_mode == Tournament.EntryMode.ORGANIZER_ONLY:
+    if tournament.entry_mode != Tournament.EntryMode.MANAGER:
         return {key: False for key in keys}
 
-    perms: dict[str, Any] = dict(membership.effective_permissions() or {})
-    raw: dict[str, Any] = dict(membership.permissions or {})
-
-    # Klucze organizer-only pozostają zablokowane dla asystenta.
-    perms[TournamentMembership.PERM_PUBLISH] = False
-    perms[TournamentMembership.PERM_ARCHIVE] = False
-    perms[TournamentMembership.PERM_MANAGE_ASSISTANTS] = False
-    perms[TournamentMembership.PERM_JOIN_SETTINGS] = False
-
-    perms = _apply_strict_keys_from_raw(perms, raw)
-
-    return {key: bool(perms.get(key, False)) for key in keys}
+    return {
+        key: False if key in ORGANIZER_ONLY_PERMISSION_KEYS else _raw_permission_enabled(membership, key)
+        for key in keys
+    }
 
 
 def assistant_has_perm(user, tournament: Tournament, perm_key: str) -> bool:
@@ -177,12 +171,10 @@ def assistant_has_perm(user, tournament: Tournament, perm_key: str) -> bool:
     if tournament.entry_mode != Tournament.EntryMode.MANAGER:
         return False
 
-    if perm_key in STRICT_EXPLICIT_KEYS:
-        raw = membership.permissions or {}
-        return bool(raw.get(perm_key, False))
+    if perm_key in ORGANIZER_ONLY_PERMISSION_KEYS:
+        return False
 
-    perms = membership.effective_permissions() or {}
-    return bool(perms.get(perm_key, False))
+    return _raw_permission_enabled(membership, perm_key)
 
 
 def user_can_manage_tournament(user_or_tournament, tournament_or_user) -> bool:
