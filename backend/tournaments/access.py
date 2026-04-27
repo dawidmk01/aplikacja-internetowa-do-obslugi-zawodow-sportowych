@@ -178,7 +178,14 @@ def assistant_has_perm(user, tournament: Tournament, perm_key: str) -> bool:
 
 
 def tournament_allows_mutation(tournament: Tournament) -> bool:
-    return not bool(getattr(tournament, "is_archived", False))
+    if bool(getattr(tournament, "is_archived", False)):
+        return False
+
+    if getattr(tournament, "status", None) == Tournament.Status.FINISHED:
+        return False
+
+    return True
+
 
 
 def user_can_manage_tournament(user_or_tournament, tournament_or_user) -> bool:

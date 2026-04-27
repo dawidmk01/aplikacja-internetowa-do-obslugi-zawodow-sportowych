@@ -50,8 +50,8 @@ export const COMPETITION_MODEL_LABELS = {
 } as const;
 
 export const HEAD_TO_HEAD_MODE_LABELS = {
-  POINTS_TABLE: "System punktowy",
-  MEASURED_RESULT: "Wynik mierzalny",
+  HEAD_TO_HEAD_POINTS: "System punktowy",
+  MASS_START_MEASURED: "Wynik mierzalny",
 } as const;
 
 export const RESULT_VALUE_KIND_LABELS = {

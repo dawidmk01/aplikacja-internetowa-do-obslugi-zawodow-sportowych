@@ -106,9 +106,9 @@ def _get_ruleset(context) -> StandingsRuleset:
     return FootballPZPNRuleset()
 
 
-def _custom_head_to_head_mode(context) -> str:
+def _custom_mode(context) -> str:
     cfg = _context_result_config(context)
-    return str(cfg.get("head_to_head_mode") or cfg.get("custom_mode") or "").upper()
+    return str(cfg.get(Tournament.RESULTCFG_CUSTOM_MODE_KEY) or "").upper()
 
 
 def _custom_competition_model(context) -> str:
@@ -120,8 +120,8 @@ def _uses_custom_points_table(context) -> bool:
         return False
     if _custom_competition_model(context) != Tournament.CompetitionModel.HEAD_TO_HEAD:
         return False
-    mode = _custom_head_to_head_mode(context)
-    return mode in {"POINTS_TABLE", "HEAD_TO_HEAD_POINTS"}
+    mode = _custom_mode(context)
+    return mode == Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS
 
 
 def _uses_custom_measured_ranking(context) -> bool:
@@ -131,8 +131,8 @@ def _uses_custom_measured_ranking(context) -> bool:
     if _custom_competition_model(context) == Tournament.CompetitionModel.MASS_START:
         return True
 
-    mode = _custom_head_to_head_mode(context)
-    return mode in {"MEASURED_RESULT", "MASS_START_MEASURED"}
+    mode = _custom_mode(context)
+    return mode == Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED
 
 
 def compute_stage_standings(
@@ -181,7 +181,7 @@ def _compute_custom_points_stage_standings(
     ranked = list(rows.values())
     for row in ranked:
         row.is_custom_result = False
-        row.custom_mode = "POINTS_TABLE"
+        row.custom_mode = Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS
         row.goal_difference = row.goals_for - row.goals_against
 
     # Ranking punktowy custom korzysta z uproszczonego klucza bez osobnego rulesetu H2H.
@@ -213,11 +213,7 @@ def _compute_custom_measured_stage_standings(
     cfg = _context_result_config(context)
     allow_ties = bool(cfg.get(Tournament.RESULTCFG_ALLOW_TIES_KEY, True))
     lower_is_better = _context_custom_result_lower_is_better(context)
-    custom_mode = (
-        "MASS_START"
-        if _custom_competition_model(context) == Tournament.CompetitionModel.MASS_START
-        else "MEASURED_RESULT"
-    )
+    custom_mode = Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED
 
     results = list(_get_custom_results_for_context(stage, group))
     best_results_by_team: dict[int, MatchCustomResult] = {}

@@ -104,7 +104,11 @@ class TournamentStandingsView(APIView):
         result_mode = getattr(context_obj, "result_mode", Tournament.ResultMode.SCORE)
         competition_model = getattr(context_obj, "competition_model", None)
 
-        result_config = dict(getattr(context_obj, "result_config", None) or {})
+        result_config = (
+            context_obj.get_result_config()
+            if result_mode == Tournament.ResultMode.CUSTOM and hasattr(context_obj, "get_result_config")
+            else dict(getattr(context_obj, "result_config", None) or {})
+        )
         format_config = dict(getattr(context_obj, "format_config", None) or {})
 
         stages_qs = tournament.stages.all()
@@ -222,11 +226,8 @@ class TournamentStandingsView(APIView):
                     "custom_value_kind": custom_value_kind,
                     "result_config": result_config,
                     "format_config": format_config,
-                    "shows_points_table": custom_mode == "HEAD_TO_HEAD_POINTS",
-                    "shows_result_ranking": custom_mode in (
-                        "HEAD_TO_HEAD_MEASURED",
-                        "MASS_START_MEASURED",
-                    ),
+                    "shows_points_table": custom_mode == Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS,
+                    "shows_result_ranking": custom_mode == Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED,
                 }
             )
 
@@ -278,12 +279,14 @@ class TournamentStandingsView(APIView):
             result_config=result_config,
         )
 
-        if custom_mode == "HEAD_TO_HEAD_POINTS":
+        if custom_mode == Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS:
             return "CUSTOM_POINTS"
-        if custom_mode == "HEAD_TO_HEAD_MEASURED":
-            return "CUSTOM_MEASURED_HEAD_TO_HEAD"
-        if custom_mode == "MASS_START_MEASURED":
+
+        if custom_mode == Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED:
+            if competition_model == Tournament.CompetitionModel.HEAD_TO_HEAD:
+                return "CUSTOM_MEASURED_HEAD_TO_HEAD"
             return "CUSTOM_MEASURED_MASS_START"
+
         return "CUSTOM"
 
     @staticmethod
@@ -292,15 +295,20 @@ class TournamentStandingsView(APIView):
         competition_model: str | None,
         result_config: dict,
     ) -> str:
-        if competition_model == Tournament.CompetitionModel.HEAD_TO_HEAD:
-            head_to_head_mode = (
-                result_config.get("head_to_head_mode") or "POINTS_TABLE"
-            ).upper()
-            if head_to_head_mode == "MEASURED_RESULT":
-                return "HEAD_TO_HEAD_MEASURED"
-            return "HEAD_TO_HEAD_POINTS"
+        custom_mode = str(
+            result_config.get(Tournament.RESULTCFG_CUSTOM_MODE_KEY) or ""
+        ).upper()
 
-        return "MASS_START_MEASURED"
+        if custom_mode in (
+            Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS,
+            Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED,
+        ):
+            return custom_mode
+
+        if competition_model == Tournament.CompetitionModel.HEAD_TO_HEAD:
+            return Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS
+
+        return Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED
 
     @staticmethod
     def _detect_custom_value_kind(
@@ -308,15 +316,15 @@ class TournamentStandingsView(APIView):
         competition_model: str | None,
         result_config: dict,
     ) -> str | None:
-        if competition_model == Tournament.CompetitionModel.HEAD_TO_HEAD:
-            head_to_head_mode = (
-                result_config.get("head_to_head_mode") or "POINTS_TABLE"
-            ).upper()
-            if head_to_head_mode != "MEASURED_RESULT":
-                return None
-            return (result_config.get("measured_value_kind") or "NUMBER").upper()
+        custom_mode = TournamentStandingsView._detect_custom_table_mode(
+            competition_model=competition_model,
+            result_config=result_config,
+        )
 
-        return (result_config.get("mass_start_value_kind") or "TIME").upper()
+        if custom_mode == Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS:
+            return None
+
+        return (result_config.get(Tournament.RESULTCFG_VALUE_KIND_KEY) or "NUMBER").upper()
 
     @staticmethod
     def _serialize_row(

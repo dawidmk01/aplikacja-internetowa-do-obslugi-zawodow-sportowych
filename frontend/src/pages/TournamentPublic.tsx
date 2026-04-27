@@ -53,11 +53,11 @@ type CompetitionModel = "HEAD_TO_HEAD" | "MASS_START";
 type CustomResultValueKind = "NUMBER" | "TIME" | "PLACE";
 type CustomBetterResult = "HIGHER" | "LOWER";
 type CustomTimeFormat = "HH:MM:SS" | "MM:SS" | "MM:SS.hh" | "SS.hh";
-type CustomHeadToHeadMode = "POINTS_TABLE" | "MEASURED_RESULT";
+type CustomHeadToHeadMode = "HEAD_TO_HEAD_POINTS" | "MASS_START_MEASURED";
 
 type TournamentResultConfigDTO = {
   value_kind?: CustomResultValueKind;
-  head_to_head_mode?: CustomHeadToHeadMode;
+  custom_mode?: CustomHeadToHeadMode;
   measured_value_kind?: CustomResultValueKind;
   mass_start_value_kind?: CustomResultValueKind;
   unit?: string;
@@ -217,8 +217,8 @@ function getResolvedCustomValueKind(tournament: TournamentPublicDTO | null): Cus
     }
   }
 
-  const headToHeadMode = String(config.head_to_head_mode ?? "").toUpperCase();
-  if (headToHeadMode === "MEASURED_RESULT") {
+  const headToHeadMode = String(config.custom_mode ?? "").toUpperCase();
+  if (headToHeadMode === "MASS_START_MEASURED") {
     const measuredKind = String(config.measured_value_kind ?? "").toUpperCase();
     if (measuredKind === "NUMBER" || measuredKind === "TIME" || measuredKind === "PLACE") {
       return measuredKind as CustomResultValueKind;
@@ -245,11 +245,11 @@ function getPublicResultModeSummary(tournament: TournamentPublicDTO | null): str
 
   const config = getResultConfig(tournament);
   const competitionModel = getCompetitionModel(tournament);
-  const headToHeadMode = String(config.head_to_head_mode ?? "POINTS_TABLE").toUpperCase();
+  const headToHeadMode = String(config.custom_mode ?? "HEAD_TO_HEAD_POINTS").toUpperCase();
   const valueKind = getResolvedCustomValueKind(tournament);
   const unitLabel = String(config.unit_label ?? config.unit ?? "").trim();
 
-  if (competitionModel === "HEAD_TO_HEAD" && headToHeadMode === "POINTS_TABLE") {
+  if (competitionModel === "HEAD_TO_HEAD" && headToHeadMode === "HEAD_TO_HEAD_POINTS") {
     return "Klasyfikacja punktowa oparta na wynikach meczów. Relacja na żywo pozostaje dostępna dla pojedynków.";
   }
 

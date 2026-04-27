@@ -112,42 +112,14 @@ def _is_custom_head_to_head_points_table(match: Match) -> bool:
         return False
 
     cfg = _custom_result_config(match)
-
-    custom_mode_key = getattr(Tournament, "RESULTCFG_CUSTOM_MODE_KEY", "custom_mode")
-    custom_points_mode = str(
-        getattr(Tournament, "RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS", "HEAD_TO_HEAD_POINTS")
-    ).upper()
-
-    head_to_head_mode_key = getattr(
-        Tournament,
-        "RESULTCFG_HEAD_TO_HEAD_MODE_KEY",
-        "head_to_head_mode",
-    )
-    head_to_head_points_mode = str(
-        getattr(Tournament, "RESULTCFG_HEAD_TO_HEAD_MODE_POINTS_TABLE", "POINTS_TABLE")
-    ).upper()
-
     custom_mode = str(
-        cfg.get("custom_mode")
-        or cfg.get(custom_mode_key)
-        or ""
-    ).upper()
-    head_mode = str(
-        cfg.get("head_to_head_mode")
-        or cfg.get("headToHeadMode")
-        or cfg.get(head_to_head_mode_key)
-        or ""
+        cfg.get(Tournament.RESULTCFG_CUSTOM_MODE_KEY) or ""
     ).upper()
     competition_model = str(_runtime_competition_model_for_match(match) or "").upper()
 
     return (
         competition_model == str(Tournament.CompetitionModel.HEAD_TO_HEAD).upper()
-        and (
-            custom_mode == "HEAD_TO_HEAD_POINTS"
-            or custom_mode == custom_points_mode
-            or head_mode == "POINTS_TABLE"
-            or head_mode == head_to_head_points_mode
-        )
+        and custom_mode == Tournament.RESULTCFG_CUSTOM_MODE_HEAD_TO_HEAD_POINTS
     )
 
 

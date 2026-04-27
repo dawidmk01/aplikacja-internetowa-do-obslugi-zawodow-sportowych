@@ -445,8 +445,8 @@ function getCustomValueKind(config: Record<string, any>, meta?: StandingsMeta | 
   const fromMeta = String(meta?.custom_value_kind ?? "").toUpperCase();
   if (fromMeta) return fromMeta;
 
-  const headToHeadMode = String(config.head_to_head_mode ?? "").toUpperCase();
-  if (headToHeadMode === "MEASURED_RESULT") {
+  const headToHeadMode = String(config.custom_mode ?? "").toUpperCase();
+  if (headToHeadMode === "MASS_START_MEASURED") {
     const measured = String(config.measured_value_kind ?? "").toUpperCase();
     if (measured) return measured;
   }

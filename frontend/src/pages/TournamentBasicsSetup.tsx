@@ -169,7 +169,7 @@ type BackendCustomStageConfig = {
 };
 
 const RESULT_CONFIG_KEY_MAP = {
-  headToHeadMode: "head_to_head_mode",
+  headToHeadMode: "custom_mode",
   customMatchSeriesMode: "custom_match_series_mode",
   groupResolutionMode: "group_resolution_mode",
   knockoutResolutionMode: "knockout_resolution_mode",

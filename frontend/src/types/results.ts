@@ -17,11 +17,10 @@ export type ResultMode = "SCORE" | "CUSTOM";
 export type CustomResultValueKind = "NUMBER" | "TIME" | "PLACE";
 export type CustomBetterResult = "HIGHER" | "LOWER";
 export type CustomTimeFormat = "HH:MM:SS" | "MM:SS" | "MM:SS.hh" | "SS.hh";
-export type CustomHeadToHeadMode = "POINTS_TABLE" | "MEASURED_RESULT";
+export type CustomHeadToHeadMode = "HEAD_TO_HEAD_POINTS" | "MASS_START_MEASURED";
 export type CustomAggregationMode = "BEST" | "LAST_ROUND" | "SUM" | "AVERAGE";
 export type CustomStandingsMode =
   | "HEAD_TO_HEAD_POINTS"
-  | "HEAD_TO_HEAD_MEASURED"
   | "MASS_START_MEASURED";
 export type StandingsTableSchema =
   | "DEFAULT"
@@ -57,7 +56,7 @@ export type TournamentResultConfigDTO = {
   value_kind?: CustomResultValueKind;
 
   // Pola rozróżniające tryb HEAD_TO_HEAD i MASS_START po stronie backendu.
-  head_to_head_mode?: CustomHeadToHeadMode;
+  custom_mode?: CustomHeadToHeadMode;
   measured_value_kind?: CustomResultValueKind;
   mass_start_value_kind?: CustomResultValueKind;
 

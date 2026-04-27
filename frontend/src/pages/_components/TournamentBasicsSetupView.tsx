@@ -62,7 +62,7 @@ export type TournamentFormat = "LEAGUE" | "CUP" | "MIXED";
 export type CompetitionType = "TEAM" | "INDIVIDUAL";
 export type CompetitionModel = "HEAD_TO_HEAD" | "MASS_START";
 
-export type CustomHeadToHeadMode = "POINTS_TABLE" | "MEASURED_RESULT";
+export type CustomHeadToHeadMode = "HEAD_TO_HEAD_POINTS" | "MASS_START_MEASURED";
 export type CustomMassStartValueKind = "TIME" | "NUMBER" | "POINTS" | "PLACE";
 export type CustomMeasuredValueKind = "TIME" | "NUMBER" | "PLACE";
 
@@ -231,13 +231,13 @@ export const COMPETITION_MODEL_OPTIONS: SelectOption<CompetitionModel>[] = [
 
 export const HEAD_TO_HEAD_MODE_OPTIONS: SelectOption<CustomHeadToHeadMode>[] = [
   {
-    value: "POINTS_TABLE",
-    label: HEAD_TO_HEAD_MODE_LABELS.POINTS_TABLE,
+    value: "HEAD_TO_HEAD_POINTS",
+    label: HEAD_TO_HEAD_MODE_LABELS.HEAD_TO_HEAD_POINTS,
     description: "Punkty za wynik i różne typy rozstrzygnięcia.",
   },
   {
-    value: "MEASURED_RESULT",
-    label: HEAD_TO_HEAD_MODE_LABELS.MEASURED_RESULT,
+    value: "MASS_START_MEASURED",
+    label: HEAD_TO_HEAD_MODE_LABELS.MASS_START_MEASURED,
     description: "Np. czas, liczba, miejsce w pojedynku.",
   },
 ];
@@ -639,7 +639,7 @@ function getStructureValidationMessages(params: {
   }
 
   if (discipline === "custom" && competitionModel === "HEAD_TO_HEAD") {
-    if (resultConfig.headToHeadMode === "POINTS_TABLE") {
+    if (resultConfig.headToHeadMode === "HEAD_TO_HEAD_POINTS") {
       if (resultConfig.bestOf != null && ![3, 5, 7, 9].includes(resultConfig.bestOf)) {
         messages.push("Tryb serii do określonej liczby zwycięstw może mieć tylko wartości 3, 5, 7 lub 9.");
       }
@@ -653,7 +653,7 @@ function getStructureValidationMessages(params: {
       }
     }
 
-    if (resultConfig.headToHeadMode === "MEASURED_RESULT" && resultConfig.measuredValueKind === "TIME" && !resultConfig.measuredTimeFormat) {
+    if (resultConfig.headToHeadMode === "MASS_START_MEASURED" && resultConfig.measuredValueKind === "TIME" && !resultConfig.measuredTimeFormat) {
       messages.push("Dla wyniku czasowego wybierz format czasu.");
     }
   }
@@ -1841,12 +1841,12 @@ export function StructureCard({
                     onChange={(value) => onHeadToHeadModeChange?.(value)}
                     options={[
                       {
-                        value: "POINTS_TABLE",
+                        value: "HEAD_TO_HEAD_POINTS",
                         label: "Własne zasady punktacji",
                         description: "Punkty do klasyfikacji za różne typy rozstrzygnięcia.",
                       },
                       {
-                        value: "MEASURED_RESULT",
+                        value: "MASS_START_MEASURED",
                         label: "Wynik mierzalny",
                         description: "Np. czas, liczba, miejsce w pojedynku.",
                       },
@@ -1856,7 +1856,7 @@ export function StructureCard({
                 </div>
               </div>
 
-              {resultConfig.headToHeadMode === "POINTS_TABLE" ? (
+              {resultConfig.headToHeadMode === "HEAD_TO_HEAD_POINTS" ? (
                 <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
                   <div className="mb-3 text-sm font-semibold text-white">Własne zasady punktacji</div>
                   <div className="mb-4 text-sm text-slate-300">
@@ -2109,7 +2109,7 @@ export function StructureCard({
         <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
           <div className="text-sm font-semibold text-white">Parametry formatu</div>
 
-          {resultConfig.headToHeadMode === "POINTS_TABLE" && (
+          {resultConfig.headToHeadMode === "HEAD_TO_HEAD_POINTS" && (
             <div className="mt-4 rounded-2xl border border-white/10 bg-black/10 p-4">
               <div className="text-sm font-semibold text-white">Model meczu / serii</div>
               <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -2127,7 +2127,7 @@ export function StructureCard({
             </div>
           )}
 
-          {resultConfig.headToHeadMode === "MEASURED_RESULT" && (
+          {resultConfig.headToHeadMode === "MASS_START_MEASURED" && (
             <div className="mt-4 rounded-2xl border border-white/10 bg-black/10 p-4">
               <div className="text-sm font-semibold text-white">Model pojedynku</div>
               <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -2880,7 +2880,7 @@ export function SummaryCard({
                     value={headToHeadModeLabel(resultConfig.headToHeadMode)}
                   />
 
-                  {resultConfig.headToHeadMode === "POINTS_TABLE" ? (
+                  {resultConfig.headToHeadMode === "HEAD_TO_HEAD_POINTS" ? (
                     <>
                       <StatRow
                         label="Punktacja podstawowa"
@@ -3000,7 +3000,7 @@ export function getDefaultResultConfig(): TournamentResultConfig {
   return {
     competition_model: "MASS_START",
 
-    headToHeadMode: "POINTS_TABLE",
+    headToHeadMode: "HEAD_TO_HEAD_POINTS",
     allowDraw: true,
     allowOvertime: false,
     allowShootout: false,
