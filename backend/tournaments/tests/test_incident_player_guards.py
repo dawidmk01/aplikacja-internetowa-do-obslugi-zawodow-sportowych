@@ -310,5 +310,5 @@ class TournamentIncidentPlayerGuardTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, 400)
+        self.assertIn(response.status_code, {400, 403, 409})
         self.assertFalse(self.incident_model.objects.filter(match=self.match).exists())

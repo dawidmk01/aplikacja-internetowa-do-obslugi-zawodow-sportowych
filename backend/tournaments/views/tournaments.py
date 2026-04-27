@@ -207,7 +207,22 @@ def _sync_mass_start_stage_entries(
     groups: list,
     cfg: dict,
 ) -> None:
-    if stage.order != 1:
+    result_config = (
+        division.get_result_config()
+        if division is not None and hasattr(division, "get_result_config")
+        else tournament.get_result_config()
+        if hasattr(tournament, "get_result_config")
+        else {}
+    )
+    stage_structure_mode = str(
+        result_config.get(Tournament.RESULTCFG_STAGE_STRUCTURE_MODE_KEY)
+        or Tournament.RESULTCFG_STAGE_STRUCTURE_REDUCTION
+    ).upper()
+
+    if (
+        stage.order != 1
+        and stage_structure_mode != Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT
+    ):
         return
 
     stage_has_progress = (

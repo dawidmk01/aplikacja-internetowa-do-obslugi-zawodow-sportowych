@@ -430,6 +430,10 @@ def _build_response_payload(tournament: Tournament, division: Division | None) -
         "division_id": division.id if division else None,
         "division_name": division.name if division else None,
         "competition_model": context_obj.competition_model,
+        "stage_structure_mode": str(
+            context_obj.get_result_config().get(Tournament.RESULTCFG_STAGE_STRUCTURE_MODE_KEY)
+            or Tournament.RESULTCFG_STAGE_STRUCTURE_REDUCTION
+        ).upper(),
         "value_kind": context_obj.get_result_value_kind(),
         "unit_label": str(
             context_obj.get_result_config().get(Tournament.RESULTCFG_UNIT_LABEL_KEY)

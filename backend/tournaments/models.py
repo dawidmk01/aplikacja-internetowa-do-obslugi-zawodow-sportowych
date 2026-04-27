@@ -85,6 +85,9 @@ class Tournament(models.Model):
     RESULTCFG_ROUNDS_COUNT_KEY = "rounds_count"
     RESULTCFG_AGGREGATION_MODE_KEY = "aggregation_mode"
     RESULTCFG_STAGES_KEY = "stages"
+    RESULTCFG_STAGE_STRUCTURE_MODE_KEY = "stage_structure_mode"
+    RESULTCFG_STAGE_STRUCTURE_REDUCTION = "REDUCTION"
+    RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT = "MULTI_EVENT"
 
     RESULTCFG_POINTS_WIN_KEY = "points_win"
     RESULTCFG_POINTS_DRAW_KEY = "points_draw"
@@ -138,7 +141,7 @@ class Tournament(models.Model):
     RESULTCFG_AGGREGATION_BEST = "BEST"
     RESULTCFG_AGGREGATION_LAST_ROUND = "LAST_ROUND"
 
-    MAX_CUSTOM_STAGE_LEVELS = 3
+    MAX_CUSTOM_STAGE_LEVELS = 12
 
     name = models.CharField(max_length=255)
 
@@ -423,6 +426,7 @@ class Tournament(models.Model):
             cls.RESULTCFG_ALLOW_TIES_KEY: True,
             cls.RESULTCFG_ROUNDS_COUNT_KEY: 1,
             cls.RESULTCFG_AGGREGATION_MODE_KEY: cls.RESULTCFG_AGGREGATION_BEST,
+            cls.RESULTCFG_STAGE_STRUCTURE_MODE_KEY: cls.RESULTCFG_STAGE_STRUCTURE_REDUCTION,
             cls.RESULTCFG_STAGES_KEY: [
                 {
                     cls.RESULTCFG_STAGE_NAME_KEY: "Etap 1",
@@ -448,7 +452,20 @@ class Tournament(models.Model):
         }
 
     @classmethod
-    def _normalize_mass_start_stages(cls, stages, rounds_count_default: int, aggregation_default: str) -> list[dict]:
+    def _normalize_mass_start_stages(
+        cls,
+        stages,
+        rounds_count_default: int,
+        aggregation_default: str,
+        stage_structure_mode: str | None = None,
+    ) -> list[dict]:
+        structure_mode = str(stage_structure_mode or cls.RESULTCFG_STAGE_STRUCTURE_REDUCTION).upper()
+        if structure_mode not in (
+            cls.RESULTCFG_STAGE_STRUCTURE_REDUCTION,
+            cls.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+        ):
+            structure_mode = cls.RESULTCFG_STAGE_STRUCTURE_REDUCTION
+
         if stages is None:
             stages = []
         if not isinstance(stages, list):
@@ -509,6 +526,9 @@ class Tournament(models.Model):
                 if advance_count < 1:
                     raise ValueError("advance_count musi być większe lub równe 1.")
 
+            if structure_mode == cls.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT:
+                advance_count = None
+
             try:
                 rounds_count = int(item.get(cls.RESULTCFG_STAGE_ROUNDS_COUNT_KEY, rounds_count_default))
             except (TypeError, ValueError) as exc:
@@ -539,6 +559,7 @@ class Tournament(models.Model):
             )
 
         return normalized
+
 
     @classmethod
     def normalize_result_config(cls, result_mode: str, cfg) -> dict:
@@ -681,10 +702,22 @@ class Tournament(models.Model):
                 normalized[cls.RESULTCFG_DECIMAL_PLACES_KEY] = decimal_places
                 normalized[cls.RESULTCFG_TIME_FORMAT_KEY] = None
 
+            stage_structure_mode = str(
+                normalized.get(cls.RESULTCFG_STAGE_STRUCTURE_MODE_KEY)
+                or cls.RESULTCFG_STAGE_STRUCTURE_REDUCTION
+            ).upper()
+            if stage_structure_mode not in (
+                cls.RESULTCFG_STAGE_STRUCTURE_REDUCTION,
+                cls.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            ):
+                raise ValueError("stage_structure_mode musi mieć wartość REDUCTION albo MULTI_EVENT.")
+            normalized[cls.RESULTCFG_STAGE_STRUCTURE_MODE_KEY] = stage_structure_mode
+
             normalized[cls.RESULTCFG_STAGES_KEY] = cls._normalize_mass_start_stages(
                 normalized.get(cls.RESULTCFG_STAGES_KEY),
                 rounds_count_default=rounds_count,
                 aggregation_default=aggregation_mode,
+                stage_structure_mode=stage_structure_mode,
             )
 
         else:
