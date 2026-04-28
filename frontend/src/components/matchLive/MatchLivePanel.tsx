@@ -48,6 +48,8 @@ type Props = {
     away: number;
     stageType?: string;
     wentToExtraTime?: boolean;
+    homeExtraTime?: number;
+    awayExtraTime?: number;
   };
 
   match: LiveMatchSummary;

@@ -17,8 +17,13 @@ import {
   BreakMode,
   type IncidentDTO,
   incidentKindOptions,
+  incidentScorePoints as utilIncidentScorePoints,
+  incidentScoreScopeFromMetaAndPeriod,
+  isExtraTimeClockPeriod,
+  matchMinuteFromSeconds,
   isBasketball,
   isTennis,
+  isWrestling,
   safeInt,
   tennisPointLabel,
   tennisPointLabelOther,
@@ -87,20 +92,6 @@ type Props = {
   onRequestClockReload?: () => void;
 };
 
-const WRESTLING_KIND_OPTIONS: SelectOption<string>[] = [
-  { value: "WRESTLING_POINT_1", label: "Punkt techniczny 1" },
-  { value: "WRESTLING_POINT_2", label: "Punkty techniczne 2" },
-  { value: "WRESTLING_POINT_4", label: "Punkty techniczne 4" },
-  { value: "WRESTLING_POINT_5", label: "Punkty techniczne 5" },
-  { value: "WRESTLING_PASSIVITY", label: "Pasywność" },
-  { value: "WRESTLING_CAUTION", label: "Ostrzeżenie" },
-  { value: "WRESTLING_FALL", label: "Tusz" },
-  { value: "WRESTLING_INJURY", label: "Kontuzja" },
-  { value: "WRESTLING_FORFEIT", label: "Walkower" },
-  { value: "WRESTLING_DISQUALIFICATION", label: "Dyskwalifikacja" },
-  { value: "TIMEOUT", label: "Przerwa techniczna" },
-];
-
 const WRESTLING_PLAYER_KINDS = new Set<string>([
   "WRESTLING_POINT_1",
   "WRESTLING_POINT_2",
@@ -113,17 +104,6 @@ const WRESTLING_PLAYER_KINDS = new Set<string>([
   "WRESTLING_FORFEIT",
   "WRESTLING_DISQUALIFICATION",
 ]);
-
-function isWrestling(discipline: string) {
-  return String(discipline || "").toLowerCase() === "wrestling";
-}
-
-function buildIncidentKinds(discipline: string): SelectOption<string>[] {
-  const base = incidentKindOptions(discipline);
-  if (!isWrestling(discipline)) return base;
-  if (Array.isArray(base) && base.length > 0) return base;
-  return WRESTLING_KIND_OPTIONS;
-}
 
 function supportsSubKind(kind: string) {
   return kind === "SUBSTITUTION";
@@ -150,46 +130,21 @@ function computeClockMinute(clockMeta: ClockMeta | null): number | null {
   const absEnd = typeof limit === "number" ? Math.max(0, base + Number(limit || 0)) : absNow;
   const chosen = inIntermission ? absEnd : absNow;
 
-  return Math.max(0, Math.floor(Number(chosen) / 60));
+  return matchMinuteFromSeconds(Number(chosen));
 }
 
 function mapPlayersToOptions(players: TeamPlayerDTO[]): SelectOption<string>[] {
   return players.map((p) => ({ value: String(p.id), label: playerLabel(p) }));
 }
 
-const WRESTLING_SCORING_POINTS: Record<string, number> = {
-  WRESTLING_POINT_1: 1,
-  WRESTLING_POINT_2: 2,
-  WRESTLING_POINT_4: 4,
-  WRESTLING_POINT_5: 5,
-};
-
 function incidentScoreScope(incident: IncidentDTO): "REGULAR" | "EXTRA_TIME" {
   const meta = incident.meta && typeof incident.meta === "object" ? incident.meta : {};
-  const metaScope = String(meta.scope ?? "").trim().toUpperCase();
-  const period = String(incident.period || "").trim().toUpperCase();
-
-  if (metaScope === "EXTRA_TIME") return "EXTRA_TIME";
-  if (["ET", "ET1", "ET2", "OT", "OT1", "OT2", "OT3", "OT4"].includes(period)) return "EXTRA_TIME";
-  return "REGULAR";
+  return incidentScoreScopeFromMetaAndPeriod(meta, incident.period);
 }
 
 function incidentScorePoints(discipline: string, incident: IncidentDTO): number {
-  const normalized = String(discipline || "").trim().toLowerCase();
-
-  if (normalized === "wrestling") {
-    return WRESTLING_SCORING_POINTS[incident.kind] ?? 0;
-  }
-
-  if (incident.kind !== "GOAL" || normalized === "tennis") return 0;
-
-  if (normalized === "basketball") {
-    const raw = incident.meta && typeof incident.meta === "object" ? incident.meta.points : null;
-    const points = Number(raw ?? 1);
-    return [1, 2, 3].includes(points) ? points : 1;
-  }
-
-  return 1;
+  const meta = incident.meta && typeof incident.meta === "object" ? incident.meta : {};
+  return utilIncidentScorePoints(discipline, incident.kind, meta);
 }
 
 function buildScorePreviewAfterDelete({
@@ -272,7 +227,7 @@ export function IncidentsPanel({
   } | null>(null);
   const [updating, setUpdating] = useState<Record<number, boolean>>({});
 
-  const kinds = useMemo(() => buildIncidentKinds(discipline), [discipline]);
+  const kinds = useMemo(() => incidentKindOptions(discipline), [discipline]);
 
   const [minuteTouched, setMinuteTouched] = useState(false);
 
@@ -451,9 +406,9 @@ export function IncidentsPanel({
 
   const pointsOptions = useMemo<SelectOption<1 | 2 | 3>[]>(
     () => [
-      { value: 1, label: "1" },
-      { value: 2, label: "2" },
-      { value: 3, label: "3" },
+      { value: 1, label: "1 pkt" },
+      { value: 2, label: "2 pkt" },
+      { value: 3, label: "3 pkt" },
     ],
     []
   );
@@ -524,8 +479,10 @@ export function IncidentsPanel({
 
     const meta: Record<string, any> = {};
 
-    const inExtra = clockMeta?.clock?.clock_period === "ET1" || clockMeta?.clock?.clock_period === "ET2";
-    const effectiveGoalScope = goalScope ?? (inExtra ? "EXTRA_TIME" : "REGULAR");
+    const clockPeriod = clockMeta?.clock?.clock_period;
+    const hasActiveClockPeriod = Boolean(clockPeriod && clockPeriod !== "NONE");
+    const inExtra = isExtraTimeClockPeriod(clockPeriod);
+    const effectiveGoalScope = hasActiveClockPeriod ? (inExtra ? "EXTRA_TIME" : "REGULAR") : goalScope ?? "REGULAR";
 
     if (!isTennis(discipline) && draft.kind === "GOAL" && effectiveGoalScope === "EXTRA_TIME") {
       meta.scope = "EXTRA_TIME";
@@ -866,7 +823,7 @@ export function IncidentsPanel({
 
             {isBasketball(discipline) && draft.kind === "GOAL" ? (
               <div className="grid gap-1 text-sm text-slate-200">
-                Punkty
+                Wartość punktowa
                 <Select<1 | 2 | 3>
                   value={draft.points}
                   onChange={(v) => setDraft((d) => ({ ...d, points: v }))}

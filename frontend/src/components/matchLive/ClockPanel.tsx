@@ -74,6 +74,8 @@ type Props = {
     away: number;
     stageType?: string;
     wentToExtraTime?: boolean;
+    homeExtraTime?: number;
+    awayExtraTime?: number;
   };
   reloadToken?: number;
   onMetaChange?: (meta: ClockMeta) => void;
@@ -90,6 +92,35 @@ const WRESTLING_PERIOD_OPTIONS: Array<{ value: ClockPeriod; label: string }> = [
 
 function isWrestlingDiscipline(discipline: string): boolean {
   return String(discipline || "").toLowerCase() === "wrestling";
+}
+
+function canEnterNextExtraTimePeriod(
+  discipline: string,
+  currentPeriod: ClockPeriod,
+  scoreContext?: Props["scoreContext"]
+): boolean {
+  if (!scoreContext || !isKnockoutLike(scoreContext.stageType)) return false;
+
+  const home = Number(scoreContext.home || 0);
+  const away = Number(scoreContext.away || 0);
+  const homeExtraTime = Number(scoreContext.homeExtraTime || 0);
+  const awayExtraTime = Number(scoreContext.awayExtraTime || 0);
+  const period = String(currentPeriod || "NONE").toUpperCase();
+  const normalizedDiscipline = String(discipline || "").toLowerCase();
+
+  if (normalizedDiscipline === "basketball") {
+    if (period === "Q4") return home === away && !scoreContext.wentToExtraTime;
+    if (period === "OT1" || period === "OT2" || period === "OT3") {
+      return home + homeExtraTime === away + awayExtraTime;
+    }
+    return false;
+  }
+
+  if (period === "SH" || period === "H2") {
+    return home === away && !scoreContext.wentToExtraTime;
+  }
+
+  return false;
 }
 
 function scoringIncidentNoun(discipline: string) {
@@ -123,25 +154,6 @@ function scoringIncidentDeleteLabel(count: number, discipline: string): string {
   }
 
   return `${count} ${noun.plural}, które nie pasują do zapisywanego wyniku`;
-}
-
-
-const SCORE_SYNC_SKIP_SESSION_KEY = "turniejepro.skipScoreSyncConfirm";
-
-function readSessionFlag(key: string): boolean {
-  if (typeof window === "undefined") return false;
-  return window.sessionStorage.getItem(key) === "1";
-}
-
-function writeSessionFlag(key: string, value: boolean) {
-  if (typeof window === "undefined") return;
-
-  if (value) {
-    window.sessionStorage.setItem(key, "1");
-    return;
-  }
-
-  window.sessionStorage.removeItem(key);
 }
 
 function getPeriodOptions(discipline: string): Array<{ value: ClockPeriod; label: string }> {
@@ -206,14 +218,6 @@ export function ClockPanel({
 
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [pendingConfirmBusy, setPendingConfirmBusy] = useState(false);
-  const [skipScoreSyncConfirm, setSkipScoreSyncConfirmState] = useState(() =>
-    readSessionFlag(SCORE_SYNC_SKIP_SESSION_KEY)
-  );
-
-  const setSkipScoreSyncConfirm = useCallback((value: boolean) => {
-    setSkipScoreSyncConfirmState(value);
-    writeSessionFlag(SCORE_SYNC_SKIP_SESSION_KEY, value);
-  }, []);
 
   useEffect(() => {
     setBreakMode(readBreakMode(matchId));
@@ -307,6 +311,7 @@ export function ClockPanel({
   }, [clock, clockTick]);
 
   const baseOffsetSeconds = useMemo(() => {
+    if (typeof clock?.period_base_offset_seconds === "number") return clock.period_base_offset_seconds;
     const p = (clock?.clock_period || "NONE") as ClockPeriod;
     return getPeriodBaseOffsetSeconds(discipline, p);
   }, [clock?.clock_period, discipline]);
@@ -336,6 +341,7 @@ export function ClockPanel({
 
   const timeLimitSeconds = useMemo(() => {
     if (!clock) return null;
+    if (typeof clock.period_limit_seconds === "number") return clock.period_limit_seconds;
     return getPeriodLimitSeconds(discipline, clock.clock_period);
   }, [clock, discipline]);
 
@@ -385,11 +391,7 @@ export function ClockPanel({
     if (clock.clock_state === "NOT_STARTED" || clock.clock_state === "STOPPED") return "Zacznij mecz";
 
     if (clock.clock_state === "PAUSED" && breakMode === BreakMode.INTERMISSION) {
-      const allowExtraTimeStart =
-        !!scoreContext &&
-        isKnockoutLike(scoreContext.stageType) &&
-        Number(scoreContext.home || 0) === Number(scoreContext.away || 0) &&
-        !scoreContext.wentToExtraTime;
+      const allowExtraTimeStart = canEnterNextExtraTimePeriod(discipline, clock.clock_period, scoreContext);
 
       const next = getNextPeriodFromIntermission(discipline, clock.clock_period, { allowExtraTimeStart });
       if (next === "SH" || next === "H2") return "Rozpocznij 2 połowę";
@@ -425,16 +427,12 @@ export function ClockPanel({
     }
 
     if (clock.clock_state === "PAUSED" && breakMode === BreakMode.INTERMISSION) {
-      const allowExtraTimeStart =
-        !!scoreContext &&
-        isKnockoutLike(scoreContext.stageType) &&
-        Number(scoreContext.home || 0) === Number(scoreContext.away || 0) &&
-        !scoreContext.wentToExtraTime;
+      const allowExtraTimeStart = canEnterNextExtraTimePeriod(discipline, clock.clock_period, scoreContext);
 
       const next = getNextPeriodFromIntermission(discipline, clock.clock_period, { allowExtraTimeStart });
       if (next) {
         await postClock("period/", { period: next });
-        if (next === "ET1") onEnterExtraTime?.();
+        if (next === "ET1" || next === "OT1") onEnterExtraTime?.();
       }
 
       clearBreak(matchId);
@@ -477,7 +475,8 @@ export function ClockPanel({
     setPendingConfirm({
       kind: "RESET_CLOCK",
       title: "Reset zegara",
-      detail: "Reset zresetuje zegar bieżącego okresu do jego początku bez ingerencji w incydenty i wynik.",
+      detail:
+        "Reset zresetuje zegar bieżącego okresu do jego początku (bez ingerencji w incydenty i wynik). Kontynuować?",
       confirmLabel: "Resetuj",
     });
   }, [clock]);
@@ -513,15 +512,10 @@ export function ClockPanel({
         const data: any = await res.json().catch(() => ({}));
 
         if (res.status === 409 && !force && data?.code === "SCORE_SYNC_CONFIRM_REQUIRED") {
-          if (skipScoreSyncConfirm) {
-            await runFinish(true);
-            return;
-          }
-
           setPendingConfirm({
             kind: "FINISH_FORCE",
-            title: "Synchronizacja wyniku z incydentami LIVE",
-            detail: String(data?.detail || "Zakończenie meczu wymaga usunięcia incydentów LIVE, które nie pasują do zapisywanego wyniku."),
+            title: "Potwierdź zakończenie meczu",
+            detail: String(data?.detail || "Zmiana wyniku wymaga usunięcia części incydentów LIVE."),
             confirmLabel: "Skoryguj i zakończ",
             delete_count: Number(data?.delete_count || 0),
             delete_ids: Array.isArray(data?.delete_ids) ? data.delete_ids : undefined,
@@ -543,7 +537,7 @@ export function ClockPanel({
         setLoading(false);
       }
     },
-    [loadClock, matchId, onAfterRecompute, onRequestIncidentsReload, skipScoreSyncConfirm]
+    [loadClock, matchId, onAfterRecompute, onRequestIncidentsReload]
   );
 
   const handleFinish = useCallback(async () => {
@@ -599,17 +593,6 @@ export function ClockPanel({
             pendingConfirm.kind === "FINISH_FORCE" && typeof pendingConfirm.delete_count === "number" && pendingConfirm.delete_count > 0
               ? [scoringIncidentDeleteLabel(pendingConfirm.delete_count, discipline)]
               : []
-          }
-          sessionCheckbox={
-            pendingConfirm.kind === "FINISH_FORCE"
-              ? {
-                  checked: skipScoreSyncConfirm,
-                  onChange: setSkipScoreSyncConfirm,
-                  label: "Nie pokazuj więcej podobnych synchronizacji w tej sesji",
-                  description:
-                    "Kolejne podobne synchronizacje zostaną wykonane automatycznie do końca bieżącej sesji.",
-                }
-              : undefined
           }
           confirmLabel={pendingConfirm.confirmLabel}
           cancelLabel="Anuluj"

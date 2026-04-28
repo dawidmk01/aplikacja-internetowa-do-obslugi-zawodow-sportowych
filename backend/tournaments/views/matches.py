@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import math
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -27,6 +26,7 @@ from tournaments.services.match_outcome import (
     validate_wrestling_consistency,
 )
 from tournaments.services.match_result import MatchResultService
+from tournaments.services.match_periods import default_period_for_score_scope, is_extra_time_period
 
 from ..models import Match, MatchCustomResult, MatchIncident, Stage, Tournament
 from ..realtime import ws_emit_tournament
@@ -393,7 +393,7 @@ def _incident_scope(match: Match, incident: MatchIncident) -> str:
         return "EXTRA_TIME"
 
     period = str(getattr(incident, "period", None) or "").strip().upper()
-    if period in {"ET", "ET1", "ET2"}:
+    if is_extra_time_period(period):
         return "EXTRA_TIME"
 
     return "REGULAR"
@@ -437,17 +437,13 @@ def _clock_minute_payload(match: Match) -> Tuple[str, Optional[int], Optional[st
         if total > _MAX_MATCH_SECONDS:
             total = _MAX_MATCH_SECONDS
 
-        minute = int(math.ceil(total / 60.0)) if total > 0 else 0
+        minute = int(total // 60) + 1
 
     return ("CLOCK", int(minute), str(int(minute)))
 
 
 def _default_period_for_scope(discipline: str, scope: str) -> str:
-    if str(scope).upper() == "EXTRA_TIME":
-        if discipline in (Tournament.Discipline.FOOTBALL, Tournament.Discipline.HANDBALL):
-            return "ET1"
-        return "ET"
-    return "NONE"
+    return default_period_for_score_scope(discipline, scope)
 
 
 def _custom_sort_value(result: MatchCustomResult):

@@ -240,6 +240,70 @@ class TournamentIncidentAndCommentaryApiTests(TestCase):
         self.assertEqual(int(match.away_extra_time_score or 0), 0)
         self.assertTrue(match.went_to_extra_time)
 
+    def test_delete_last_extra_time_goal_resets_extra_time_flag_and_scores(self):
+        _tournament, _division, _stage, teams, match = self._create_context()
+
+        self.client.force_authenticate(user=self.organizer)
+
+        create_response = self.client.post(
+            f"/api/matches/{match.id}/incidents/",
+            {
+                "team_id": teams[0].id,
+                "kind": "GOAL",
+                "time_source": "MANUAL",
+                "minute": 93,
+                "scope": "EXTRA_TIME",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, 201)
+
+        match.refresh_from_db()
+        self.assertTrue(match.went_to_extra_time)
+        self.assertEqual(match.home_extra_time_score, 1)
+
+        delete_response = self.client.delete(f"/api/incidents/{create_response.json()['id']}/")
+
+        self.assertEqual(delete_response.status_code, 204)
+
+        match.refresh_from_db()
+        self.assertFalse(match.went_to_extra_time)
+        self.assertEqual(int(match.home_extra_time_score or 0), 0)
+        self.assertEqual(int(match.away_extra_time_score or 0), 0)
+
+    def test_recompute_score_resets_stale_extra_time_flag_without_extra_time_incidents(self):
+        _tournament, _division, _stage, teams, match = self._create_context()
+
+        match.went_to_extra_time = True
+        match.home_extra_time_score = 2
+        match.away_extra_time_score = 1
+        match.save(update_fields=["went_to_extra_time", "home_extra_time_score", "away_extra_time_score"])
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.post(
+            f"/api/matches/{match.id}/incidents/",
+            {
+                "team_id": teams[0].id,
+                "kind": "GOAL",
+                "time_source": "MANUAL",
+                "minute": 12,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+
+        recompute_response = self.client.post(f"/api/matches/{match.id}/incidents/recompute-score/")
+
+        self.assertEqual(recompute_response.status_code, 200)
+
+        match.refresh_from_db()
+        self.assertFalse(match.went_to_extra_time)
+        self.assertEqual(match.home_score, 1)
+        self.assertEqual(match.away_score, 0)
+        self.assertEqual(int(match.home_extra_time_score or 0), 0)
+        self.assertEqual(int(match.away_extra_time_score or 0), 0)
+
     def test_delete_goal_incident_recomputes_score(self):
         _tournament, _division, _stage, teams, match = self._create_context()
 
@@ -459,6 +523,120 @@ class TournamentIncidentAndCommentaryApiTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertFalse(self._commentary_model().objects.filter(match=match).exists())
 
+    def test_commentary_accepts_basketball_quarter_and_overtime_periods(self):
+        _tournament, _division, _stage, _teams, match = self._create_context(
+            name="Komentarz koszykówka",
+            discipline=Tournament.Discipline.BASKETBALL,
+        )
+
+        self.client.force_authenticate(user=self.organizer)
+
+        regular_response = self.client.post(
+            f"/api/matches/{match.id}/commentary/",
+            {
+                "text": "Celny rzut po zasłonie.",
+                "time_source": "MANUAL",
+                "minute": 8,
+                "period": "Q2",
+            },
+            format="json",
+        )
+
+        overtime_response = self.client.post(
+            f"/api/matches/{match.id}/commentary/",
+            {
+                "text": "Dogrywka zaczyna się od szybkiej akcji.",
+                "time_source": "MANUAL",
+                "minute": 41,
+                "period": "OT1",
+            },
+            format="json",
+        )
+
+        self.assertEqual(regular_response.status_code, 201)
+        self.assertEqual(regular_response.json().get("period"), "Q2")
+        self.assertEqual(overtime_response.status_code, 201)
+        self.assertEqual(overtime_response.json().get("period"), "OT1")
+
+    def test_commentary_rejects_football_period_for_basketball(self):
+        _tournament, _division, _stage, _teams, match = self._create_context(
+            name="Komentarz koszykówka błędny okres",
+            discipline=Tournament.Discipline.BASKETBALL,
+        )
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.post(
+            f"/api/matches/{match.id}/commentary/",
+            {
+                "text": "Nieprawidłowa połowa dla koszykówki.",
+                "time_source": "MANUAL",
+                "minute": 1,
+                "period": "FH",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(self._commentary_model().objects.filter(match=match).exists())
+
+    def test_commentary_accepts_wrestling_periods_and_break(self):
+        _tournament, _division, _stage, _teams, match = self._create_context(
+            name="Komentarz zapasy",
+            discipline=Tournament.Discipline.WRESTLING,
+        )
+
+        self.client.force_authenticate(user=self.organizer)
+
+        p1_response = self.client.post(
+            f"/api/matches/{match.id}/commentary/",
+            {
+                "text": "Akcja w pierwszym okresie.",
+                "time_source": "MANUAL",
+                "minute": 2,
+                "period": "P1",
+            },
+            format="json",
+        )
+
+        break_response = self.client.post(
+            f"/api/matches/{match.id}/commentary/",
+            {
+                "text": "Krótka przerwa między okresami.",
+                "time_source": "MANUAL",
+                "minute": 3,
+                "period": "BREAK",
+            },
+            format="json",
+        )
+
+        self.assertEqual(p1_response.status_code, 201)
+        self.assertEqual(p1_response.json().get("period"), "P1")
+        self.assertEqual(break_response.status_code, 201)
+        self.assertEqual(break_response.json().get("period"), "BREAK")
+
+    def test_commentary_rejects_tennis_clock_period(self):
+        _tournament, _division, _stage, _teams, match = self._create_context(
+            name="Komentarz tenis",
+            discipline=Tournament.Discipline.TENNIS,
+        )
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.post(
+            f"/api/matches/{match.id}/commentary/",
+            {
+                "text": "Tenis nie używa okresów zegara meczowego.",
+                "time_source": "MANUAL",
+                "minute": 1,
+                "period": "Q1",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(self._commentary_model().objects.filter(match=match).exists())
+
     def test_public_commentary_get_rejects_unpublished_tournament(self):
         _tournament, _division, _stage, _teams, match = self._create_context()
         self._create_commentary_entry(match)
@@ -591,3 +769,69 @@ class TournamentIncidentAndCommentaryApiTests(TestCase):
 
         self.assertEqual(delete_response.status_code, 200)
         self.assertFalse(self._phrase_model().objects.filter(id=phrase.id).exists())
+
+    def test_basketball_extra_time_incident_uses_overtime_period(self):
+        _tournament, _division, _stage, teams, match = self._create_context(
+            name="Turniej live koszykówki dogrywka",
+            discipline=Tournament.Discipline.BASKETBALL,
+        )
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.post(
+            f"/api/matches/{match.id}/incidents/",
+            {
+                "team_id": teams[0].id,
+                "kind": "GOAL",
+                "time_source": "MANUAL",
+                "minute": 41,
+                "points": 2,
+                "scope": "EXTRA_TIME",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json().get("period"), "OT1")
+        self.assertEqual(response.json().get("meta", {}).get("scope"), "EXTRA_TIME")
+
+        match.refresh_from_db()
+
+        self.assertEqual(match.home_score, 0)
+        self.assertEqual(match.away_score, 0)
+        self.assertEqual(match.home_extra_time_score, 2)
+        self.assertEqual(int(match.away_extra_time_score or 0), 0)
+        self.assertTrue(match.went_to_extra_time)
+
+    def test_basketball_ot_period_is_treated_as_extra_time_scope(self):
+        _tournament, _division, _stage, teams, match = self._create_context(
+            name="Turniej live koszykówki OT",
+            discipline=Tournament.Discipline.BASKETBALL,
+        )
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.post(
+            f"/api/matches/{match.id}/incidents/",
+            {
+                "team_id": teams[1].id,
+                "kind": "GOAL",
+                "period": "OT2",
+                "time_source": "MANUAL",
+                "minute": 46,
+                "points": 3,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json().get("period"), "OT2")
+        self.assertEqual(response.json().get("meta", {}).get("scope"), "EXTRA_TIME")
+
+        match.refresh_from_db()
+
+        self.assertEqual(match.home_score, 0)
+        self.assertEqual(match.away_score, 0)
+        self.assertEqual(int(match.home_extra_time_score or 0), 0)
+        self.assertEqual(match.away_extra_time_score, 3)
+        self.assertTrue(match.went_to_extra_time)

@@ -44,6 +44,9 @@ export type MatchClockDTO = {
   break_level?: BreakLevel;
   write_locked?: boolean;
   cap_reached?: boolean;
+  period_base_offset_seconds?: number;
+  period_limit_seconds?: number | null;
+  time_over_limit?: boolean;
   max_clock_seconds?: number;
 };
 
@@ -131,6 +134,55 @@ export function fmtClockPeriod(period: ClockPeriod | null | undefined): string {
   return "-";
 }
 
+export function isExtraTimeClockPeriod(period: ClockPeriod | string | null | undefined): boolean {
+  const value = String(period || "").trim().toUpperCase();
+  return value === "ET" || value === "ET1" || value === "ET2" || value === "OT" || value === "OT1" || value === "OT2" || value === "OT3" || value === "OT4";
+}
+
+export const WRESTLING_SCORING_POINTS: Record<string, number> = {
+  WRESTLING_POINT_1: 1,
+  WRESTLING_POINT_2: 2,
+  WRESTLING_POINT_4: 4,
+  WRESTLING_POINT_5: 5,
+};
+
+export function incidentScoreScopeFromMetaAndPeriod(
+  meta: Record<string, unknown> | null | undefined,
+  period: ClockPeriod | string | null | undefined
+): "REGULAR" | "EXTRA_TIME" {
+  const metaScope = String(meta?.scope ?? "").trim().toUpperCase();
+  if (metaScope === "EXTRA_TIME") return "EXTRA_TIME";
+  return isExtraTimeClockPeriod(period) ? "EXTRA_TIME" : "REGULAR";
+}
+
+export function incidentScorePoints(discipline: string, kind: string, meta?: Record<string, unknown> | null): number {
+  const normalized = lower(discipline);
+  const normalizedKind = String(kind || "").trim().toUpperCase();
+
+  if (normalized === "wrestling") {
+    return WRESTLING_SCORING_POINTS[normalizedKind] ?? 0;
+  }
+
+  if (normalized === "tennis" || normalizedKind !== "GOAL") return 0;
+
+  if (normalized === "basketball") {
+    const points = Number(meta?.points ?? 1);
+    return points === 1 || points === 2 || points === 3 ? points : 1;
+  }
+
+  return 1;
+}
+
+export function incidentAffectsScore(discipline: string, kind: string): boolean {
+  return incidentScorePoints(discipline, kind, {}) > 0;
+}
+
+export function matchMinuteFromSeconds(totalSeconds: number): number {
+  const seconds = Math.max(0, Math.floor(Number(totalSeconds || 0)));
+  if (seconds <= 0) return 0;
+  return Math.floor((seconds - 1) / 60) + 1;
+}
+
 export function safeInt(v: string): number | null {
   const t = (v ?? "").trim();
   if (!t) return null;
@@ -188,15 +240,16 @@ export function incidentKindOptions(discipline: string): { value: string; label:
     return [
       { value: "TENNIS_POINT", label: "Punkt (tenis)" },
       { value: "TENNIS_CODE_VIOLATION", label: "Naruszenie przepisów (tenis)" },
-      { value: "TIMEOUT", label: "Przerwa techniczna" },
+      { value: "TIMEOUT", label: "Przerwa na żądanie" },
     ];
   }
 
   if (isBasketball(discipline)) {
     return [
-      { value: "GOAL", label: "Punkt" },
+      { value: "GOAL", label: "Punkty" },
       { value: "FOUL", label: "Faul" },
-      { value: "TIMEOUT", label: "Przerwa techniczna" },
+      { value: "SUBSTITUTION", label: "Zmiana" },
+      { value: "TIMEOUT", label: "Przerwa na żądanie" },
     ];
   }
 
@@ -340,9 +393,9 @@ export function nextPeriodFromIntermission(
     if (current === "Q2") return "Q3";
     if (current === "Q3") return "Q4";
     if (current === "Q4" && allowExtraTimeStart) return "OT1";
-    if (current === "OT1") return "OT2";
-    if (current === "OT2") return "OT3";
-    if (current === "OT3") return "OT4";
+    if (current === "OT1" && allowExtraTimeStart) return "OT2";
+    if (current === "OT2" && allowExtraTimeStart) return "OT3";
+    if (current === "OT3" && allowExtraTimeStart) return "OT4";
     return null;
   }
 

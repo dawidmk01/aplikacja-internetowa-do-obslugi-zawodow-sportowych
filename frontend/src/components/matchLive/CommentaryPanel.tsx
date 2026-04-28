@@ -13,6 +13,8 @@ import { Select, type SelectOption } from "../../ui/Select";
 import { Textarea } from "../../ui/Textarea";
 import { toast } from "../../ui/Toast";
 
+import { fmtClockPeriod } from "./matchLive.utils";
+
 type LiveCommentaryEntryDTO = {
   id: number;
   match_id: number;
@@ -110,21 +112,39 @@ function generalPhrases(): DictState {
       { id: null, kind: "TOKEN", text: "atak" },
       { id: null, kind: "TOKEN", text: "obrona" },
       { id: null, kind: "TOKEN", text: "tempo" },
-      { id: null, kind: "TOKEN", text: "pressing" },
+      { id: null, kind: "TOKEN", text: "inicjatywa" },
       { id: null, kind: "TOKEN", text: "kontra" },
       { id: null, kind: "TOKEN", text: "przewaga" },
       { id: null, kind: "TOKEN", text: "interwencja" },
-      { id: null, kind: "TOKEN", text: "niedokładność" },
-      { id: null, kind: "TOKEN", text: "faul" },
+      { id: null, kind: "TOKEN", text: "błąd" },
       { id: null, kind: "TOKEN", text: "przerwa" },
+      { id: null, kind: "TOKEN", text: "decyzja sędziego" },
     ],
     templates: [
       { id: null, kind: "TEMPLATE", text: "Dobra akcja - ale bez końcowego efektu." },
-      { id: null, kind: "TEMPLATE", text: "Zespół buduje przewagę i utrzymuje piłkę." },
+      { id: null, kind: "TEMPLATE", text: "Strona atakująca buduje przewagę i szuka miejsca do zakończenia akcji." },
       { id: null, kind: "TEMPLATE", text: "Szybka zmiana tempa po przejęciu." },
-      { id: null, kind: "TEMPLATE", text: "Udana interwencja w defensywie." },
-      { id: null, kind: "TEMPLATE", text: "Akcja zatrzymana przewinieniem." },
-      { id: null, kind: "TEMPLATE", text: "Rośnie presja po stronie atakującej." },
+      { id: null, kind: "TEMPLATE", text: "Udana interwencja zatrzymuje akcję rywala." },
+      { id: null, kind: "TEMPLATE", text: "Akcja zostaje przerwana po kontakcie lub błędzie technicznym." },
+      { id: null, kind: "TEMPLATE", text: "Rośnie presja po stronie aktywniejszego uczestnika." },
+    ],
+  };
+}
+
+function sharedSportPhrases(): DictState {
+  return {
+    words: [
+      { id: null, kind: "TOKEN", text: "atak" },
+      { id: null, kind: "TOKEN", text: "obrona" },
+      { id: null, kind: "TOKEN", text: "tempo" },
+      { id: null, kind: "TOKEN", text: "kontra" },
+      { id: null, kind: "TOKEN", text: "przewaga" },
+      { id: null, kind: "TOKEN", text: "interwencja" },
+    ],
+    templates: [
+      { id: null, kind: "TEMPLATE", text: "Dobra akcja - ale bez końcowego efektu." },
+      { id: null, kind: "TEMPLATE", text: "Szybka zmiana tempa po przejęciu." },
+      { id: null, kind: "TEMPLATE", text: "Udana interwencja zatrzymuje akcję rywala." },
     ],
   };
 }
@@ -142,11 +162,13 @@ function sportSpecificPhrases(discipline: SupportedDiscipline): DictState {
           { id: null, kind: "TOKEN", text: "pole karne" },
           { id: null, kind: "TOKEN", text: "odbiór" },
           { id: null, kind: "TOKEN", text: "bramka" },
+          { id: null, kind: "TOKEN", text: "pressing" },
+          { id: null, kind: "TOKEN", text: "bramkarz" },
         ],
         templates: [
           { id: null, kind: "TEMPLATE", text: "Dośrodkowanie w pole karne - obrona wybija piłkę." },
           { id: null, kind: "TEMPLATE", text: "Groźny strzał - bramkarz skutecznie interweniuje." },
-          { id: null, kind: "TEMPLATE", text: "Szybka kontra - akcja przenosi się pod bramkę rywali." },
+          { id: null, kind: "TEMPLATE", text: "Szybka kontra przenosi grę pod bramkę rywali." },
           { id: null, kind: "TEMPLATE", text: "Piłka wraca do środka pola po nieudanym rozegraniu." },
           { id: null, kind: "TEMPLATE", text: "Stały fragment - zespół ustawia się do rozegrania." },
           { id: null, kind: "TEMPLATE", text: "Dobra wymiana podań, ale bez finalnego uderzenia." },
@@ -163,6 +185,8 @@ function sportSpecificPhrases(discipline: SupportedDiscipline): DictState {
           { id: null, kind: "TOKEN", text: "blok" },
           { id: null, kind: "TOKEN", text: "rzut wolny" },
           { id: null, kind: "TOKEN", text: "wejście pod kosz" },
+          { id: null, kind: "TOKEN", text: "posiadanie" },
+          { id: null, kind: "TOKEN", text: "faul osobisty" },
         ],
         templates: [
           { id: null, kind: "TEMPLATE", text: "Szybki atak kończy się rzutem spod kosza." },
@@ -184,6 +208,8 @@ function sportSpecificPhrases(discipline: SupportedDiscipline): DictState {
           { id: null, kind: "TOKEN", text: "wykluczenie" },
           { id: null, kind: "TOKEN", text: "wznowienie" },
           { id: null, kind: "TOKEN", text: "przewinienie" },
+          { id: null, kind: "TOKEN", text: "rzut karny" },
+          { id: null, kind: "TOKEN", text: "bramkarz" },
         ],
         templates: [
           { id: null, kind: "TEMPLATE", text: "Szybkie wznowienie otwiera drogę do kontrataku." },
@@ -205,12 +231,14 @@ function sportSpecificPhrases(discipline: SupportedDiscipline): DictState {
           { id: null, kind: "TOKEN", text: "przełamanie" },
           { id: null, kind: "TOKEN", text: "as serwisowy" },
           { id: null, kind: "TOKEN", text: "podwójny błąd" },
+          { id: null, kind: "TOKEN", text: "gem serwisowy" },
+          { id: null, kind: "TOKEN", text: "tie-break" },
         ],
         templates: [
           { id: null, kind: "TEMPLATE", text: "Mocny serwis ustawia wymianę od pierwszego uderzenia." },
           { id: null, kind: "TEMPLATE", text: "Długa wymiana kończy się błędem po stronie odbierającego." },
           { id: null, kind: "TEMPLATE", text: "Dobry return odbiera inicjatywę serwującemu." },
-          { id: null, kind: "TEMPLATE", text: "Zawodnik przejmuje kontrolę wymiany po mocnym forhendu." },
+          { id: null, kind: "TEMPLATE", text: "Zawodnik przejmuje kontrolę wymiany po mocnym forhendzie." },
           { id: null, kind: "TEMPLATE", text: "Błąd serwisowy komplikuje gema serwisowego." },
           { id: null, kind: "TEMPLATE", text: "Akcja przy siatce przynosi przewagę po agresywnym wejściu." },
         ],
@@ -250,9 +278,10 @@ function defaultPhrases(discipline: SupportedDiscipline, presetMode: PhrasePrese
   }
 
   const sportSpecific = sportSpecificPhrases(discipline);
+  const shared = sharedSportPhrases();
   return {
-    words: uniqByText([...sportSpecific.words, ...general.words]),
-    templates: uniqByText([...sportSpecific.templates, ...general.templates]),
+    words: uniqByText([...sportSpecific.words, ...shared.words]),
+    templates: uniqByText([...sportSpecific.templates, ...shared.templates]),
   };
 }
 
@@ -274,19 +303,8 @@ function commentaryPlaceholderForDiscipline(discipline: SupportedDiscipline): st
 }
 
 function periodLabel(period?: string | null): string {
-  const value = String(period || "").trim().toUpperCase();
-  if (value === "P1") return "1 okres";
-  if (value === "BREAK") return "Przerwa";
-  if (value === "P2") return "2 okres";
-  if (value === "Q1") return "1 kwarta";
-  if (value === "Q2") return "2 kwarta";
-  if (value === "Q3") return "3 kwarta";
-  if (value === "Q4") return "4 kwarta";
-  if (value === "OT1" || value === "ET1") return "Dogrywka 1";
-  if (value === "OT2" || value === "ET2") return "Dogrywka 2";
-  if (value === "FH" || value === "H1") return "1 połowa";
-  if (value === "SH" || value === "H2") return "2 połowa";
-  return "";
+  const label = fmtClockPeriod(period as never);
+  return label === "-" ? "" : label;
 }
 
 function uniqByText(list: UiPhrase[]): UiPhrase[] {
@@ -678,8 +696,8 @@ export function CommentaryPanel({
     }
 
     return presetMode === "SPORT"
-      ? "Widoczne są frazy dopasowane do bieżącej dyscypliny oraz zwroty ogólne."
-      : "Widoczne są wyłącznie ogólne frazy, niezależne od konkretnej dyscypliny.";
+      ? "Widoczne są frazy dopasowane do bieżącej dyscypliny oraz neutralne zwroty wspólne."
+      : "Widoczne są wyłącznie ogólne frazy, bez terminologii konkretnej dyscypliny.";
   }, [canSwitchPreset, presetMode]);
 
   const addEntryDisabled = !canEdit || !draft.trim() || entrySubmitting;

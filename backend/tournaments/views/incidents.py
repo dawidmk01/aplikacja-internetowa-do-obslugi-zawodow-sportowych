@@ -15,6 +15,7 @@ from rest_framework.views import APIView
 
 from tournaments.access import can_edit_results
 from tournaments.models import Match, MatchIncident, TeamPlayer, Team, Tournament
+from tournaments.services.match_periods import allowed_periods_for_match, is_extra_time_period
 
 from ..realtime import ws_emit_tournament
 
@@ -143,18 +144,25 @@ def _norm_score_scope(scope: str | None) -> str:
 
 
 def _is_extra_time_period(period: str | None) -> bool:
-    value = (period or "").strip().upper()
-    if not value:
-        return False
-    return value in ("ET1", "ET2", "ET", "OT", SCORE_SCOPE_EXTRA_TIME)
+    return is_extra_time_period(period)
 
 
 def _default_period_for_scope(discipline: str, scope: str) -> str:
-    if str(scope).upper() == SCORE_SCOPE_EXTRA_TIME:
-        if discipline in (Tournament.Discipline.FOOTBALL, Tournament.Discipline.HANDBALL):
-            return "ET1"
-        return "ET"
+    if _norm_score_scope(scope) != SCORE_SCOPE_EXTRA_TIME:
+        return getattr(Match.ClockPeriod, "NONE", "NONE")
+    if discipline == Tournament.Discipline.BASKETBALL:
+        return "OT1"
+    if discipline in (Tournament.Discipline.FOOTBALL, Tournament.Discipline.HANDBALL):
+        return "ET1"
     return getattr(Match.ClockPeriod, "NONE", "NONE")
+
+
+def _normalize_period_for_match(match: Match, period: str | None) -> str:
+    value = str(period or getattr(Match.ClockPeriod, "NONE", "NONE")).strip() or getattr(Match.ClockPeriod, "NONE", "NONE")
+    allowed = allowed_periods_for_match(match)
+    if value not in allowed:
+        raise ValueError(f"Nieprawidłowy okres meczu. Dozwolone: {sorted(list(allowed))}")
+    return value
 
 
 def _resolve_scope(match: Match, *, data: dict, meta: dict, period: str | None) -> str:
@@ -236,8 +244,9 @@ def _recompute_match_score_from_goal_incidents(match: Match) -> None:
         setattr(match, "away_extra_time_score", int(away_et))
         update_fields.append("away_extra_time_score")
 
-    if (home_et + away_et) > 0 and hasattr(match, "went_to_extra_time") and not getattr(match, "went_to_extra_time", False):
-        match.went_to_extra_time = True
+    has_extra_time_score = (home_et + away_et) > 0
+    if hasattr(match, "went_to_extra_time") and bool(getattr(match, "went_to_extra_time", False)) != has_extra_time_score:
+        match.went_to_extra_time = has_extra_time_score
         update_fields.append("went_to_extra_time")
 
     if update_fields:
@@ -457,6 +466,7 @@ class MatchIncidentListCreateView(APIView):
                 period = match.clock_period if match.clock_period else getattr(Match.ClockPeriod, "NONE", "NONE")
                 if "period" in data and data.get("period"):
                     period = str(data.get("period")).strip()
+                period = _normalize_period_for_match(match, period)
 
                 player_id = _parse_int(data.get("player_id"), "player_id", allow_none=True)
                 player_in_id = _parse_int(data.get("player_in_id"), "player_in_id", allow_none=True)
@@ -655,7 +665,10 @@ class MatchIncidentDeleteView(APIView):
                 incident.meta = meta
 
                 if meta["scope"] == SCORE_SCOPE_EXTRA_TIME and not _is_extra_time_period(incident.period):
-                    incident.period = _default_period_for_scope(discipline, SCORE_SCOPE_EXTRA_TIME)
+                    incident.period = _normalize_period_for_match(
+                        match,
+                        _default_period_for_scope(discipline, SCORE_SCOPE_EXTRA_TIME),
+                    )
 
             if "points" in data and incident.kind == "GOAL":
                 if discipline != Tournament.Discipline.BASKETBALL:

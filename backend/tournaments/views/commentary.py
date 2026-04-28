@@ -15,6 +15,7 @@ from rest_framework.views import APIView
 
 from tournaments.access import can_edit_results
 from tournaments.models import Match, MatchCommentaryEntry, Tournament, TournamentCommentaryPhrase
+from tournaments.services.match_periods import allowed_periods_for_match as service_allowed_periods_for_match
 
 from ..realtime import ws_emit_tournament
 from ._helpers import public_access_or_403
@@ -45,45 +46,13 @@ def _p(name: str, fallback: str) -> str:
 
 
 def _allowed_periods_for_match(match: Match) -> set[str]:
-    discipline = match.tournament.discipline
-    allowed: set[str] = {_p("NONE", "NONE")}
-
-    if discipline == Tournament.Discipline.FOOTBALL:
-        allowed.update({_p("FH", "FH"), _p("SH", "SH"), _p("ET1", "ET1"), _p("ET2", "ET2")})
-        return allowed
-
-    if discipline == Tournament.Discipline.HANDBALL:
-        allowed.update({_p("H1", "H1"), _p("H2", "H2"), _p("ET1", "ET1"), _p("ET2", "ET2")})
-        return allowed
-
-    if discipline == Tournament.Discipline.BASKETBALL:
-        allowed.update({
-            _p("Q1", "Q1"),
-            _p("Q2", "Q2"),
-            _p("Q3", "Q3"),
-            _p("Q4", "Q4"),
-            _p("OT1", "OT1"),
-            _p("OT2", "OT2"),
-            _p("OT3", "OT3"),
-            _p("OT4", "OT4"),
-        })
-        return allowed
-
-    if discipline == Tournament.Discipline.WRESTLING:
-        allowed.update({
-            _p("P1", "P1"),
-            _p("BREAK", "BREAK"),
-            _p("P2", "P2"),
-        })
-        return allowed
-
-    return allowed
+    return service_allowed_periods_for_match(match)
 
 
 def _validate_period_for_match(match: Match, period: str) -> str:
     allowed = _allowed_periods_for_match(match)
     if period not in allowed:
-        raise ValueError(f"Nieprawidłowy period. Dozwolone: {sorted(list(allowed))}")
+        raise ValueError(f"Nieprawidłowy okres gry dla tej dyscypliny. Dozwolone: {sorted(list(allowed))}")
     return period
 
 

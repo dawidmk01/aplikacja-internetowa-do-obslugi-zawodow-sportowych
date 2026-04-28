@@ -292,3 +292,157 @@ class TournamentMatchClockApiTests(TestCase):
         match.refresh_from_db()
 
         self.assertEqual(match.clock_added_seconds, 0)
+
+
+    def test_basketball_clock_accepts_later_overtime_periods(self):
+        tournament, match, _second_match = self._create_context()
+        tournament.discipline = Tournament.Discipline.BASKETBALL
+        tournament.save(update_fields=["discipline"])
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.patch(
+            f"/api/matches/{match.id}/clock/period/",
+            {
+                "period": self._match_model().ClockPeriod.OT3,
+                "clock_period": self._match_model().ClockPeriod.OT3,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        match.refresh_from_db()
+
+        self.assertEqual(match.clock_period, self._match_model().ClockPeriod.OT3)
+        self.assertTrue(match.went_to_extra_time)
+
+    def test_football_clock_rejects_basketball_period(self):
+        _tournament, match, _second_match = self._create_context()
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.patch(
+            f"/api/matches/{match.id}/clock/period/",
+            {
+                "period": self._match_model().ClockPeriod.Q1,
+                "clock_period": self._match_model().ClockPeriod.Q1,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+        match.refresh_from_db()
+
+        self.assertEqual(match.clock_period, self._match_model().ClockPeriod.NONE)
+
+    def test_wrestling_clock_accepts_break_period(self):
+        tournament, match, _second_match = self._create_context()
+        tournament.discipline = Tournament.Discipline.WRESTLING
+        tournament.save(update_fields=["discipline"])
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.patch(
+            f"/api/matches/{match.id}/clock/period/",
+            {
+                "period": self._match_model().ClockPeriod.BREAK,
+                "clock_period": self._match_model().ClockPeriod.BREAK,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        match.refresh_from_db()
+
+        self.assertEqual(match.clock_period, self._match_model().ClockPeriod.BREAK)
+
+    def test_clock_start_sets_default_period_for_supported_disciplines(self):
+        expectations = [
+            (Tournament.Discipline.FOOTBALL, self._match_model().ClockPeriod.FH),
+            (Tournament.Discipline.HANDBALL, self._match_model().ClockPeriod.H1),
+            (Tournament.Discipline.BASKETBALL, self._match_model().ClockPeriod.Q1),
+            (Tournament.Discipline.WRESTLING, self._match_model().ClockPeriod.P1),
+        ]
+
+        for discipline, expected_period in expectations:
+            with self.subTest(discipline=discipline):
+                tournament, match, _second_match = self._create_context()
+                tournament.discipline = discipline
+                tournament.save(update_fields=["discipline"])
+
+                self.client.force_authenticate(user=self.organizer)
+
+                response = self.client.post(f"/api/matches/{match.id}/clock/start/")
+
+                self.assertEqual(response.status_code, 200)
+
+                match.refresh_from_db()
+
+                self.assertEqual(match.clock_period, expected_period)
+                self.assertEqual(response.json().get("clock_period"), expected_period)
+
+    def test_clock_payload_exposes_period_contract(self):
+        _tournament, match, _second_match = self._create_context()
+        match.clock_period = self._match_model().ClockPeriod.SH
+        match.clock_elapsed_seconds = 120
+        match.clock_added_seconds = 30
+        match.save(update_fields=["clock_period", "clock_elapsed_seconds", "clock_added_seconds"])
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.get(f"/api/matches/{match.id}/clock/")
+
+        self.assertEqual(response.status_code, 200)
+
+        data = response.json()
+
+        self.assertEqual(data.get("period_base_offset_seconds"), 45 * 60)
+        self.assertEqual(data.get("period_limit_seconds"), 45 * 60)
+        self.assertEqual(data.get("seconds_in_period"), 150)
+        self.assertEqual(data.get("seconds_total"), 45 * 60 + 150)
+        self.assertFalse(data.get("time_over_limit"))
+
+    def test_football_extra_time_period_marks_match_as_extra_time(self):
+        _tournament, match, _second_match = self._create_context()
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.patch(
+            f"/api/matches/{match.id}/clock/period/",
+            {
+                "period": self._match_model().ClockPeriod.ET1,
+                "clock_period": self._match_model().ClockPeriod.ET1,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        match.refresh_from_db()
+
+        self.assertEqual(match.clock_period, self._match_model().ClockPeriod.ET1)
+        self.assertTrue(match.went_to_extra_time)
+
+    def test_tennis_clock_rejects_match_periods(self):
+        tournament, match, _second_match = self._create_context()
+        tournament.discipline = Tournament.Discipline.TENNIS
+        tournament.save(update_fields=["discipline"])
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.patch(
+            f"/api/matches/{match.id}/clock/period/",
+            {
+                "period": self._match_model().ClockPeriod.FH,
+                "clock_period": self._match_model().ClockPeriod.FH,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+        match.refresh_from_db()
+
+        self.assertEqual(match.clock_period, self._match_model().ClockPeriod.NONE)
+

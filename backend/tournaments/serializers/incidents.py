@@ -39,11 +39,6 @@ def _allowed_kinds_for_discipline(discipline: str) -> set[str]:
             k.TIMEOUT,
         }
 
-    if discipline == Tournament.Discipline.VOLLEYBALL:
-        return {
-            k.SUBSTITUTION,
-            k.TIMEOUT,
-        }
 
     if discipline == Tournament.Discipline.BASKETBALL:
         return {

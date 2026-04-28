@@ -14,6 +14,14 @@ from rest_framework.views import APIView
 
 from tournaments.access import tournament_allows_mutation, can_edit_results, can_edit_schedule
 from tournaments.models import Match, Tournament
+from tournaments.services.match_periods import (
+    allowed_periods_for_match as service_allowed_periods_for_match,
+    default_period_for_match as service_default_period_for_match,
+    is_break_period_for_match as service_is_break_period_for_match,
+    is_extra_time_period as service_is_extra_time_period,
+    period_base_offset_seconds as service_period_base_offset_seconds,
+    period_limit_seconds as service_period_limit_seconds,
+)
 
 from ..realtime import ws_emit_tournament
 from ._helpers import public_access_or_403
@@ -36,19 +44,7 @@ def _p(name: str, fallback: str) -> str:
 
 
 def _is_extra_time_period(period: str | None) -> bool:
-    value = (period or "").strip()
-    if not value:
-        return False
-    return value in {
-        _p("ET1", "ET1"),
-        _p("ET2", "ET2"),
-        _p("ET", "ET"),
-        _p("OT", "OT"),
-        _p("OT1", "OT1"),
-        _p("OT2", "OT2"),
-        _p("OT3", "OT3"),
-        _p("OT4", "OT4"),
-    }
+    return service_is_extra_time_period(period)
 
 
 def _ensure_went_to_extra_time(match: Match) -> bool:
@@ -74,47 +70,23 @@ def _require_can_manage_clock(user, match: Match) -> None:
 
 
 def _default_period_for_discipline(match: Match) -> str:
-    discipline = match.tournament.discipline
-    if discipline == Tournament.Discipline.FOOTBALL:
-        return _p("FH", "FH")
-    if discipline == Tournament.Discipline.HANDBALL:
-        return _p("H1", "H1")
-    if discipline == Tournament.Discipline.BASKETBALL:
-        return _p("Q1", "Q1")
-    if discipline == Tournament.Discipline.WRESTLING:
-        return _p("P1", "P1")
-    return _p("NONE", "NONE")
+    return service_default_period_for_match(match)
 
 
 def _allowed_periods_for_match(match: Match) -> set[str]:
-    discipline = match.tournament.discipline
-    allowed: set[str] = {_p("NONE", "NONE")}
-    if discipline == Tournament.Discipline.FOOTBALL:
-        allowed.update({_p("FH", "FH"), _p("SH", "SH"), _p("ET1", "ET1"), _p("ET2", "ET2")})
-        return allowed
-    if discipline == Tournament.Discipline.HANDBALL:
-        allowed.update({_p("H1", "H1"), _p("H2", "H2"), _p("ET1", "ET1"), _p("ET2", "ET2")})
-        return allowed
-    if discipline == Tournament.Discipline.BASKETBALL:
-        allowed.update({
-            _p("Q1", "Q1"),
-            _p("Q2", "Q2"),
-            _p("Q3", "Q3"),
-            _p("Q4", "Q4"),
-            _p("OT1", "OT1"),
-            _p("OT2", "OT2"),
-            _p("OT3", "OT3"),
-            _p("OT4", "OT4"),
-        })
-        return allowed
-    if discipline == Tournament.Discipline.WRESTLING:
-        allowed.update({
-            _p("P1", "P1"),
-            _p("BREAK", "BREAK"),
-            _p("P2", "P2"),
-        })
-        return allowed
-    return allowed
+    return service_allowed_periods_for_match(match)
+
+
+def _period_base_offset_seconds(match: Match) -> int:
+    return service_period_base_offset_seconds(match)
+
+
+def _period_limit_seconds(match: Match) -> int | None:
+    return service_period_limit_seconds(match)
+
+
+def _is_break_period(match: Match) -> bool:
+    return service_is_break_period_for_match(match, match.clock_period)
 
 
 def _clock_running_elapsed_seconds(match: Match, now) -> int:
@@ -150,7 +122,11 @@ def _serialize_clock(match: Match) -> dict:
     elapsed_safe = min(MAX_CLOCK_SECONDS, _clock_running_elapsed_seconds(match, now))
     added = max(0, int(match.clock_added_seconds or 0))
     period_safe = min(MAX_CLOCK_SECONDS, elapsed_safe + added)
-    total_safe = min(MAX_CLOCK_SECONDS, int(match.clock_seconds_total(now=now)))
+    base_offset = _period_base_offset_seconds(match)
+    total_safe = min(MAX_CLOCK_SECONDS, base_offset + period_safe)
+    period_limit = _period_limit_seconds(match)
+    time_over_limit = bool(period_limit is not None and period_safe > period_limit)
+    is_break = _is_break_period(match)
 
     return {
         "match_id": match.id,
@@ -164,6 +140,12 @@ def _serialize_clock(match: Match) -> dict:
         "seconds_in_period": int(period_safe),
         "seconds_total": int(total_safe),
         "minute_total": _minute_from_seconds(int(total_safe)),
+        "period_base_offset_seconds": int(base_offset),
+        "period_limit_seconds": period_limit,
+        "time_over_limit": time_over_limit,
+        "is_break": is_break,
+        "write_locked": is_break,
+        "cap_reached": bool(elapsed_safe >= MAX_CLOCK_SECONDS),
         "max_clock_seconds": MAX_CLOCK_SECONDS,
         "server_time": now.isoformat(),
     }

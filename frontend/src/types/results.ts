@@ -11,6 +11,8 @@ export type TournamentStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
 export type CompetitionType = "TEAM" | "INDIVIDUAL";
 export type CompetitionModel = "HEAD_TO_HEAD" | "MASS_START";
 export type MassStartStageStatus = "PLANNED" | "OPEN" | "CLOSED";
+export type MassStartResultStatus = "OK" | "DNS" | "DNF" | "DSQ";
+export type MassStartOverallMode = "POINTS_BY_RANK" | "SUM" | "BEST" | "AVERAGE" | string;
 
 export type ResultMode = "SCORE" | "CUSTOM";
 
@@ -20,8 +22,6 @@ export type CustomTimeFormat = "HH:MM:SS" | "MM:SS" | "MM:SS.hh" | "SS.hh";
 export type CustomHeadToHeadMode = "HEAD_TO_HEAD_POINTS" | "MASS_START_MEASURED";
 export type CustomAggregationMode = "BEST" | "LAST_ROUND" | "SUM" | "AVERAGE";
 export type CustomStageStructureMode = "REDUCTION" | "MULTI_EVENT";
-export type MultiEventOverallMode = "POINTS_BY_RANK" | "SUM_RANKS" | "SUM_RESULTS";
-export type MassStartResultStatus = "OK" | "DNS" | "DNF" | "DSQ";
 export type CustomStandingsMode =
   | "HEAD_TO_HEAD_POINTS"
   | "MASS_START_MEASURED";
@@ -70,7 +70,6 @@ export type TournamentResultConfigDTO = {
   time_format?: CustomTimeFormat | null;
   allow_ties?: boolean;
   stage_structure_mode?: CustomStageStructureMode;
-  multi_event_overall_mode?: MultiEventOverallMode;
   aggregation_mode?: CustomAggregationMode;
 };
 
@@ -140,11 +139,11 @@ export type MatchDTO = {
 
 export type MassStartRoundResultDTO = {
   round_number: number;
+  result_status?: MassStartResultStatus | null;
   result_id: number | null;
   numeric_value?: string | null;
   time_ms?: number | null;
   place_value?: number | null;
-  result_status?: MassStartResultStatus;
   display_value?: string | null;
   rank?: number | null;
   is_active: boolean;
@@ -168,8 +167,8 @@ export type MassStartGroupDTO = {
 
 export type MassStartStageDTO = {
   stage_id: number;
-  stage_order: number;
-  stage_name: string;
+  stage_order: number | null;
+  stage_name: string | null;
   stage_status?: MassStartStageStatus;
   stage_structure_mode: CustomStageStructureMode;
   groups_count: number;
@@ -180,41 +179,52 @@ export type MassStartStageDTO = {
   groups: MassStartGroupDTO[];
 };
 
-
 export type MassStartOverallEventDTO = {
   stage_id: number;
-  stage_order: number;
-  stage_name: string;
+  stage_order: number | null;
+  stage_name: string | null;
+  rounds_count?: number | null;
+  aggregation_mode?: string | null;
+  value_kind?: CustomResultValueKind | null;
+  unit_label?: string | null;
+  [key: string]: unknown;
 };
 
 export type MassStartOverallEventResultDTO = {
   stage_id: number;
-  stage_order: number;
-  stage_name: string;
+  stage_order?: number | null;
+  stage_name?: string | null;
+  result_status?: MassStartResultStatus | null;
+  contribution?: number | string | null;
+  contribution_display?: string | null;
+  overall_contribution_display?: string | null;
+  points?: number | string | null;
   rank?: number | null;
-  points: number;
   aggregate_value?: string | number | null;
   aggregate_display?: string | null;
-  overall_contribution?: string | number | null;
-  overall_contribution_display?: string | null;
-  is_completed?: boolean;
-  result_status?: MassStartResultStatus;
-  result_status_display?: string | null;
+  display_value?: string | null;
+  numeric_value?: string | null;
+  time_ms?: number | null;
+  place_value?: number | null;
+  [key: string]: unknown;
 };
 
 export type MassStartOverallStandingDTO = {
-  rank?: number | null;
   team_id: number;
   team_name: string;
-  overall_score?: string | number | null;
+  rank?: number | null;
+  total_points?: number | string | null;
+  total_value?: number | string | null;
+  total_display?: string | null;
+  overall_score?: number | string | null;
   overall_display?: string | null;
-  total_points: number;
-  total_rank_sum?: number | null;
-  total_result_value?: string | number | null;
-  events_count: number;
-  completed_events_count: number;
-  special_statuses_count: number;
+  aggregate_value?: string | number | null;
+  aggregate_display?: string | null;
+  completed_events_count?: number | null;
+  events_count?: number | null;
+  special_statuses_count?: number | null;
   event_results: MassStartOverallEventResultDTO[];
+  [key: string]: unknown;
 };
 
 export type TournamentMassStartResultsResponseDTO = {
@@ -224,7 +234,7 @@ export type TournamentMassStartResultsResponseDTO = {
   unit_label?: string;
   allow_ties?: boolean;
   stage_structure_mode?: CustomStageStructureMode;
-  overall_mode?: MultiEventOverallMode | null;
+  overall_mode?: MassStartOverallMode;
   overall_events?: MassStartOverallEventDTO[];
   overall_standings?: MassStartOverallStandingDTO[];
   stages: MassStartStageDTO[];
@@ -235,10 +245,10 @@ export type StageMassStartResultWriteDTO = {
   group_id?: number | null;
   team_id: number;
   round_number: number;
+  result_status?: MassStartResultStatus;
   numeric_value?: string;
   time_ms?: number;
   place_value?: number;
-  result_status?: MassStartResultStatus;
 };
 
 export type AdvanceMassStartStageResponseDTO = {

@@ -95,6 +95,21 @@ function getStageEntityLabel(stageStructureMode: StageStructureMode): string {
   return isMultiEventMode(stageStructureMode) ? "konkurencji" : "etapów";
 }
 
+function sortStageOrder(value: number | null | undefined): number {
+  return typeof value === "number" ? value : Number.MAX_SAFE_INTEGER;
+}
+
+function displayText(value: unknown, fallback = "-"): string {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  return fallback;
+}
+
+function numericCount(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function getCustomResultHint(config: TournamentResultConfigDTO): string {
   const valueKind = String(config.value_kind ?? "").toUpperCase();
 
@@ -143,7 +158,7 @@ function hasIncompleteRounds(stage: MassStartStageDTO) {
 function getAdvanceCandidateStage(stages: MassStartStageDTO[] | undefined | null) {
   if (!Array.isArray(stages) || stages.length === 0) return null;
 
-  const ordered = [...stages].sort((a, b) => a.stage_order - b.stage_order);
+  const ordered = [...stages].sort((a, b) => sortStageOrder(a.stage_order) - sortStageOrder(b.stage_order));
 
   for (let index = 0; index < ordered.length; index += 1) {
     const current = ordered[index];
@@ -166,7 +181,7 @@ function getVisibleMassStartStages(
 ) {
   if (!Array.isArray(stages)) return [];
 
-  const orderedStages = [...stages].sort((a, b) => a.stage_order - b.stage_order);
+  const orderedStages = [...stages].sort((a, b) => sortStageOrder(a.stage_order) - sortStageOrder(b.stage_order));
 
   if (isMultiEventMode(stageStructureMode)) {
     // Konkurencje są równoległymi częściami wydarzenia, dlatego nie są ukrywane jako zaplanowane etapy awansu.
@@ -187,7 +202,7 @@ function overallSort(left: MassStartOverallStandingDTO, right: MassStartOverallS
 }
 
 function overallEventsLabel(row: MassStartOverallStandingDTO) {
-  return `${row.completed_events_count}/${row.events_count}`;
+  return `${numericCount(row.completed_events_count)}/${numericCount(row.events_count)}`;
 }
 
 function overallModeLabel(mode?: string | null) {
@@ -203,7 +218,7 @@ function overallValueHeader(mode?: string | null) {
 }
 
 function overallValue(row: MassStartOverallStandingDTO) {
-  return row.overall_display || row.overall_score || row.total_points;
+  return displayText(row.overall_display || row.overall_score || row.total_points);
 }
 
 function eventResultByStage(row: MassStartOverallStandingDTO, stageId: number) {
@@ -220,7 +235,7 @@ function resultStatusLabel(resultStatus?: MassStartResultStatus | null) {
 
 function eventContributionLabel(event?: MassStartOverallStandingDTO["event_results"][number]) {
   if (!event) return "-";
-  return event.overall_contribution_display || event.aggregate_display || "-";
+  return displayText(event.overall_contribution_display || event.aggregate_display);
 }
 
 function eventDetailLabel(event?: MassStartOverallStandingDTO["event_results"][number]) {
@@ -228,10 +243,10 @@ function eventDetailLabel(event?: MassStartOverallStandingDTO["event_results"][n
   const status = resultStatusLabel(event.result_status);
   if (status) return status;
 
-  const fragments = [];
+  const fragments: string[] = [];
   if (typeof event.rank === "number") fragments.push(`miejsce ${event.rank}`);
   if (event.aggregate_display) fragments.push(`wynik ${event.aggregate_display}`);
-  if (Number.isFinite(Number(event.points))) fragments.push(`${event.points} pkt`);
+  if (Number.isFinite(Number(event.points))) fragments.push(`${displayText(event.points)} pkt`);
   return fragments.join(" • ") || "Brak wyniku";
 }
 
@@ -286,7 +301,7 @@ function MassStartResultsView({
 
   const overallEvents = useMemo<MassStartOverallEventDTO[]>(() => {
     if (Array.isArray(massStartData?.overall_events) && massStartData.overall_events.length > 0) {
-      return [...massStartData.overall_events].sort((a, b) => a.stage_order - b.stage_order);
+      return [...massStartData.overall_events].sort((a, b) => sortStageOrder(a.stage_order) - sortStageOrder(b.stage_order));
     }
 
     const eventMap = new Map<number, MassStartOverallEventDTO>();
@@ -294,13 +309,13 @@ function MassStartResultsView({
       for (const event of row.event_results || []) {
         eventMap.set(event.stage_id, {
           stage_id: event.stage_id,
-          stage_order: event.stage_order,
-          stage_name: event.stage_name,
+          stage_order: event.stage_order ?? null,
+          stage_name: event.stage_name ?? null,
         });
       }
     }
 
-    return [...eventMap.values()].sort((a, b) => a.stage_order - b.stage_order);
+    return [...eventMap.values()].sort((a, b) => sortStageOrder(a.stage_order) - sortStageOrder(b.stage_order));
   }, [massStartData, overallStandings]);
 
   const overallMode = massStartData?.overall_mode ?? "POINTS_BY_RANK";
@@ -347,7 +362,7 @@ function MassStartResultsView({
                       <th className="px-4 py-3">{overallValueHeader(overallMode)}</th>
                       {overallEvents.map((event) => (
                         <th key={event.stage_id} className="min-w-[140px] px-4 py-3">
-                          {event.stage_name}
+                          {event.stage_name ?? `Konkurencja ${event.stage_id}`} 
                         </th>
                       ))}
                       <th className="px-4 py-3">Ukończone</th>
@@ -376,7 +391,7 @@ function MassStartResultsView({
                         })}
                         <td className="border-t border-white/10 px-4 py-3 text-slate-300">{overallEventsLabel(row)}</td>
                         <td className="border-t border-white/10 px-4 py-3 text-slate-300">
-                          {row.special_statuses_count > 0 ? row.special_statuses_count : "Brak"}
+                          {numericCount(row.special_statuses_count) > 0 ? numericCount(row.special_statuses_count) : "Brak"}
                         </td>
                       </tr>
                     ))}
