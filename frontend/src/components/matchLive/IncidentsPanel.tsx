@@ -1,3 +1,6 @@
+// frontend/src/components/matchLive/IncidentsPanel.tsx
+// Komponent obsługuje listę incydentów meczu oraz ich wpływ na wynik spotkania.
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { apiFetch } from "../../api";
@@ -46,6 +49,23 @@ type IncidentDraft = {
   note: string;
 };
 
+type ScorePreview = {
+  home: number;
+  away: number;
+  homeExtraTime?: number;
+  awayExtraTime?: number;
+};
+
+type IncidentDeleteRequest = {
+  matchId: number;
+  incidentId: number;
+  incidentType?: string;
+  teamLabel?: string;
+  minute?: number | null;
+  playerLabel?: string | null;
+  scoreAfterDelete?: ScorePreview | null;
+};
+
 type Props = {
   tournamentId?: number;
 
@@ -62,7 +82,7 @@ type Props = {
   clockMeta: ClockMeta | null;
   reloadToken?: number;
 
-  onRequestConfirmIncidentDelete?: (req: any, proceed: () => void) => void;
+  onRequestConfirmIncidentDelete?: (req: IncidentDeleteRequest, proceed: () => void) => void;
   onAfterRecompute?: () => Promise<void> | void;
   onRequestClockReload?: () => void;
 };
@@ -135,6 +155,88 @@ function computeClockMinute(clockMeta: ClockMeta | null): number | null {
 
 function mapPlayersToOptions(players: TeamPlayerDTO[]): SelectOption<string>[] {
   return players.map((p) => ({ value: String(p.id), label: playerLabel(p) }));
+}
+
+const WRESTLING_SCORING_POINTS: Record<string, number> = {
+  WRESTLING_POINT_1: 1,
+  WRESTLING_POINT_2: 2,
+  WRESTLING_POINT_4: 4,
+  WRESTLING_POINT_5: 5,
+};
+
+function incidentScoreScope(incident: IncidentDTO): "REGULAR" | "EXTRA_TIME" {
+  const meta = incident.meta && typeof incident.meta === "object" ? incident.meta : {};
+  const metaScope = String(meta.scope ?? "").trim().toUpperCase();
+  const period = String(incident.period || "").trim().toUpperCase();
+
+  if (metaScope === "EXTRA_TIME") return "EXTRA_TIME";
+  if (["ET", "ET1", "ET2", "OT", "OT1", "OT2", "OT3", "OT4"].includes(period)) return "EXTRA_TIME";
+  return "REGULAR";
+}
+
+function incidentScorePoints(discipline: string, incident: IncidentDTO): number {
+  const normalized = String(discipline || "").trim().toLowerCase();
+
+  if (normalized === "wrestling") {
+    return WRESTLING_SCORING_POINTS[incident.kind] ?? 0;
+  }
+
+  if (incident.kind !== "GOAL" || normalized === "tennis") return 0;
+
+  if (normalized === "basketball") {
+    const raw = incident.meta && typeof incident.meta === "object" ? incident.meta.points : null;
+    const points = Number(raw ?? 1);
+    return [1, 2, 3].includes(points) ? points : 1;
+  }
+
+  return 1;
+}
+
+function buildScorePreviewAfterDelete({
+  incidents,
+  removedIncident,
+  discipline,
+  homeTeamId,
+  awayTeamId,
+}: {
+  incidents: IncidentDTO[];
+  removedIncident: IncidentDTO;
+  discipline: string;
+  homeTeamId?: number;
+  awayTeamId?: number;
+}): ScorePreview | null {
+  if (!homeTeamId || !awayTeamId) return null;
+  if (incidentScorePoints(discipline, removedIncident) <= 0) return null;
+
+  const preview = {
+    home: 0,
+    away: 0,
+    homeExtraTime: 0,
+    awayExtraTime: 0,
+  };
+
+  for (const incident of incidents) {
+    if (incident.id === removedIncident.id) continue;
+
+    const points = incidentScorePoints(discipline, incident);
+    if (points <= 0) continue;
+
+    const scope = incidentScoreScope(incident);
+    const isHome = incident.team_id === homeTeamId;
+    const isAway = incident.team_id === awayTeamId;
+
+    if (!isHome && !isAway) continue;
+
+    if (scope === "EXTRA_TIME") {
+      if (isHome) preview.homeExtraTime += points;
+      if (isAway) preview.awayExtraTime += points;
+    } else {
+      if (isHome) preview.home += points;
+      if (isAway) preview.away += points;
+    }
+  }
+
+  return preview;
 }
 
 /** IncidentsPanel obsługuje incydenty meczu oraz pobranie składów do wyboru zawodników w ramach edycji live. */
@@ -529,6 +631,13 @@ export function IncidentsPanel({
             teamLabel,
             minute: i.minute,
             playerLabel: i.player_name,
+            scoreAfterDelete: buildScorePreviewAfterDelete({
+              incidents,
+              removedIncident: i,
+              discipline,
+              homeTeamId,
+              awayTeamId,
+            }),
           },
           proceed
         );
@@ -537,7 +646,17 @@ export function IncidentsPanel({
 
       setPendingDeleteId(i.id);
     },
-    [awayTeamId, deleteIncident, homeTeamId, homeTeamName, awayTeamName, matchId, onRequestConfirmIncidentDelete]
+    [
+      awayTeamId,
+      awayTeamName,
+      deleteIncident,
+      discipline,
+      homeTeamId,
+      homeTeamName,
+      incidents,
+      matchId,
+      onRequestConfirmIncidentDelete,
+    ]
   );
 
   const beginEdit = useCallback((i: IncidentDTO) => {

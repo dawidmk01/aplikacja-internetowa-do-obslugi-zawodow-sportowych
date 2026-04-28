@@ -1,4 +1,3 @@
-
 # backend/tournaments/views/mass_start_results.py
 # Plik udostępnia odczyt i zapis wyników etapowych dla trybu MASS_START w kontekście aktywnej dywizji.
 
@@ -63,6 +62,46 @@ def _competition_context(division: Division | None, tournament: Tournament):
     return division or tournament
 
 
+# ===== Kontekst struktury etapów MASS_START =====
+
+def _stage_structure_mode(context_obj) -> str:
+    raw = str(
+        context_obj.get_result_config().get(Tournament.RESULTCFG_STAGE_STRUCTURE_MODE_KEY)
+        or Tournament.RESULTCFG_STAGE_STRUCTURE_REDUCTION
+    ).upper()
+
+    if raw == Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT:
+        return Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT
+
+    return Tournament.RESULTCFG_STAGE_STRUCTURE_REDUCTION
+
+
+def _stage_uses_multi_event(stage: Stage) -> bool:
+    context_obj = _competition_context(getattr(stage, "division", None), stage.tournament)
+    return _stage_structure_mode(context_obj) == Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT
+
+
+def _stage_result_write_blocked(stage: Stage) -> bool:
+    if stage.status != Stage.Status.PLANNED:
+        return False
+
+    return not _stage_uses_multi_event(stage)
+
+
+def _planned_stage_write_error(stage: Stage) -> str:
+    if _stage_uses_multi_event(stage):
+        return "Nie można zapisywać wyników dla zamkniętej konkurencji."
+
+    return "Nie można zapisywać wyników dla etapu, który nie został jeszcze wygenerowany."
+
+
+def _stage_entity_name(context_obj, order: int) -> str:
+    if _stage_structure_mode(context_obj) == Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT:
+        return f"Konkurencja {order}"
+
+    return f"Etap {order}"
+
+
 def _division_stage_cfgs(context_obj) -> list[dict]:
     if hasattr(context_obj, "get_mass_start_stages"):
         return list(context_obj.get_mass_start_stages() or [])
@@ -81,10 +120,26 @@ def _stage_name(stage: Stage) -> str:
     context_obj = _competition_context(getattr(stage, "division", None), stage.tournament)
     cfg = _stage_cfg_for_order(context_obj, stage.order)
     raw = str(cfg.get(Tournament.RESULTCFG_STAGE_NAME_KEY) or "").strip()
-    return raw or f"Etap {stage.order}"
+
+    if _stage_structure_mode(context_obj) == Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT:
+        if not raw or raw == f"Etap {stage.order}":
+            return f"Konkurencja {stage.order}"
+        return raw
+
+    return raw or _stage_entity_name(context_obj, stage.order)
+
+
+def _result_status_display(result_status: str | None) -> str:
+    if not result_status or result_status == StageMassStartResult.ResultStatus.OK:
+        return ""
+    labels = dict(StageMassStartResult.ResultStatus.choices)
+    return str(labels.get(result_status, result_status))
 
 
 def _result_numeric_value(result: StageMassStartResult):
+    if result.result_status != StageMassStartResult.ResultStatus.OK:
+        return None
+
     if result.value_kind == Tournament.RESULTCFG_VALUE_KIND_TIME:
         return int(result.time_ms or 0)
     if result.value_kind == Tournament.RESULTCFG_VALUE_KIND_PLACE:
@@ -172,6 +227,28 @@ def _format_aggregate_display(context_obj, value) -> str:
     return f"{rendered} {unit_label}".strip()
 
 
+def _team_status_display(results: list[StageMassStartResult]) -> str | None:
+    special_statuses = [
+        result.result_status
+        for result in results
+        if result.result_status != StageMassStartResult.ResultStatus.OK
+    ]
+    if not special_statuses:
+        return None
+
+    priority = {
+        StageMassStartResult.ResultStatus.DSQ: 3,
+        StageMassStartResult.ResultStatus.DNF: 2,
+        StageMassStartResult.ResultStatus.DNS: 1,
+    }
+    selected = sorted(
+        special_statuses,
+        key=lambda item: priority.get(item, 0),
+        reverse=True,
+    )[0]
+    return _result_status_display(selected)
+
+
 def _entry_team_ids_for_group(stage: Stage, group: Group | None) -> list[int]:
     qs = StageMassStartEntry.objects.filter(stage=stage, is_active=True)
 
@@ -246,9 +323,11 @@ def _compute_group_rankings(
     for team_id in team_ids:
         team_results = rows_by_team.get(team_id, [])
         round_values = [
-            (item.round_number, _result_numeric_value(item))
+            (item.round_number, value)
             for item in team_results
+            if (value := _result_numeric_value(item)) is not None
         ]
+        status_display = _team_status_display(team_results)
         aggregate_value = _aggregate_round_values(
             round_values,
             aggregation_mode,
@@ -259,10 +338,12 @@ def _compute_group_rankings(
                 "team_id": team_id,
                 "results": team_results,
                 "aggregate_value": aggregate_value,
-                "aggregate_display": _format_aggregate_display(
-                    context_obj,
-                    aggregate_value,
+                "aggregate_display": (
+                    _format_aggregate_display(context_obj, aggregate_value)
+                    if aggregate_value is not None
+                    else status_display or "-"
                 ),
+                "has_rankable_result": aggregate_value is not None,
             }
         )
 
@@ -279,12 +360,16 @@ def _compute_group_rankings(
     previous_rank = None
     payload: dict[int, dict[str, Any]] = {}
 
-    for index, row in enumerate(ranking_rows, start=1):
+    rank_index = 0
+    for row in ranking_rows:
         current_value = row["aggregate_value"]
-        if allow_ties and previous_value is not None and current_value == previous_value:
+        if not row.get("has_rankable_result"):
+            rank = None
+        elif allow_ties and previous_value is not None and current_value == previous_value:
             rank = previous_rank
         else:
-            rank = index
+            rank_index += 1
+            rank = rank_index
 
         payload[row["team_id"]] = {
             "rank": rank,
@@ -298,10 +383,372 @@ def _compute_group_rankings(
                     result.rank = rank
                     result.save(update_fields=["rank", "updated_at"])
 
+        if row.get("has_rankable_result"):
+            previous_value = current_value
+            previous_rank = rank
+
+    return payload
+
+
+
+def _team_result_status(results: list[StageMassStartResult]) -> str:
+    special_statuses = [
+        result.result_status
+        for result in results
+        if result.result_status != StageMassStartResult.ResultStatus.OK
+    ]
+    if not special_statuses:
+        return StageMassStartResult.ResultStatus.OK
+
+    priority = {
+        StageMassStartResult.ResultStatus.DSQ: 3,
+        StageMassStartResult.ResultStatus.DNF: 2,
+        StageMassStartResult.ResultStatus.DNS: 1,
+    }
+    return sorted(
+        special_statuses,
+        key=lambda item: priority.get(item, 0),
+        reverse=True,
+    )[0]
+
+
+def _compute_stage_event_rankings(stage: Stage) -> dict[int, dict[str, Any]]:
+    context_obj = _competition_context(getattr(stage, "division", None), stage.tournament)
+    stage_cfg = _stage_cfg_for_order(context_obj, stage.order)
+    aggregation_mode = str(
+        stage_cfg.get(Tournament.RESULTCFG_STAGE_AGGREGATION_MODE_KEY)
+        or context_obj.get_result_config().get(Tournament.RESULTCFG_AGGREGATION_MODE_KEY)
+        or Tournament.RESULTCFG_AGGREGATION_BEST
+    ).upper()
+
+    lower_is_better = (
+        context_obj.result_is_time()
+        or context_obj.result_is_place()
+        or context_obj.custom_result_lower_is_better()
+    )
+    allow_ties = bool(
+        context_obj.get_result_config().get(Tournament.RESULTCFG_ALLOW_TIES_KEY, True)
+    )
+
+    team_ids = _stage_entry_team_ids(stage)
+    if not team_ids:
+        return {}
+
+    results = list(
+        StageMassStartResult.objects.filter(
+            stage=stage,
+            team_id__in=team_ids,
+            is_active=True,
+        )
+        .select_related("team", "group")
+        .order_by("team_id", "round_number", "id")
+    )
+
+    rows_by_team: dict[int, list[StageMassStartResult]] = defaultdict(list)
+    for result in results:
+        rows_by_team[result.team_id].append(result)
+
+    ranking_rows: list[dict[str, Any]] = []
+    for team_id in team_ids:
+        team_results = rows_by_team.get(team_id, [])
+        round_values = [
+            (item.round_number, value)
+            for item in team_results
+            if (value := _result_numeric_value(item)) is not None
+        ]
+        status_display = _team_status_display(team_results)
+        aggregate_value = _aggregate_round_values(
+            round_values,
+            aggregation_mode,
+            lower_is_better,
+        )
+        result_status = _team_result_status(team_results)
+        ranking_rows.append(
+            {
+                "team_id": team_id,
+                "aggregate_value": aggregate_value,
+                "aggregate_display": (
+                    _format_aggregate_display(context_obj, aggregate_value)
+                    if aggregate_value is not None
+                    else status_display or "-"
+                ),
+                "result_status": result_status,
+                "result_status_display": status_display or "",
+                "has_rankable_result": aggregate_value is not None,
+            }
+        )
+
+    rankable_rows = [row for row in ranking_rows if row["has_rankable_result"]]
+    unranked_rows = [row for row in ranking_rows if not row["has_rankable_result"]]
+    rankable_rows.sort(
+        key=lambda row: (row["aggregate_value"], row["team_id"]),
+        reverse=not lower_is_better,
+    )
+    unranked_rows.sort(key=lambda row: row["team_id"])
+
+    payload: dict[int, dict[str, Any]] = {}
+    previous_value = None
+    previous_rank = None
+    ranked_count = len(rankable_rows)
+
+    for index, row in enumerate(rankable_rows, start=1):
+        current_value = row["aggregate_value"]
+        if allow_ties and previous_value is not None and current_value == previous_value:
+            rank = previous_rank
+        else:
+            rank = index
+
+        points = ranked_count - int(rank or index) + 1
+        payload[row["team_id"]] = {
+            **row,
+            "rank": rank,
+            "points": points,
+        }
         previous_value = current_value
         previous_rank = rank
 
+    for row in unranked_rows:
+        payload[row["team_id"]] = {
+            **row,
+            "rank": None,
+            "points": 0,
+        }
+
     return payload
+
+
+
+def _multi_event_overall_mode(context_obj) -> str:
+    raw = str(
+        context_obj.get_result_config().get(Tournament.RESULTCFG_MULTI_EVENT_OVERALL_MODE_KEY)
+        or Tournament.RESULTCFG_MULTI_EVENT_OVERALL_POINTS_BY_RANK
+    ).upper()
+
+    if raw in (
+        Tournament.RESULTCFG_MULTI_EVENT_OVERALL_POINTS_BY_RANK,
+        Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RANKS,
+        Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RESULTS,
+    ):
+        return raw
+
+    return Tournament.RESULTCFG_MULTI_EVENT_OVERALL_POINTS_BY_RANK
+
+
+def _overall_mode_uses_lower_score(context_obj, overall_mode: str) -> bool:
+    if overall_mode == Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RANKS:
+        return True
+
+    if overall_mode == Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RESULTS:
+        return (
+            context_obj.result_is_time()
+            or context_obj.result_is_place()
+            or context_obj.custom_result_lower_is_better()
+        )
+
+    return False
+
+
+def _overall_score_display(context_obj, overall_mode: str, value) -> str:
+    if value is None:
+        return "-"
+
+    if overall_mode == Tournament.RESULTCFG_MULTI_EVENT_OVERALL_POINTS_BY_RANK:
+        return str(int(value))
+
+    if overall_mode == Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RANKS:
+        return str(int(value))
+
+    if overall_mode == Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RESULTS:
+        return _format_aggregate_display(context_obj, value)
+
+    return str(value)
+
+
+def _overall_event_contribution(context_obj, overall_mode: str, event_row: dict[str, Any]) -> tuple[Any, str]:
+    if not event_row.get("has_rankable_result"):
+        return None, event_row.get("result_status_display") or "-"
+
+    if overall_mode == Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RANKS:
+        rank = event_row.get("rank")
+        return rank, str(rank) if rank is not None else "-"
+
+    if overall_mode == Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RESULTS:
+        aggregate_value = event_row.get("aggregate_value")
+        return aggregate_value, event_row.get("aggregate_display") or _format_aggregate_display(context_obj, aggregate_value)
+
+    points = int(event_row.get("points") or 0)
+    return points, str(points)
+
+
+def _build_multi_event_overall_events(stages: list[Stage]) -> list[dict[str, Any]]:
+    return [
+        {
+            "stage_id": stage.id,
+            "stage_order": stage.order,
+            "stage_name": _stage_name(stage),
+        }
+        for stage in sorted(stages, key=lambda item: (item.order, item.id))
+    ]
+
+
+def _build_multi_event_overall_standings(
+    stages: list[Stage],
+    context_obj,
+) -> list[dict[str, Any]]:
+    overall_mode = _multi_event_overall_mode(context_obj)
+    lower_score_is_better = _overall_mode_uses_lower_score(context_obj, overall_mode)
+
+    team_lookup: dict[int, str] = {}
+    rows: dict[int, dict[str, Any]] = {}
+
+    for stage in stages:
+        event_rankings = _compute_stage_event_rankings(stage)
+        if not event_rankings:
+            continue
+
+        stage_name = _stage_name(stage)
+        team_ids = list(event_rankings.keys())
+        team_lookup.update(
+            {
+                team.id: team.name
+                for team in stage.tournament.teams.filter(id__in=team_ids).order_by("id")
+            }
+        )
+
+        for team_id, event_row in event_rankings.items():
+            row = rows.setdefault(
+                team_id,
+                {
+                    "team_id": team_id,
+                    "team_name": team_lookup.get(team_id, f"Uczestnik {team_id}"),
+                    "rank": None,
+                    "overall_score": None,
+                    "overall_display": "-",
+                    "total_points": 0,
+                    "total_rank_sum": None,
+                    "total_result_value": None,
+                    "events_count": 0,
+                    "completed_events_count": 0,
+                    "special_statuses_count": 0,
+                    "event_results": [],
+                },
+            )
+            row["team_name"] = team_lookup.get(team_id, row["team_name"])
+            row["events_count"] += 1
+
+            points = int(event_row.get("points") or 0)
+            rank = event_row.get("rank")
+            aggregate_value = event_row.get("aggregate_value")
+
+            row["total_points"] += points
+            if event_row.get("has_rankable_result"):
+                row["completed_events_count"] += 1
+
+                if rank is not None:
+                    row["total_rank_sum"] = int(row["total_rank_sum"] or 0) + int(rank)
+
+                if aggregate_value is not None:
+                    current_total = row["total_result_value"]
+                    if current_total is None:
+                        row["total_result_value"] = aggregate_value
+                    else:
+                        row["total_result_value"] = Decimal(current_total) + Decimal(aggregate_value)
+
+            if event_row.get("result_status") != StageMassStartResult.ResultStatus.OK:
+                row["special_statuses_count"] += 1
+
+            contribution_value, contribution_display = _overall_event_contribution(
+                context_obj,
+                overall_mode,
+                event_row,
+            )
+
+            row["event_results"].append(
+                {
+                    "stage_id": stage.id,
+                    "stage_order": stage.order,
+                    "stage_name": stage_name,
+                    "rank": rank,
+                    "points": points,
+                    "aggregate_value": (
+                        str(aggregate_value)
+                        if isinstance(aggregate_value, Decimal)
+                        else aggregate_value
+                    ),
+                    "aggregate_display": event_row.get("aggregate_display") or "-",
+                    "overall_contribution": (
+                        str(contribution_value)
+                        if isinstance(contribution_value, Decimal)
+                        else contribution_value
+                    ),
+                    "overall_contribution_display": contribution_display,
+                    "is_completed": bool(event_row.get("has_rankable_result")),
+                    "result_status": event_row.get("result_status") or StageMassStartResult.ResultStatus.OK,
+                    "result_status_display": event_row.get("result_status_display") or "",
+                }
+            )
+
+    standings = list(rows.values())
+
+    for row in standings:
+        if overall_mode == Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RANKS:
+            row["overall_score"] = row["total_rank_sum"]
+        elif overall_mode == Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RESULTS:
+            row["overall_score"] = row["total_result_value"]
+        else:
+            row["overall_score"] = row["total_points"]
+
+        row["overall_display"] = _overall_score_display(
+            context_obj,
+            overall_mode,
+            row["overall_score"],
+        )
+
+    def sort_key(row: dict[str, Any]):
+        completed = int(row["completed_events_count"])
+        special = int(row["special_statuses_count"])
+        score = row.get("overall_score")
+
+        if score is None:
+            normalized_score = Decimal("999999999") if lower_score_is_better else Decimal("-999999999")
+        else:
+            normalized_score = Decimal(score)
+
+        score_key = normalized_score if lower_score_is_better else -normalized_score
+
+        return (
+            -completed,
+            special,
+            score_key,
+            str(row["team_name"]).lower(),
+            int(row["team_id"]),
+        )
+
+    standings.sort(key=sort_key)
+
+    previous_key = None
+    previous_rank = None
+    for index, row in enumerate(standings, start=1):
+        score = row.get("overall_score")
+        score_key = None if score is None else str(score)
+        current_key = (
+            row["completed_events_count"],
+            row["special_statuses_count"],
+            score_key,
+        )
+        if previous_key is not None and current_key == previous_key:
+            row["rank"] = previous_rank
+        else:
+            row["rank"] = index
+        previous_key = current_key
+        previous_rank = row["rank"]
+
+        if isinstance(row.get("total_result_value"), Decimal):
+            row["total_result_value"] = str(row["total_result_value"])
+        if isinstance(row.get("overall_score"), Decimal):
+            row["overall_score"] = str(row["overall_score"])
+
+    return standings
 
 
 def _group_payload(stage: Stage, group: Group) -> dict[str, Any]:
@@ -342,6 +789,11 @@ def _group_payload(stage: Stage, group: Group) -> dict[str, Any]:
                         else None
                     ),
                     "display_value": result.display_value if result else None,
+                    "result_status": (
+                        result.result_status
+                        if result
+                        else StageMassStartResult.ResultStatus.OK
+                    ),
                     "rank": int(result.rank) if result and result.rank is not None else None,
                     "is_active": bool(result.is_active) if result else False,
                 }
@@ -373,12 +825,15 @@ def _group_payload(stage: Stage, group: Group) -> dict[str, Any]:
 
 def _build_response_payload(tournament: Tournament, division: Division | None) -> dict[str, Any]:
     context_obj = _competition_context(division, tournament)
+    stage_structure_mode = _stage_structure_mode(context_obj)
+    is_multi_event = stage_structure_mode == Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT
 
     stages = list(
         Stage.objects.filter(
             tournament=tournament,
             division=division,
             stage_type=Stage.StageType.MASS_START,
+            is_archived=False,
             status__in=(Stage.Status.PLANNED, Stage.Status.OPEN, Stage.Status.CLOSED),
         )
         .prefetch_related("groups")
@@ -408,9 +863,9 @@ def _build_response_payload(tournament: Tournament, division: Division | None) -
                 "participants_count": stage_cfg.get(
                     Tournament.RESULTCFG_STAGE_PARTICIPANTS_COUNT_KEY
                 ),
-                "advance_count": stage_cfg.get(
-                    Tournament.RESULTCFG_STAGE_ADVANCE_COUNT_KEY
-                ),
+                "advance_count": None
+                if is_multi_event
+                else stage_cfg.get(Tournament.RESULTCFG_STAGE_ADVANCE_COUNT_KEY),
                 "rounds_count": int(
                     stage_cfg.get(Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY) or 1
                 ),
@@ -430,10 +885,7 @@ def _build_response_payload(tournament: Tournament, division: Division | None) -
         "division_id": division.id if division else None,
         "division_name": division.name if division else None,
         "competition_model": context_obj.competition_model,
-        "stage_structure_mode": str(
-            context_obj.get_result_config().get(Tournament.RESULTCFG_STAGE_STRUCTURE_MODE_KEY)
-            or Tournament.RESULTCFG_STAGE_STRUCTURE_REDUCTION
-        ).upper(),
+        "stage_structure_mode": stage_structure_mode,
         "value_kind": context_obj.get_result_value_kind(),
         "unit_label": str(
             context_obj.get_result_config().get(Tournament.RESULTCFG_UNIT_LABEL_KEY)
@@ -443,6 +895,15 @@ def _build_response_payload(tournament: Tournament, division: Division | None) -
         "allow_ties": bool(
             context_obj.get_result_config().get(Tournament.RESULTCFG_ALLOW_TIES_KEY, True)
         ),
+        "overall_mode": _multi_event_overall_mode(context_obj)
+        if is_multi_event
+        else None,
+        "overall_events": _build_multi_event_overall_events(stages)
+        if is_multi_event
+        else [],
+        "overall_standings": _build_multi_event_overall_standings(stages, context_obj)
+        if is_multi_event
+        else [],
         "stages": payload_stages,
     }
 
@@ -487,6 +948,37 @@ def _close_stage_if_complete(stage: Stage) -> bool:
     stage.status = Stage.Status.CLOSED
     stage.save(update_fields=["status"])
     return True
+
+
+def _stage_from_validated_serializer(
+    serializer: StageMassStartResultWriteSerializer,
+    tournament: Tournament,
+    division: Division | None,
+) -> Stage | None:
+    validated = getattr(serializer, "validated_data", {}) or {}
+    stage = validated.get("stage")
+    if isinstance(stage, Stage):
+        return stage
+
+    initial_data = getattr(serializer, "initial_data", {}) or {}
+    raw_stage_id = (
+        validated.get("stage_id")
+        or validated.get("stage")
+        or (initial_data.get("stage_id") if hasattr(initial_data, "get") else None)
+    )
+
+    try:
+        stage_id = int(raw_stage_id)
+    except (TypeError, ValueError):
+        return None
+
+    return Stage.objects.filter(
+        pk=stage_id,
+        tournament=tournament,
+        division=division,
+        stage_type=Stage.StageType.MASS_START,
+        is_archived=False,
+    ).first()
 
 
 class TournamentMassStartResultListCreateView(APIView):
@@ -537,12 +1029,6 @@ class TournamentMassStartResultListCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not tournament_allows_mutation(tournament):
-            return Response(
-                {"detail": "Nie można zapisywać wyników w zarchiwizowanym turnieju."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         division = _resolve_division_from_request(request, tournament)
         context_obj = _competition_context(division, tournament)
         if not context_obj.uses_custom_results() or not context_obj.uses_mass_start():
@@ -556,13 +1042,15 @@ class TournamentMassStartResultListCreateView(APIView):
             context={"tournament": tournament, "division": division, "user": request.user},
         )
         serializer.is_valid(raise_exception=True)
-        result = serializer.save()
 
-        if result.stage.status == Stage.Status.PLANNED:
+        stage = _stage_from_validated_serializer(serializer, tournament, division)
+        if stage is not None and _stage_result_write_blocked(stage):
             return Response(
-                {"detail": "Nie można zapisywać wyników dla etapu, który nie został jeszcze wygenerowany."},
+                {"detail": _planned_stage_write_error(stage)},
                 status=status.HTTP_409_CONFLICT,
             )
+
+        result = serializer.save()
 
         group = result.group
         _compute_group_rankings(result.stage, group, persist=True)
@@ -582,9 +1070,16 @@ class TournamentMassStartResultListCreateView(APIView):
             event_payload,
         )
 
-        detail = "Wynik etapowy zapisany."
+        if _stage_uses_multi_event(result.stage):
+            detail = "Wynik konkurencji zapisany."
+        else:
+            detail = "Wynik etapowy zapisany."
+
         if stage_closed:
-            detail = "Wynik etapowy zapisany. Etap został automatycznie zamknięty."
+            if _stage_uses_multi_event(result.stage):
+                detail = "Wynik konkurencji zapisany. Konkurencja została automatycznie zamknięta."
+            else:
+                detail = "Wynik etapowy zapisany. Etap został automatycznie zamknięty."
 
         return Response(
             {

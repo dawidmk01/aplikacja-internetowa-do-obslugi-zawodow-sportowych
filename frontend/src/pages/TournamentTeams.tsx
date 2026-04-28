@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, Trash2 } from "lucide-react";
 
 import { apiFetch } from "../api";
 
@@ -16,7 +16,7 @@ import { toast } from "../ui/Toast";
 
 import { useAutosave } from "../hooks/useAutosave";
 import { AutosaveIndicator } from "../components/AutosaveIndicator";
-import ConfirmActionModal from "../components/ConfirmActionModal";
+import ConfirmChangeModal from "../components/ConfirmChangeModal";
 import { PERMISSION_LABELS } from "../lib/sportLabels";
 
 type Team = {
@@ -25,6 +25,11 @@ type Team = {
   players_count?: number;
   division_id?: number | null;
   division_name?: string | null;
+  has_registration?: boolean;
+  is_registered_slot?: boolean;
+  registered_user_id?: number | null;
+  registration_id?: number | null;
+  registration_display_name?: string | null;
 };
 
 type TournamentFormat = "LEAGUE" | "CUP" | "MIXED";
@@ -76,6 +81,43 @@ type SetupTeamsResponse = {
   reset_done: boolean;
   tournament: TournamentDTO;
   teams: Team[];
+  teams_count?: number;
+  upgraded?: boolean;
+};
+
+type DeleteTeamResponse = SetupTeamsResponse & {
+  removed_team_id?: number;
+};
+
+type TeamSetupRestoreItem = {
+  id: number;
+  name: string;
+  position?: number | null;
+  has_registration?: boolean;
+  registration_label?: string | null;
+};
+
+type TeamSetupDryRunResponse = {
+  changed: boolean;
+  current_count: number;
+  requested_count: number;
+  reset_needed?: boolean;
+  requires_confirmation?: boolean;
+  archive_messages?: string[];
+  restore_available?: boolean;
+  restore_items?: TeamSetupRestoreItem[];
+  detail?: string;
+};
+
+type TeamDeleteDryRunResponse = {
+  changed: boolean;
+  team_id: number;
+  team_name: string;
+  requires_confirmation?: boolean;
+  archive_messages?: string[];
+  restore_available?: boolean;
+  restore_items?: TeamSetupRestoreItem[];
+  detail?: string;
 };
 
 type NameChangeRequestItem = {
@@ -132,16 +174,21 @@ type TeamPlayersResponse = {
   }>;
 };
 
-type ConfirmDialogState = {
+type TeamCountDecision = "confirm" | "restore" | "clean" | "cancel";
+
+type TeamCountDialogState = {
   title: string;
   message: string;
+  archiveMessages: string[];
+  restoreItems: TeamSetupRestoreItem[];
+  showRestoreChoice: boolean;
   confirmLabel?: string;
-  cancelLabel?: string;
   confirmVariant?: "primary" | "danger";
-  resolve: (result: boolean) => void;
+  resolve: (decision: TeamCountDecision) => void;
 };
 
-type ConfirmDialogRequest = Omit<ConfirmDialogState, "resolve">;
+const MIN_PARTICIPANTS_COUNT = 0;
+const MAX_PARTICIPANTS_COUNT = 400;
 
 function parseDivisionId(value: string | null | undefined): number | null {
   if (!value) return null;
@@ -301,18 +348,17 @@ export default function TournamentTeams() {
   const [participantMode, setParticipantMode] = useState(false);
   const inFlightRef = useRef(false);
 
-  // ===== Potwierdzenia =====
-  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(
-    null
-  );
+  // ===== Decyzje dla zmian liczby uczestników =====
+  const [teamCountDialog, setTeamCountDialog] = useState<TeamCountDialogState | null>(null);
+  const [teamCountDraft, setTeamCountDraft] = useState(String(MIN_PARTICIPANTS_COUNT));
 
-  const requestConfirm = (req: ConfirmDialogRequest) =>
-    new Promise<boolean>((resolve) => setConfirmDialog({ ...req, resolve }));
+  const requestTeamCountDecision = (state: Omit<TeamCountDialogState, "resolve">) =>
+    new Promise<TeamCountDecision>((resolve) => setTeamCountDialog({ ...state, resolve }));
 
-  const resolveConfirm = (result: boolean) => {
-    const resolver = confirmDialog?.resolve;
-    setConfirmDialog(null);
-    resolver?.(result);
+  const resolveTeamCountDecision = (decision: TeamCountDecision) => {
+    const resolver = teamCountDialog?.resolve;
+    setTeamCountDialog(null);
+    resolver?.(decision);
   };
 
   // ===== Podgląd składu w kartach =====
@@ -521,8 +567,41 @@ export default function TournamentTeams() {
     [id]
   );
 
-  const setupTeams = useCallback(
+  const dryRunTeamsCount = useCallback(
     async (count: number, divisionId: number | null | undefined) => {
+      const res = await apiFetch(
+        withDivisionQuery(`/api/tournaments/${id}/teams/setup/?dry_run=1`, divisionId),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            withDivisionPayload(
+              {
+                teams_count: count,
+                participants_count: count,
+              },
+              divisionId
+            )
+          ),
+        }
+      );
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || "Nie udało się sprawdzić zmiany liczby uczestników.");
+      }
+
+      return (await res.json()) as TeamSetupDryRunResponse;
+    },
+    [id]
+  );
+
+  const setupTeams = useCallback(
+    async (
+      count: number,
+      divisionId: number | null | undefined,
+      options?: { restoreArchivedSlots?: boolean }
+    ) => {
       const res = await apiFetch(
         withDivisionQuery(`/api/tournaments/${id}/teams/setup/`, divisionId),
         {
@@ -533,6 +612,7 @@ export default function TournamentTeams() {
               {
                 teams_count: count,
                 participants_count: count,
+                restore_archived_slots: options?.restoreArchivedSlots ?? true,
               },
               divisionId
             )
@@ -552,6 +632,46 @@ export default function TournamentTeams() {
       tournamentRef.current = data.tournament;
       setTeams(data.teams);
 
+      setActiveDivisionId(data.tournament?.active_division_id ?? divisionId ?? null);
+
+      return data;
+    },
+    [id]
+  );
+
+  const dryRunTeamDelete = useCallback(
+    async (teamId: number, divisionId: number | null | undefined) => {
+      const res = await apiFetch(
+        withDivisionQuery(`/api/tournaments/${id}/teams/${teamId}/?dry_run=1`, divisionId),
+        { method: "DELETE" }
+      );
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || "Nie udało się sprawdzić usunięcia uczestnika.");
+      }
+
+      return (await res.json()) as TeamDeleteDryRunResponse;
+    },
+    [id]
+  );
+
+  const deleteTeamSlot = useCallback(
+    async (teamId: number, divisionId: number | null | undefined) => {
+      const res = await apiFetch(
+        withDivisionQuery(`/api/tournaments/${id}/teams/${teamId}/`, divisionId),
+        { method: "DELETE" }
+      );
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || "Nie udało się usunąć uczestnika.");
+      }
+
+      const data: DeleteTeamResponse = await res.json();
+      setTournament(data.tournament);
+      tournamentRef.current = data.tournament;
+      setTeams(data.teams);
       setActiveDivisionId(data.tournament?.active_division_id ?? divisionId ?? null);
 
       return data;
@@ -984,9 +1104,24 @@ export default function TournamentTeams() {
   }, [id, requestedDivisionId, setSearchParams]);
 
   // ===== Zmiana liczby uczestników =====
-  const currentCount = useMemo(() => Math.max(2, teams.length), [teams.length]);
+  const currentCount = useMemo(() => teams.length, [teams.length]);
+  const teamCountDraftNumber = useMemo(() => {
+    const parsed = Number(teamCountDraft);
+    return Number.isInteger(parsed) ? parsed : null;
+  }, [teamCountDraft]);
+  const canApplyTeamCountDraft =
+    teamCountDraftNumber !== null &&
+    teamCountDraftNumber >= MIN_PARTICIPANTS_COUNT &&
+    teamCountDraftNumber <= MAX_PARTICIPANTS_COUNT &&
+    teamCountDraftNumber !== currentCount;
 
-  const confirmChangeCount = async (): Promise<boolean> => {
+  useEffect(() => {
+    setTeamCountDraft(String(currentCount));
+  }, [currentCount, effectiveDivisionId]);
+
+  const resolveTeamsCountChange = async (
+    nextCount: number
+  ): Promise<{ proceed: boolean; restoreArchivedSlots?: boolean }> => {
     if (!canChangeTeamsCount) {
       if (isAssistant) {
         if (!myPerms?.tournament_edit) {
@@ -999,58 +1134,68 @@ export default function TournamentTeams() {
       } else {
         toast.error("Brak uprawnień.");
       }
-      return false;
+      return { proceed: false };
     }
 
-    if (tournament?.status === "DRAFT" && !matchesStarted) return true;
+    const analysis = await dryRunTeamsCount(nextCount, effectiveDivisionId);
+    const archiveMessages = Array.isArray(analysis.archive_messages)
+      ? analysis.archive_messages.filter(Boolean)
+      : [];
+    const restoreItems = Array.isArray(analysis.restore_items)
+      ? analysis.restore_items.filter((item) => item && item.name)
+      : [];
 
-    if (isOrganizer && matchesStarted) {
-      const message = [
-        "Aktywna dywizja jest już rozpoczęta.",
-        "",
-        "Zmiana liczby uczestników spowoduje reset rozgrywek tej dywizji:",
-        "- usunięcie etapów i meczów aktywnej dywizji",
-        "- skasowanie wyników i postępu klasyfikacji",
-        "- skasowanie harmonogramu dywizji",
-        "",
-        "Nazwy uczestników w innych dywizjach pozostaną bez zmian.",
-        "",
-        "Kontynuować?",
-      ].join("\n");
-
-      return await requestConfirm({
-        title: "Potwierdź reset rozgrywek dywizji",
-        message,
-        confirmLabel: "Kontynuuj",
-        cancelLabel: "Anuluj",
-        confirmVariant: "danger",
-      });
+    if (!analysis.changed || (!analysis.requires_confirmation && archiveMessages.length === 0 && restoreItems.length === 0)) {
+      return { proceed: true };
     }
 
-    return await requestConfirm({
-      title: "Potwierdź zmianę liczby uczestników",
-      message:
-        "Zmiana liczby uczestników spowoduje reset rozgrywek aktywnej dywizji.\nKontynuować?",
-      confirmLabel: "Kontynuuj",
-      cancelLabel: "Anuluj",
-      confirmVariant: "danger",
+    const message = [
+      archiveMessages.length > 0
+        ? "Zapisanie tej zmiany spowoduje usunięcie albo zarchiwizowanie wskazanych danych."
+        : null,
+      restoreItems.length > 0
+        ? "Dla zwiększanej liczby uczestników istnieją wcześniej ukryte sloty. Można je przywrócić z dotychczasowymi nazwami albo utworzyć czyste sloty."
+        : null,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    const decision = await requestTeamCountDecision({
+      title: restoreItems.length > 0 ? "Zmiana liczby uczestników" : "Potwierdź zmianę liczby uczestników",
+      message,
+      archiveMessages,
+      restoreItems,
+      showRestoreChoice: restoreItems.length > 0,
     });
+
+    if (decision === "cancel") return { proceed: false };
+    if (decision === "clean") return { proceed: true, restoreArchivedSlots: false };
+    if (decision === "restore") return { proceed: true, restoreArchivedSlots: true };
+    return { proceed: true };
   };
 
-  const changeTeamsCount = async (delta: number) => {
+  const changeTeamsCountTo = async (next: number) => {
     if (!tournament || busy || inFlightRef.current) return;
     if (!canChangeTeamsCount) return;
+    if (next < MIN_PARTICIPANTS_COUNT || next > MAX_PARTICIPANTS_COUNT || next === currentCount) return;
 
-    const next = currentCount + delta;
-    if (next < 2) return;
+    let decision: { proceed: boolean; restoreArchivedSlots?: boolean };
+    try {
+      decision = await resolveTeamsCountChange(next);
+    } catch (e: any) {
+      toast.error(e?.message || "Nie udało się sprawdzić zmiany liczby uczestników.");
+      return;
+    }
 
-    if (!(await confirmChangeCount())) return;
+    if (!decision.proceed) return;
 
     try {
       inFlightRef.current = true;
       setBusy(true);
 
-      const resp = await setupTeams(next, effectiveDivisionId);
+      const resp = await setupTeams(next, effectiveDivisionId, {
+        restoreArchivedSlots: decision.restoreArchivedSlots ?? true,
+      });
 
       if (canManageQueue) {
         await loadPendingQueue(effectiveDivisionId);
@@ -1076,6 +1221,116 @@ export default function TournamentTeams() {
       }
     } catch (e: any) {
       toast.error(e?.message || "Nie udało się zmienić liczby uczestników.");
+    } finally {
+      setBusy(false);
+      inFlightRef.current = false;
+    }
+  };
+
+  const adjustTeamCountDraft = (delta: number) => {
+    setTeamCountDraft((prev) => {
+      const base = Number.isInteger(Number(prev)) ? Number(prev) : currentCount;
+      const next = Math.min(
+        MAX_PARTICIPANTS_COUNT,
+        Math.max(MIN_PARTICIPANTS_COUNT, base + delta)
+      );
+      return String(next);
+    });
+  };
+
+  const applyTeamCountDraft = async () => {
+    if (teamCountDraftNumber === null) {
+      toast.error("Wpisz poprawną liczbę uczestników.");
+      return;
+    }
+
+    if (teamCountDraftNumber < MIN_PARTICIPANTS_COUNT || teamCountDraftNumber > MAX_PARTICIPANTS_COUNT) {
+      toast.error(`Liczba uczestników musi być w zakresie ${MIN_PARTICIPANTS_COUNT}-${MAX_PARTICIPANTS_COUNT}.`);
+      return;
+    }
+
+    await changeTeamsCountTo(teamCountDraftNumber);
+  };
+
+  const handleDeleteTeam = async (team: Team) => {
+    if (!tournament || busy || inFlightRef.current) return;
+    if (!canEditTeams) {
+      toast.error("Brak uprawnień do usuwania uczestników.");
+      return;
+    }
+
+    let analysis: TeamDeleteDryRunResponse;
+    try {
+      analysis = await dryRunTeamDelete(team.id, effectiveDivisionId);
+    } catch (e: any) {
+      toast.error(e?.message || "Nie udało się sprawdzić usunięcia uczestnika.");
+      return;
+    }
+
+    const archiveMessages = Array.isArray(analysis.archive_messages)
+      ? analysis.archive_messages.filter(Boolean)
+      : [];
+    const restoreItems = Array.isArray(analysis.restore_items)
+      ? analysis.restore_items.filter((item) => item && item.name)
+      : [];
+
+    if (analysis.requires_confirmation || archiveMessages.length > 0 || restoreItems.length > 0) {
+      const message = [
+        archiveMessages.length > 0
+          ? "Usunięcie uczestnika spowoduje usunięcie albo zarchiwizowanie wskazanych danych."
+          : null,
+        restoreItems.length > 0
+          ? "Ten slot jest powiązany z uczestnikiem zarejestrowanym. Po późniejszym przywróceniu slotu może wrócić również to powiązanie."
+          : null,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+
+      const decision = await requestTeamCountDecision({
+        title: "Usunięcie uczestnika",
+        message,
+        archiveMessages,
+        restoreItems,
+        showRestoreChoice: false,
+        confirmLabel: "Usuń",
+        confirmVariant: "danger",
+      });
+
+      if (decision !== "confirm") return;
+    }
+
+    try {
+      inFlightRef.current = true;
+      setBusy(true);
+      const resp = await deleteTeamSlot(team.id, effectiveDivisionId);
+
+      setExpandedTeams((prev) => {
+        const next = { ...prev };
+        delete next[team.id];
+        return next;
+      });
+      setTeamPlayersPreview((prev) => {
+        const next = { ...prev };
+        delete next[team.id];
+        return next;
+      });
+
+      if (selectedTeamId === team.id) {
+        const nextSelected = resp.teams?.[0]?.id ?? null;
+        setSelectedTeamId(nextSelected);
+        if (nextSelected && hasRosterFeature(resp.tournament)) {
+          await loadTeamPlayers(nextSelected, effectiveDivisionId);
+        } else {
+          setPlayers([{ display_name: "", jersey_number: null }]);
+          setPlayersDirty(false);
+        }
+      }
+
+      if (canManageQueue) {
+        await loadPendingQueue(effectiveDivisionId);
+      }
+    } catch (e: any) {
+      toast.error(e?.message || "Nie udało się usunąć uczestnika.");
     } finally {
       setBusy(false);
       inFlightRef.current = false;
@@ -1270,32 +1525,55 @@ export default function TournamentTeams() {
                 Liczba {entityCountLabel}
               </div>
               <div className="mt-1 text-sm text-slate-300/90">
-                Dopasuj liczbę {entityCountLabel} zanim przejdziesz do dokładnej edycji nazw i składów.
+                Dopasuj liczbę {entityCountLabel}. Rozgrywki powstaną dopiero przy co najmniej dwóch aktywnych uczestnikach.
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <Button
-                variant="secondary"
-                disabled={busy || !canChangeTeamsCount}
-                onClick={() => {
-                  void changeTeamsCount(-1);
-                }}
-              >
-                -
-              </Button>
-              <div className="min-w-[4rem] text-center text-2xl font-extrabold text-slate-100">
-                {currentCount}
+            <div className="flex flex-col items-end gap-2">
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  disabled={busy || !canChangeTeamsCount}
+                  onClick={() => adjustTeamCountDraft(-1)}
+                >
+                  -
+                </Button>
+                <Input
+                  value={teamCountDraft}
+                  disabled={busy || !canChangeTeamsCount}
+                  inputMode="numeric"
+                  className="w-24 text-center text-lg font-extrabold"
+                  onChange={(event) => {
+                    const raw = event.target.value.replace(/[^0-9]/g, "");
+                    setTeamCountDraft(raw);
+                  }}
+                  onBlur={() => {
+                    if (teamCountDraft === "") {
+                      setTeamCountDraft(String(currentCount));
+                    }
+                  }}
+                />
+                <Button
+                  variant="secondary"
+                  disabled={busy || !canChangeTeamsCount}
+                  onClick={() => adjustTeamCountDraft(1)}
+                >
+                  +
+                </Button>
               </div>
-              <Button
-                variant="secondary"
-                disabled={busy || !canChangeTeamsCount}
-                onClick={() => {
-                  void changeTeamsCount(1);
-                }}
-              >
-                +
-              </Button>
+
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button
+                  variant="primary"
+                  disabled={busy || !canChangeTeamsCount || !canApplyTeamCountDraft}
+                  onClick={() => {
+                    void applyTeamCountDraft();
+                  }}
+                >
+                  Zapisz
+                </Button>
+                <div className="self-center text-xs text-slate-400">Zakres: {MIN_PARTICIPANTS_COUNT}-{MAX_PARTICIPANTS_COUNT}</div>
+              </div>
             </div>
           </div>
 
@@ -1643,6 +1921,21 @@ export default function TournamentTeams() {
                           <AutosaveIndicator status={saveStatus} error={error} />
                         </div>
 
+                        {canEditTeams ? (
+                          <Button
+                            type="button"
+                            variant="danger"
+                            disabled={busy}
+                            onClick={() => {
+                              void handleDeleteTeam(team);
+                            }}
+                            className="h-9 rounded-xl px-3"
+                            title={`Usuń ${entityLabels.singular}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        ) : null}
+
                         {hasRosterFeature(tournament) ? (
                           <button
                             type="button"
@@ -1662,6 +1955,14 @@ export default function TournamentTeams() {
                           </button>
                         ) : null}
                       </div>
+
+                      {team.is_registered_slot || team.has_registration ? (
+                        <div className="mt-3 inline-flex max-w-full items-center rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2.5 py-1 text-xs font-semibold text-cyan-100">
+                          <span className="truncate">
+                            Powiązany z kontem{team.registration_display_name ? ` - ${team.registration_display_name}` : ""}
+                          </span>
+                        </div>
+                      ) : null}
 
                       {hasRosterFeature(tournament) ? (
                         <div className="mt-3 text-xs text-slate-400">
@@ -1709,15 +2010,41 @@ export default function TournamentTeams() {
         )}
       </Card>
 
-      <ConfirmActionModal
-        open={!!confirmDialog}
-        title={confirmDialog?.title ?? ""}
-        message={confirmDialog?.message ?? ""}
-        confirmLabel={confirmDialog?.confirmLabel}
-        cancelLabel={confirmDialog?.cancelLabel}
-        confirmVariant={confirmDialog?.confirmVariant}
-        onCancel={() => resolveConfirm(false)}
-        onConfirm={() => resolveConfirm(true)}
+      <ConfirmChangeModal
+        open={!!teamCountDialog}
+        title={teamCountDialog?.title ?? ""}
+        description={teamCountDialog?.message || undefined}
+        archiveItems={teamCountDialog?.archiveMessages ?? []}
+        restoreItems={(teamCountDialog?.restoreItems ?? []).map((item) =>
+          item.has_registration
+            ? `${item.name} - powiązanie z uczestnikiem: ${item.registration_label || item.name}`
+            : item.name
+        )}
+        restoreItemsTitle="Możliwe do przywrócenia:"
+        actions={
+          teamCountDialog?.showRestoreChoice
+            ? [
+                {
+                  label: "Utwórz czyste sloty",
+                  variant: "secondary",
+                  onClick: () => resolveTeamCountDecision("clean"),
+                },
+              ]
+            : []
+        }
+        confirmLabel={
+          teamCountDialog?.showRestoreChoice
+            ? "Przywróć wcześniejsze"
+            : teamCountDialog?.confirmLabel ?? "Zapisz zmianę"
+        }
+        cancelLabel="Anuluj"
+        confirmVariant={
+          teamCountDialog?.showRestoreChoice
+            ? "primary"
+            : teamCountDialog?.confirmVariant ?? "danger"
+        }
+        onConfirm={() => resolveTeamCountDecision(teamCountDialog?.showRestoreChoice ? "restore" : "confirm")}
+        onCancel={() => resolveTeamCountDecision("cancel")}
       />
     </div>
   );

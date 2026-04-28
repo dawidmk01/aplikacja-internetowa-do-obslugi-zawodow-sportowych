@@ -191,6 +191,7 @@ def _get_open_stage(
     stage_qs = Stage.objects.filter(
         tournament=tournament,
         stage_type=Stage.StageType.MASS_START,
+        is_archived=False,
         status=Stage.Status.OPEN,
     )
     if division is not None:
@@ -248,6 +249,7 @@ def _collect_advancers(
     next_stage_qs = Stage.objects.filter(
         tournament=tournament,
         stage_type=Stage.StageType.MASS_START,
+        is_archived=False,
         order=stage.order + 1,
     )
     if division is not None:
@@ -376,6 +378,7 @@ def advance_mass_start_stage(
     next_stage_qs = Stage.objects.filter(
         tournament=tournament,
         stage_type=Stage.StageType.MASS_START,
+        is_archived=False,
         order=current_stage.order + 1,
     )
     if division is not None:

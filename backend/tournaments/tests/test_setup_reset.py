@@ -97,6 +97,7 @@ class TournamentSetupResetApiTests(TestCase):
         return set(
             self.stage_model.objects.filter(
                 tournament=self.tournament,
+                is_archived=False,
                 division=division,
             ).values_list("id", flat=True)
         )
@@ -105,6 +106,7 @@ class TournamentSetupResetApiTests(TestCase):
         return set(
             self.match_model.objects.filter(
                 tournament=self.tournament,
+                stage__is_archived=False,
                 stage__division=division,
             ).values_list("id", flat=True)
         )
@@ -140,6 +142,34 @@ class TournamentSetupResetApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json().get("changed"))
         self.assertTrue(response.json().get("requires_reset"))
+        self.assertFalse(response.json().get("reset_needed"))
+
+    def test_setup_dry_run_reports_confirmation_needed_after_result_progress(self):
+        match = self.match_model.objects.filter(
+            tournament=self.tournament,
+            stage__division=self.default_division,
+        ).first()
+        match.home_score = 1
+        match.away_score = 0
+        match.result_entered = True
+        match.status = self.match_model.Status.FINISHED
+        match.save()
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.post(
+            self._setup_url(self.default_division, dry_run=True),
+            {
+                "tournament_format": Tournament.TournamentFormat.CUP,
+                "format_config": {},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json().get("changed"))
+        self.assertTrue(response.json().get("requires_reset"))
+        self.assertTrue(response.json().get("reset_needed"))
 
     def test_organizer_can_change_setup_and_clear_only_selected_division_structure(self):
         old_default_stages = self._stage_ids_for_division(self.default_division)

@@ -78,6 +78,12 @@ export const STAGE_STRUCTURE_MODE_LABELS = {
   MULTI_EVENT: "Konkurencje / wielobój",
 } as const;
 
+export const MULTI_EVENT_OVERALL_MODE_LABELS = {
+  POINTS_BY_RANK: "Punkty za miejsca",
+  SUM_RANKS: "Suma miejsc",
+  SUM_RESULTS: "Suma wyników",
+} as const;
+
 export const AGGREGATION_MODE_LABELS = {
   SUM: "Suma",
   AVERAGE: "Średnia",

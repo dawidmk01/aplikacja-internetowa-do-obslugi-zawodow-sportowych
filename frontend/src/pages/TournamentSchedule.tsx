@@ -27,6 +27,7 @@ import {
 
 import {
   TournamentMassStartScheduleScaffold,
+  type MassStartStageStructureMode,
   type MassStartViewMode,
 } from "./_shared/TournamentMassStartScheduleScaffold";
 
@@ -36,6 +37,10 @@ import {
 
 type DivisionStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
 type DivisionSummaryDTO = { id: number; name?: string; status?: DivisionStatus };
+
+type TournamentResultConfigDTO = {
+  stage_structure_mode?: MassStartStageStructureMode | string | null;
+};
 
 type ScheduleStageDTO = {
   stage_id: number;
@@ -62,6 +67,8 @@ type TournamentScheduleDTO = {
   id: number;
   discipline?: string | null;
   competition_model?: string | null;
+  stage_structure_mode?: MassStartStageStructureMode | string | null;
+  result_config?: TournamentResultConfigDTO | null;
   start_date: string | null;
   end_date: string | null;
   location: string | null;
@@ -162,6 +169,26 @@ function normalizeMatches(raw: any): MatchScheduleDTO[] {
   return [];
 }
 
+function getStageStructureMode(tournament: TournamentScheduleDTO | null): MassStartStageStructureMode {
+  const direct = String(tournament?.stage_structure_mode ?? "").toUpperCase();
+  if (direct === "MULTI_EVENT") return "MULTI_EVENT";
+
+  const configValue = String(tournament?.result_config?.stage_structure_mode ?? "").toUpperCase();
+  return configValue === "MULTI_EVENT" ? "MULTI_EVENT" : "REDUCTION";
+}
+
+function isMultiEventStructure(stageStructureMode: MassStartStageStructureMode) {
+  return stageStructureMode === "MULTI_EVENT";
+}
+
+function massStartItemLabel(stageStructureMode: MassStartStageStructureMode) {
+  return isMultiEventStructure(stageStructureMode) ? "konkurencja" : "etap";
+}
+
+function massStartItemTitle(stageStructureMode: MassStartStageStructureMode) {
+  return isMultiEventStructure(stageStructureMode) ? "Konkurencja" : "Etap";
+}
+
 // ---------------------------------------------------------------------------
 // MassStartStageBlock – oddzielny komponent dla etapu (zwijalne grupy + autosave)
 // Dzięki osobnemu komponentowi każdy etap ma własny stan zwinięcia grup.
@@ -171,6 +198,7 @@ type MassStartStageBlockProps = {
   stage: ScheduleStageDTO;
   stageGroups: ScheduleGroupDTO[];
   viewMode: MassStartViewMode;
+  stageStructureMode: MassStartStageStructureMode;
   tournamentStartDate: string | null;
   tournamentEndDate: string | null;
   fieldWrap: string;
@@ -192,6 +220,7 @@ function MassStartStageBlock({
   stage,
   stageGroups,
   viewMode,
+  stageStructureMode,
   tournamentStartDate,
   tournamentEndDate,
   fieldWrap,
@@ -219,7 +248,9 @@ function MassStartStageBlock({
       : null;
 
   const plannedCardStyles = sectionCardClasses("PLANNED");
-  const stageCardTitle = stage.stage_name?.trim() || `Etap ${stage.stage_order}`;
+  const stageItemLabel = massStartItemLabel(stageStructureMode);
+  const stageItemTitle = massStartItemTitle(stageStructureMode);
+  const stageCardTitle = stage.stage_name?.trim() || `${stageItemTitle} ${stage.stage_order}`;
   const groupsLayoutClass =
     viewMode === "grid"
       ? "grid gap-4 sm:grid-cols-2 xl:grid-cols-3"
@@ -252,7 +283,7 @@ function MassStartStageBlock({
             type="button"
             onClick={() => clearStageSchedule(stage.stage_id)}
             className="inline-flex items-center gap-2 px-2 py-2 text-xs font-medium text-slate-400 transition-colors hover:text-white"
-            title="Wyczyść dane etapu"
+            title={`Wyczyść dane ${stageItemLabel}`}
           >
             <Eraser className="h-4 w-4" />
             <span className="hidden sm:inline">Wyczyść</span>
@@ -273,7 +304,7 @@ function MassStartStageBlock({
                 updateStageSchedule(stage.stage_id, { scheduled_date: e.target.value || null })
               }
               onBlur={commitMeta}
-              aria-label={`Data dla ${stage.stage_name}`}
+              aria-label={`Data dla ${stageCardTitle}`}
             />
           </div>
           <div className={fieldWrap}>
@@ -287,7 +318,7 @@ function MassStartStageBlock({
                 updateStageSchedule(stage.stage_id, { scheduled_time: e.target.value || null })
               }
               onBlur={commitMeta}
-              aria-label={`Godzina dla ${stage.stage_name}`}
+              aria-label={`Godzina dla ${stageCardTitle}`}
             />
           </div>
           <div className={fieldWrap}>
@@ -296,12 +327,12 @@ function MassStartStageBlock({
               unstyled
               className={fieldInput}
               value={stage.location ?? ""}
-              placeholder="Lokalizacja etapu"
+              placeholder={`Lokalizacja ${stageItemLabel}`}
               onChange={(e) =>
                 updateStageSchedule(stage.stage_id, { location: e.target.value || null })
               }
               onBlur={commitMeta}
-              aria-label={`Lokalizacja dla ${stage.stage_name}`}
+              aria-label={`Lokalizacja dla ${stageCardTitle}`}
             />
           </div>
         </div>
@@ -662,6 +693,9 @@ export default function TournamentSchedule() {
     () => String(tournament?.tournament_format ?? ""),
     [tournament?.tournament_format]
   );
+
+  const stageStructureMode = useMemo(() => getStageStructureMode(tournament), [tournament]);
+  const isMassStartMultiEvent = isMultiEventStructure(stageStructureMode);
 
   const isMassStartScheduleMode = useMemo(() => {
     return (
@@ -1043,6 +1077,7 @@ export default function TournamentSchedule() {
         stage={stage}
         stageGroups={stageGroups}
         viewMode={viewMode}
+        stageStructureMode={stageStructureMode}
         tournamentStartDate={tournament?.start_date ?? null}
         tournamentEndDate={tournament?.end_date ?? null}
         fieldWrap={fieldWrap}
@@ -1069,6 +1104,7 @@ export default function TournamentSchedule() {
       lastEditedEntity,
       metaError,
       metaStatus,
+      stageStructureMode,
       tournament?.end_date,
       tournament?.start_date,
       updateGroupSchedule,
@@ -1107,13 +1143,18 @@ export default function TournamentSchedule() {
     return (
       <TournamentMassStartScheduleScaffold
         tournamentId={tournamentId}
-        title="Harmonogram i lokalizacja"
-        description="Ustaw termin i lokalizację turnieju, a następnie doprecyzuj datę, godzinę i miejsce dla każdego etapu i grupy."
+        title={isMassStartMultiEvent ? "Harmonogram konkurencji" : "Harmonogram i lokalizacja"}
+        description={
+          isMassStartMultiEvent
+            ? "Ustaw termin i lokalizację turnieju, a następnie doprecyzuj datę, godzinę i miejsce dla każdej konkurencji i grupy."
+            : "Ustaw termin i lokalizację turnieju, a następnie doprecyzuj datę, godzinę i miejsce dla każdego etapu i grupy."
+        }
         loading={loading}
         headerSlot={headerSlot}
         storageScope="schedule"
         stages={currentMeta?.stage_schedule ?? []}
         groups={currentMeta?.group_schedule ?? []}
+        stageStructureMode={stageStructureMode}
         renderStageBlock={renderStageBlock}
       />
     );

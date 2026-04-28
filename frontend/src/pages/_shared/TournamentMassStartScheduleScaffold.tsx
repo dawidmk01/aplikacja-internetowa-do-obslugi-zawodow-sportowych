@@ -19,6 +19,7 @@ import { Card } from "../../ui/Card";
 import { Input } from "../../ui/Input";
 
 export type MassStartViewMode = "list" | "grid";
+export type MassStartStageStructureMode = "REDUCTION" | "MULTI_EVENT";
 
 export type MassStartStageLike = {
   stage_id: number;
@@ -70,6 +71,7 @@ export type TournamentMassStartScheduleScaffoldProps<
   storageKeyPrefix?: string;
   stages: TStage[];
   groups: TGroup[];
+  stageStructureMode?: MassStartStageStructureMode;
   renderStageBlock: (
     stage: TStage,
     groupsForStage: TGroup[],
@@ -121,12 +123,16 @@ function sortGroups<TGroup extends MassStartGroupLike>(groups: TGroup[]): TGroup
   });
 }
 
-function getStageLabel(stageOrder: number) {
-  return `Etap ${stageOrder}`;
+function isMultiEventStructure(stageStructureMode: MassStartStageStructureMode) {
+  return stageStructureMode === "MULTI_EVENT";
 }
 
-function getStageHeading(stageName: string) {
-  return stageName.trim() || "Etap";
+function getStageLabel(stageOrder: number, stageStructureMode: MassStartStageStructureMode) {
+  return `${isMultiEventStructure(stageStructureMode) ? "Konkurencja" : "Etap"} ${stageOrder}`;
+}
+
+function getStageHeading(stageName: string, stageStructureMode: MassStartStageStructureMode) {
+  return stageName.trim() || (isMultiEventStructure(stageStructureMode) ? "Konkurencja" : "Etap");
 }
 
 type MassStartFilterPanelProps = {
@@ -139,6 +145,7 @@ type MassStartFilterPanelProps = {
   panelCollapsed: boolean;
   onTogglePanelCollapsed: () => void;
   onClearAll: () => void;
+  stageStructureMode: MassStartStageStructureMode;
 };
 
 function MassStartFilterPanel({
@@ -151,6 +158,7 @@ function MassStartFilterPanel({
   panelCollapsed,
   onTogglePanelCollapsed,
   onClearAll,
+  stageStructureMode,
 }: MassStartFilterPanelProps) {
   const chipBase = cn(
     "inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-slate-200 transition",
@@ -158,6 +166,10 @@ function MassStartFilterPanel({
     "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
   );
   const chipActive = "bg-white/[0.10] border-white/20";
+  const isMultiEvent = isMultiEventStructure(stageStructureMode);
+  const itemPlural = isMultiEvent ? "konkurencji" : "etapów";
+  const itemPluralTitle = isMultiEvent ? "Konkurencje" : "Etapy";
+  const searchLabel = isMultiEvent ? "Szukaj konkurencji lub grupy" : "Szukaj etapu lub grupy";
 
   const toggleStage = (stageId: number) => {
     const nextStageIds = filters.stageIds.includes(stageId)
@@ -192,7 +204,7 @@ function MassStartFilterPanel({
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-white">Filtry</div>
                 <div className="text-xs text-slate-400">
-                  Łącznie: {totalStageCount} etapów, {totalGroupCount} grup
+                  Łącznie: {totalStageCount} {itemPlural}, {totalGroupCount} grup
                 </div>
               </div>
             </div>
@@ -238,10 +250,10 @@ function MassStartFilterPanel({
                 <Input
                   unstyled
                   type="search"
-                  aria-label="Szukaj etapu lub grupy"
+                  aria-label={searchLabel}
                   value={filters.query}
                   onChange={(e) => onFiltersChange({ ...filters, query: e.target.value })}
-                  placeholder="Szukaj etapu lub grupy..."
+                  placeholder={`${searchLabel}...`}
                   className={cn(
                     "w-full rounded-2xl border border-white/10 bg-white/[0.04] px-10 py-2 text-sm text-slate-100 placeholder:text-slate-500",
                     "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10 focus-visible:border-white/20"
@@ -252,7 +264,7 @@ function MassStartFilterPanel({
 
             {stageOptions.length ? (
               <div>
-                <div className="mb-2 text-xs font-semibold text-slate-300">Etapy</div>
+                <div className="mb-2 text-xs font-semibold text-slate-300">{itemPluralTitle}</div>
                 <div className="flex flex-wrap gap-2">
                   {stageOptions.map((option) => {
                     const active = filters.stageIds.includes(option.value);
@@ -315,8 +327,9 @@ export function TournamentMassStartScheduleScaffold<
   storageKeyPrefix,
   stages,
   groups,
+  stageStructureMode = "REDUCTION",
   renderStageBlock,
-  emptyStateText = "Brak etapów lub grup pasujących do aktywnych filtrów.",
+  emptyStateText,
 }: TournamentMassStartScheduleScaffoldProps<TStage, TGroup>) {
   const storageBase = useMemo(() => {
     const prefix = storageKeyPrefix || "turniejepro.massStartSchedule";
@@ -325,6 +338,11 @@ export function TournamentMassStartScheduleScaffold<
 
   const filtersKey = `${storageBase}.filters.v3`;
   const uiKey = `${storageBase}.ui.v4`;
+  const effectiveEmptyStateText =
+    emptyStateText ??
+    (isMultiEventStructure(stageStructureMode)
+      ? "Brak konkurencji lub grup pasujących do aktywnych filtrów."
+      : "Brak etapów lub grup pasujących do aktywnych filtrów.");
 
   const orderedStages = useMemo(() => sortStages(stages), [stages]);
 
@@ -346,13 +364,13 @@ export function TournamentMassStartScheduleScaffold<
   const stageOptions = useMemo<StageFilterOption[]>(() => {
     return orderedStages.map((stage) => ({
       value: stage.stage_id,
-      label: stage.stage_name?.trim() || getStageLabel(stage.stage_order),
+      label: stage.stage_name?.trim() || getStageLabel(stage.stage_order, stageStructureMode),
     }));
-  }, [orderedStages]);
+  }, [orderedStages, stageStructureMode]);
 
   const groupOptions = useMemo<GroupFilterOption[]>(() => {
     return orderedStages.flatMap((stage) => {
-      const stageName = stage.stage_name?.trim() || getStageLabel(stage.stage_order);
+      const stageName = stage.stage_name?.trim() || getStageLabel(stage.stage_order, stageStructureMode);
       const stageGroups = normalizedGroupsByStage[stage.stage_id] ?? [];
       return stageGroups.map((group, index) => ({
         value: `${stage.stage_id}:${group.group_id}`,
@@ -360,7 +378,7 @@ export function TournamentMassStartScheduleScaffold<
         stageId: stage.stage_id,
       }));
     });
-  }, [normalizedGroupsByStage, orderedStages]);
+  }, [normalizedGroupsByStage, orderedStages, stageStructureMode]);
 
   const [filters, setFilters] = useState<MassStartFiltersState>(() => {
     const parsed = safeReadJson<Partial<MassStartFiltersState>>(filtersKey, {});
@@ -417,7 +435,7 @@ export function TournamentMassStartScheduleScaffold<
 
     return orderedStages
       .map((stage) => {
-        const stageName = stage.stage_name?.trim() || getStageLabel(stage.stage_order);
+        const stageName = stage.stage_name?.trim() || getStageLabel(stage.stage_order, stageStructureMode);
         const stageGroups = normalizedGroupsByStage[stage.stage_id] ?? [];
 
         const baseGroups = stageGroups.filter((group) => {
@@ -458,7 +476,7 @@ export function TournamentMassStartScheduleScaffold<
         return {
           stage,
           stageName,
-          stageHeading: getStageHeading(stageName),
+          stageHeading: getStageHeading(stageName, stageStructureMode),
           groups: visibleGroups,
         };
       })
@@ -468,7 +486,7 @@ export function TournamentMassStartScheduleScaffold<
         stageHeading: string;
         groups: TGroup[];
       }>;
-  }, [filters.groupKeys, filters.query, filters.stageIds, normalizedGroupsByStage, orderedStages]);
+  }, [filters.groupKeys, filters.query, filters.stageIds, normalizedGroupsByStage, orderedStages, stageStructureMode]);
 
   const toggleStageCollapsed = (stageId: number) => {
     setUi((prev) => ({
@@ -542,6 +560,7 @@ export function TournamentMassStartScheduleScaffold<
               setUi((prev) => ({ ...prev, panelCollapsed: !prev.panelCollapsed }))
             }
             onClearAll={clearAll}
+            stageStructureMode={stageStructureMode}
           />
         </div>
 
@@ -549,7 +568,7 @@ export function TournamentMassStartScheduleScaffold<
           <div className="space-y-10">
             {!filteredStageBlocks.length ? (
               <Card className="p-6">
-                <div className="text-sm text-slate-200">{emptyStateText}</div>
+                <div className="text-sm text-slate-200">{effectiveEmptyStateText}</div>
               </Card>
             ) : (
               filteredStageBlocks.map(({ stage, stageName, stageHeading, groups: stageGroups }) => {

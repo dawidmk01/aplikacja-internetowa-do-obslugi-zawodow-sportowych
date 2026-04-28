@@ -20,6 +20,23 @@ type LiveMatchSummary = {
   awayTeamName: string;
 };
 
+type ScorePreview = {
+  home: number;
+  away: number;
+  homeExtraTime?: number;
+  awayExtraTime?: number;
+};
+
+type IncidentDeleteRequest = {
+  matchId: number;
+  incidentId: number;
+  incidentType?: string;
+  teamLabel?: string;
+  minute?: number | null;
+  playerLabel?: string | null;
+  scoreAfterDelete?: ScorePreview | null;
+};
+
 type Props = {
   tournamentId: string;
   discipline: string;
@@ -35,9 +52,10 @@ type Props = {
 
   match: LiveMatchSummary;
 
-  onRequestConfirmIncidentDelete?: (req: any, proceed: () => void) => void;
+  onRequestConfirmIncidentDelete?: (req: IncidentDeleteRequest, proceed: () => void) => void;
   onEnterExtraTime?: () => void;
   onAfterRecompute?: () => Promise<void> | void;
+  externalIncidentsReloadToken?: number;
 };
 
 export default function MatchLivePanel({
@@ -50,6 +68,7 @@ export default function MatchLivePanel({
   onRequestConfirmIncidentDelete,
   onEnterExtraTime,
   onAfterRecompute,
+  externalIncidentsReloadToken,
 }: Props) {
   const numericTournamentId = useMemo(() => {
     const n = Number(tournamentId);
@@ -62,6 +81,7 @@ export default function MatchLivePanel({
 
   const requestClockReload = useCallback(() => setClockReloadToken((x) => x + 1), []);
   const requestIncidentsReload = useCallback(() => setIncidentsReloadToken((x) => x + 1), []);
+  const combinedIncidentsReloadToken = incidentsReloadToken + Number(externalIncidentsReloadToken ?? 0);
 
   const commentaryMinute = useMemo(() => {
     const m: any = clockMeta as any;
@@ -106,7 +126,7 @@ export default function MatchLivePanel({
             homeTeamName={match.homeTeamName}
             awayTeamName={match.awayTeamName}
             clockMeta={clockMeta}
-            reloadToken={incidentsReloadToken}
+            reloadToken={combinedIncidentsReloadToken}
             onRequestConfirmIncidentDelete={onRequestConfirmIncidentDelete}
             onAfterRecompute={onAfterRecompute}
             onRequestClockReload={requestClockReload}

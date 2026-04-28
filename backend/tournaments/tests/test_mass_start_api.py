@@ -36,6 +36,8 @@ class TournamentMassStartResultApiTests(TestCase):
         decimal_places=2,
         rounds_count=1,
         stages=None,
+        stage_structure_mode=None,
+        multi_event_overall_mode=None,
     ):
         value_kind = value_kind or Tournament.RESULTCFG_VALUE_KIND_NUMBER
         better_result = better_result or Tournament.RESULTCFG_BETTER_RESULT_HIGHER
@@ -48,6 +50,11 @@ class TournamentMassStartResultApiTests(TestCase):
             Tournament.RESULTCFG_ALLOW_TIES_KEY: True,
             Tournament.RESULTCFG_AGGREGATION_MODE_KEY: Tournament.RESULTCFG_AGGREGATION_BEST,
             Tournament.RESULTCFG_ROUNDS_COUNT_KEY: rounds_count,
+            Tournament.RESULTCFG_STAGE_STRUCTURE_MODE_KEY: stage_structure_mode or Tournament.RESULTCFG_STAGE_STRUCTURE_REDUCTION,
+            Tournament.RESULTCFG_MULTI_EVENT_OVERALL_MODE_KEY: (
+                multi_event_overall_mode
+                or Tournament.RESULTCFG_MULTI_EVENT_OVERALL_POINTS_BY_RANK
+            ),
             Tournament.RESULTCFG_STAGES_KEY: stages
             or [
                 {
@@ -214,6 +221,59 @@ class TournamentMassStartResultApiTests(TestCase):
         self.assertEqual(result.display_value, "12.35")
         self.assertEqual(result.round_number, 1)
         self.assertTrue(result.is_active)
+
+    def test_organizer_can_save_dns_mass_start_result_without_value(self):
+        tournament, division, teams, stages = self._create_context()
+        stage = stages[0]
+        group = self._first_group(stage)
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.post(
+            self._panel_url(tournament, division),
+            {
+                "stage_id": stage.id,
+                "group_id": group.id,
+                "team_id": teams[0].id,
+                "round_number": 1,
+                "result_status": "DNS",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        result = self.result_model.objects.get(stage=stage, group=group, team=teams[0])
+
+        self.assertEqual(result.result_status, self.result_model.ResultStatus.DNS)
+        self.assertIsNone(result.numeric_value)
+        self.assertIsNone(result.time_ms)
+        self.assertIsNone(result.place_value)
+        self.assertEqual(result.display_value, "DNS")
+        self.assertIsNone(result.rank)
+
+    def test_mass_start_result_status_rejects_value_payload(self):
+        tournament, division, teams, stages = self._create_context()
+        stage = stages[0]
+        group = self._first_group(stage)
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.post(
+            self._panel_url(tournament, division),
+            {
+                "stage_id": stage.id,
+                "group_id": group.id,
+                "team_id": teams[0].id,
+                "round_number": 1,
+                "result_status": "DNF",
+                "numeric_value": "10",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(self.result_model.objects.filter(stage=stage, team=teams[0]).exists())
 
     def test_saving_second_numeric_result_recalculates_group_ranks(self):
         tournament, division, teams, stages = self._create_context(teams_count=2)
@@ -491,6 +551,277 @@ class TournamentMassStartResultApiTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertFalse(self.result_model.objects.filter(stage=planned_stage).exists())
+
+    def test_multi_event_result_can_be_saved_for_planned_parallel_competition(self):
+        result_config = self._result_config(
+            stage_structure_mode=Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            stages=[
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Przysiad",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+                },
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Martwy ciąg",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+                },
+            ],
+        )
+        tournament, division, teams, stages = self._create_context(
+            name="Turniej MASS_START API wielobój",
+            teams_count=2,
+            result_config=result_config,
+        )
+        planned_stage = stages[1]
+        planned_stage.status = self.stage_model.Status.PLANNED
+        planned_stage.save(update_fields=["status"])
+        group = self._first_group(planned_stage)
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.post(
+            self._panel_url(tournament, division),
+            {
+                "stage_id": planned_stage.id,
+                "group_id": group.id,
+                "team_id": teams[0].id,
+                "round_number": 1,
+                "numeric_value": "10",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(self.result_model.objects.filter(stage=planned_stage, team=teams[0]).exists())
+        self.assertEqual(response.json().get("detail"), "Wynik konkurencji zapisany.")
+
+    def test_multi_event_public_payload_hides_advance_count(self):
+        result_config = self._result_config(
+            stage_structure_mode=Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            stages=[
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Bieg",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ADVANCE_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+                },
+            ],
+        )
+        tournament, division, _teams, _stages = self._create_context(
+            name="Turniej MASS_START API payload wielobój",
+            result_config=result_config,
+            is_published=True,
+        )
+
+        response = self.client.get(self._public_url(tournament, division))
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data.get("stage_structure_mode"), Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT)
+        self.assertIsNone((data.get("stages") or [])[0].get("advance_count"))
+
+    def test_multi_event_public_payload_includes_overall_standings(self):
+        result_config = self._result_config(
+            stage_structure_mode=Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            stages=[
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Przysiad",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+                },
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Martwy ciąg",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+                },
+            ],
+        )
+        tournament, division, teams, stages = self._create_context(
+            name="Turniej MASS_START API klasyfikacja łączna",
+            teams_count=3,
+            result_config=result_config,
+            is_published=True,
+        )
+
+        self.client.force_authenticate(user=self.organizer)
+
+        first_stage = stages[0]
+        first_group = self._first_group(first_stage)
+        second_stage = stages[1]
+        second_group = self._first_group(second_stage)
+
+        payloads = [
+            (first_stage, first_group, teams[0], {"numeric_value": "100"}),
+            (first_stage, first_group, teams[1], {"numeric_value": "90"}),
+            (first_stage, first_group, teams[2], {"result_status": "DNS"}),
+            (second_stage, second_group, teams[0], {"numeric_value": "80"}),
+            (second_stage, second_group, teams[1], {"result_status": "DNF"}),
+            (second_stage, second_group, teams[2], {"numeric_value": "120"}),
+        ]
+
+        for stage, group, team, result_payload in payloads:
+            response = self.client.post(
+                self._panel_url(tournament, division),
+                {
+                    "stage_id": stage.id,
+                    "group_id": group.id,
+                    "team_id": team.id,
+                    "round_number": 1,
+                    **result_payload,
+                },
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+
+        self.client.force_authenticate(user=None)
+        response = self.client.get(self._public_url(tournament, division))
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data.get("overall_mode"), Tournament.RESULTCFG_MULTI_EVENT_OVERALL_POINTS_BY_RANK)
+        standings = data.get("overall_standings") or []
+
+        self.assertEqual(len(standings), 3)
+        self.assertEqual(standings[0].get("team_id"), teams[0].id)
+        self.assertEqual(standings[0].get("rank"), 1)
+        self.assertEqual(standings[0].get("total_points"), 3)
+        self.assertEqual(standings[0].get("completed_events_count"), 2)
+        self.assertEqual(
+            [event.get("stage_name") for event in data.get("overall_events", [])],
+            ["Przysiad", "Martwy ciąg"],
+        )
+        self.assertEqual(
+            [event.get("overall_contribution_display") for event in standings[0].get("event_results", [])],
+            ["2", "1"],
+        )
+        self.assertTrue(all(event.get("is_completed") for event in standings[0].get("event_results", [])))
+        self.assertEqual(standings[1].get("team_id"), teams[2].id)
+        self.assertEqual(standings[1].get("total_points"), 2)
+        self.assertEqual(
+            standings[1].get("event_results", [])[0].get("overall_contribution_display"),
+            "Nie wystartował",
+        )
+        self.assertEqual(standings[2].get("team_id"), teams[1].id)
+        self.assertEqual(standings[2].get("special_statuses_count"), 1)
+
+
+    def test_multi_event_overall_standings_can_use_sum_ranks(self):
+        result_config = self._result_config(
+            stage_structure_mode=Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            multi_event_overall_mode=Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RANKS,
+            stages=[
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Konkurencja 1",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+                },
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Konkurencja 2",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+                },
+            ],
+        )
+        tournament, division, teams, stages = self._create_context(
+            name="Turniej MASS_START API suma miejsc",
+            teams_count=2,
+            result_config=result_config,
+            is_published=True,
+        )
+
+        self.client.force_authenticate(user=self.organizer)
+
+        payloads = [
+            (stages[0], teams[0], "10"),
+            (stages[0], teams[1], "20"),
+            (stages[1], teams[0], "30"),
+            (stages[1], teams[1], "35"),
+        ]
+
+        for stage, team, value in payloads:
+            response = self.client.post(
+                self._panel_url(tournament, division),
+                {
+                    "stage_id": stage.id,
+                    "group_id": self._first_group(stage).id,
+                    "team_id": team.id,
+                    "round_number": 1,
+                    "numeric_value": value,
+                },
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+
+        self.client.force_authenticate(user=None)
+        response = self.client.get(self._public_url(tournament, division))
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        standings = data.get("overall_standings") or []
+
+        self.assertEqual(data.get("overall_mode"), Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RANKS)
+        self.assertEqual(standings[0].get("team_id"), teams[1].id)
+        self.assertEqual(standings[0].get("total_rank_sum"), 2)
+        self.assertEqual(standings[0].get("overall_display"), "2")
+
+    def test_multi_event_overall_standings_can_use_sum_results(self):
+        result_config = self._result_config(
+            stage_structure_mode=Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            multi_event_overall_mode=Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RESULTS,
+            stages=[
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Konkurencja 1",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+                },
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Konkurencja 2",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+                },
+            ],
+        )
+        tournament, division, teams, stages = self._create_context(
+            name="Turniej MASS_START API suma wyników",
+            teams_count=2,
+            result_config=result_config,
+            is_published=True,
+        )
+
+        self.client.force_authenticate(user=self.organizer)
+
+        payloads = [
+            (stages[0], teams[0], "10"),
+            (stages[0], teams[1], "20"),
+            (stages[1], teams[0], "30"),
+            (stages[1], teams[1], "25"),
+        ]
+
+        for stage, team, value in payloads:
+            response = self.client.post(
+                self._panel_url(tournament, division),
+                {
+                    "stage_id": stage.id,
+                    "group_id": self._first_group(stage).id,
+                    "team_id": team.id,
+                    "round_number": 1,
+                    "numeric_value": value,
+                },
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+
+        self.client.force_authenticate(user=None)
+        response = self.client.get(self._public_url(tournament, division))
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        standings = data.get("overall_standings") or []
+
+        self.assertEqual(data.get("overall_mode"), Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RESULTS)
+        self.assertEqual(standings[0].get("team_id"), teams[1].id)
+        self.assertEqual(standings[0].get("overall_display"), "45.00 pkt")
 
     def test_time_mass_start_result_uses_time_ms_and_display_value(self):
         result_config = self._result_config(

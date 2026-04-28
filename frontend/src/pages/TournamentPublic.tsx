@@ -55,6 +55,7 @@ type CustomResultValueKind = "NUMBER" | "TIME" | "PLACE";
 type CustomBetterResult = "HIGHER" | "LOWER";
 type CustomTimeFormat = "HH:MM:SS" | "MM:SS" | "MM:SS.hh" | "SS.hh";
 type CustomHeadToHeadMode = "HEAD_TO_HEAD_POINTS" | "MASS_START_MEASURED";
+type CustomStageStructureMode = "REDUCTION" | "MULTI_EVENT";
 
 type TournamentResultConfigDTO = {
   value_kind?: CustomResultValueKind;
@@ -67,6 +68,7 @@ type TournamentResultConfigDTO = {
   decimal_places?: number | null;
   time_format?: CustomTimeFormat | null;
   allow_ties?: boolean;
+  stage_structure_mode?: CustomStageStructureMode | string | null;
 };
 
 type TournamentPublicDTO = {
@@ -94,6 +96,7 @@ type TournamentPublicDTO = {
   divisions?: DivisionSwitcherItem[];
   active_division_id?: number | null;
   active_division_name?: string | null;
+  stage_structure_mode?: CustomStageStructureMode | string | null;
 };
 
 type RegistrationMeDTO = {
@@ -215,6 +218,14 @@ function getResultConfig(tournament: TournamentPublicDTO | null): TournamentResu
   return tournament?.result_config ?? {};
 }
 
+function getStageStructureMode(tournament: TournamentPublicDTO | null): CustomStageStructureMode {
+  const direct = String(tournament?.stage_structure_mode ?? "").toUpperCase();
+  if (direct === "MULTI_EVENT") return "MULTI_EVENT";
+
+  const configValue = String(getResultConfig(tournament).stage_structure_mode ?? "").toUpperCase();
+  return configValue === "MULTI_EVENT" ? "MULTI_EVENT" : "REDUCTION";
+}
+
 function getResolvedCustomValueKind(tournament: TournamentPublicDTO | null): CustomResultValueKind | "" {
   const config = getResultConfig(tournament);
   const direct = String(config.value_kind ?? "").toUpperCase();
@@ -261,6 +272,7 @@ function getPublicResultModeSummary(tournament: TournamentPublicDTO | null): str
   const headToHeadMode = String(config.custom_mode ?? "HEAD_TO_HEAD_POINTS").toUpperCase();
   const valueKind = getResolvedCustomValueKind(tournament);
   const unitLabel = String(config.unit_label ?? config.unit ?? "").trim();
+  const isMassStartMultiEvent = competitionModel === "MASS_START" && getStageStructureMode(tournament) === "MULTI_EVENT";
 
   if (competitionModel === "HEAD_TO_HEAD" && headToHeadMode === "HEAD_TO_HEAD_POINTS") {
     return "Klasyfikacja punktowa oparta na wynikach meczów. Relacja na żywo pozostaje dostępna dla pojedynków.";
@@ -269,16 +281,24 @@ function getPublicResultModeSummary(tournament: TournamentPublicDTO | null): str
   if (valueKind === "TIME") {
     const format = getLabel(TIME_FORMAT_LABELS, String(config.time_format ?? "MM:SS.hh"), "minuty:sekundy:setne");
     const valueKindLabel = getLabel(RESULT_VALUE_KIND_LABELS, valueKind, "Wynik czasowy").toLowerCase();
-    return competitionModel === "MASS_START"
-      ? `Ranking etapowy według czasu. Typ wyniku: ${valueKindLabel}. Format czasu: ${format}. Lepszy jest wynik niższy.`
-      : `Wynik meczowy według czasu. Typ wyniku: ${valueKindLabel}. Format czasu: ${format}. Lepszy jest wynik niższy.`;
+    if (competitionModel === "MASS_START") {
+      return isMassStartMultiEvent
+        ? `Klasyfikacja konkurencji według czasu. Typ wyniku: ${valueKindLabel}. Format czasu: ${format}. Lepszy jest wynik niższy.`
+        : `Ranking etapowy według czasu. Typ wyniku: ${valueKindLabel}. Format czasu: ${format}. Lepszy jest wynik niższy.`;
+    }
+
+    return `Wynik meczowy według czasu. Typ wyniku: ${valueKindLabel}. Format czasu: ${format}. Lepszy jest wynik niższy.`;
   }
 
   if (valueKind === "PLACE") {
     const valueKindLabel = getLabel(RESULT_VALUE_KIND_LABELS, valueKind, "Miejsce").toLowerCase();
-    return competitionModel === "MASS_START"
-      ? `Ranking etapowy według miejsc. Typ wyniku: ${valueKindLabel}. Niższa wartość oznacza lepszy rezultat.`
-      : `Wynik meczowy według miejsc. Typ wyniku: ${valueKindLabel}. Niższa wartość oznacza lepszy rezultat.`;
+    if (competitionModel === "MASS_START") {
+      return isMassStartMultiEvent
+        ? `Klasyfikacja konkurencji według miejsc. Typ wyniku: ${valueKindLabel}. Niższa wartość oznacza lepszy rezultat.`
+        : `Ranking etapowy według miejsc. Typ wyniku: ${valueKindLabel}. Niższa wartość oznacza lepszy rezultat.`;
+    }
+
+    return `Wynik meczowy według miejsc. Typ wyniku: ${valueKindLabel}. Niższa wartość oznacza lepszy rezultat.`;
   }
 
   const better = String(config.better_result ?? "HIGHER").toUpperCase();
@@ -287,9 +307,13 @@ function getPublicResultModeSummary(tournament: TournamentPublicDTO | null): str
   const unitPart = unitLabel ? ` Jednostka: ${unitLabel}.` : "";
   const valueKindLabel = getLabel(RESULT_VALUE_KIND_LABELS, valueKind || "NUMBER", "Wynik liczbowy").toLowerCase();
 
-  return competitionModel === "MASS_START"
-    ? `Ranking etapowy. Typ wyniku: ${valueKindLabel}. ${betterLabel}. Dokładność: ${decimals} miejsc po przecinku.${unitPart}`
-    : `Wynik meczowy. Typ wyniku: ${valueKindLabel}. ${betterLabel}. Dokładność: ${decimals} miejsc po przecinku.${unitPart}`;
+  if (competitionModel === "MASS_START") {
+    return isMassStartMultiEvent
+      ? `Klasyfikacja konkurencji. Typ wyniku: ${valueKindLabel}. ${betterLabel}. Dokładność: ${decimals} miejsc po przecinku.${unitPart}`
+      : `Ranking etapowy. Typ wyniku: ${valueKindLabel}. ${betterLabel}. Dokładność: ${decimals} miejsc po przecinku.${unitPart}`;
+  }
+
+  return `Wynik meczowy. Typ wyniku: ${valueKindLabel}. ${betterLabel}. Dokładność: ${decimals} miejsc po przecinku.${unitPart}`;
 }
 
 function incidentMinute(i: IncidentPublicDTO): number | null {
@@ -748,6 +772,8 @@ export default function TournamentPublic({
   const customDisciplineLabel = useMemo(() => getPublicDisciplineLabel(tournament), [tournament]);
   const customResultSummary = useMemo(() => getPublicResultModeSummary(tournament), [tournament]);
   const customResultConfig = useMemo(() => getResultConfig(tournament), [tournament]);
+  const stageStructureMode = useMemo(() => getStageStructureMode(tournament), [tournament]);
+  const isMassStartMultiEvent = isCustomMassStartMode && stageStructureMode === "MULTI_EVENT";
   const dateRange = formatDateRange(tournament?.start_date ?? null, tournament?.end_date ?? null);
 
   const activeDivisionOptions = useMemo<SelectOption<number>[]>(() => {
@@ -785,13 +811,17 @@ export default function TournamentPublic({
   }, [targetDivisionOptions]);
 
   const matchesSectionLabel = isCustomMassStartMode
-    ? "Rezultaty etapowe"
+    ? isMassStartMultiEvent
+      ? "Rezultaty konkurencji"
+      : "Rezultaty etapowe"
     : customMode
       ? "Rezultaty"
       : "Mecze";
 
   const standingsSectionLabel = isCustomMassStartMode
-    ? "Ranking etapów"
+    ? isMassStartMultiEvent
+      ? "Klasyfikacja konkurencji"
+      : "Ranking etapów"
     : customMode
       ? "Ranking / Drabinka"
       : "Tabela / Drabinka";
@@ -1657,7 +1687,7 @@ export default function TournamentPublic({
       return (
         <SectionShell
           eyebrow="Przegląd"
-          title="Ranking wydarzenia"
+          title={isMassStartMultiEvent ? "Klasyfikacja konkurencji" : "Ranking wydarzenia"}
           right={
             <Button
               type="button"
@@ -1674,7 +1704,7 @@ export default function TournamentPublic({
               icon={<Medal className="h-5 w-5" />}
               label="Tryb"
               value="Wszyscy razem"
-              desc="Głównym widokiem jest klasyfikacja uczestników i rezultatów etapowych."
+              desc={isMassStartMultiEvent ? "Głównym widokiem jest klasyfikacja uczestników w osobnych konkurencjach wydarzenia." : "Głównym widokiem jest klasyfikacja uczestników i rezultatów etapowych."}
             />
             <SummaryCard
               icon={<Gauge className="h-5 w-5" />}
@@ -1751,6 +1781,7 @@ export default function TournamentPublic({
             accessCode={code.trim() || undefined}
             refreshKey={standingsRefreshKey}
             resultConfig={customResultConfig}
+            stageStructureMode={stageStructureMode}
           />
         ) : (
           <StandingsBracket
@@ -1769,14 +1800,14 @@ export default function TournamentPublic({
       return (
         <SectionShell
           eyebrow="Podsumowanie"
-          title="Jak oglądać wydarzenie etapowe"
+          title={isMassStartMultiEvent ? "Jak oglądać wydarzenie z konkurencjami" : "Jak oglądać wydarzenie etapowe"}
         >
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             <SummaryCard
               icon={<Medal className="h-5 w-5" />}
               label="Najważniejszy ekran"
-              value="Ranking etapów"
-              desc="To właśnie ranking pokazuje aktualną pozycję uczestników i buduje narrację wydarzenia od startu do finału."
+              value={isMassStartMultiEvent ? "Klasyfikacja konkurencji" : "Ranking etapów"}
+              desc={isMassStartMultiEvent ? "To właśnie klasyfikacja pokazuje aktualną pozycję uczestników w każdej konkurencji wydarzenia." : "To właśnie ranking pokazuje aktualną pozycję uczestników i buduje narrację wydarzenia od startu do finału."}
             />
             <SummaryCard
               icon={<Gauge className="h-5 w-5" />}
@@ -2118,7 +2149,9 @@ export default function TournamentPublic({
               <p className="mt-4 max-w-4xl text-base leading-relaxed text-slate-300 sm:text-lg">
                 {tournament?.description?.trim() ||
                   (isCustomMassStartMode
-                    ? "Publiczny ekran rywalizacji etapowej."
+                    ? isMassStartMultiEvent
+                      ? "Publiczny ekran rywalizacji z wieloma konkurencjami."
+                      : "Publiczny ekran rywalizacji etapowej."
                     : "Śledź przebieg wydarzenia i aktualne wyniki.")}
               </p>
 

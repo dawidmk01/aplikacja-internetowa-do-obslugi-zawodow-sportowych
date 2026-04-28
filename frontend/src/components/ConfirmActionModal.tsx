@@ -1,15 +1,18 @@
-import { ConfirmDialog } from "../ui/ConfirmDialog";
+// frontend/src/components/ConfirmActionModal.tsx
+// Komponent udostępnia prosty wariant wspólnego modala potwierdzającego akcje użytkownika.
+
+import { type ButtonVariant } from "../ui/Button";
+
+import ConfirmChangeModal from "./ConfirmChangeModal";
 
 type Props = {
   open: boolean;
   title: string;
   message: string;
-
   confirmLabel?: string;
   cancelLabel?: string;
-
-  confirmVariant?: "primary" | "danger";
-
+  confirmVariant?: ButtonVariant;
+  question?: string | null;
   onConfirm: () => void;
   onCancel: () => void;
 };
@@ -21,14 +24,16 @@ export default function ConfirmActionModal({
   confirmLabel,
   cancelLabel,
   confirmVariant = "danger",
+  question = "Czy chcesz kontynuować?",
   onConfirm,
   onCancel,
 }: Props) {
   return (
-    <ConfirmDialog
+    <ConfirmChangeModal
       open={open}
       title={title}
-      message={message}
+      description={message}
+      question={question}
       confirmLabel={confirmLabel}
       cancelLabel={cancelLabel}
       confirmVariant={confirmVariant}

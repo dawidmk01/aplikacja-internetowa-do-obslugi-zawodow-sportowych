@@ -23,8 +23,7 @@ import { Checkbox } from "../ui/Checkbox";
 import { Input } from "../ui/Input";
 import { toast } from "../ui/Toast";
 
-import ConfirmIncidentDeleteModal from "./ConfirmIncidentDeleteModal";
-import ConfirmScoreSyncModal from "./ConfirmScoreSyncModal";
+import ConfirmChangeModal from "./ConfirmChangeModal";
 import MatchLivePanel from "./MatchLivePanel";
 
 type ToastKind = "saved" | "success" | "error" | "info";
@@ -73,6 +72,13 @@ type ConfirmScoreSyncState = {
   deleteIds: number[];
 };
 
+type IncidentDeleteScorePreview = {
+  home: number;
+  away: number;
+  homeExtraTime?: number;
+  awayExtraTime?: number;
+};
+
 type ConfirmIncidentDeleteState = {
   matchId: number;
   incidentId: number;
@@ -80,7 +86,125 @@ type ConfirmIncidentDeleteState = {
   teamLabel?: string;
   minute?: number | null;
   playerLabel?: string | null;
+  scoreAfterDelete?: IncidentDeleteScorePreview | null;
 };
+
+
+const SCORE_SYNC_SKIP_SESSION_KEY = "turniejepro.skipScoreSyncConfirm";
+const INCIDENT_DELETE_SKIP_SESSION_KEY = "turniejepro.skipIncidentDeleteConfirm";
+
+function readSessionFlag(key: string): boolean {
+  if (typeof window === "undefined") return false;
+  return window.sessionStorage.getItem(key) === "1";
+}
+
+function writeSessionFlag(key: string, value: boolean) {
+  if (typeof window === "undefined") return;
+
+  if (value) {
+    window.sessionStorage.setItem(key, "1");
+    return;
+  }
+
+  window.sessionStorage.removeItem(key);
+}
+
+function scoringIncidentNoun(discipline?: string) {
+  const normalized = String(discipline || "").trim().toLowerCase();
+
+  if (normalized === "basketball" || normalized === "wrestling") {
+    return {
+      singular: "incydent punktowy LIVE",
+      plural: "incydentów punktowych LIVE",
+    };
+  }
+
+  if (normalized === "football" || normalized === "handball") {
+    return {
+      singular: "incydent bramkowy LIVE",
+      plural: "incydentów bramkowych LIVE",
+    };
+  }
+
+  return {
+    singular: "incydent wynikowy LIVE",
+    plural: "incydentów wynikowych LIVE",
+  };
+}
+
+function scoringIncidentDeleteLabel(count: number, discipline?: string): string {
+  const safeCount = Number.isFinite(count) ? Math.max(0, count) : 0;
+  const noun = scoringIncidentNoun(discipline);
+
+  if (safeCount === 1) {
+    return `1 ${noun.singular}, który nie pasuje do zapisywanego wyniku`;
+  }
+
+  return `${safeCount} ${noun.plural}, które nie pasują do zapisywanego wyniku`;
+}
+
+function incidentTypeLabel(value?: string): string {
+  const normalized = (value ?? "").trim().toUpperCase();
+
+  if (normalized === "GOAL") return "Gol";
+  if (normalized === "OWN_GOAL") return "Gol samobójczy";
+  if (normalized === "PENALTY_GOAL" || normalized === "PENALTY_SCORED") return "Gol z rzutu karnego";
+  if (normalized === "PENALTY_MISSED") return "Niewykorzystany rzut karny";
+  if (normalized === "YELLOW_CARD") return "Żółta kartka";
+  if (normalized === "RED_CARD") return "Czerwona kartka";
+  if (normalized === "FOUL") return "Faul";
+  if (normalized === "SUBSTITUTION") return "Zmiana";
+  if (normalized === "HANDBALL_TWO_MINUTES") return "Kara dwóch minut";
+  if (normalized === "TENNIS_POINT" || normalized === "POINT") return "Punkt";
+  if (normalized === "SET_POINT") return "Punkt setowy";
+  if (normalized === "TENNIS_CODE_VIOLATION") return "Naruszenie przepisów";
+  if (normalized === "TIMEOUT") return "Przerwa na żądanie";
+  if (normalized === "WRESTLING_POINT_1") return "Punkt techniczny za 1";
+  if (normalized === "WRESTLING_POINT_2") return "Punkty techniczne za 2";
+  if (normalized === "WRESTLING_POINT_4") return "Punkty techniczne za 4";
+  if (normalized === "WRESTLING_POINT_5") return "Punkty techniczne za 5";
+  if (normalized === "WRESTLING_PASSIVITY") return "Pasywność";
+  if (normalized === "WRESTLING_CAUTION") return "Ostrzeżenie";
+  if (normalized === "WRESTLING_FALL") return "Tusz";
+  if (normalized === "WRESTLING_INJURY") return "Kontuzja";
+  if (normalized === "WRESTLING_FORFEIT") return "Walkower";
+  if (normalized === "WRESTLING_DISQUALIFICATION") return "Dyskwalifikacja";
+
+  return "Incydent";
+}
+
+function buildIncidentItem(incident: ConfirmIncidentDeleteState | null) {
+  if (!incident) return "wybrany incydent";
+
+  const parts: string[] = [];
+  const kind = incidentTypeLabel(incident.incidentType);
+  const minute = typeof incident.minute === "number" ? `${incident.minute}'` : null;
+  const team = (incident.teamLabel ?? "").trim();
+  const player = (incident.playerLabel ?? "").trim();
+
+  parts.push(kind);
+  if (minute) parts.push(minute);
+  if (team) parts.push(team);
+  if (player) parts.push(player);
+
+  return parts.join(" - ");
+}
+
+function formatScorePreview(score?: IncidentDeleteScorePreview | null): string | null {
+  if (!score) return null;
+
+  const home = Number(score.home ?? 0) || 0;
+  const away = Number(score.away ?? 0) || 0;
+  const homeExtraTime = Number(score.homeExtraTime ?? 0) || 0;
+  const awayExtraTime = Number(score.awayExtraTime ?? 0) || 0;
+  const base = `${home}:${away}`;
+
+  if (homeExtraTime > 0 || awayExtraTime > 0) {
+    return `${base}, dogrywka ${homeExtraTime}:${awayExtraTime}`;
+  }
+
+  return base;
+}
 
 type MatchPermissions = {
   results_edit?: boolean;
@@ -403,11 +527,26 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
   const [openLive, setOpenLive] = useState(false);
   const [editFinished, setEditFinished] = useState(false);
 
-  const [skipScoreSyncConfirm, setSkipScoreSyncConfirm] = useState(false);
+  const [skipScoreSyncConfirm, setSkipScoreSyncConfirmState] = useState(() => readSessionFlag(SCORE_SYNC_SKIP_SESSION_KEY));
+  const [skipIncidentDeleteConfirm, setSkipIncidentDeleteConfirmState] = useState(() =>
+    readSessionFlag(INCIDENT_DELETE_SKIP_SESSION_KEY)
+  );
   const [confirmScoreSync, setConfirmScoreSync] = useState<ConfirmScoreSyncState | null>(null);
   const [confirmIncidentDelete, setConfirmIncidentDelete] = useState<ConfirmIncidentDeleteState | null>(null);
+  const [liveIncidentsReloadToken, setLiveIncidentsReloadToken] = useState(0);
 
   const incidentDeleteProceedRef = useRef<null | (() => void)>(null);
+
+
+  const setSkipScoreSyncConfirm = useCallback((value: boolean) => {
+    setSkipScoreSyncConfirmState(value);
+    writeSessionFlag(SCORE_SYNC_SKIP_SESSION_KEY, value);
+  }, []);
+
+  const setSkipIncidentDeleteConfirm = useCallback((value: boolean) => {
+    setSkipIncidentDeleteConfirmState(value);
+    writeSessionFlag(INCIDENT_DELETE_SKIP_SESSION_KEY, value);
+  }, []);
 
   useEffect(() => {
     if (!isDirty) {
@@ -484,6 +623,10 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
       // Rodzic może mieć własną obsługę.
     }
   }, [onReload]);
+
+  const requestLiveIncidentsReload = useCallback(() => {
+    setLiveIncidentsReloadToken((value) => value + 1);
+  }, []);
 
   const updateMatchScore = useCallback(
     async ({ force, op }: { force?: boolean; op: ConfirmScoreSyncOp }) => {
@@ -686,9 +829,10 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
 
     setBusy(true);
     try {
-      const result = await updateMatchScore({ op: "SAVE" });
+      const result = await updateMatchScore({ op: "SAVE", force: skipScoreSyncConfirm });
       if (result.confirmed) {
         await doReload();
+        requestLiveIncidentsReload();
         setEdited(true);
         pushToast("Zapisano.", "saved");
       }
@@ -698,7 +842,17 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
     } finally {
       setBusy(false);
     }
-  }, [customMode, doReload, isCustomDirty, isDirty, pushToast, saveAllCustomResults, updateMatchScore]);
+  }, [
+    customMode,
+    doReload,
+    isCustomDirty,
+    isDirty,
+    pushToast,
+    requestLiveIncidentsReload,
+    saveAllCustomResults,
+    skipScoreSyncConfirm,
+    updateMatchScore,
+  ]);
 
   const onFinishClick = useCallback(async () => {
     if (customMode) {
@@ -722,10 +876,11 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
 
     setBusy(true);
     try {
-      const result = await updateMatchScore({ op: "FINISH" });
+      const result = await updateMatchScore({ op: "FINISH", force: skipScoreSyncConfirm });
       if (result.confirmed) {
         await finishMatch();
         await doReload();
+        requestLiveIncidentsReload();
         setEdited(true);
         pushToast("Mecz zakończony.", "success");
       }
@@ -735,7 +890,17 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
     } finally {
       setBusy(false);
     }
-  }, [customMode, doReload, finishMatch, isCustomDirty, pushToast, saveAllCustomResults, updateMatchScore]);
+  }, [
+    customMode,
+    doReload,
+    finishMatch,
+    isCustomDirty,
+    pushToast,
+    requestLiveIncidentsReload,
+    saveAllCustomResults,
+    skipScoreSyncConfirm,
+    updateMatchScore,
+  ]);
 
   const onStartClick = useCallback(async () => {
     setBusy(true);
@@ -857,10 +1022,15 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
 
   const onRequestConfirmIncidentDelete = useCallback(
     (st: ConfirmIncidentDeleteState, proceed: () => void) => {
+      if (skipIncidentDeleteConfirm) {
+        proceed();
+        return;
+      }
+
       incidentDeleteProceedRef.current = proceed;
       setConfirmIncidentDelete(st);
     },
-    []
+    [skipIncidentDeleteConfirm]
   );
 
   const forceSync = useCallback(
@@ -872,6 +1042,7 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
           await finishMatch();
         }
         await doReload();
+        requestLiveIncidentsReload();
         setConfirmScoreSync(null);
         setEdited(true);
         pushToast(op === "FINISH" ? "Mecz zakończony." : "Zapisano.", op === "FINISH" ? "success" : "saved");
@@ -882,7 +1053,7 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
         setBusy(false);
       }
     },
-    [doReload, finishMatch, pushToast, updateMatchScore]
+    [doReload, finishMatch, pushToast, requestLiveIncidentsReload, updateMatchScore]
   );
 
   const basketballOvertimeAvailable = bb && Number(draft.home_score ?? 0) === Number(draft.away_score ?? 0);
@@ -1619,21 +1790,33 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
               setEdited(true);
             }}
             onAfterRecompute={doReload}
+            externalIncidentsReloadToken={liveIncidentsReloadToken}
           />
         </div>
       ) : null}
 
-      <ConfirmScoreSyncModal
+      <ConfirmChangeModal
         open={!!confirmScoreSync}
-        title="Synchronizacja panelu na żywo z wynikiem"
-        message={confirmScoreSync?.message ?? ""}
-        code={confirmScoreSync?.code}
-        deleteCount={confirmScoreSync?.deleteCount ?? 0}
-        deleteIds={confirmScoreSync?.deleteIds ?? []}
-        autoForceInSession={skipScoreSyncConfirm}
-        onToggleAutoForceInSession={setSkipScoreSyncConfirm}
+        title="Synchronizacja wyniku z incydentami LIVE"
+        description={
+          confirmScoreSync?.message ||
+          "Zapisanie wyniku wymaga usunięcia incydentów LIVE, które nie pasują do zapisywanego wyniku."
+        }
+        deleteItems={
+          confirmScoreSync && confirmScoreSync.deleteCount > 0
+            ? [scoringIncidentDeleteLabel(confirmScoreSync.deleteCount, tournament.discipline)]
+            : []
+        }
+        sessionCheckbox={{
+          checked: skipScoreSyncConfirm,
+          onChange: setSkipScoreSyncConfirm,
+          label: "Nie pokazuj więcej podobnych synchronizacji w tej sesji",
+          description:
+            "Kolejne podobne synchronizacje zostaną wykonane automatycznie do końca bieżącej sesji.",
+        }}
         confirmLabel="Kontynuuj"
         cancelLabel="Anuluj"
+        confirmVariant="danger"
         onConfirm={() => {
           const st = confirmScoreSync;
           if (!st) return;
@@ -1642,9 +1825,31 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
         onCancel={() => setConfirmScoreSync(null)}
       />
 
-      <ConfirmIncidentDeleteModal
+      <ConfirmChangeModal
         open={!!confirmIncidentDelete}
-        incident={confirmIncidentDelete}
+        title="Potwierdź usunięcie"
+        description={
+          formatScorePreview(confirmIncidentDelete?.scoreAfterDelete)
+            ? "Usunięcie incydentu przeliczy wynik meczu."
+            : "Usunięcie incydentu usunie go z danych LIVE tego meczu."
+        }
+        deleteItems={[buildIncidentItem(confirmIncidentDelete)]}
+        overwriteItems={
+          formatScorePreview(confirmIncidentDelete?.scoreAfterDelete)
+            ? [formatScorePreview(confirmIncidentDelete?.scoreAfterDelete) as string]
+            : []
+        }
+        overwriteItemsTitle="Po usunięciu zostanie ustawiony wynik:"
+        sessionCheckbox={{
+          checked: skipIncidentDeleteConfirm,
+          onChange: setSkipIncidentDeleteConfirm,
+          label: "Nie pokazuj więcej podobnych usunięć w tej sesji",
+          description:
+            "Kolejne podobne usunięcia incydentów zostaną wykonane automatycznie do końca bieżącej sesji.",
+        }}
+        confirmLabel="Usuń incydent"
+        cancelLabel="Anuluj"
+        confirmVariant="danger"
         onConfirm={() => {
           const proceed = incidentDeleteProceedRef.current;
           incidentDeleteProceedRef.current = null;

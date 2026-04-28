@@ -33,6 +33,7 @@ class TournamentMassStartStructureTests(TestCase):
         rounds_count=1,
         stages=None,
         decimal_places=0,
+        stage_structure_mode=None,
     ):
         value_kind = value_kind or Tournament.RESULTCFG_VALUE_KIND_NUMBER
         better_result = better_result or Tournament.RESULTCFG_BETTER_RESULT_HIGHER
@@ -43,6 +44,7 @@ class TournamentMassStartStructureTests(TestCase):
             Tournament.RESULTCFG_BETTER_RESULT_KEY: better_result,
             Tournament.RESULTCFG_DECIMAL_PLACES_KEY: decimal_places,
             Tournament.RESULTCFG_ROUNDS_COUNT_KEY: rounds_count,
+            Tournament.RESULTCFG_STAGE_STRUCTURE_MODE_KEY: stage_structure_mode or Tournament.RESULTCFG_STAGE_STRUCTURE_REDUCTION,
             Tournament.RESULTCFG_STAGES_KEY: stages
             or [
                 {
@@ -253,6 +255,115 @@ class TournamentMassStartStructureTests(TestCase):
             ).exists()
         )
 
+    def test_sync_multi_event_structure_creates_parallel_competitions(self):
+        from tournaments.views.tournaments import (
+            _stage_name_for_mass_start,
+            sync_custom_mass_start_structure_for_division,
+        )
+
+        stage_model = self._stage_model()
+        entry_model = self._entry_model()
+
+        result_config = self._result_config(
+            stage_structure_mode=Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            stages=[
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Przysiad",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_PARTICIPANTS_COUNT_KEY: 2,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+                },
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Wyciskanie leżąc",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_PARTICIPANTS_COUNT_KEY: 3,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+                },
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Martwy ciąg",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_PARTICIPANTS_COUNT_KEY: 4,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+                },
+            ],
+        )
+        tournament, division, teams = self._create_mass_start_context(
+            name="Turniej MASS_START wielobój",
+            teams_count=4,
+            result_config=result_config,
+        )
+
+        sync_custom_mass_start_structure_for_division(tournament, division)
+
+        stages = list(
+            stage_model.objects.filter(tournament=tournament, division=division).order_by("order")
+        )
+
+        stage_cfgs = list(division.get_mass_start_stages() or [])
+        stage_names = [
+            _stage_name_for_mass_start(
+                stage.order,
+                stage_cfgs[stage.order - 1],
+                Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            )
+            for stage in stages
+        ]
+
+        self.assertEqual(stage_names, ["Przysiad", "Wyciskanie leżąc", "Martwy ciąg"])
+        self.assertEqual([stage.status for stage in stages], [stage_model.Status.OPEN, stage_model.Status.OPEN, stage_model.Status.OPEN])
+
+        for stage in stages:
+            entries = entry_model.objects.filter(stage=stage, is_active=True)
+            self.assertEqual(entries.count(), len(teams))
+            self.assertEqual(
+                set(entries.values_list("team_id", flat=True)),
+                {team.id for team in teams},
+            )
+
+    def test_sync_multi_event_structure_uses_competition_default_names(self):
+        from tournaments.views.tournaments import (
+            _stage_name_for_mass_start,
+            sync_custom_mass_start_structure_for_division,
+        )
+
+        stage_model = self._stage_model()
+
+        result_config = self._result_config(
+            stage_structure_mode=Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            stages=[
+                {
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+                },
+                {
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+                },
+            ],
+        )
+        tournament, division, _teams = self._create_mass_start_context(
+            name="Turniej MASS_START nazwy konkurencji",
+            result_config=result_config,
+        )
+
+        sync_custom_mass_start_structure_for_division(tournament, division)
+
+        stages = list(
+            stage_model.objects.filter(tournament=tournament, division=division).order_by("order")
+        )
+
+        stage_cfgs = list(division.get_mass_start_stages() or [])
+        stage_names = [
+            _stage_name_for_mass_start(
+                stage.order,
+                stage_cfgs[stage.order - 1],
+                Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            )
+            for stage in stages
+        ]
+
+        self.assertEqual(stage_names, ["Konkurencja 1", "Konkurencja 2"])
+
     def test_stage_mass_start_result_accepts_numeric_value_for_stage_entry(self):
         from tournaments.views.tournaments import sync_custom_mass_start_structure_for_division
 
@@ -283,6 +394,36 @@ class TournamentMassStartStructureTests(TestCase):
         self.assertEqual(result.group_id, group.id)
         self.assertEqual(result.team_id, teams[0].id)
         self.assertEqual(str(result.numeric_value), "12.34")
+
+    def test_stage_mass_start_result_accepts_non_start_status_without_value(self):
+        from tournaments.views.tournaments import sync_custom_mass_start_structure_for_division
+
+        result_model = self._result_model()
+
+        tournament, division, teams = self._create_mass_start_context()
+
+        sync_custom_mass_start_structure_for_division(tournament, division)
+
+        stage = self._stage_model().objects.get(tournament=tournament, division=division)
+        group = self._group_model().objects.get(stage=stage)
+
+        result = result_model.objects.create(
+            stage=stage,
+            group=group,
+            team=teams[0],
+            round_number=1,
+            value_kind=Tournament.RESULTCFG_VALUE_KIND_NUMBER,
+            result_status=result_model.ResultStatus.DNF,
+            created_by=self.organizer,
+            updated_by=self.organizer,
+        )
+
+        self.assertEqual(result.result_status, result_model.ResultStatus.DNF)
+        self.assertIsNone(result.numeric_value)
+        self.assertIsNone(result.time_ms)
+        self.assertIsNone(result.place_value)
+        self.assertEqual(result.display_value, "DNF")
+        self.assertIsNone(result.rank)
 
     def test_stage_mass_start_result_rejects_team_without_stage_entry(self):
         from django.core.exceptions import ValidationError
@@ -414,3 +555,132 @@ class TournamentMassStartStructureTests(TestCase):
 
         with self.assertRaises(ValidationError):
             result.save()
+
+
+    def test_sync_multi_event_structure_archives_removed_competition(self):
+        from tournaments.views.tournaments import sync_custom_mass_start_structure_for_division
+
+        stage_model = self._stage_model()
+        result_model = self._result_model()
+
+        stages_cfg = [
+            {
+                Tournament.RESULTCFG_STAGE_NAME_KEY: f"Konkurencja {index}",
+                Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+            }
+            for index in range(1, 5)
+        ]
+        result_config = self._result_config(
+            stage_structure_mode=Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            decimal_places=2,
+            stages=stages_cfg,
+        )
+        tournament, division, teams = self._create_mass_start_context(
+            name="Turniej MULTI_EVENT archiwum",
+            result_config=result_config,
+        )
+
+        sync_custom_mass_start_structure_for_division(tournament, division)
+
+        stage_four = stage_model.objects.get(tournament=tournament, division=division, order=4)
+        group = self._group_model().objects.get(stage=stage_four)
+        stage_four.scheduled_date = "2026-01-10"
+        stage_four.location = "Sala A"
+        stage_four.save(update_fields=["scheduled_date", "location"])
+
+        result_model.objects.create(
+            stage=stage_four,
+            group=group,
+            team=teams[0],
+            round_number=1,
+            value_kind=Tournament.RESULTCFG_VALUE_KIND_NUMBER,
+            numeric_value="120",
+            display_value="120.00",
+            created_by=self.organizer,
+            updated_by=self.organizer,
+        )
+
+        reduced_config = self._result_config(
+            stage_structure_mode=Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            decimal_places=2,
+            stages=stages_cfg[:3],
+        )
+        division.result_config = reduced_config
+        division.save(update_fields=["result_config"])
+
+        sync_custom_mass_start_structure_for_division(tournament, division)
+
+        stage_four.refresh_from_db()
+        self.assertTrue(stage_four.is_archived)
+        self.assertEqual(stage_four.archive_reason, "MASS_START_STRUCTURE_REDUCED")
+        self.assertEqual(
+            stage_model.objects.filter(tournament=tournament, division=division, is_archived=False).count(),
+            3,
+        )
+        self.assertTrue(result_model.objects.filter(stage=stage_four, team=teams[0]).exists())
+
+    def test_sync_multi_event_structure_can_restore_archived_competition(self):
+        from tournaments.views.tournaments import sync_custom_mass_start_structure_for_division
+
+        stage_model = self._stage_model()
+        result_model = self._result_model()
+
+        stages_cfg = [
+            {
+                Tournament.RESULTCFG_STAGE_NAME_KEY: f"Konkurencja {index}",
+                Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 1,
+            }
+            for index in range(1, 5)
+        ]
+        result_config = self._result_config(
+            stage_structure_mode=Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            decimal_places=2,
+            stages=stages_cfg,
+        )
+        tournament, division, teams = self._create_mass_start_context(
+            name="Turniej MULTI_EVENT przywracanie",
+            result_config=result_config,
+        )
+
+        sync_custom_mass_start_structure_for_division(tournament, division)
+        stage_four = stage_model.objects.get(tournament=tournament, division=division, order=4)
+        original_stage_id = stage_four.id
+        group = self._group_model().objects.get(stage=stage_four)
+
+        result_model.objects.create(
+            stage=stage_four,
+            group=group,
+            team=teams[0],
+            round_number=1,
+            value_kind=Tournament.RESULTCFG_VALUE_KIND_NUMBER,
+            numeric_value="120",
+            display_value="120.00",
+            created_by=self.organizer,
+            updated_by=self.organizer,
+        )
+
+        division.result_config = self._result_config(
+            stage_structure_mode=Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            decimal_places=2,
+            stages=stages_cfg[:3],
+        )
+        division.save(update_fields=["result_config"])
+        sync_custom_mass_start_structure_for_division(tournament, division)
+
+        division.result_config = result_config
+        division.save(update_fields=["result_config"])
+        sync_custom_mass_start_structure_for_division(
+            tournament,
+            division,
+            restore_archived_mass_start=True,
+        )
+
+        restored_stage = stage_model.objects.get(pk=original_stage_id)
+        self.assertFalse(restored_stage.is_archived)
+        self.assertTrue(result_model.objects.filter(stage=restored_stage, team=teams[0]).exists())
+        self.assertEqual(
+            stage_model.objects.filter(tournament=tournament, division=division, is_archived=False).count(),
+            4,
+        )

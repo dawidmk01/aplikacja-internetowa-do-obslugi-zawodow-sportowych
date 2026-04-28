@@ -111,7 +111,7 @@ class TournamentStandingsView(APIView):
         )
         format_config = dict(getattr(context_obj, "format_config", None) or {})
 
-        stages_qs = tournament.stages.all()
+        stages_qs = tournament.stages.filter(is_archived=False)
         if division is not None:
             stages_qs = stages_qs.filter(division=division)
 

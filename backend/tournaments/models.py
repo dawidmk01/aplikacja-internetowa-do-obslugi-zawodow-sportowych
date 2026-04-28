@@ -88,6 +88,10 @@ class Tournament(models.Model):
     RESULTCFG_STAGE_STRUCTURE_MODE_KEY = "stage_structure_mode"
     RESULTCFG_STAGE_STRUCTURE_REDUCTION = "REDUCTION"
     RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT = "MULTI_EVENT"
+    RESULTCFG_MULTI_EVENT_OVERALL_MODE_KEY = "multi_event_overall_mode"
+    RESULTCFG_MULTI_EVENT_OVERALL_POINTS_BY_RANK = "POINTS_BY_RANK"
+    RESULTCFG_MULTI_EVENT_OVERALL_SUM_RANKS = "SUM_RANKS"
+    RESULTCFG_MULTI_EVENT_OVERALL_SUM_RESULTS = "SUM_RESULTS"
 
     RESULTCFG_POINTS_WIN_KEY = "points_win"
     RESULTCFG_POINTS_DRAW_KEY = "points_draw"
@@ -427,6 +431,7 @@ class Tournament(models.Model):
             cls.RESULTCFG_ROUNDS_COUNT_KEY: 1,
             cls.RESULTCFG_AGGREGATION_MODE_KEY: cls.RESULTCFG_AGGREGATION_BEST,
             cls.RESULTCFG_STAGE_STRUCTURE_MODE_KEY: cls.RESULTCFG_STAGE_STRUCTURE_REDUCTION,
+            cls.RESULTCFG_MULTI_EVENT_OVERALL_MODE_KEY: cls.RESULTCFG_MULTI_EVENT_OVERALL_POINTS_BY_RANK,
             cls.RESULTCFG_STAGES_KEY: [
                 {
                     cls.RESULTCFG_STAGE_NAME_KEY: "Etap 1",
@@ -527,6 +532,7 @@ class Tournament(models.Model):
                     raise ValueError("advance_count musi być większe lub równe 1.")
 
             if structure_mode == cls.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT:
+                participants_count = None
                 advance_count = None
 
             try:
@@ -600,6 +606,11 @@ class Tournament(models.Model):
 
         if custom_mode == cls.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED:
             value_kind = str(normalized.get(cls.RESULTCFG_VALUE_KIND_KEY) or "").upper()
+            if value_kind == "POINTS":
+                value_kind = cls.RESULTCFG_VALUE_KIND_NUMBER
+                normalized[cls.RESULTCFG_UNIT_PRESET_KEY] = cls.RESULTCFG_UNIT_PRESET_POINTS
+                normalized[cls.RESULTCFG_UNIT_KEY] = normalized.get(cls.RESULTCFG_UNIT_KEY) or "pkt"
+                normalized[cls.RESULTCFG_UNIT_LABEL_KEY] = normalized.get(cls.RESULTCFG_UNIT_LABEL_KEY) or "pkt"
             if value_kind not in (
                 cls.RESULTCFG_VALUE_KIND_NUMBER,
                 cls.RESULTCFG_VALUE_KIND_TIME,
@@ -712,6 +723,20 @@ class Tournament(models.Model):
             ):
                 raise ValueError("stage_structure_mode musi mieć wartość REDUCTION albo MULTI_EVENT.")
             normalized[cls.RESULTCFG_STAGE_STRUCTURE_MODE_KEY] = stage_structure_mode
+
+            multi_event_overall_mode = str(
+                normalized.get(cls.RESULTCFG_MULTI_EVENT_OVERALL_MODE_KEY)
+                or cls.RESULTCFG_MULTI_EVENT_OVERALL_POINTS_BY_RANK
+            ).upper()
+            if multi_event_overall_mode not in (
+                cls.RESULTCFG_MULTI_EVENT_OVERALL_POINTS_BY_RANK,
+                cls.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RANKS,
+                cls.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RESULTS,
+            ):
+                raise ValueError(
+                    "multi_event_overall_mode musi mieć wartość POINTS_BY_RANK, SUM_RANKS albo SUM_RESULTS."
+                )
+            normalized[cls.RESULTCFG_MULTI_EVENT_OVERALL_MODE_KEY] = multi_event_overall_mode
 
             normalized[cls.RESULTCFG_STAGES_KEY] = cls._normalize_mass_start_stages(
                 normalized.get(cls.RESULTCFG_STAGES_KEY),
@@ -1740,18 +1765,23 @@ class Stage(models.Model):
     order = models.PositiveIntegerField()
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # Archiwizacja pozwala zachować dane etapów wypadających z aktywnej konfiguracji.
+    is_archived = models.BooleanField(default=False, db_index=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archive_reason = models.CharField(max_length=64, blank=True, default="")
+
     class Meta:
         ordering = ["order"]
         constraints = [
             models.UniqueConstraint(
                 fields=["division", "order"],
-                condition=Q(division__isnull=False),
-                name="uniq_stage_order_per_division",
+                condition=Q(division__isnull=False, is_archived=False),
+                name="uniq_active_stage_order_per_division",
             ),
             models.UniqueConstraint(
                 fields=["tournament", "order"],
-                condition=Q(division__isnull=True),
-                name="uniq_stage_order_per_tournament_without_division",
+                condition=Q(division__isnull=True, is_archived=False),
+                name="uniq_active_stage_order_per_tournament_without_division",
             ),
         ]
 
@@ -2412,6 +2442,12 @@ class StageMassStartResult(models.Model):
         TIME = Tournament.RESULTCFG_VALUE_KIND_TIME, "Czas"
         PLACE = Tournament.RESULTCFG_VALUE_KIND_PLACE, "Miejsce"
 
+    class ResultStatus(models.TextChoices):
+        OK = "OK", "Wynik"
+        DNS = "DNS", "Nie wystartował"
+        DNF = "DNF", "Nie ukończył"
+        DSQ = "DSQ", "Dyskwalifikacja"
+
     stage = models.ForeignKey(
         Stage,
         on_delete=models.CASCADE,
@@ -2440,6 +2476,14 @@ class StageMassStartResult(models.Model):
     value_kind = models.CharField(
         max_length=16,
         choices=ValueKind.choices,
+    )
+
+    result_status = models.CharField(
+        max_length=8,
+        choices=ResultStatus.choices,
+        default=ResultStatus.OK,
+        db_index=True,
+        help_text="Status startu lub poprawności wyniku w danej próbie.",
     )
 
     numeric_value = models.DecimalField(
@@ -2503,7 +2547,8 @@ class StageMassStartResult(models.Model):
             ),
             models.CheckConstraint(
                 check=(
-                    Q(numeric_value__isnull=False)
+                    ~Q(result_status="OK")
+                    | Q(numeric_value__isnull=False)
                     | Q(time_ms__isnull=False)
                     | Q(place_value__isnull=False)
                 ),
@@ -2567,6 +2612,16 @@ class StageMassStartResult(models.Model):
         if self.round_number < 1:
             raise ValidationError("round_number musi być większe lub równe 1.")
 
+        if self.result_status not in dict(self.ResultStatus.choices):
+            raise ValidationError("Nieprawidłowy status wyniku MASS_START.")
+
+        if self.result_status != self.ResultStatus.OK:
+            if self.numeric_value is not None or self.time_ms is not None or self.place_value is not None:
+                raise ValidationError("Dla statusu DNS, DNF albo DSQ pola wartości muszą być puste.")
+            self.display_value = self.result_status
+            self.rank = None
+            return
+
         if self.value_kind == self.ValueKind.TIME:
             if self.time_ms is None:
                 raise ValidationError("Dla value_kind=TIME wymagane jest pole time_ms.")
@@ -2598,6 +2653,9 @@ class StageMassStartResult(models.Model):
             self.numeric_value = quantized
 
     def get_sort_value(self):
+        if self.result_status != self.ResultStatus.OK:
+            return None
+
         if self.value_kind == self.ValueKind.TIME:
             return int(self.time_ms or 0)
         if self.value_kind == self.ValueKind.PLACE:

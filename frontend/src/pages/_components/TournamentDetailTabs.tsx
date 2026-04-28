@@ -70,6 +70,10 @@ export type Tournament = {
   name: string;
   discipline: string;
   competition_type?: "TEAM" | "INDIVIDUAL";
+  competition_model?: "HEAD_TO_HEAD" | "MASS_START";
+  result_config?: {
+    stage_structure_mode?: "REDUCTION" | "MULTI_EVENT" | string;
+  } | null;
   tournament_format: "LEAGUE" | "CUP" | "MIXED";
   status: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
   is_published: boolean;
@@ -657,6 +661,11 @@ export function TournamentDetailTabs(props: Props) {
     </div>
   );
 
+  const massStartStageProgressLabel =
+    String(tournament.result_config?.stage_structure_mode ?? "").toUpperCase() === "MULTI_EVENT"
+      ? "Konkurencje zakończone"
+      : "Etapy zakończone";
+
   const renderDetailsTab = () => (
     <div className="space-y-4">
       <Card className="p-5">
@@ -682,13 +691,13 @@ export function TournamentDetailTabs(props: Props) {
             {panelStats?.progress_mode === "MASS_START" ? (
               <>
                 <KeyValue k="Rezultaty" v={formatProgress(panelStats?.primary_progress_current, panelStats?.primary_progress_total)} />
-                <KeyValue k="Etapy zakończone" v={formatProgress(panelStats?.stages_closed, panelStats?.stages_total)} />
+                <KeyValue k={massStartStageProgressLabel} v={formatProgress(panelStats?.stages_closed, panelStats?.stages_total)} />
               </>
             ) : (
               <>
                 <KeyValue k="Mecze w trakcie" v={formatProgress(panelStats?.primary_progress_current, panelStats?.primary_progress_total)} />
                 <KeyValue k="Mecze zakończone" v={formatProgress(panelStats?.secondary_progress_current, panelStats?.secondary_progress_total)} />
-                <KeyValue k="Etapy zakończone" v={formatProgress(panelStats?.stages_closed, panelStats?.stages_total)} />
+                <KeyValue k={massStartStageProgressLabel} v={formatProgress(panelStats?.stages_closed, panelStats?.stages_total)} />
               </>
             )}
           </Card>

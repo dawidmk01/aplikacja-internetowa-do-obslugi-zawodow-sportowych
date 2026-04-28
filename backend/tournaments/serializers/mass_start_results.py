@@ -88,6 +88,21 @@ def _parse_place_value(raw_value: Any) -> int:
     return parsed
 
 
+def _normalize_result_status(raw_value: Any) -> str:
+    status = str(raw_value or StageMassStartResult.ResultStatus.OK).upper()
+    allowed = {choice[0] for choice in StageMassStartResult.ResultStatus.choices}
+    if status not in allowed:
+        raise serializers.ValidationError(
+            {"result_status": "Dozwolone wartości statusu wyniku to OK, DNS, DNF albo DSQ."}
+        )
+    return status
+
+
+def _result_status_display(result_status: str) -> str:
+    labels = dict(StageMassStartResult.ResultStatus.choices)
+    return str(labels.get(result_status, result_status))
+
+
 def _stage_division(stage: Stage) -> Division | None:
     return getattr(stage, "division", None)
 
@@ -120,6 +135,25 @@ def _get_mass_start_stage_cfg(stage: Stage) -> dict:
     return stage_cfgs[index] if index < len(stage_cfgs) else {}
 
 
+def _stage_structure_mode_for_stage(stage: Stage) -> str:
+    context = _competition_context_for_stage(stage)
+    result_config = context.get_result_config() if hasattr(context, "get_result_config") else {}
+    mode = str(
+        result_config.get(Tournament.RESULTCFG_STAGE_STRUCTURE_MODE_KEY)
+        or Tournament.RESULTCFG_STAGE_STRUCTURE_REDUCTION
+    ).upper()
+    if mode not in (
+        Tournament.RESULTCFG_STAGE_STRUCTURE_REDUCTION,
+        Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+    ):
+        return Tournament.RESULTCFG_STAGE_STRUCTURE_REDUCTION
+    return mode
+
+
+def _stage_uses_multi_event(stage: Stage) -> bool:
+    return _stage_structure_mode_for_stage(stage) == Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT
+
+
 def _uses_mass_start_context(stage: Stage) -> bool:
     context = _competition_context_for_stage(stage)
     if hasattr(context, "uses_custom_results") and hasattr(context, "uses_mass_start"):
@@ -150,6 +184,7 @@ class StageMassStartResultSerializer(serializers.ModelSerializer):
             "team_name",
             "round_number",
             "value_kind",
+            "result_status",
             "numeric_value",
             "time_ms",
             "place_value",
@@ -174,6 +209,11 @@ class StageMassStartResultWriteSerializer(serializers.Serializer):
     numeric_value = serializers.CharField(required=False, allow_blank=False)
     time_ms = serializers.IntegerField(required=False, min_value=0)
     place_value = serializers.IntegerField(required=False, min_value=1)
+    result_status = serializers.ChoiceField(
+        choices=StageMassStartResult.ResultStatus.choices,
+        required=False,
+        default=StageMassStartResult.ResultStatus.OK,
+    )
     is_active = serializers.BooleanField(required=False, default=True)
 
     def validate(self, attrs):
@@ -196,7 +236,7 @@ class StageMassStartResultWriteSerializer(serializers.Serializer):
                 {"detail": "Ten endpoint obsługuje wyłącznie wyniki etapowe MASS_START."}
             )
 
-        if stage.status == Stage.Status.PLANNED:
+        if stage.status == Stage.Status.PLANNED and not _stage_uses_multi_event(stage):
             raise serializers.ValidationError(
                 {"stage_id": "Ten etap nie został jeszcze wygenerowany."}
             )
@@ -242,9 +282,28 @@ class StageMassStartResultWriteSerializer(serializers.Serializer):
         stage_cfg = _get_mass_start_stage_cfg(stage)
         rounds_count = int(stage_cfg.get(Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY) or 1)
         if attrs["round_number"] > rounds_count:
+            item_label = "konkurencji" if _stage_uses_multi_event(stage) else "etapu"
             raise serializers.ValidationError(
-                {"round_number": f"Dozwolony zakres rund dla tego etapu to 1-{rounds_count}."}
+                {"round_number": f"Dozwolony zakres rund dla tej {item_label} to 1-{rounds_count}."}
             )
+
+        result_status = _normalize_result_status(attrs.get("result_status"))
+        has_value_payload = any(
+            field in attrs for field in ("numeric_value", "time_ms", "place_value")
+        )
+
+        if result_status != StageMassStartResult.ResultStatus.OK:
+            if has_value_payload:
+                raise serializers.ValidationError(
+                    {"detail": "Dla statusu DNS, DNF albo DSQ nie podawaj wartości wyniku."}
+                )
+            attrs["result_status"] = result_status
+            attrs["stage"] = stage
+            attrs["group"] = group
+            attrs["team"] = team
+            attrs["stage_entry"] = entry
+            attrs["division"] = division
+            return attrs
 
         value_kind = _get_result_value_kind_for_stage(stage)
         if value_kind == Tournament.RESULTCFG_VALUE_KIND_TIME:
@@ -275,6 +334,7 @@ class StageMassStartResultWriteSerializer(serializers.Serializer):
                     {"detail": "Dla wyniku liczbowego nie podawaj time_ms ani place_value."}
                 )
 
+        attrs["result_status"] = result_status
         attrs["stage"] = stage
         attrs["group"] = group
         attrs["team"] = team
@@ -291,14 +351,25 @@ class StageMassStartResultWriteSerializer(serializers.Serializer):
         value_kind = _get_result_value_kind_for_stage(stage)
         cfg = _get_result_config_for_stage(stage)
 
+        result_status = _normalize_result_status(
+            self.validated_data.get("result_status")
+        )
+
         defaults: dict[str, Any] = {
             "group": group,
             "value_kind": value_kind,
+            "result_status": result_status,
             "is_active": bool(self.validated_data.get("is_active", True)),
             "updated_by": self.context.get("user"),
         }
 
-        if value_kind == Tournament.RESULTCFG_VALUE_KIND_TIME:
+        if result_status != StageMassStartResult.ResultStatus.OK:
+            defaults["numeric_value"] = None
+            defaults["time_ms"] = None
+            defaults["place_value"] = None
+            defaults["display_value"] = _result_status_display(result_status)
+            defaults["rank"] = None
+        elif value_kind == Tournament.RESULTCFG_VALUE_KIND_TIME:
             time_ms = _parse_time_ms(self.validated_data["time_ms"])
             defaults["time_ms"] = time_ms
             defaults["numeric_value"] = None

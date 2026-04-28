@@ -86,17 +86,177 @@ class TournamentTeamSetupApiTests(TestCase):
         self.assertEqual([team.name for team in all_teams if team.is_active], ["Drużyna 1", "Drużyna 2", "Drużyna 3"])
         self.assertFalse(all_teams[-1].is_active)
 
-    def test_team_setup_rejects_less_than_two_participants(self):
+    def test_team_setup_dry_run_reports_restore_available_for_archived_slot(self):
+        tournament, division = self._create_tournament_via_api()
+
+        self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 4},
+            format="json",
+        )
+        Team.objects.filter(tournament=tournament, division=division, name="Drużyna 4").update(name="Poprzedni uczestnik")
+        self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 3},
+            format="json",
+        )
+
+        response = self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}&dry_run=1",
+            {"teams_count": 4},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json().get("restore_available"))
+        self.assertEqual(response.json().get("restore_items")[0].get("name"), "Poprzedni uczestnik")
+        self.assertTrue(response.json().get("requires_confirmation"))
+
+    def test_team_setup_restores_archived_slot_name_when_count_increases(self):
+        tournament, division = self._create_tournament_via_api()
+
+        self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 4},
+            format="json",
+        )
+        Team.objects.filter(tournament=tournament, division=division, name="Drużyna 4").update(name="Poprzedni uczestnik")
+        self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 3},
+            format="json",
+        )
+
+        response = self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 4, "restore_archived_slots": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self._active_team_names(tournament, division),
+            ["Drużyna 1", "Drużyna 2", "Drużyna 3", "Poprzedni uczestnik"],
+        )
+
+    def test_team_setup_can_create_clean_slot_instead_of_restoring_archived_name(self):
+        tournament, division = self._create_tournament_via_api()
+
+        self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 4},
+            format="json",
+        )
+        Team.objects.filter(tournament=tournament, division=division, name="Drużyna 4").update(name="Poprzedni uczestnik")
+        self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 3},
+            format="json",
+        )
+
+        response = self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 4, "restore_archived_slots": False},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self._active_team_names(tournament, division),
+            ["Drużyna 1", "Drużyna 2", "Drużyna 3", "Drużyna 4"],
+        )
+        self.assertTrue(
+            Team.objects.filter(
+                tournament=tournament,
+                division=division,
+                name="Poprzedni uczestnik",
+                is_active=False,
+            ).exists()
+        )
+
+
+    def test_team_setup_dry_run_does_not_prompt_for_default_archived_slot(self):
+        tournament, division = self._create_tournament_via_api()
+
+        self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 4},
+            format="json",
+        )
+        self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 3},
+            format="json",
+        )
+
+        response = self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}&dry_run=1",
+            {"teams_count": 4},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json().get("restore_available"))
+        self.assertFalse(response.json().get("requires_confirmation"))
+        self.assertEqual(response.json().get("restore_items"), [])
+
+    def test_team_setup_restores_default_archived_slot_without_duplicate_name(self):
+        tournament, division = self._create_tournament_via_api()
+
+        self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 7},
+            format="json",
+        )
+        self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 6},
+            format="json",
+        )
+        self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 7, "restore_archived_slots": False},
+            format="json",
+        )
+        response = self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 8, "restore_archived_slots": False},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        active_names = self._active_team_names(tournament, division)
+        self.assertEqual(
+            active_names,
+            [
+                "Drużyna 1",
+                "Drużyna 2",
+                "Drużyna 3",
+                "Drużyna 4",
+                "Drużyna 5",
+                "Drużyna 6",
+                "Drużyna 7",
+                "Drużyna 8",
+            ],
+        )
+        self.assertEqual(len(active_names), len(set(active_names)))
+
+    def test_team_setup_allows_removing_all_participants_without_generating_structure(self):
+        from tournaments.models import Stage
+
         tournament, division = self._create_tournament_via_api()
 
         response = self.client.post(
             f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
-            {"teams_count": 1},
+            {"teams_count": 0},
             format="json",
         )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(self._active_team_names(tournament, division), ["Drużyna 1", "Drużyna 2"])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json().get("teams_count"), 0)
+        self.assertFalse(response.json().get("upgraded"))
+        self.assertEqual(self._active_team_names(tournament, division), [])
+        self.assertFalse(Stage.objects.filter(tournament=tournament, division=division).exists())
 
     def test_team_setup_rejects_invalid_participants_count(self):
         tournament, division = self._create_tournament_via_api()
@@ -226,6 +386,18 @@ class TournamentTeamListAndUpdateApiTests(TestCase):
         self.assertEqual(response.status_code, 201)
 
         return Division.objects.get(tournament=tournament, name=name)
+
+    def _active_team_names(self, tournament, division):
+        return list(
+            Team.objects.filter(
+                tournament=tournament,
+                division=division,
+                is_active=True,
+            )
+            .exclude(name=self.bye_team_name)
+            .order_by("id")
+            .values_list("name", flat=True)
+        )
 
     def _response_items(self, response):
         data = response.json()
@@ -387,3 +559,78 @@ class TournamentTeamListAndUpdateApiTests(TestCase):
 
         bye_team.refresh_from_db()
         self.assertEqual(bye_team.name, self.bye_team_name)
+
+    def test_organizer_can_delete_specific_team_slot_without_minimum_limit(self):
+        tournament, division = self._create_tournament_via_api()
+        teams = list(Team.objects.filter(tournament=tournament, division=division, is_active=True).order_by("id"))
+
+        first_response = self.client.delete(
+            f"/api/tournaments/{tournament.id}/teams/{teams[0].id}/?division_id={division.id}",
+            format="json",
+        )
+        second_response = self.client.delete(
+            f"/api/tournaments/{tournament.id}/teams/{teams[1].id}/?division_id={division.id}",
+            format="json",
+        )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(second_response.json().get("teams_count"), 0)
+        self.assertEqual(second_response.json().get("teams"), [])
+        self.assertEqual(
+            Team.objects.filter(tournament=tournament, division=division, is_active=True)
+            .exclude(name=self.bye_team_name)
+            .count(),
+            0,
+        )
+
+    def test_delete_registered_slot_reports_restoreable_registration_link(self):
+        from tournaments.models import TournamentRegistration
+
+        tournament, division = self._create_tournament_via_api()
+        registered_user = create_test_user("registered-slot@example.com")
+        team = Team.objects.filter(tournament=tournament, division=division, is_active=True).order_by("id").first()
+        team.name = "Jan Kowalski"
+        team.registered_user = registered_user
+        team.save(update_fields=["name", "registered_user"])
+        registration = TournamentRegistration.objects.create(
+            tournament=tournament,
+            division=division,
+            user=registered_user,
+            team=team,
+            display_name="Jan Kowalski",
+        )
+
+        dry_run_response = self.client.delete(
+            f"/api/tournaments/{tournament.id}/teams/{team.id}/?division_id={division.id}&dry_run=1",
+            format="json",
+        )
+
+        self.assertEqual(dry_run_response.status_code, 200)
+        self.assertTrue(dry_run_response.json().get("requires_confirmation"))
+        self.assertTrue(dry_run_response.json().get("restore_available"))
+        self.assertEqual(dry_run_response.json().get("restore_items")[0].get("registration_label"), "Jan Kowalski")
+
+        delete_response = self.client.delete(
+            f"/api/tournaments/{tournament.id}/teams/{team.id}/?division_id={division.id}",
+            format="json",
+        )
+
+        self.assertEqual(delete_response.status_code, 200)
+        team.refresh_from_db()
+        registration.refresh_from_db()
+        self.assertFalse(team.is_active)
+        self.assertEqual(registration.team_id, team.id)
+
+        restore_response = self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 2, "restore_archived_slots": True},
+            format="json",
+        )
+
+        self.assertEqual(restore_response.status_code, 200)
+        team.refresh_from_db()
+        registration.refresh_from_db()
+        self.assertTrue(team.is_active)
+        self.assertEqual(registration.team_id, team.id)
+        self.assertEqual(self._active_team_names(tournament, division), ["Jan Kowalski", "Drużyna 2"])

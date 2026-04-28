@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from django.contrib.auth import get_user_model
-from django.db import transaction
+from django.db import models, transaction
 from rest_framework import serializers
 
 from tournaments.models import (
@@ -130,6 +130,82 @@ def _division_summary_payload(division: Division) -> dict:
         "is_archived": division.is_archived,
         "status": division.status,
     }
+
+
+def _division_has_result_progress(division: Division) -> bool:
+    match_progress = Match.objects.filter(
+        tournament=division.tournament,
+        stage__division=division,
+        stage__is_archived=False,
+    ).filter(
+        models.Q(result_entered=True)
+        | models.Q(status__in=(Match.Status.IN_PROGRESS, Match.Status.FINISHED))
+    )
+    if match_progress.exists():
+        return True
+
+    if StageMassStartResult.objects.filter(
+        stage__tournament=division.tournament,
+        stage__division=division,
+        stage__is_archived=False,
+        is_active=True,
+    ).exists():
+        return True
+
+    return False
+
+
+
+def _mass_start_config_change_requires_confirmation(
+    division: Division,
+    new_payload: dict | None,
+) -> bool:
+    if not new_payload:
+        return True
+
+    old_cfg = division.get_result_config() if hasattr(division, "get_result_config") else dict(division.result_config or {})
+    new_cfg = dict(new_payload.get("result_config") or {})
+
+    if (
+        new_payload.get("competition_model") != Tournament.CompetitionModel.MASS_START
+        or new_payload.get("result_mode") != Tournament.ResultMode.CUSTOM
+        or new_cfg.get(Tournament.RESULTCFG_CUSTOM_MODE_KEY) != Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED
+        or old_cfg.get(Tournament.RESULTCFG_CUSTOM_MODE_KEY) != Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED
+    ):
+        return True
+
+    comparable_keys = (
+        Tournament.RESULTCFG_VALUE_KIND_KEY,
+        Tournament.RESULTCFG_STAGE_STRUCTURE_MODE_KEY,
+        Tournament.RESULTCFG_BETTER_RESULT_KEY,
+        Tournament.RESULTCFG_TIME_FORMAT_KEY,
+    )
+    for key in comparable_keys:
+        if old_cfg.get(key) != new_cfg.get(key):
+            return True
+
+    active_stages = list(
+        Stage.objects.filter(
+            tournament=division.tournament,
+            division=division,
+            stage_type=Stage.StageType.MASS_START,
+            is_archived=False,
+        ).order_by("order", "id")
+    )
+    target_count = len(list(new_cfg.get(Tournament.RESULTCFG_STAGES_KEY) or []))
+
+    removed_stage_ids = [
+        stage.id
+        for stage in active_stages
+        if int(stage.order or 0) > target_count
+    ]
+    if removed_stage_ids and StageMassStartResult.objects.filter(
+        stage_id__in=removed_stage_ids,
+        is_active=True,
+    ).exists():
+        return True
+
+    return False
 
 
 def _extract_requested_division_ref(serializer: serializers.ModelSerializer) -> tuple[int | None, str | None]:
@@ -450,6 +526,8 @@ class TournamentSerializer(serializers.ModelSerializer):
     division_id = serializers.IntegerField(required=False, write_only=True)
     division_slug = serializers.CharField(required=False, write_only=True)
     division_name = serializers.CharField(required=False, write_only=True, allow_blank=False, max_length=120)
+    confirmed_destructive_change = serializers.BooleanField(required=False, write_only=True, default=False)
+    restore_archived_mass_start = serializers.BooleanField(required=False, write_only=True, default=False)
 
     active_division_id = serializers.SerializerMethodField()
     active_division_slug = serializers.SerializerMethodField()
@@ -676,16 +754,28 @@ class TournamentSerializer(serializers.ModelSerializer):
                 }
             )
 
+        confirmed_change = bool(attrs.get("confirmed_destructive_change"))
+        restore_archived_mass_start = bool(attrs.get("restore_archived_mass_start"))
+        requires_progress_confirmation = (
+            _mass_start_config_change_requires_confirmation(division, normalized_division_config)
+            if division is not None
+            else True
+        )
+
         if (
             division is not None
             and division.status != Tournament.Status.DRAFT
             and any(field in attrs for field in DIVISION_CONFIG_FIELDS)
+            and _division_has_result_progress(division)
+            and requires_progress_confirmation
+            and not confirmed_change
+            and not restore_archived_mass_start
         ):
             raise serializers.ValidationError(
                 {
                     "detail": (
-                        "Zmiana konfiguracji aktywnej dywizji po wygenerowaniu rozgrywek wymaga resetu "
-                        "etapów i meczów tej dywizji. Użyj dedykowanego endpointu resetu setupu."
+                        "Zmiana konfiguracji aktywnej dywizji po wprowadzeniu wyników wymaga resetu "
+                        "danych wynikowych tej dywizji."
                     )
                 }
             )
@@ -734,6 +824,9 @@ class TournamentSerializer(serializers.ModelSerializer):
         if discipline != Tournament.Discipline.CUSTOM:
             validated_data["custom_discipline_name"] = None
 
+        validated_data.pop("confirmed_destructive_change", None)
+        validated_data.pop("restore_archived_mass_start", None)
+
         tournament = super().create(validated_data)
 
         division_payload = division_payload or _normalize_division_config(
@@ -780,6 +873,8 @@ class TournamentSerializer(serializers.ModelSerializer):
         validated_data.pop("division_id", None)
         validated_data.pop("division_slug", None)
         validated_data.pop("division_name", None)
+        validated_data.pop("confirmed_destructive_change", None)
+        validated_data.pop("restore_archived_mass_start", None)
 
         # Konfiguracja sportowa jest utrzymywana w aktywnej dywizji, a nie w rekordzie turnieju.
         for field in DIVISION_CONFIG_FIELDS:
@@ -994,7 +1089,7 @@ class TournamentSerializer(serializers.ModelSerializer):
         ).exclude(team__name=BYE_TEAM_NAME)
         players_count = players_qs.count()
 
-        stages_qs = Stage.objects.filter(tournament=obj)
+        stages_qs = Stage.objects.filter(tournament=obj, is_archived=False)
         stages_total = stages_qs.count()
         stages_closed = stages_qs.filter(status=Stage.Status.CLOSED).count()
         stage_progress_label = f"{stages_closed}/{stages_total}"
@@ -1026,7 +1121,7 @@ class TournamentSerializer(serializers.ModelSerializer):
                 "secondary_progress_label": f"{matches_finished}/{matches_total}",
             }
 
-        mass_start_stages = Stage.objects.filter(tournament=obj, stage_type=Stage.StageType.MASS_START).order_by("order", "id")
+        mass_start_stages = Stage.objects.filter(tournament=obj, stage_type=Stage.StageType.MASS_START, is_archived=False).order_by("order", "id")
         progress_current = 0
         progress_total = 0
 
@@ -1065,7 +1160,7 @@ class TournamentSerializer(serializers.ModelSerializer):
         stages_payload = []
         groups_payload = []
 
-        stages_qs = obj.stages.all()
+        stages_qs = obj.stages.filter(is_archived=False)
         if division is not None:
             stages_qs = stages_qs.filter(division=division)
 
@@ -1178,7 +1273,7 @@ class TournamentMetaUpdateSerializer(serializers.ModelSerializer):
 
     def _validate_schedule_entries(self, stage_schedule, group_schedule, *, start, end):
         division = self._get_active_division()
-        stages_qs = self.instance.stages.all()
+        stages_qs = self.instance.stages.filter(is_archived=False)
         if division is not None:
             stages_qs = stages_qs.filter(division=division)
 
@@ -1212,7 +1307,7 @@ class TournamentMetaUpdateSerializer(serializers.ModelSerializer):
         instance = super().update(instance, validated_data)
         division = self._get_active_division()
 
-        stages_qs = instance.stages.all()
+        stages_qs = instance.stages.filter(is_archived=False)
         if division is not None:
             stages_qs = stages_qs.filter(division=division)
 

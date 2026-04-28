@@ -3,7 +3,6 @@
 
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 import {
   ChevronDown,
   ChevronUp,
@@ -18,7 +17,8 @@ import {
   COMPETITION_TYPE_LABELS,
   DISCIPLINE_LABELS,
   HEAD_TO_HEAD_MODE_LABELS,
-  RESULT_VALUE_KIND_LABELS, STAGE_STRUCTURE_MODE_LABELS,
+  RESULT_VALUE_KIND_LABELS,
+  STAGE_STRUCTURE_MODE_LABELS,
   TENNIS_POINTS_MODE_LABELS,
   TIME_FORMAT_LABELS,
   TOURNAMENT_FORMAT_LABELS,
@@ -32,9 +32,10 @@ import { Button } from "../../ui/Button";
 import { Card } from "../../ui/Card";
 import { InlineAlert } from "../../ui/InlineAlert";
 import { Input } from "../../ui/Input";
-import { Portal } from "../../ui/Portal";
 import { Select, type SelectOption } from "../../ui/Select";
 import { Textarea } from "../../ui/Textarea";
+
+import ConfirmChangeModal from "../../components/ConfirmChangeModal";
 const WRESTLING_STYLE_OPTIONS = [
   { value: "FREESTYLE", label: WRESTLING_STYLE_LABELS.FREESTYLE },
   { value: "GRECO_ROMAN", label: WRESTLING_STYLE_LABELS.GRECO_ROMAN },
@@ -70,6 +71,7 @@ export type CustomBetterResult = "HIGHER" | "LOWER";
 export type CustomTimeFormat = "HH:MM:SS" | "MM:SS" | "MM:SS.hh" | "SS.hh";
 export type CustomAggregationMode = "SUM" | "AVERAGE" | "BEST" | "LAST_ROUND";
 export type CustomStageStructureMode = "REDUCTION" | "MULTI_EVENT";
+export type MultiEventOverallMode = "POINTS_BY_RANK" | "SUM_RANKS" | "SUM_RESULTS";
 export type CustomUnitPreset =
   | "POINTS"
   | "SECONDS"
@@ -138,6 +140,7 @@ export type TournamentResultConfig = {
   massStartRoundsCount: number;
   massStartAggregationMode: CustomAggregationMode;
   stageStructureMode: CustomStageStructureMode;
+  multiEventOverallMode: MultiEventOverallMode;
   stages: CustomStageConfig[];
 };
 
@@ -409,6 +412,10 @@ function headToHeadModeLabel(v?: CustomHeadToHeadMode) {
 }
 
 function massStartValueKindLabel(v?: CustomMassStartValueKind) {
+  return getLabel(RESULT_VALUE_KIND_LABELS, v, "-");
+}
+
+function stageStructureModeLabel(v?: CustomStageStructureMode) {
   return getLabel(STAGE_STRUCTURE_MODE_LABELS, v, "-");
 }
 
@@ -531,7 +538,18 @@ const BOOLEAN_SELECT_OPTIONS: SelectOption<BooleanSelectValue>[] = [
 
 const ACTIVE_STAGES_OPTIONS: SelectOption<number>[] = Array.from({ length: MAX_CUSTOM_STAGE_LEVELS }, (_, i) => ({ value: i + 1, label: `${i + 1} ${i === 0 ? "etap" : i < 4 ? "etapy" : "etapów"}` }));
 const STAGE_STRUCTURE_MODE_OPTIONS: SelectOption<CustomStageStructureMode>[] = [{ value: "REDUCTION", label: STAGE_STRUCTURE_MODE_LABELS.REDUCTION }, { value: "MULTI_EVENT", label: STAGE_STRUCTURE_MODE_LABELS.MULTI_EVENT }];
-void STAGE_STRUCTURE_MODE_OPTIONS;
+
+const MULTI_EVENT_OVERALL_MODE_LABELS: Record<MultiEventOverallMode, string> = {
+  POINTS_BY_RANK: "Punkty za miejsca",
+  SUM_RANKS: "Suma miejsc",
+  SUM_RESULTS: "Suma wyników",
+};
+
+const MULTI_EVENT_OVERALL_MODE_OPTIONS: SelectOption<MultiEventOverallMode>[] = [
+  { value: "POINTS_BY_RANK", label: MULTI_EVENT_OVERALL_MODE_LABELS.POINTS_BY_RANK },
+  { value: "SUM_RANKS", label: MULTI_EVENT_OVERALL_MODE_LABELS.SUM_RANKS },
+  { value: "SUM_RESULTS", label: MULTI_EVENT_OVERALL_MODE_LABELS.SUM_RESULTS },
+];
 
 function boolToSelectValue(value: boolean): BooleanSelectValue {
   return value ? "YES" : "NO";
@@ -542,11 +560,10 @@ function selectValueToBool(value: BooleanSelectValue): boolean {
 }
 
 function getActiveStagesCount(stages: CustomStageConfig[]) {
-  const stage3 = stages[2];
-  if (stage3?.participantsCount != null) return 3;
-
-  const stage2 = stages[1];
-  if (stage2?.participantsCount != null) return 2;
+  for (let index = Math.min(stages.length, MAX_CUSTOM_STAGE_LEVELS) - 1; index >= 0; index -= 1) {
+    const stage = stages[index];
+    if (stage?.participantsCount != null || stage?.advanceCount != null) return index + 1;
+  }
 
   return 1;
 }
@@ -560,11 +577,18 @@ function getStageWarnings(
   index: number,
   activeStagesCount: number,
   totalParticipants: number,
-  previousStage: CustomStageConfig | null
+  previousStage: CustomStageConfig | null,
+  stageStructureMode: CustomStageStructureMode
 ) {
   const warnings: string[] = [];
-  const effectiveParticipants = index === 0 ? totalParticipants : previousStage?.advanceCount ?? previousStage?.participantsCount ?? totalParticipants;
+  const isMultiEvent = stageStructureMode === "MULTI_EVENT";
+  const effectiveParticipants = isMultiEvent
+    ? stage.participantsCount ?? totalParticipants
+    : index === 0
+      ? totalParticipants
+      : previousStage?.advanceCount ?? previousStage?.participantsCount ?? totalParticipants;
   const minParticipants = getStageMinParticipants(stage.groupsCount);
+  const itemLabel = isMultiEvent ? "konkurencji" : "etapu";
 
   if (index >= activeStagesCount) {
     return warnings;
@@ -575,7 +599,14 @@ function getStageWarnings(
   }
 
   if (effectiveParticipants < minParticipants) {
-    warnings.push(`Dla ${stage.groupsCount} grup potrzebujesz co najmniej ${minParticipants} uczestników.`);
+    warnings.push(`Dla ${stage.groupsCount} grup potrzebujesz co najmniej ${minParticipants} uczestników ${itemLabel}.`);
+  }
+
+  if (isMultiEvent) {
+    if (stage.advanceCount != null) {
+      warnings.push("W trybie wieloboju konkurencje nie przekazują awansu dalej.");
+    }
+    return warnings;
   }
 
   if (stage.advanceCount != null) {
@@ -631,7 +662,14 @@ function getStructureValidationMessages(params: {
     const activeStages = stages.slice(0, activeStagesCount);
 
     activeStages.forEach((stage, index) => {
-      messages.push(...getStageWarnings(stage, index, activeStagesCount, participants, index > 0 ? activeStages[index - 1] : null));
+      messages.push(...getStageWarnings(
+        stage,
+        index,
+        activeStagesCount,
+        participants,
+        index > 0 ? activeStages[index - 1] : null,
+        resultConfig.stageStructureMode
+      ));
     });
 
   }
@@ -1030,6 +1068,7 @@ function NumberInput({
 function StageCard({
   index,
   stage,
+  stageStructureMode,
   disabled,
   isLastActiveStage,
   stageWarnings,
@@ -1039,6 +1078,7 @@ function StageCard({
 }: {
   index: number;
   stage: CustomStageConfig;
+  stageStructureMode: CustomStageStructureMode;
   disabled?: boolean;
   isLastActiveStage: boolean;
   stageWarnings: string[];
@@ -1046,30 +1086,51 @@ function StageCard({
   previousStageParticipants: number;
   onChange: (patch: Partial<CustomStageConfig>) => void;
 }) {
-  const effectiveParticipants = index === 0 ? totalParticipants : Math.max(0, previousStageParticipants);
+  const isMultiEvent = stageStructureMode === "MULTI_EVENT";
+  const effectiveParticipants = isMultiEvent
+    ? stage.participantsCount ?? totalParticipants
+    : index === 0
+      ? totalParticipants
+      : Math.max(0, previousStageParticipants);
   const minParticipants = getStageMinParticipants(stage.groupsCount);
-  const maxParticipants = Math.max(2, effectiveParticipants);
+  const maxParticipants = Math.max(2, isMultiEvent ? totalParticipants : effectiveParticipants);
+  const titlePrefix = isMultiEvent ? "Konkurencja" : "Etap";
+  const defaultName = isMultiEvent
+    ? `Konkurencja ${index + 1}`
+    : index === 0
+      ? "Kwalifikacje"
+      : index === 1
+        ? "Półfinał"
+        : index === 2
+          ? "Finał"
+          : `Etap ${index + 1}`;
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
       <div className="mb-4 flex items-center gap-2">
         <Layers3 className="h-4 w-4 text-white/80" />
-        <div className="text-sm font-semibold text-white">Etap {index + 1}</div>
+        <div className="text-sm font-semibold text-white">
+          {titlePrefix} {index + 1}
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div className="space-y-2">
-          <div className="text-xs font-semibold text-slate-300">Nazwa etapu</div>
+          <div className="text-xs font-semibold text-slate-300">
+            {isMultiEvent ? "Nazwa konkurencji" : "Nazwa etapu"}
+          </div>
           <Input
             value={stage.name}
             disabled={disabled}
             onChange={(e) => onChange({ name: e.target.value })}
-            placeholder={`Np. ${index === 0 ? "Kwalifikacje" : index === 1 ? "Półfinał" : "Finał"}`}
+            placeholder={`Np. ${defaultName}`}
           />
         </div>
 
         <div className="space-y-2">
-          <div className="text-xs font-semibold text-slate-300">Liczba grup</div>
+          <div className="text-xs font-semibold text-slate-300">
+            {isMultiEvent ? "Liczba grup / serii" : "Liczba grup"}
+          </div>
           <NumberInput
             value={stage.groupsCount}
             min={1}
@@ -1083,41 +1144,49 @@ function StageCard({
         </div>
 
         <div className="space-y-2">
-          <div className="text-xs font-semibold text-slate-300">Liczba uczestników w etapie</div>
+          <div className="text-xs font-semibold text-slate-300">
+            {isMultiEvent ? "Liczba uczestników w konkurencji" : "Liczba uczestników w etapie"}
+          </div>
           <NumberInput
             value={effectiveParticipants}
-            min={index === 0 ? totalParticipants : minParticipants}
+            min={isMultiEvent ? 1 : index === 0 ? totalParticipants : minParticipants}
             max={maxParticipants}
-            disabled
-            onChange={() => undefined}
-            placeholder="Liczba wyliczana automatycznie"
+            disabled={disabled || !isMultiEvent}
+            onChange={(next) => onChange({ participantsCount: Math.max(1, next ?? 1) })}
+            placeholder={isMultiEvent ? "Np. 16" : "Liczba wyliczana automatycznie"}
           />
           <div className="text-xs text-slate-400">
-            {index === 0
-              ? "Pierwszy etap zawsze startuje z pełną liczbą uczestników turnieju."
-              : "Ta wartość wynika z liczby awansujących z poprzedniego etapu."}
+            {isMultiEvent
+              ? "Można wpisać mniejszą liczbę, jeżeli uczestnik nie startuje w tej konkurencji."
+              : index === 0
+                ? "Pierwszy etap zawsze startuje z pełną liczbą uczestników turnieju."
+                : "Ta wartość wynika z liczby awansujących z poprzedniego etapu."}
           </div>
         </div>
 
-        <div className="space-y-2">
-          <div className="text-xs font-semibold text-slate-300">Ilu przechodzi dalej łącznie</div>
-          <NumberInput
-            value={stage.advanceCount}
-            min={1}
-            max={stage.participantsCount ?? maxParticipants}
-            disabled={disabled || isLastActiveStage}
-            onChange={(next) => onChange({ advanceCount: isLastActiveStage ? null : next })}
-            placeholder={isLastActiveStage ? "Ostatni etap - puste" : "Np. 20"}
-          />
-          <div className="text-xs text-slate-400">
-            {isLastActiveStage
-              ? "Ostatni aktywny etap nie przekazuje awansu dalej."
-              : "Podaj łączną liczbę awansujących do następnego etapu."}
+        {!isMultiEvent && (
+          <div className="space-y-2">
+            <div className="text-xs font-semibold text-slate-300">Ilu przechodzi dalej łącznie</div>
+            <NumberInput
+              value={stage.advanceCount}
+              min={1}
+              max={stage.participantsCount ?? maxParticipants}
+              disabled={disabled || isLastActiveStage}
+              onChange={(next) => onChange({ advanceCount: isLastActiveStage ? null : next })}
+              placeholder={isLastActiveStage ? "Ostatni etap - puste" : "Np. 20"}
+            />
+            <div className="text-xs text-slate-400">
+              {isLastActiveStage
+                ? "Ostatni aktywny etap nie przekazuje awansu dalej."
+                : "Podaj łączną liczbę awansujących do następnego etapu."}
+            </div>
           </div>
-        </div>
+        )}
 
         <div className="space-y-2">
-          <div className="text-xs font-semibold text-slate-300">Rundy / próby w etapie</div>
+          <div className="text-xs font-semibold text-slate-300">
+            {isMultiEvent ? "Próby / rundy" : "Rundy / próby w etapie"}
+          </div>
           <NumberInput
             value={stage.roundsCount}
             min={1}
@@ -1126,12 +1195,11 @@ function StageCard({
             onChange={(next) => onChange({ roundsCount: Math.max(1, next ?? 1) })}
           />
         </div>
-
       </div>
 
       {stageWarnings.length > 0 && (
         <div className="mt-4">
-          <InlineAlert variant="warning" title="Sprawdź ustawienia etapu">
+          <InlineAlert variant="warning" title={isMultiEvent ? "Sprawdź ustawienia konkurencji" : "Sprawdź ustawienia etapu"}>
             <ul className="list-disc space-y-1 pl-5">
               {stageWarnings.map((warning) => (
                 <li key={warning}>{warning}</li>
@@ -1162,46 +1230,17 @@ export function ConfirmModal({
   onCancel: () => void;
 }) {
   return (
-    <AnimatePresence>
-      {open && (
-        <Portal>
-          <motion.div
-            key="confirm-overlay"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            onClick={onCancel}
-          >
-            <div className="absolute inset-0 bg-black/60" />
-
-            <motion.div
-              key="confirm-modal"
-              initial={{ opacity: 0, y: 10, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 10, scale: 0.98 }}
-              transition={{ duration: 0.18 }}
-              className="relative w-full max-w-md"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <Card className="p-5">
-                <div className="space-y-2">
-                  <div className="text-base font-semibold text-slate-100">{title}</div>
-                  <div className="whitespace-pre-wrap text-sm text-slate-300">{message}</div>
-                </div>
-
-                <div className="mt-5 flex items-center justify-end gap-2">
-                  <Button variant="secondary" onClick={onCancel}>
-                    {cancelLabel}
-                  </Button>
-                  <Button onClick={onConfirm}>{confirmLabel}</Button>
-                </div>
-              </Card>
-            </motion.div>
-          </motion.div>
-        </Portal>
-      )}
-    </AnimatePresence>
+    <ConfirmChangeModal
+      open={open}
+      title={title}
+      description={message}
+      confirmLabel={confirmLabel}
+      cancelLabel={cancelLabel}
+      confirmVariant="primary"
+      question=""
+      onConfirm={onConfirm}
+      onCancel={onCancel}
+    />
   );
 }
 
@@ -1400,6 +1439,8 @@ export function StructureCard({
   onMassStartAllowTiesChange,
   onMassStartRoundsCountChange,
   onMassStartAggregationModeChange,
+  onStageStructureModeChange,
+  onMultiEventOverallModeChange,
   onStageChange,
 }: {
   isTournamentCreated: boolean;
@@ -1533,6 +1574,8 @@ export function StructureCard({
   onMassStartAllowTiesChange?: (v: boolean) => void;
   onMassStartRoundsCountChange?: (v: number | null) => void;
   onMassStartAggregationModeChange?: (v: CustomAggregationMode) => void;
+  onStageStructureModeChange?: (v: CustomStageStructureMode) => void;
+  onMultiEventOverallModeChange?: (v: MultiEventOverallMode) => void;
 
   onStageChange?: (stageId: string, patch: Partial<CustomStageConfig>) => void;
 }) {
@@ -1561,6 +1604,8 @@ export function StructureCard({
 
   const thirdPlaceValue = getThirdPlaceSelectValue(thirdPlace, thirdPlaceMatches);
   const activeStagesCount = getActiveStagesCount(resultConfig.stages);
+  const stageStructureMode = resultConfig.stageStructureMode ?? "REDUCTION";
+  const isMultiEventStructure = stageStructureMode === "MULTI_EVENT";
   const validationMessages = getStructureValidationMessages({
     discipline,
     participants,
@@ -1645,8 +1690,61 @@ export function StructureCard({
     onThirdPlaceMatchesChange(2);
   };
 
+  const handleStageStructureModeChange = (value: CustomStageStructureMode) => {
+    onStageStructureModeChange?.(value);
+
+    if (!onStageChange) {
+      return;
+    }
+
+    const defaults = getDefaultStages(value);
+    const activeCount = getActiveStagesCount(resultConfig.stages);
+    let previousStageAdvanceOrParticipants = participants;
+
+    resultConfig.stages.forEach((stage, index) => {
+      if (index >= activeCount) {
+        onStageChange(stage.id, {
+          participantsCount: null,
+          advanceCount: null,
+          name: defaults[index].name,
+          groupsCount: 1,
+          roundsCount: 1,
+          aggregationMode: defaults[index].aggregationMode,
+          contributesToFinalRanking: false,
+        });
+        return;
+      }
+
+      if (value === "MULTI_EVENT") {
+        onStageChange(stage.id, {
+          participantsCount: stage.participantsCount ?? participants,
+          advanceCount: null,
+          name: stage.name || defaults[index].name,
+          contributesToFinalRanking: true,
+        });
+        return;
+      }
+
+      const participantsCount = index === 0 ? participants : previousStageAdvanceOrParticipants;
+      const advanceCount =
+        index === activeCount - 1
+          ? null
+          : stage.advanceCount ?? Math.max(2, Math.floor(participantsCount / 2));
+
+      onStageChange(stage.id, {
+        participantsCount,
+        advanceCount,
+        name: stage.name || defaults[index].name,
+        contributesToFinalRanking: index === activeCount - 1,
+      });
+
+      previousStageAdvanceOrParticipants = advanceCount ?? participantsCount;
+    });
+  };
+
   const handleActiveStagesChange = (value: number) => {
-    const defaults = getDefaultStages();
+    const safeValue = Math.max(1, Math.min(MAX_CUSTOM_STAGE_LEVELS, Math.trunc(value)));
+    const defaults = getDefaultStages(stageStructureMode);
 
     if (!onStageChange) {
       return;
@@ -1655,7 +1753,7 @@ export function StructureCard({
     let previousStageAdvanceOrParticipants = participants;
 
     resultConfig.stages.forEach((stage, index) => {
-      if (index >= value) {
+      if (index >= safeValue) {
         onStageChange(stage.id, {
           participantsCount: null,
           advanceCount: null,
@@ -1663,14 +1761,24 @@ export function StructureCard({
           groupsCount: 1,
           roundsCount: 1,
           aggregationMode: defaults[index].aggregationMode,
-          contributesToFinalRanking: defaults[index].contributesToFinalRanking,
+          contributesToFinalRanking: false,
+        });
+        return;
+      }
+
+      if (stageStructureMode === "MULTI_EVENT") {
+        onStageChange(stage.id, {
+          participantsCount: stage.participantsCount ?? participants,
+          advanceCount: null,
+          name: stage.name || defaults[index].name,
+          contributesToFinalRanking: true,
         });
         return;
       }
 
       const participantsCount = index === 0 ? participants : previousStageAdvanceOrParticipants;
       const advanceCount =
-        index === value - 1
+        index === safeValue - 1
           ? null
           : stage.advanceCount ?? Math.max(2, Math.floor(participantsCount / 2));
 
@@ -1678,7 +1786,7 @@ export function StructureCard({
         participantsCount,
         advanceCount,
         name: stage.name || defaults[index].name,
-        contributesToFinalRanking: index === value - 1,
+        contributesToFinalRanking: index === safeValue - 1,
       });
 
       previousStageAdvanceOrParticipants = advanceCount ?? participantsCount;
@@ -2363,15 +2471,41 @@ export function StructureCard({
 
           <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className="space-y-2">
-              <div className="text-xs font-semibold text-slate-300">Liczba aktywnych etapów</div>
+              <div className="text-xs font-semibold text-slate-300">Typ struktury</div>
+              <Select<CustomStageStructureMode>
+                value={stageStructureMode}
+                disabled={disableForm}
+                onChange={handleStageStructureModeChange}
+                options={STAGE_STRUCTURE_MODE_OPTIONS}
+                ariaLabel="Typ struktury etapów"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs font-semibold text-slate-300">
+                {isMultiEventStructure ? "Liczba aktywnych konkurencji" : "Liczba aktywnych etapów"}
+              </div>
               <Select<number>
                 value={activeStagesCount}
                 disabled={disableForm}
                 onChange={handleActiveStagesChange}
                 options={ACTIVE_STAGES_OPTIONS}
-                ariaLabel="Liczba aktywnych etapów"
+                ariaLabel={isMultiEventStructure ? "Liczba aktywnych konkurencji" : "Liczba aktywnych etapów"}
               />
             </div>
+
+            {isMultiEventStructure && (
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-slate-300">Klasyfikacja łączna</div>
+                <Select<MultiEventOverallMode>
+                  value={resultConfig.multiEventOverallMode}
+                  disabled={disableForm}
+                  onChange={onMultiEventOverallModeChange ?? (() => undefined)}
+                  options={MULTI_EVENT_OVERALL_MODE_OPTIONS}
+                  ariaLabel="Metoda klasyfikacji łącznej"
+                />
+              </div>
+            )}
           </div>
 
           <div className="mt-4 space-y-4">
@@ -2387,6 +2521,7 @@ export function StructureCard({
                   key={stage.id}
                   index={index}
                   stage={stage}
+                  stageStructureMode={stageStructureMode}
                   disabled={disableForm}
                   isLastActiveStage={index === activeStagesCount - 1}
                   totalParticipants={participants}
@@ -2396,7 +2531,8 @@ export function StructureCard({
                     index,
                     activeStagesCount,
                     participants,
-                    index > 0 ? activeStages[index - 1] : null
+                    index > 0 ? activeStages[index - 1] : null,
+                    stageStructureMode
                   )}
                   onChange={(patch) => {
                     onStageChange?.(stage.id, patch);
@@ -2405,7 +2541,7 @@ export function StructureCard({
                       return;
                     }
 
-                    if (patch.advanceCount !== undefined) {
+                    if (stageStructureMode === "REDUCTION" && patch.advanceCount !== undefined) {
                       const nextStage = activeStages[index + 1];
                       if (nextStage) {
                         onStageChange(nextStage.id, {
@@ -2920,7 +3056,11 @@ export function SummaryCard({
                     label="Rundy domyślne"
                     value={`${resultConfig.massStartRoundsCount} • ${aggregationModeLabel(resultConfig.massStartAggregationMode)}`}
                   />
-                  <StatRow label="Liczba etapów" value={getActiveStagesCount(resultConfig.stages)} />
+                  <StatRow label="Tryb struktury" value={stageStructureModeLabel(resultConfig.stageStructureMode)} />
+                  <StatRow
+                    label={resultConfig.stageStructureMode === "MULTI_EVENT" ? "Liczba konkurencji" : "Liczba etapów"}
+                    value={getActiveStagesCount(resultConfig.stages)}
+                  />
                 </>
               )}
             </>
@@ -2930,7 +3070,7 @@ export function SummaryCard({
         {isCustomDiscipline && isMassStart && getActiveStagesCount(resultConfig.stages) > 0 && (
           <div className="mt-4 space-y-2">
             <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-              Etapy
+              {resultConfig.stageStructureMode === "MULTI_EVENT" ? "Konkurencje" : "Etapy"}
             </div>
 
             <div className="space-y-2">
@@ -2940,10 +3080,12 @@ export function SummaryCard({
                   className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2"
                 >
                   <div className="text-sm font-semibold text-white">
-                    {index + 1}. {stage.name || `Etap ${index + 1}`}
+                    {index + 1}. {stage.name || (resultConfig.stageStructureMode === "MULTI_EVENT" ? `Konkurencja ${index + 1}` : `Etap ${index + 1}`)}
                   </div>
                   <div className="mt-1 text-xs leading-relaxed text-slate-300">
-                    grupy: {stage.groupsCount} • uczestnicy: {stage.participantsCount ?? "-"} • awans: {stage.advanceCount ?? "-"} • rundy: {stage.roundsCount}
+                    {resultConfig.stageStructureMode === "MULTI_EVENT"
+                      ? `grupy/serie: ${stage.groupsCount} • uczestnicy: ${stage.participantsCount ?? "-"} • próby: ${stage.roundsCount}`
+                      : `grupy: ${stage.groupsCount} • uczestnicy: ${stage.participantsCount ?? "-"} • awans: ${stage.advanceCount ?? "-"} • rundy: ${stage.roundsCount}`}
                   </div>
                 </div>
               ))}
@@ -2963,39 +3105,25 @@ export function SummaryCard({
   );
 }
 
-export function getDefaultStages(): CustomStageConfig[] {
-  return [
-    {
-      id: "stage-1",
-      name: "Etap 1",
-      groupsCount: 1,
-      participantsCount: null,
-      advanceCount: null,
-      roundsCount: 1,
-      aggregationMode: "BEST",
-      contributesToFinalRanking: false,
-    },
-    {
-      id: "stage-2",
-      name: "Etap 2",
-      groupsCount: 1,
-      participantsCount: null,
-      advanceCount: null,
-      roundsCount: 1,
-      aggregationMode: "BEST",
-      contributesToFinalRanking: false,
-    },
-    {
-      id: "stage-3",
-      name: "Etap 3",
-      groupsCount: 1,
-      participantsCount: null,
-      advanceCount: null,
-      roundsCount: 1,
-      aggregationMode: "BEST",
-      contributesToFinalRanking: false,
-    },
-  ];
+function defaultStageName(index: number, stageStructureMode: CustomStageStructureMode) {
+  if (stageStructureMode === "MULTI_EVENT") return `Konkurencja ${index + 1}`;
+  if (index === 0) return "Kwalifikacje";
+  if (index === 1) return "Półfinał";
+  if (index === 2) return "Finał";
+  return `Etap ${index + 1}`;
+}
+
+export function getDefaultStages(stageStructureMode: CustomStageStructureMode = "REDUCTION"): CustomStageConfig[] {
+  return Array.from({ length: MAX_CUSTOM_STAGE_LEVELS }, (_, index) => ({
+    id: `stage-${index + 1}`,
+    name: defaultStageName(index, stageStructureMode),
+    groupsCount: 1,
+    participantsCount: null,
+    advanceCount: null,
+    roundsCount: 1,
+    aggregationMode: "BEST" as CustomAggregationMode,
+    contributesToFinalRanking: stageStructureMode === "MULTI_EVENT" ? index === 0 : false,
+  }));
 }
 
 export function getDefaultResultConfig(): TournamentResultConfig {
@@ -3041,37 +3169,7 @@ export function getDefaultResultConfig(): TournamentResultConfig {
     massStartRoundsCount: 1,
     massStartAggregationMode: "BEST",
     stageStructureMode: "REDUCTION",
-    stages: [
-      {
-        id: "stage-1",
-        name: "Etap 1",
-        groupsCount: 1,
-        participantsCount: null,
-        advanceCount: null,
-        roundsCount: 1,
-        aggregationMode: "BEST",
-        contributesToFinalRanking: false,
-      },
-      {
-        id: "stage-2",
-        name: "Etap 2",
-        groupsCount: 1,
-        participantsCount: null,
-        advanceCount: null,
-        roundsCount: 1,
-        aggregationMode: "BEST",
-        contributesToFinalRanking: false,
-      },
-      {
-        id: "stage-3",
-        name: "Etap 3",
-        groupsCount: 1,
-        participantsCount: null,
-        advanceCount: null,
-        roundsCount: 1,
-        aggregationMode: "BEST",
-        contributesToFinalRanking: false,
-      },
-    ],
+    multiEventOverallMode: "POINTS_BY_RANK",
+    stages: getDefaultStages("REDUCTION"),
   };
 }

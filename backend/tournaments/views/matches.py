@@ -620,8 +620,8 @@ def _apply_manual_result_via_goal_incidents_or_409(
         return Response(
             {
                 "detail": (
-                    f"Zmiana wyniku spowoduje usunięcie {len(delete_ids)} istniejących incydentów GOAL. "
-                    "Czy chcesz kontynuować?"
+                    f"Zapisanie wyniku wymaga usunięcia {len(delete_ids)} incydentów LIVE, "
+                    "które nie pasują do zapisywanego wyniku."
                 ),
                 "code": SCORE_SYNC_CONFIRM_REQUIRED,
                 "delete_count": len(delete_ids),

@@ -6,8 +6,9 @@ import { cn } from "../../lib/cn";
 import { Button } from "../../ui/Button";
 import { Card } from "../../ui/Card";
 import { InlineAlert } from "../../ui/InlineAlert";
-import { Portal } from "../../ui/Portal";
 import { Select, type SelectOption } from "../../ui/Select";
+
+import ConfirmChangeModal from "../ConfirmChangeModal";
 
 import {
   BreakMode,
@@ -91,6 +92,58 @@ function isWrestlingDiscipline(discipline: string): boolean {
   return String(discipline || "").toLowerCase() === "wrestling";
 }
 
+function scoringIncidentNoun(discipline: string) {
+  const normalized = String(discipline || "").trim().toLowerCase();
+
+  if (normalized === "basketball" || normalized === "wrestling") {
+    return {
+      singular: "incydent punktowy LIVE",
+      plural: "incydentów punktowych LIVE",
+    };
+  }
+
+  if (normalized === "football" || normalized === "handball") {
+    return {
+      singular: "incydent bramkowy LIVE",
+      plural: "incydentów bramkowych LIVE",
+    };
+  }
+
+  return {
+    singular: "incydent wynikowy LIVE",
+    plural: "incydentów wynikowych LIVE",
+  };
+}
+
+function scoringIncidentDeleteLabel(count: number, discipline: string): string {
+  const noun = scoringIncidentNoun(discipline);
+
+  if (count === 1) {
+    return `1 ${noun.singular}, który nie pasuje do zapisywanego wyniku`;
+  }
+
+  return `${count} ${noun.plural}, które nie pasują do zapisywanego wyniku`;
+}
+
+
+const SCORE_SYNC_SKIP_SESSION_KEY = "turniejepro.skipScoreSyncConfirm";
+
+function readSessionFlag(key: string): boolean {
+  if (typeof window === "undefined") return false;
+  return window.sessionStorage.getItem(key) === "1";
+}
+
+function writeSessionFlag(key: string, value: boolean) {
+  if (typeof window === "undefined") return;
+
+  if (value) {
+    window.sessionStorage.setItem(key, "1");
+    return;
+  }
+
+  window.sessionStorage.removeItem(key);
+}
+
 function getPeriodOptions(discipline: string): Array<{ value: ClockPeriod; label: string }> {
   if (isWrestlingDiscipline(discipline)) return WRESTLING_PERIOD_OPTIONS;
   return utilPeriodOptions(discipline) as Array<{ value: ClockPeriod; label: string }>;
@@ -153,6 +206,14 @@ export function ClockPanel({
 
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [pendingConfirmBusy, setPendingConfirmBusy] = useState(false);
+  const [skipScoreSyncConfirm, setSkipScoreSyncConfirmState] = useState(() =>
+    readSessionFlag(SCORE_SYNC_SKIP_SESSION_KEY)
+  );
+
+  const setSkipScoreSyncConfirm = useCallback((value: boolean) => {
+    setSkipScoreSyncConfirmState(value);
+    writeSessionFlag(SCORE_SYNC_SKIP_SESSION_KEY, value);
+  }, []);
 
   useEffect(() => {
     setBreakMode(readBreakMode(matchId));
@@ -416,8 +477,7 @@ export function ClockPanel({
     setPendingConfirm({
       kind: "RESET_CLOCK",
       title: "Reset zegara",
-      detail:
-        "Reset zresetuje zegar bieżącego okresu do jego początku (bez ingerencji w incydenty i wynik). Kontynuować?",
+      detail: "Reset zresetuje zegar bieżącego okresu do jego początku bez ingerencji w incydenty i wynik.",
       confirmLabel: "Resetuj",
     });
   }, [clock]);
@@ -453,10 +513,15 @@ export function ClockPanel({
         const data: any = await res.json().catch(() => ({}));
 
         if (res.status === 409 && !force && data?.code === "SCORE_SYNC_CONFIRM_REQUIRED") {
+          if (skipScoreSyncConfirm) {
+            await runFinish(true);
+            return;
+          }
+
           setPendingConfirm({
             kind: "FINISH_FORCE",
-            title: "Potwierdź zakończenie meczu",
-            detail: String(data?.detail || "Zmiana wyniku wymaga usunięcia części istniejących incydentów GOAL."),
+            title: "Synchronizacja wyniku z incydentami LIVE",
+            detail: String(data?.detail || "Zakończenie meczu wymaga usunięcia incydentów LIVE, które nie pasują do zapisywanego wyniku."),
             confirmLabel: "Skoryguj i zakończ",
             delete_count: Number(data?.delete_count || 0),
             delete_ids: Array.isArray(data?.delete_ids) ? data.delete_ids : undefined,
@@ -478,7 +543,7 @@ export function ClockPanel({
         setLoading(false);
       }
     },
-    [loadClock, matchId, onAfterRecompute, onRequestIncidentsReload]
+    [loadClock, matchId, onAfterRecompute, onRequestIncidentsReload, skipScoreSyncConfirm]
   );
 
   const handleFinish = useCallback(async () => {
@@ -526,58 +591,49 @@ export function ClockPanel({
   return (
     <Card className={cn("p-4", headerBg)}>
       {pendingConfirm ? (
-        <Portal>
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-            <div className="w-full max-w-[560px]">
-              <Card className="p-4 shadow-2xl">
-                <div className="text-base font-extrabold text-white">{pendingConfirm.title}</div>
-                <div className="mt-2 text-sm leading-6 text-slate-200">{pendingConfirm.detail}</div>
+        <ConfirmChangeModal
+          open={!!pendingConfirm}
+          title={pendingConfirm.title}
+          description={pendingConfirm.detail}
+          deleteItems={
+            pendingConfirm.kind === "FINISH_FORCE" && typeof pendingConfirm.delete_count === "number" && pendingConfirm.delete_count > 0
+              ? [scoringIncidentDeleteLabel(pendingConfirm.delete_count, discipline)]
+              : []
+          }
+          sessionCheckbox={
+            pendingConfirm.kind === "FINISH_FORCE"
+              ? {
+                  checked: skipScoreSyncConfirm,
+                  onChange: setSkipScoreSyncConfirm,
+                  label: "Nie pokazuj więcej podobnych synchronizacji w tej sesji",
+                  description:
+                    "Kolejne podobne synchronizacje zostaną wykonane automatycznie do końca bieżącej sesji.",
+                }
+              : undefined
+          }
+          confirmLabel={pendingConfirm.confirmLabel}
+          cancelLabel="Anuluj"
+          confirmVariant={pendingConfirm.kind === "FINISH_FORCE" ? "danger" : "primary"}
+          onCancel={() => (pendingConfirmBusy ? null : setPendingConfirm(null))}
+          onConfirm={async () => {
+            if (pendingConfirmBusy) return;
 
-                {"delete_count" in pendingConfirm && typeof pendingConfirm.delete_count === "number" ? (
-                  <div className="mt-3 text-sm text-slate-200">
-                    Do usunięcia: <span className="font-bold text-white">{pendingConfirm.delete_count}</span> incydentów GOAL.
-                  </div>
-                ) : null}
-
-                <div className="mt-4 flex items-center justify-end gap-2">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={() => (pendingConfirmBusy ? null : setPendingConfirm(null))}
-                    disabled={pendingConfirmBusy}
-                  >
-                    Anuluj
-                  </Button>
-
-                  <Button
-                    type="button"
-                    variant="primary"
-                    onClick={async () => {
-                      if (pendingConfirmBusy) return;
-
-                      setPendingConfirmBusy(true);
-                      try {
-                        if (pendingConfirm.kind === "FINISH_FORCE") {
-                          await runFinish(true);
-                        }
-                        if (pendingConfirm.kind === "RESET_CLOCK") {
-                          await runReset();
-                        }
-                        setPendingConfirm(null);
-                      } finally {
-                        setPendingConfirmBusy(false);
-                      }
-                    }}
-                    disabled={pendingConfirmBusy}
-                  >
-                    {pendingConfirm.confirmLabel}
-                  </Button>
-                </div>
-              </Card>
-            </div>
-          </div>
-        </Portal>
+            setPendingConfirmBusy(true);
+            try {
+              if (pendingConfirm.kind === "FINISH_FORCE") {
+                await runFinish(true);
+              }
+              if (pendingConfirm.kind === "RESET_CLOCK") {
+                await runReset();
+              }
+              setPendingConfirm(null);
+            } finally {
+              setPendingConfirmBusy(false);
+            }
+          }}
+        />
       ) : null}
+
 
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">

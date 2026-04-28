@@ -1,31 +1,37 @@
 // frontend/src/components/MassStartStageCard.tsx
-// Komponent renderuje pojedynczy etap MASS_START w stylistyce zbliżonej do MatchRow.
+// Komponent renderuje pojedynczy etap lub konkurencję MASS_START w widoku wprowadzania rezultatów.
 
 import { useMemo } from "react";
 
 import { Lock, Save, Trophy } from "lucide-react";
 
-import type {
-  MassStartEntryDTO,
-  MassStartStageDTO,
-  TournamentResultConfigDTO,
-} from "../types/results";
+import { cn } from "../lib/cn";
 
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { Input } from "../ui/Input";
-import { cn } from "../lib/cn";
 
+import type {
+  MassStartEntryDTO,
+  MassStartResultStatus,
+  MassStartStageDTO,
+  TournamentResultConfigDTO,
+} from "../types/results";
+
+type StageStructureMode = "REDUCTION" | "MULTI_EVENT";
 type ValueInputKind = "text" | "number";
 type ValueInputMode = "numeric" | "decimal";
 
 type Props = {
   stage: MassStartStageDTO;
   customResultConfig: TournamentResultConfigDTO;
+  stageStructureMode: StageStructureMode;
   canManageTournament: boolean;
   drafts: Record<string, string>;
+  statusDrafts: Record<string, MassStartResultStatus>;
   savingRows: Record<string, boolean>;
   onDraftChange: (key: string, value: string) => void;
+  onStatusDraftChange: (key: string, value: MassStartResultStatus) => void;
   onSaveEntry: (
     stage: MassStartStageDTO,
     groupId: number | null,
@@ -33,37 +39,86 @@ type Props = {
   ) => Promise<void>;
 };
 
+const RESULT_STATUS_OPTIONS: Array<{ value: MassStartResultStatus; label: string }> = [
+  { value: "OK", label: "Wynik" },
+  { value: "DNS", label: "DNS - nie wystartował" },
+  { value: "DNF", label: "DNF - nie ukończył" },
+  { value: "DSQ", label: "DSQ - dyskwalifikacja" },
+];
+
+// ===== Identyfikacja wpisów wynikowych =====
+
 function draftKey(stageId: number, groupId: number | null, teamId: number, roundNumber: number) {
   return `${stageId}:${groupId ?? 0}:${teamId}:${roundNumber}`;
 }
 
-function stageSummary(stage: MassStartStageDTO) {
+// ===== Prezentacja trybu etapów i konkurencji =====
+
+function isMultiEventMode(stageStructureMode: StageStructureMode) {
+  return stageStructureMode === "MULTI_EVENT";
+}
+
+function getRoundLabel(stageStructureMode: StageStructureMode) {
+  return isMultiEventMode(stageStructureMode) ? "Próba" : "Runda";
+}
+
+function getAggregateLabel(stageStructureMode: StageStructureMode) {
+  return isMultiEventMode(stageStructureMode) ? "Wynik konkurencji" : "Suma / wynik";
+}
+
+function stageSummary(stage: MassStartStageDTO, stageStructureMode: StageStructureMode) {
+  const roundsLabel = isMultiEventMode(stageStructureMode) ? "próby" : "rundy";
   const parts = [
     `grupy: ${stage.groups_count}`,
     `uczestnicy: ${stage.participants_count ?? "-"}`,
-    `awans: ${stage.advance_count ?? "-"}`,
-    `rundy: ${stage.rounds_count}`,
+    `${roundsLabel}: ${stage.rounds_count}`,
   ];
+
+  if (!isMultiEventMode(stageStructureMode)) {
+    parts.splice(2, 0, `awans: ${stage.advance_count ?? "-"}`);
+  }
+
   return parts.join(" • ");
 }
 
-function getStageStatusLabel(stage: MassStartStageDTO) {
+function getStageStatusLabel(stage: MassStartStageDTO, stageStructureMode: StageStructureMode) {
   const status = String(stage.stage_status ?? "").toUpperCase();
+
+  if (isMultiEventMode(stageStructureMode)) {
+    if (status === "CLOSED") return "Zamknięta";
+    if (status === "OPEN") return "Otwarta";
+    return "Dostępna";
+  }
 
   if (status === "CLOSED") return "Zamknięty";
   if (status === "PLANNED") return "Zaplanowany";
   return "Otwarty";
 }
 
-function isStageEditable(stage: MassStartStageDTO, canManageTournament: boolean) {
+// ===== Dostępność edycji rezultatów =====
+
+function isStageEditable(
+  stage: MassStartStageDTO,
+  canManageTournament: boolean,
+  stageStructureMode: StageStructureMode
+) {
+  if (!canManageTournament) return false;
+
   const status = String(stage.stage_status ?? "").toUpperCase();
-  return canManageTournament && (status === "" || status === "OPEN");
+
+  if (isMultiEventMode(stageStructureMode)) {
+    // Konkurencje w wieloboju nie są kolejnymi szczeblami awansu, dlatego status PLANNED nie blokuje edycji wyników.
+    return status !== "CLOSED";
+  }
+
+  return status === "" || status === "OPEN";
 }
 
-function getStageTone(stage: MassStartStageDTO) {
+function getStageTone(stage: MassStartStageDTO, stageStructureMode: StageStructureMode) {
   const status = String(stage.stage_status ?? "").toUpperCase();
+  const editableLike = isMultiEventMode(stageStructureMode) && status !== "CLOSED";
 
-  if (status === "OPEN") {
+  if (status === "OPEN" || editableLike) {
     return {
       card: "border-emerald-400/20 bg-emerald-500/[0.05]",
       badge: "border-emerald-400/30 bg-emerald-500/[0.10] text-emerald-100",
@@ -85,6 +140,26 @@ function getStageTone(stage: MassStartStageDTO) {
     dot: "bg-white/60",
   };
 }
+
+function getLockedMessage(stage: MassStartStageDTO, stageStructureMode: StageStructureMode) {
+  const status = String(stage.stage_status ?? "").toUpperCase();
+
+  if (isMultiEventMode(stageStructureMode)) {
+    if (status === "CLOSED") {
+      return "Ta konkurencja jest zamknięta. Wyniki są dostępne tylko do podglądu.";
+    }
+
+    return "Ta konkurencja nie jest obecnie otwarta do wprowadzania rezultatów.";
+  }
+
+  if (status === "CLOSED") {
+    return "Ten etap jest zamknięty. Wyniki są dostępne tylko do podglądu.";
+  }
+
+  return "Ten etap nie jest obecnie otwarty do wprowadzania rezultatów.";
+}
+
+// ===== Normalizacja wartości wyników =====
 
 function getValueMeta(config: TournamentResultConfigDTO) {
   const valueKind = String(config.value_kind ?? "NUMBER").toUpperCase();
@@ -125,6 +200,7 @@ function getEntryBusy(
 function hasAnySavedResult(entry: MassStartEntryDTO) {
   return entry.rounds.some(
     (round) =>
+      (round.result_status != null && round.result_status !== "OK") ||
       round.display_value ||
       round.numeric_value != null ||
       round.time_ms != null ||
@@ -164,36 +240,56 @@ function getEntryTone(stageEditable: boolean, entry: MassStartEntryDTO, rowBusy:
   };
 }
 
+function getStatusDisplay(resultStatus?: MassStartResultStatus | null) {
+  if (!resultStatus || resultStatus === "OK") return "";
+  return RESULT_STATUS_OPTIONS.find((option) => option.value === resultStatus)?.label ?? resultStatus;
+}
+
 function getRoundSavedLabel(
   round: MassStartEntryDTO["rounds"][number],
   valueKind: string,
   unitLabel: string
 ) {
+  const statusDisplay = getStatusDisplay(round.result_status);
+  if (statusDisplay) return `Zapisano: ${statusDisplay}`;
   if (round.display_value) return `Zapisano: ${round.display_value}`;
   if (valueKind === "TIME") return "Brak czasu";
   if (valueKind === "PLACE") return "Brak miejsca";
   return unitLabel ? `Brak wyniku (${unitLabel})` : "Brak wyniku";
 }
 
+// ===== Karta rezultatów MASS_START =====
+
 export default function MassStartStageCard({
   stage,
   customResultConfig,
+  stageStructureMode,
   canManageTournament,
   drafts,
+  statusDrafts,
   savingRows,
   onDraftChange,
+  onStatusDraftChange,
   onSaveEntry,
 }: Props) {
-  const stageEditable = isStageEditable(stage, canManageTournament);
-  const stageStatusLabel = getStageStatusLabel(stage);
-  const stageStatus = String(stage.stage_status ?? "").toUpperCase();
-  const tone = getStageTone(stage);
+  const stageEditable = isStageEditable(stage, canManageTournament, stageStructureMode);
+  const stageStatusLabel = getStageStatusLabel(stage, stageStructureMode);
+  const tone = getStageTone(stage, stageStructureMode);
+  const roundLabel = getRoundLabel(stageStructureMode);
+  const aggregateLabel = getAggregateLabel(stageStructureMode);
 
   const { valueKind, unitLabel, inputType, inputMode, placeholder } =
     getValueMeta(customResultConfig);
 
   const inputClass = cn(
     "h-9 w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 text-sm font-semibold text-white placeholder:text-slate-500",
+    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
+    "disabled:opacity-60",
+    "[color-scheme:dark]"
+  );
+
+  const selectClass = cn(
+    "h-9 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 text-sm font-semibold text-white",
     "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
     "disabled:opacity-60",
     "[color-scheme:dark]"
@@ -208,7 +304,9 @@ export default function MassStartStageCard({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="text-lg font-extrabold text-white">{stage.stage_name}</div>
-          <div className="mt-1 text-xs text-slate-400">{stageSummary(stage)}</div>
+          <div className="mt-1 text-xs text-slate-400">
+            {stageSummary(stage, stageStructureMode)}
+          </div>
         </div>
 
         <div
@@ -224,9 +322,7 @@ export default function MassStartStageCard({
 
       {!stageEditable ? (
         <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
-          {stageStatus === "CLOSED"
-            ? "Ten etap jest zamknięty. Wyniki są dostępne tylko do podglądu."
-            : "Ten etap nie jest obecnie otwarty do wprowadzania rezultatów."}
+          {getLockedMessage(stage, stageStructureMode)}
         </div>
       ) : null}
 
@@ -274,7 +370,9 @@ export default function MassStartStageCard({
                               <Trophy className="h-3.5 w-3.5" />
                               Miejsce: {entry.rank ?? "-"}
                             </span>
-                            <span>Suma / wynik: {entry.aggregate_display ?? "-"}</span>
+                            <span>
+                              {aggregateLabel}: {entry.aggregate_display ?? "-"}
+                            </span>
                           </div>
                         </div>
 
@@ -287,17 +385,33 @@ export default function MassStartStageCard({
                               round.round_number
                             );
                             const value = drafts[key] ?? "";
+                            const selectedStatus = statusDrafts[key] ?? round.result_status ?? "OK";
+                            const valueInputDisabled = !stageEditable || rowBusy || selectedStatus !== "OK";
 
                             return (
                               <label key={key} className="grid gap-1 text-xs text-slate-300">
-                                Runda {round.round_number}
+                                {roundLabel} {round.round_number}
+                                <select
+                                  value={selectedStatus}
+                                  onChange={(event) =>
+                                    onStatusDraftChange(key, event.target.value as MassStartResultStatus)
+                                  }
+                                  disabled={!stageEditable || rowBusy}
+                                  className={selectClass}
+                                >
+                                  {RESULT_STATUS_OPTIONS.map((option) => (
+                                    <option key={option.value} value={option.value}>
+                                      {option.label}
+                                    </option>
+                                  ))}
+                                </select>
                                 <Input
                                   value={value}
                                   onChange={(e) => onDraftChange(key, e.target.value)}
                                   type={inputType}
                                   inputMode={inputMode}
                                   placeholder={placeholder}
-                                  disabled={!stageEditable || rowBusy}
+                                  disabled={valueInputDisabled}
                                   className={inputClass}
                                 />
                                 <span className="text-[11px] text-slate-500">

@@ -46,6 +46,7 @@ from ._helpers import (
 )
 
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
+MAX_PARTICIPANTS_COUNT = 400
 
 
 # ===== Helpery kontekstu i uprawnień =====
@@ -223,6 +224,253 @@ def _team_name_prefix(
     return "Drużyna"
 
 
+# Flagi operacyjne są przesyłane z frontendu jako wartości boolowskie albo tekstowe.
+def _payload_bool(payload: Any, key: str, default: bool = False) -> bool:
+    if not hasattr(payload, "get"):
+        return default
+
+    value = payload.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+
+    normalized = str(value).strip().lower()
+    if normalized in ("1", "true", "yes", "tak", "on"):
+        return True
+    if normalized in ("0", "false", "no", "nie", "off"):
+        return False
+    return default
+
+
+def _slot_name_for_position(
+    tournament: Tournament,
+    division: Optional[Division],
+    position: int,
+) -> str:
+    return f"{_team_name_prefix(tournament, division)} {position}"
+
+
+def _registration_for_team(team: Team) -> Optional[TournamentRegistration]:
+    return (
+        TournamentRegistration.objects.filter(team=team)
+        .select_related("user")
+        .order_by("id")
+        .first()
+    )
+
+
+def _slot_has_registration(team: Team) -> bool:
+    if team.registered_user_id:
+        return True
+    return TournamentRegistration.objects.filter(team=team).exists()
+
+
+def _registered_slot_label(team: Team) -> str:
+    registration = _registration_for_team(team)
+    if registration is not None:
+        return registration.display_name or team.name
+    return team.name
+
+
+def _registered_slot_payload(team: Team) -> dict[str, Any]:
+    registration = _registration_for_team(team)
+    return {
+        "has_registration": bool(team.registered_user_id or registration),
+        "registered_user_id": team.registered_user_id or (registration.user_id if registration else None),
+        "registration_id": registration.id if registration else None,
+        "registration_display_name": registration.display_name if registration else None,
+    }
+
+
+def _serialize_team(team: Team) -> dict[str, Any]:
+    data = dict(TeamSerializer(team).data)
+    data.update(_registered_slot_payload(team))
+    data["is_registered_slot"] = bool(data.get("has_registration"))
+    return data
+
+
+def _serialize_teams(teams) -> list[dict[str, Any]]:
+    return [_serialize_team(team) for team in teams]
+
+
+def _clear_generated_structure_for_division(
+    tournament: Tournament,
+    division: Optional[Division],
+) -> None:
+    stages_qs = Stage.objects.filter(tournament=tournament)
+    if division is not None:
+        stages_qs = stages_qs.filter(division=division)
+    stages_qs.delete()
+
+
+def _is_default_slot_name(
+    team: Team,
+    tournament: Tournament,
+    division: Optional[Division],
+) -> bool:
+    prefix = _team_name_prefix(tournament, division)
+    normalized = _norm_name(team.name)
+    marker = f"{prefix} "
+
+    if not normalized.startswith(marker):
+        return False
+
+    return normalized[len(marker) :].isdigit()
+
+
+def _unique_slot_name(
+    *,
+    tournament: Tournament,
+    division: Optional[Division],
+    preferred_position: int,
+    ignored_team_id: Optional[int] = None,
+) -> str:
+    prefix = _team_name_prefix(tournament, division)
+    used_names = {
+        _norm_name(team.name).lower()
+        for team in _team_queryset(tournament, division, exclude_bye=True)
+        if ignored_team_id is None or team.id != ignored_team_id
+    }
+
+    position = max(1, preferred_position)
+    while True:
+        candidate = f"{prefix} {position}"
+        if candidate.lower() not in used_names:
+            return candidate
+        position += 1
+
+
+def _slot_restore_candidates(
+    *,
+    tournament: Tournament,
+    division: Optional[Division],
+    inactive_slots: list[Team],
+    requested_count: int,
+    active_before: int,
+) -> tuple[list[Team], list[Team]]:
+    needed_count = max(0, requested_count - active_before)
+    if needed_count == 0:
+        return [], []
+
+    silent_slots: list[Team] = []
+    prompted_slots: list[Team] = []
+
+    for team in inactive_slots:
+        if len(silent_slots) + len(prompted_slots) >= needed_count:
+            break
+
+        has_registration = _slot_has_registration(team)
+        has_custom_name = not _is_default_slot_name(team, tournament, division)
+
+        if has_registration or has_custom_name:
+            prompted_slots.append(team)
+        else:
+            silent_slots.append(team)
+
+    return silent_slots, prompted_slots
+
+
+# Archiwizacja slotów opiera się na dezaktywacji rekordów Team, dzięki czemu można przywrócić wcześniejsze nazwy.
+def _sync_participant_slots(
+    *,
+    tournament: Tournament,
+    division: Division,
+    requested_count: int,
+    restore_archived_slots: bool,
+) -> int:
+    _team_queryset(tournament, division).filter(name=BYE_TEAM_NAME).update(is_active=False)
+
+    all_real_teams = list(_team_queryset(tournament, division, exclude_bye=True).order_by("id"))
+    active_slots = [team for team in all_real_teams if team.is_active]
+    inactive_slots = [team for team in all_real_teams if not team.is_active]
+
+    target_slots = active_slots[:requested_count]
+    missing_count = requested_count - len(target_slots)
+    renamed_slots: dict[int, str] = {}
+
+    if missing_count > 0:
+        silent_slots, named_slots = _slot_restore_candidates(
+            tournament=tournament,
+            division=division,
+            inactive_slots=inactive_slots,
+            requested_count=requested_count,
+            active_before=len(active_slots),
+        )
+
+        for slot in silent_slots:
+            if missing_count <= 0:
+                break
+            position = len(target_slots) + 1
+            target_slots.append(slot)
+            missing_count -= 1
+            if slot.id is not None:
+                renamed_slots[slot.id] = _unique_slot_name(
+                    tournament=tournament,
+                    division=division,
+                    preferred_position=position,
+                    ignored_team_id=slot.id,
+                )
+
+        if restore_archived_slots:
+            for slot in named_slots:
+                if missing_count <= 0:
+                    break
+                target_slots.append(slot)
+                missing_count -= 1
+
+    if missing_count > 0:
+        name_prefix = _team_name_prefix(tournament, division)
+        used_names = {
+            _norm_name(team.name).lower()
+            for team in _team_queryset(tournament, division, exclude_bye=True)
+        }
+        start_position = len(target_slots) + 1
+        new_slots = []
+
+        for index in range(missing_count):
+            position = start_position + index
+            while True:
+                candidate = f"{name_prefix} {position}"
+                if candidate.lower() not in used_names:
+                    used_names.add(candidate.lower())
+                    new_slots.append(
+                        Team(
+                            tournament=tournament,
+                            division=division,
+                            name=candidate,
+                            is_active=True,
+                        )
+                    )
+                    break
+                position += 1
+
+        Team.objects.bulk_create(new_slots)
+
+    target_ids = {team.id for team in target_slots if team.id is not None}
+    changed = []
+    for team in all_real_teams:
+        should_be_active = team.id in target_ids
+        desired_name = renamed_slots.get(team.id)
+        if team.is_active != should_be_active or (desired_name is not None and team.name != desired_name):
+            team.is_active = should_be_active
+            if desired_name is not None:
+                team.name = desired_name
+            changed.append(team)
+
+    if changed:
+        Team.objects.bulk_update(changed, ["is_active", "name"])
+
+    return _team_queryset(
+        tournament,
+        division,
+        active_only=True,
+        exclude_bye=True,
+    ).count()
+
+
 # Serializacja jawna utrzymuje stały kontrakt odpowiedzi niezależnie od przyszłych zmian serializerów modelowych.
 def _serialize_player(player: TeamPlayer) -> dict[str, Any]:
     return {
@@ -256,6 +504,10 @@ class TournamentTeamListView(ListAPIView):
             active_only=True,
             exclude_bye=True,
         ).order_by("id")
+
+    def list(self, request, *args, **kwargs):
+        queryset = list(self.get_queryset())
+        return Response(_serialize_teams(queryset), status=status.HTTP_200_OK)
 
 
 class TournamentTeamUpdateView(APIView):
@@ -291,7 +543,134 @@ class TournamentTeamUpdateView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
-        return Response(TeamSerializer(team).data, status=status.HTTP_200_OK)
+        return Response(_serialize_team(team), status=status.HTTP_200_OK)
+
+    @transaction.atomic
+    def delete(self, request, pk, team_id):
+        tournament = get_object_or_404(Tournament, pk=pk)
+        division = _current_division(request, tournament)
+
+        if not can_edit_teams(request.user, tournament):
+            return Response(
+                {"detail": "Nie masz uprawnień do usuwania uczestników. Dostępny jest tylko podgląd."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        team = get_object_or_404(
+            _team_queryset(tournament, division, active_only=True),
+            pk=team_id,
+        )
+
+        if team.name == BYE_TEAM_NAME:
+            return Response(
+                {"detail": "Nie można usunąć technicznego wolnego losu."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        match_qs = Match.objects.filter(tournament=tournament, stage__is_archived=False)
+        if division is not None:
+            match_qs = match_qs.filter(stage__division=division)
+        match_qs = match_qs.filter(Q(home_team_id=team.id) | Q(away_team_id=team.id))
+
+        schedule_filter = (
+            Q(scheduled_date__isnull=False)
+            | Q(scheduled_time__isnull=False)
+            | (Q(location__isnull=False) & ~Q(location=""))
+        )
+
+        archive_messages: list[str] = []
+        if match_qs.filter(schedule_filter).exists():
+            archive_messages.append("dane harmonogramu powiązane z usuwanym miejscem")
+        if match_qs.filter(Q(result_entered=True) | Q(status__in=(Match.Status.IN_PROGRESS, Match.Status.FINISHED))).exists():
+            archive_messages.append("wprowadzone wyniki powiązane z usuwanym miejscem")
+
+        restore_items: list[dict[str, Any]] = []
+        if _slot_has_registration(team):
+            restore_items.append(
+                {
+                    "id": team.id,
+                    "name": team.name,
+                    "has_registration": True,
+                    "registration_label": _registered_slot_label(team),
+                }
+            )
+
+        dry_run = str(request.query_params.get("dry_run", "")).lower() in ("1", "true", "yes")
+        if dry_run:
+            return Response(
+                {
+                    "changed": True,
+                    "team_id": team.id,
+                    "team_name": team.name,
+                    "requires_confirmation": bool(archive_messages or restore_items),
+                    "archive_messages": archive_messages,
+                    "restore_available": bool(restore_items),
+                    "restore_items": restore_items,
+                    "detail": "Sprawdzenie usunięcia uczestnika zakończone.",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        active_before = _team_queryset(
+            tournament,
+            division,
+            active_only=True,
+            exclude_bye=True,
+        ).count()
+        had_structure = Stage.objects.filter(tournament=tournament, division=division).exists()
+
+        team.is_active = False
+        team.save(update_fields=["is_active"])
+
+        active_after = _team_queryset(
+            tournament,
+            division,
+            active_only=True,
+            exclude_bye=True,
+        ).count()
+
+        reset_done = False
+        if active_after < 2 and had_structure:
+            _clear_generated_structure_for_division(tournament, division)
+            if division is not None and division.status != Tournament.Status.DRAFT:
+                division.status = Tournament.Status.DRAFT
+                division.save(update_fields=["status"])
+            reset_done = True
+        elif active_after >= 2 and active_after != active_before and had_structure:
+            if division is not None and division.status != Tournament.Status.DRAFT:
+                division.status = Tournament.Status.DRAFT
+                division.save(update_fields=["status"])
+                reset_done = True
+            ensure_matches_generated(tournament=tournament, division=division)
+            if division is not None and division.status == Tournament.Status.DRAFT:
+                division.status = Tournament.Status.CONFIGURED
+                division.save(update_fields=["status"])
+
+        active_teams = _team_queryset(
+            tournament,
+            division,
+            active_only=True,
+            exclude_bye=True,
+        ).order_by("id")
+
+        detail = "Uczestnik został usunięty z aktywnej listy."
+        if active_after < 2:
+            detail += " Do wygenerowania rozgrywek potrzeba co najmniej dwóch aktywnych uczestników."
+        elif reset_done:
+            detail += " Rozgrywki tej dywizji zostały przebudowane."
+
+        return Response(
+            {
+                "detail": detail,
+                "reset_done": reset_done,
+                "division_id": division.id if division is not None else None,
+                "tournament": TournamentSerializer(tournament, context={"request": request, "division": division}).data,
+                "teams": _serialize_teams(active_teams),
+                "teams_count": active_after,
+                "removed_team_id": team.id,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 # ===== Operacje konfiguracji liczby uczestników =====
@@ -343,10 +722,85 @@ class TournamentTeamSetupView(APIView):
         except (TypeError, ValueError):
             return Response({"detail": "Nieprawidłowa liczba uczestników."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if requested_count < 2:
-            return Response({"detail": "Liczba uczestników musi wynosić co najmniej 2."}, status=status.HTTP_400_BAD_REQUEST)
+        if requested_count < 0:
+            return Response({"detail": "Liczba uczestników nie może być ujemna."}, status=status.HTTP_400_BAD_REQUEST)
+        if requested_count > MAX_PARTICIPANTS_COUNT:
+            return Response(
+                {"detail": f"Liczba uczestników nie może przekraczać {MAX_PARTICIPANTS_COUNT}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        _team_queryset(tournament, division).filter(name=BYE_TEAM_NAME).update(is_active=False)
+        dry_run = str(request.query_params.get("dry_run", "")).lower() in ("1", "true", "yes")
+        active_slots = list(
+            _team_queryset(
+                tournament,
+                division,
+                active_only=True,
+                exclude_bye=True,
+            ).order_by("id")
+        )
+        active_before = len(active_slots)
+
+        if dry_run:
+            removed_team_ids = [team.id for team in active_slots[requested_count:]]
+            inactive_slots = list(
+                _team_queryset(tournament, division, exclude_bye=True)
+                .filter(is_active=False)
+                .order_by("id")
+            )
+            _silent_restore_slots, restore_candidates = _slot_restore_candidates(
+                tournament=tournament,
+                division=division,
+                inactive_slots=inactive_slots,
+                requested_count=requested_count,
+                active_before=active_before,
+            )
+
+            match_qs = Match.objects.filter(tournament=tournament, stage__is_archived=False)
+            if division is not None:
+                match_qs = match_qs.filter(stage__division=division)
+            if removed_team_ids:
+                match_qs = match_qs.filter(Q(home_team_id__in=removed_team_ids) | Q(away_team_id__in=removed_team_ids))
+
+            schedule_filter = (
+                Q(scheduled_date__isnull=False)
+                | Q(scheduled_time__isnull=False)
+                | (Q(location__isnull=False) & ~Q(location=""))
+            )
+            archive_messages: list[str] = []
+            if requested_count < active_before and match_qs.filter(schedule_filter).exists():
+                archive_messages.append("dane harmonogramu powiązane z ukrywanymi miejscami")
+            if requested_count < active_before and match_qs.filter(
+                Q(result_entered=True) | Q(status__in=(Match.Status.IN_PROGRESS, Match.Status.FINISHED))
+            ).exists():
+                archive_messages.append("wprowadzone wyniki powiązane z ukrywanymi miejscami")
+
+            restore_items = [
+                {
+                    "id": team.id,
+                    "name": team.name,
+                    "position": active_before + index + 1,
+                    "has_registration": _slot_has_registration(team),
+                    "registration_label": _registered_slot_label(team) if _slot_has_registration(team) else None,
+                }
+                for index, team in enumerate(restore_candidates)
+            ]
+            restore_available = bool(restore_items)
+
+            return Response(
+                {
+                    "changed": requested_count != active_before,
+                    "current_count": active_before,
+                    "requested_count": requested_count,
+                    "reset_needed": bool(archive_messages),
+                    "requires_confirmation": bool(archive_messages or restore_available),
+                    "archive_messages": archive_messages,
+                    "restore_available": restore_available,
+                    "restore_items": restore_items,
+                    "detail": "Sprawdzenie zmiany liczby uczestników zakończone.",
+                },
+                status=status.HTTP_200_OK,
+            )
 
         active_before = _team_queryset(
             tournament,
@@ -355,45 +809,26 @@ class TournamentTeamSetupView(APIView):
             exclude_bye=True,
         ).count()
         had_structure = Stage.objects.filter(tournament=tournament, division=division).exists()
+        restore_archived_slots = _payload_bool(request.data, "restore_archived_slots", True)
 
-        all_real_teams = list(
-            _team_queryset(tournament, division, exclude_bye=True).order_by("id")
+        active_after = _sync_participant_slots(
+            tournament=tournament,
+            division=division,
+            requested_count=requested_count,
+            restore_archived_slots=restore_archived_slots,
         )
-        existing_total = len(all_real_teams)
-        name_prefix = _team_name_prefix(tournament, division)
-
-        if existing_total < requested_count:
-            Team.objects.bulk_create(
-                [
-                    Team(tournament=tournament, division=division, name=f"{name_prefix} {i}", is_active=True)
-                    for i in range(existing_total + 1, requested_count + 1)
-                ]
-            )
-            all_real_teams = list(
-                _team_queryset(tournament, division, exclude_bye=True).order_by("id")
-            )
-
-        changed = []
-        for index, team in enumerate(all_real_teams):
-            should_be_active = index < requested_count
-            if team.is_active != should_be_active:
-                team.is_active = should_be_active
-                changed.append(team)
-
-        if changed:
-            Team.objects.bulk_update(changed, ["is_active"])
-
-        active_after = _team_queryset(
-            tournament,
-            division,
-            active_only=True,
-            exclude_bye=True,
-        ).count()
 
         count_changed = active_after != active_before
         should_upgrade = (active_after >= 2) and (count_changed or not had_structure)
 
         reset_done = False
+        if active_after < 2 and had_structure:
+            _clear_generated_structure_for_division(tournament, division)
+            if division.status != Tournament.Status.DRAFT:
+                division.status = Tournament.Status.DRAFT
+                division.save(update_fields=["status"])
+            reset_done = True
+
         if should_upgrade and division.status != Tournament.Status.DRAFT:
             # Powrót do DRAFT wymusza pełną regenerację wyłącznie dla aktywnej dywizji.
             division.status = Tournament.Status.DRAFT
@@ -408,7 +843,9 @@ class TournamentTeamSetupView(APIView):
                 division.save(update_fields=["status"])
 
         detail = "Uczestnicy zostali zaktualizowani."
-        if reset_done:
+        if active_after < 2:
+            detail += " Do wygenerowania rozgrywek potrzeba co najmniej dwóch aktywnych uczestników."
+        elif reset_done:
             detail += " Rozgrywki tej dywizji zostały przebudowane."
         elif should_upgrade:
             detail += " Rozgrywki tej dywizji zostały wygenerowane."
@@ -433,7 +870,7 @@ class TournamentTeamSetupView(APIView):
                 "reset_done": reset_done,
                 "division_id": division.id,
                 "tournament": TournamentSerializer(tournament, context={"request": request, "division": division}).data,
-                "teams": TeamSerializer(active_teams, many=True).data,
+                "teams": _serialize_teams(active_teams),
                 "teams_count": active_after,
                 "upgraded": should_upgrade,
             },

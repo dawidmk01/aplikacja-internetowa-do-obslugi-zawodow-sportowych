@@ -10,6 +10,7 @@ import { apiFetch } from "../api";
 import MassStartStageCard from "../components/MassStartStageCard";
 import MatchRow from "../components/MatchRow";
 import { useTournamentWs } from "../hooks/useTournamentWs";
+import { cn } from "../lib/cn";
 import { getLabel, RESULT_VALUE_KIND_LABELS, TIME_FORMAT_LABELS } from "../lib/sportLabels";
 
 import { Button } from "../ui/Button";
@@ -19,6 +20,9 @@ import { toast } from "../ui/Toast";
 import type {
   AdvanceMassStartStageResponseDTO,
   MassStartEntryDTO,
+  MassStartOverallEventDTO,
+  MassStartOverallStandingDTO,
+  MassStartResultStatus,
   MassStartStageDTO,
   MatchDTO,
   StageMassStartResultWriteDTO,
@@ -35,12 +39,15 @@ import {
 } from "./_shared/TournamentMatchesScaffold";
 
 type ToastKind = "saved" | "success" | "error" | "info";
+type StageStructureMode = "REDUCTION" | "MULTI_EVENT";
 type MatchLike = MatchDTO & MatchLikeBase;
 type DivisionSummaryDTO = { id: number; name?: string; status?: string };
 type MassStartResultSaveResponseDTO = {
   detail?: string;
   payload?: TournamentMassStartResultsResponseDTO | null;
 };
+
+// ===== Normalizacja danych i trybu turnieju =====
 
 function parseDivisionId(value: string | null | undefined): number | null {
   if (!value) return null;
@@ -72,6 +79,22 @@ function getCompetitionModel(tournament: TournamentDTO | null): string {
   return String(tournament?.competition_model ?? "").toUpperCase();
 }
 
+function getStageStructureMode(tournament: TournamentDTO | null): StageStructureMode {
+  const directValue = String((tournament as any)?.stage_structure_mode ?? "").toUpperCase();
+  const configValue = String((tournament as any)?.result_config?.stage_structure_mode ?? "").toUpperCase();
+  const resolvedValue = directValue || configValue;
+
+  return resolvedValue === "MULTI_EVENT" ? "MULTI_EVENT" : "REDUCTION";
+}
+
+function isMultiEventMode(stageStructureMode: StageStructureMode): boolean {
+  return stageStructureMode === "MULTI_EVENT";
+}
+
+function getStageEntityLabel(stageStructureMode: StageStructureMode): string {
+  return isMultiEventMode(stageStructureMode) ? "konkurencji" : "etapów";
+}
+
 function getCustomResultHint(config: TournamentResultConfigDTO): string {
   const valueKind = String(config.value_kind ?? "").toUpperCase();
 
@@ -94,6 +117,8 @@ function getCustomResultHint(config: TournamentResultConfigDTO): string {
 
   return `${valueKindLabel}, dokładność: ${decimals} miejsce po przecinku.${unitLabel} Zasada rankingu: ${betterLabel}.`;
 }
+
+// ===== Obsługa rezultatów MASS_START =====
 
 function draftKey(stageId: number, groupId: number | null, teamId: number, roundNumber: number) {
   return `${stageId}:${groupId ?? 0}:${teamId}:${roundNumber}`;
@@ -135,11 +160,86 @@ function getAdvanceCandidateStage(stages: MassStartStageDTO[] | undefined | null
   return null;
 }
 
-function getVisibleMassStartStages(stages: MassStartStageDTO[] | undefined | null) {
+function getVisibleMassStartStages(
+  stages: MassStartStageDTO[] | undefined | null,
+  stageStructureMode: StageStructureMode
+) {
   if (!Array.isArray(stages)) return [];
-  return [...stages]
-    .filter((stage) => !isStagePlanned(stage))
-    .sort((a, b) => a.stage_order - b.stage_order);
+
+  const orderedStages = [...stages].sort((a, b) => a.stage_order - b.stage_order);
+
+  if (isMultiEventMode(stageStructureMode)) {
+    // Konkurencje są równoległymi częściami wydarzenia, dlatego nie są ukrywane jako zaplanowane etapy awansu.
+    return orderedStages;
+  }
+
+  return orderedStages.filter((stage) => !isStagePlanned(stage));
+}
+
+
+// ===== Widok rezultatów etapowych i konkurencji =====
+
+function overallSort(left: MassStartOverallStandingDTO, right: MassStartOverallStandingDTO) {
+  const leftRank = typeof left.rank === "number" ? left.rank : Number.MAX_SAFE_INTEGER;
+  const rightRank = typeof right.rank === "number" ? right.rank : Number.MAX_SAFE_INTEGER;
+  if (leftRank !== rightRank) return leftRank - rightRank;
+  return left.team_name.localeCompare(right.team_name, "pl");
+}
+
+function overallEventsLabel(row: MassStartOverallStandingDTO) {
+  return `${row.completed_events_count}/${row.events_count}`;
+}
+
+function overallModeLabel(mode?: string | null) {
+  if (mode === "SUM_RANKS") return "Suma miejsc";
+  if (mode === "SUM_RESULTS") return "Suma wyników";
+  return "Punkty za miejsca";
+}
+
+function overallValueHeader(mode?: string | null) {
+  if (mode === "SUM_RANKS") return "Suma miejsc";
+  if (mode === "SUM_RESULTS") return "Suma wyników";
+  return "Punkty";
+}
+
+function overallValue(row: MassStartOverallStandingDTO) {
+  return row.overall_display || row.overall_score || row.total_points;
+}
+
+function eventResultByStage(row: MassStartOverallStandingDTO, stageId: number) {
+  return row.event_results.find((event) => event.stage_id === stageId);
+}
+
+function resultStatusLabel(resultStatus?: MassStartResultStatus | null) {
+  if (!resultStatus || resultStatus === "OK") return "";
+  if (resultStatus === "DNS") return "DNS - nie wystartował";
+  if (resultStatus === "DNF") return "DNF - nie ukończył";
+  if (resultStatus === "DSQ") return "DSQ - dyskwalifikacja";
+  return resultStatus;
+}
+
+function eventContributionLabel(event?: MassStartOverallStandingDTO["event_results"][number]) {
+  if (!event) return "-";
+  return event.overall_contribution_display || event.aggregate_display || "-";
+}
+
+function eventDetailLabel(event?: MassStartOverallStandingDTO["event_results"][number]) {
+  if (!event) return "Brak danych";
+  const status = resultStatusLabel(event.result_status);
+  if (status) return status;
+
+  const fragments = [];
+  if (typeof event.rank === "number") fragments.push(`miejsce ${event.rank}`);
+  if (event.aggregate_display) fragments.push(`wynik ${event.aggregate_display}`);
+  if (Number.isFinite(Number(event.points))) fragments.push(`${event.points} pkt`);
+  return fragments.join(" • ") || "Brak wyniku";
+}
+
+function placeBadgeClass(rank: number | null | undefined) {
+  if (rank === 1) return "border-amber-300/25 bg-amber-400/10 text-amber-100";
+  if (rank === 2) return "border-slate-200/15 bg-white/[0.06] text-slate-100";
+  if (rank === 3) return "border-orange-300/20 bg-orange-400/10 text-orange-100";
+  return "border-white/10 bg-white/[0.04] text-slate-200";
 }
 
 function MassStartResultsView({
@@ -148,11 +248,14 @@ function MassStartResultsView({
   pageDescription,
   customModeCard,
   customResultConfig,
+  stageStructureMode,
   massStartData,
   canManageTournament,
   drafts,
+  statusDrafts,
   savingRows,
   onDraftChange,
+  onStatusDraftChange,
   onSaveEntry,
 }: {
   loading: boolean;
@@ -160,49 +263,146 @@ function MassStartResultsView({
   pageDescription: string;
   customModeCard: ReactNode;
   customResultConfig: TournamentResultConfigDTO;
+  stageStructureMode: StageStructureMode;
   massStartData: TournamentMassStartResultsResponseDTO | null;
   canManageTournament: boolean;
   drafts: Record<string, string>;
+  statusDrafts: Record<string, MassStartResultStatus>;
   savingRows: Record<string, boolean>;
   onDraftChange: (key: string, value: string) => void;
+  onStatusDraftChange: (key: string, value: MassStartResultStatus) => void;
   onSaveEntry: (stage: MassStartStageDTO, groupId: number | null, entry: MassStartEntryDTO) => Promise<void>;
 }) {
   const visibleStages = useMemo(
-    () => getVisibleMassStartStages(massStartData?.stages),
-    [massStartData]
+    () => getVisibleMassStartStages(massStartData?.stages, stageStructureMode),
+    [massStartData, stageStructureMode]
   );
+
+  const overallStandings = useMemo(() => {
+    return Array.isArray(massStartData?.overall_standings)
+      ? [...massStartData.overall_standings].sort(overallSort)
+      : [];
+  }, [massStartData]);
+
+  const overallEvents = useMemo<MassStartOverallEventDTO[]>(() => {
+    if (Array.isArray(massStartData?.overall_events) && massStartData.overall_events.length > 0) {
+      return [...massStartData.overall_events].sort((a, b) => a.stage_order - b.stage_order);
+    }
+
+    const eventMap = new Map<number, MassStartOverallEventDTO>();
+    for (const row of overallStandings) {
+      for (const event of row.event_results || []) {
+        eventMap.set(event.stage_id, {
+          stage_id: event.stage_id,
+          stage_order: event.stage_order,
+          stage_name: event.stage_name,
+        });
+      }
+    }
+
+    return [...eventMap.values()].sort((a, b) => a.stage_order - b.stage_order);
+  }, [massStartData, overallStandings]);
+
+  const overallMode = massStartData?.overall_mode ?? "POINTS_BY_RANK";
+
+  const stageEntityLabel = getStageEntityLabel(stageStructureMode);
 
   return (
     <div className="w-full py-6">
-        <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <div className="text-2xl font-extrabold text-white">{pageTitle}</div>
-            <div className="mt-1 text-sm text-slate-300">{pageDescription}</div>
-          </div>
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="text-2xl font-extrabold text-white">{pageTitle}</div>
+          <div className="mt-1 text-sm text-slate-300">{pageDescription}</div>
         </div>
+      </div>
 
-        {customModeCard}
+      {customModeCard}
 
-        {loading ? (
-          <Card className="p-6 text-slate-200">Ładowanie rezultatów etapowych...</Card>
-        ) : !massStartData || visibleStages.length === 0 ? (
-          <Card className="p-6 text-slate-200">Brak etapów do wyświetlenia.</Card>
-        ) : (
-          <div className="space-y-6">
-            {visibleStages.map((stage) => (
-              <MassStartStageCard
-                key={stage.stage_id}
-                stage={stage}
-                customResultConfig={customResultConfig}
-                canManageTournament={canManageTournament}
-                drafts={drafts}
-                savingRows={savingRows}
-                onDraftChange={onDraftChange}
-                onSaveEntry={onSaveEntry}
-              />
-            ))}
-          </div>
-        )}
+      {loading ? (
+        <Card className="p-6 text-slate-200">Ładowanie rezultatów {stageEntityLabel}...</Card>
+      ) : !massStartData || visibleStages.length === 0 ? (
+        <Card className="p-6 text-slate-200">Brak {stageEntityLabel} do wyświetlenia.</Card>
+      ) : (
+        <div className="space-y-6">
+          {stageStructureMode === "MULTI_EVENT" && overallStandings.length > 0 ? (
+            <Card className="border border-amber-300/15 bg-amber-400/[0.04] p-5">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="text-lg font-extrabold text-white">Klasyfikacja łączna wieloboju</div>
+                  <div className="mt-1 text-sm text-slate-300">
+                    Metoda: {overallModeLabel(overallMode)}. Statusy DNS, DNF i DSQ nie zwiększają wyniku w danej konkurencji.
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-slate-300">
+                  {overallStandings.length} uczestników
+                </div>
+              </div>
+
+              <div className="mt-5 overflow-x-auto">
+                <table className="min-w-full border-separate border-spacing-0">
+                  <thead>
+                    <tr className="text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                      <th className="px-4 py-3">Miejsce</th>
+                      <th className="px-4 py-3">Uczestnik</th>
+                      <th className="px-4 py-3">{overallValueHeader(overallMode)}</th>
+                      {overallEvents.map((event) => (
+                        <th key={event.stage_id} className="min-w-[140px] px-4 py-3">
+                          {event.stage_name}
+                        </th>
+                      ))}
+                      <th className="px-4 py-3">Ukończone</th>
+                      <th className="px-4 py-3">Statusy</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {overallStandings.map((row) => (
+                      <tr key={row.team_id} className="text-sm text-slate-100">
+                        <td className="border-t border-white/10 px-4 py-3">
+                          <span className={cn("inline-flex min-w-[52px] justify-center rounded-full border px-3 py-1 text-xs font-semibold", placeBadgeClass(row.rank))}>
+                            {row.rank ?? "-"}
+                          </span>
+                        </td>
+                        <td className="border-t border-white/10 px-4 py-3 font-semibold">{row.team_name}</td>
+                        <td className="border-t border-white/10 px-4 py-3 font-semibold text-white">{overallValue(row)}</td>
+                        {overallEvents.map((event) => {
+                          const eventResult = eventResultByStage(row, event.stage_id);
+
+                          return (
+                            <td key={event.stage_id} className="border-t border-white/10 px-4 py-3 align-top">
+                              <div className="font-semibold text-white">{eventContributionLabel(eventResult)}</div>
+                              <div className="mt-1 text-xs text-slate-400">{eventDetailLabel(eventResult)}</div>
+                            </td>
+                          );
+                        })}
+                        <td className="border-t border-white/10 px-4 py-3 text-slate-300">{overallEventsLabel(row)}</td>
+                        <td className="border-t border-white/10 px-4 py-3 text-slate-300">
+                          {row.special_statuses_count > 0 ? row.special_statuses_count : "Brak"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          ) : null}
+
+          {visibleStages.map((stage) => (
+            <MassStartStageCard
+              key={stage.stage_id}
+              stage={stage}
+              customResultConfig={customResultConfig}
+              stageStructureMode={stageStructureMode}
+              canManageTournament={canManageTournament}
+              drafts={drafts}
+              statusDrafts={statusDrafts}
+              savingRows={savingRows}
+              onDraftChange={onDraftChange}
+              onStatusDraftChange={onStatusDraftChange}
+              onSaveEntry={onSaveEntry}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -230,6 +430,7 @@ export default function TournamentResults() {
   const [massStartData, setMassStartData] = useState<TournamentMassStartResultsResponseDTO | null>(null);
   const [loading, setLoading] = useState(true);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [statusDrafts, setStatusDrafts] = useState<Record<string, MassStartResultStatus>>({});
   const [savingRows, setSavingRows] = useState<Record<string, boolean>>({});
   const [advanceBusy, setAdvanceBusy] = useState(false);
 
@@ -322,11 +523,18 @@ export default function TournamentResults() {
     if (!massStartData) return;
 
     const nextDrafts: Record<string, string> = {};
+    const nextStatusDrafts: Record<string, MassStartResultStatus> = {};
+
     for (const stage of massStartData.stages) {
       for (const group of stage.groups) {
         for (const entry of group.entries) {
           for (const round of entry.rounds) {
             const key = draftKey(stage.stage_id, group.group_id, entry.team_id, round.round_number);
+            const resultStatus = String(round.result_status ?? "OK").toUpperCase() as MassStartResultStatus;
+            nextStatusDrafts[key] = ["OK", "DNS", "DNF", "DSQ"].includes(resultStatus)
+              ? resultStatus
+              : "OK";
+
             if (round.numeric_value != null) nextDrafts[key] = String(round.numeric_value);
             else if (round.time_ms != null) nextDrafts[key] = String(round.time_ms);
             else if (round.place_value != null) nextDrafts[key] = String(round.place_value);
@@ -335,7 +543,9 @@ export default function TournamentResults() {
         }
       }
     }
+
     setDrafts(nextDrafts);
+    setStatusDrafts(nextStatusDrafts);
   }, [massStartData]);
 
   useTournamentWs({
@@ -369,6 +579,9 @@ export default function TournamentResults() {
   );
 
   const competitionModel = useMemo(() => getCompetitionModel(tournament), [tournament]);
+  const stageStructureMode = useMemo(() => getStageStructureMode(tournament), [tournament]);
+  const isMassStartMultiEvent = isMultiEventMode(stageStructureMode);
+
   const isCustomMassStartMode = useMemo(
     () => usesCustomResults && competitionModel === "MASS_START",
     [competitionModel, usesCustomResults]
@@ -513,15 +726,19 @@ export default function TournamentResults() {
 
     const valueKind = String(customResultConfig.value_kind ?? "").toUpperCase();
     const isTime = valueKind === "TIME";
-    const modeTitle = isCustomMassStartMode
-      ? "Tryb rezultatów etapowych"
-      : "Tryb wyników niestandardowych dla meczów";
+    const isMultiEvent = isCustomMassStartMode && isMassStartMultiEvent;
+    const resultScopeLabel = isMultiEvent ? "konkurencji" : isCustomMassStartMode ? "etapowy" : "meczowy";
+    const modeTitle = isMultiEvent
+      ? "Tryb wielu konkurencji"
+      : isCustomMassStartMode
+        ? "Tryb rezultatów etapowych"
+        : "Tryb wyników niestandardowych dla meczów";
     const modeBadge = isCustomMassStartMode
       ? isTime
-        ? "Wynik etapowy - czasowy"
+        ? `Wynik ${resultScopeLabel} - czasowy`
         : valueKind === "PLACE"
-          ? "Wynik etapowy - miejsca"
-          : "Wynik etapowy - liczbowy"
+          ? `Wynik ${resultScopeLabel} - miejsca`
+          : `Wynik ${resultScopeLabel} - liczbowy`
       : isTime
         ? "Wynik meczowy - czasowy"
         : "Wynik meczowy - liczbowy";
@@ -553,11 +770,19 @@ export default function TournamentResults() {
         </div>
       </Card>
     );
-  }, [customDisciplineLabel, customResultConfig, isCustomMassStartMode, usesCustomResults]);
+  }, [customDisciplineLabel, customResultConfig, isCustomMassStartMode, isMassStartMultiEvent, usesCustomResults]);
 
-  const pageTitle = isCustomHeadToHeadMode ? "Wyniki" : usesCustomResults ? "Rezultaty" : "Wyniki";
+  const pageTitle = isCustomMassStartMode && isMassStartMultiEvent
+    ? "Rezultaty konkurencji"
+    : isCustomHeadToHeadMode
+      ? "Wyniki"
+      : usesCustomResults
+        ? "Rezultaty"
+        : "Wyniki";
   const pageDescription = isCustomMassStartMode
-    ? "Wprowadzaj rezultaty uczestników i kontroluj postęp rywalizacji etapowej."
+    ? isMassStartMultiEvent
+      ? "Wprowadzaj rezultaty uczestników w kilku konkurencjach bez wymuszania przechodzenia etap po etapie."
+      : "Wprowadzaj rezultaty uczestników i kontroluj postęp rywalizacji etapowej."
     : isCustomHeadToHeadMode
       ? "Wprowadzaj wyniki meczów i korzystaj z trybu LIVE również dla dyscyplin niestandardowych z pojedynkami."
       : "Wprowadzaj wyniki meczów i kontroluj postęp rozgrywek.";
@@ -566,12 +791,21 @@ export default function TournamentResults() {
     setDrafts((prev) => ({ ...prev, [key]: value }));
   }, []);
 
+  const onStatusDraftChange = useCallback((key: string, value: MassStartResultStatus) => {
+    setStatusDrafts((prev) => ({ ...prev, [key]: value }));
+
+    if (value !== "OK") {
+      setDrafts((prev) => ({ ...prev, [key]: "" }));
+    }
+  }, []);
+
   const onSaveMassStartEntry = useCallback(
     async (stage: MassStartStageDTO, groupId: number | null, entry: MassStartEntryDTO) => {
       if (!tournamentId) return;
 
       const stageStatus = String(stage.stage_status ?? "").toUpperCase();
-      if (stageStatus && stageStatus !== "OPEN") {
+      // W trybie wielu konkurencji zapis nie jest blokowany przez kolejność etapów redukcyjnych.
+      if (!isMassStartMultiEvent && stageStatus && stageStatus !== "OPEN") {
         pushToast("Ten etap nie jest otwarty do zapisu rezultatów.", "info");
         return;
       }
@@ -579,20 +813,25 @@ export default function TournamentResults() {
       const requests: StageMassStartResultWriteDTO[] = [];
       for (const round of entry.rounds) {
         const key = draftKey(stage.stage_id, groupId, entry.team_id, round.round_number);
+        const resultStatus = statusDrafts[key] ?? round.result_status ?? "OK";
         const rawValue = (drafts[key] ?? "").trim();
-        if (!rawValue) continue;
+
+        if (resultStatus === "OK" && !rawValue) continue;
 
         const payload: StageMassStartResultWriteDTO = {
           stage_id: stage.stage_id,
           group_id: groupId,
           team_id: entry.team_id,
           round_number: round.round_number,
+          result_status: resultStatus,
         };
 
-        const valueKind = String(customResultConfig.value_kind ?? "NUMBER").toUpperCase();
-        if (valueKind === "TIME") payload.time_ms = Number(rawValue);
-        else if (valueKind === "PLACE") payload.place_value = Number(rawValue);
-        else payload.numeric_value = rawValue;
+        if (resultStatus === "OK") {
+          const valueKind = String(customResultConfig.value_kind ?? "NUMBER").toUpperCase();
+          if (valueKind === "TIME") payload.time_ms = Number(rawValue);
+          else if (valueKind === "PLACE") payload.place_value = Number(rawValue);
+          else payload.numeric_value = rawValue;
+        }
 
         requests.push(payload);
       }
@@ -623,7 +862,10 @@ export default function TournamentResults() {
 
           const data = (await res.json().catch(() => null)) as MassStartResultSaveResponseDTO | null;
           if (!res.ok) {
-            throw new Error(String(data?.detail || "Nie udało się zapisać wyniku etapowego."));
+            const fallbackMessage = isMassStartMultiEvent
+              ? "Nie udało się zapisać wyniku konkurencji."
+              : "Nie udało się zapisać wyniku etapowego.";
+            throw new Error(String(data?.detail || fallbackMessage));
           }
 
           if (data?.payload) {
@@ -633,14 +875,19 @@ export default function TournamentResults() {
 
         pushToast(`Zapisano rezultat dla: ${entry.team_name}.`, "saved");
 
-        const autoAdvanceStage = latestPayload ? getAdvanceCandidateStage(latestPayload.stages) : null;
+        const autoAdvanceStage = !isMassStartMultiEvent && latestPayload
+          ? getAdvanceCandidateStage(latestPayload.stages)
+          : null;
         if (canManageTournament && autoAdvanceStage?.stage_id === stage.stage_id) {
           await advanceMassStartStage();
         }
 
         await reloadAll();
       } catch (e) {
-        pushToast(e instanceof Error ? e.message : "Nie udało się zapisać rezultatu etapowego.", "error");
+        const fallbackMessage = isMassStartMultiEvent
+          ? "Nie udało się zapisać rezultatu konkurencji."
+          : "Nie udało się zapisać rezultatu etapowego.";
+        pushToast(e instanceof Error ? e.message : fallbackMessage, "error");
       } finally {
         setSavingRows((prev) => {
           const next = { ...prev };
@@ -651,7 +898,7 @@ export default function TournamentResults() {
         });
       }
     },
-    [advanceMassStartStage, canManageTournament, customResultConfig.value_kind, drafts, effectiveDivisionId, pushToast, reloadAll, tournamentId]
+    [advanceMassStartStage, canManageTournament, customResultConfig.value_kind, drafts, effectiveDivisionId, isMassStartMultiEvent, pushToast, reloadAll, statusDrafts, tournamentId]
   );
 
   const renderMatch = useCallback(
@@ -716,11 +963,14 @@ export default function TournamentResults() {
         pageDescription={pageDescription}
         customModeCard={customModeCard}
         customResultConfig={customResultConfig}
+        stageStructureMode={stageStructureMode}
         massStartData={massStartData}
         canManageTournament={canManageTournament}
         drafts={drafts}
+        statusDrafts={statusDrafts}
         savingRows={savingRows}
         onDraftChange={onDraftChange}
+        onStatusDraftChange={onStatusDraftChange}
         onSaveEntry={onSaveMassStartEntry}
       />
     );

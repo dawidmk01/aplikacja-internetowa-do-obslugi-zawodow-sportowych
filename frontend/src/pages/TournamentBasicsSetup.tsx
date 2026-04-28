@@ -42,6 +42,7 @@ import {
   type HandballPointsMode,
   type HandballTableDrawMode,
   type MatchesPreview,
+  type MultiEventOverallMode,
   type TennisBestOf,
   type TennisPointsMode,
   type TournamentFormat,
@@ -207,6 +208,7 @@ const RESULT_CONFIG_KEY_MAP = {
   massStartRoundsCount: "mass_start_rounds_count",
   massStartAggregationMode: "mass_start_aggregation_mode",
   stageStructureMode: "stage_structure_mode",
+  multiEventOverallMode: "multi_event_overall_mode",
 } as const;
 
 function getActiveCustomStagesCount(stages: CustomStageConfig[]): number {
@@ -217,13 +219,13 @@ function getActiveCustomStagesCount(stages: CustomStageConfig[]): number {
   return 1;
 }
 
-function serializeCustomStage(stage: CustomStageConfig) {
+function serializeCustomStage(stage: CustomStageConfig, stageStructureMode: CustomStageStructureMode) {
   return {
     id: stage.id,
     name: stage.name,
     groups_count: stage.groupsCount,
     participants_count: stage.participantsCount,
-    advance_count: stage.advanceCount,
+    advance_count: stageStructureMode === "MULTI_EVENT" ? null : stage.advanceCount,
     rounds_count: stage.roundsCount,
     aggregation_mode: stage.aggregationMode,
   };
@@ -242,23 +244,30 @@ function serializeCustomResultConfig(config: TournamentResultConfig) {
   }
 
   if (config.competition_model === "MASS_START") {
+    const massStartBackendValueKind = config.massStartValueKind === "POINTS" ? "NUMBER" : config.massStartValueKind;
+    const massStartUnitPreset = config.massStartValueKind === "POINTS" ? "POINTS" : config.massStartUnitPreset;
+    const massStartUnitLabel = config.massStartValueKind === "POINTS" ? "pkt" : config.massStartUnitCustomLabel || "";
+
     payload.custom_mode = "MASS_START_MEASURED";
-    payload.value_kind = config.massStartValueKind;
-    payload.unit_preset = config.massStartUnitPreset;
-    payload.unit = config.massStartUnitCustomLabel || "";
-    payload.unit_label = config.massStartUnitCustomLabel || "";
-    payload.better_result = config.massStartBetterResult;
+    payload.value_kind = massStartBackendValueKind;
+    payload.unit_preset = massStartUnitPreset;
+    payload.unit = massStartUnitLabel;
+    payload.unit_label = massStartUnitLabel;
+    payload.better_result = config.massStartValueKind === "POINTS" ? "HIGHER" : config.massStartBetterResult;
     payload.decimal_places =
-      config.massStartValueKind === "TIME" || config.massStartValueKind === "PLACE"
+      massStartBackendValueKind === "TIME" || massStartBackendValueKind === "PLACE"
         ? null
         : config.massStartDecimalPlaces;
-    payload.time_format = config.massStartValueKind === "TIME" ? config.massStartTimeFormat : null;
+    payload.time_format = massStartBackendValueKind === "TIME" ? config.massStartTimeFormat : null;
     payload.allow_ties = config.massStartAllowTies;
     payload.rounds_count = config.massStartRoundsCount;
     payload.aggregation_mode = config.massStartAggregationMode;
     payload.stage_structure_mode = config.stageStructureMode;
+    payload.multi_event_overall_mode = config.multiEventOverallMode;
     payload.stages = Array.isArray(config.stages)
-      ? config.stages.slice(0, getActiveCustomStagesCount(config.stages)).map(serializeCustomStage)
+      ? config.stages
+          .slice(0, getActiveCustomStagesCount(config.stages))
+          .map((stage) => serializeCustomStage(stage, config.stageStructureMode))
       : [];
 
     return payload;
@@ -285,10 +294,16 @@ function deserializeCustomResultConfig(rawConfig: any, participants: number): To
   }
 
   if (mapped.competition_model === "MASS_START") {
-    mapped.massStartValueKind = raw.value_kind ?? raw.mass_start_value_kind ?? defaults.massStartValueKind;
-    mapped.massStartUnitPreset = raw.unit_preset ?? raw.mass_start_unit_preset ?? defaults.massStartUnitPreset;
-    mapped.massStartUnitCustomLabel =
+    const backendMassStartValueKind = raw.value_kind ?? raw.mass_start_value_kind ?? defaults.massStartValueKind;
+    const backendMassStartUnitPreset = raw.unit_preset ?? raw.mass_start_unit_preset ?? defaults.massStartUnitPreset;
+    const backendMassStartUnitLabel =
       raw.unit_label ?? raw.unit ?? raw.mass_start_unit_custom_label ?? defaults.massStartUnitCustomLabel;
+    mapped.massStartValueKind =
+      backendMassStartValueKind === "NUMBER" && backendMassStartUnitPreset === "POINTS"
+        ? "POINTS"
+        : backendMassStartValueKind;
+    mapped.massStartUnitPreset = backendMassStartUnitPreset;
+    mapped.massStartUnitCustomLabel = backendMassStartUnitLabel;
     mapped.massStartBetterResult = raw.better_result ?? raw.mass_start_better_result ?? defaults.massStartBetterResult;
     mapped.massStartDecimalPlaces = raw.decimal_places ?? raw.mass_start_decimal_places ?? defaults.massStartDecimalPlaces;
     mapped.massStartTimeFormat = raw.time_format ?? raw.mass_start_time_format ?? defaults.massStartTimeFormat;
@@ -300,37 +315,50 @@ function deserializeCustomResultConfig(rawConfig: any, participants: number): To
 
   const stageStructureMode: CustomStageStructureMode = raw.stage_structure_mode === "MULTI_EVENT" ? "MULTI_EVENT" : "REDUCTION";
   mapped.stageStructureMode = stageStructureMode;
-  const baseStages = createDefaultStages(safeParticipants);
+  mapped.multiEventOverallMode =
+    raw.multi_event_overall_mode === "SUM_RANKS" || raw.multi_event_overall_mode === "SUM_RESULTS"
+      ? raw.multi_event_overall_mode
+      : "POINTS_BY_RANK";
+  const baseStages = createDefaultStages(safeParticipants, stageStructureMode);
   const incomingStages: BackendCustomStageConfig[] = Array.isArray(raw.stages) ? raw.stages.slice(0, MAX_CUSTOM_STAGE_LEVELS) : [];
   const activeStagesCount = Math.max(1, Math.min(MAX_CUSTOM_STAGE_LEVELS, incomingStages.length || 1));
 
   let previousAdvance: number | null = safeParticipants;
   mapped.stages = baseStages.map((baseStage, index) => {
     const rawStage = incomingStages[index];
+    const isActiveStage = index < activeStagesCount;
 
     if (!rawStage) {
       return {
         ...baseStage,
-        participantsCount: index === 0 ? safeParticipants : null,
+        name: stageStructureMode === "MULTI_EVENT" ? `Konkurencja ${index + 1}` : baseStage.name,
+        participantsCount:
+          isActiveStage && stageStructureMode === "MULTI_EVENT"
+            ? safeParticipants
+            : index === 0
+              ? safeParticipants
+              : null,
         advanceCount: null,
-        contributesToFinalRanking: index === activeStagesCount - 1,
+        contributesToFinalRanking: stageStructureMode === "MULTI_EVENT" ? isActiveStage : index === activeStagesCount - 1,
       } satisfies CustomStageConfig;
     }
 
     const rawParticipantsCount = rawStage.participants_count;
     const participantsCount =
       rawParticipantsCount === null || rawParticipantsCount === undefined
-        ? index === 0
+        ? stageStructureMode === "MULTI_EVENT"
           ? safeParticipants
-          : previousAdvance
+          : index === 0
+            ? safeParticipants
+            : previousAdvance
         : Math.max(1, Math.trunc(rawParticipantsCount));
 
     const advanceCount =
-      rawStage.advance_count === null || rawStage.advance_count === undefined
+      stageStructureMode === "MULTI_EVENT" || rawStage.advance_count === null || rawStage.advance_count === undefined
         ? null
         : Math.max(1, Math.trunc(rawStage.advance_count));
 
-    previousAdvance = advanceCount ?? participantsCount ?? previousAdvance;
+    previousAdvance = stageStructureMode === "MULTI_EVENT" ? safeParticipants : advanceCount ?? participantsCount ?? previousAdvance;
 
     return {
       ...baseStage,
@@ -339,53 +367,39 @@ function deserializeCustomResultConfig(rawConfig: any, participants: number): To
       groupsCount: Number.isFinite(rawStage.groups_count as number)
         ? Math.max(1, Math.trunc(rawStage.groups_count as number))
         : baseStage.groupsCount,
-      participantsCount,
-      advanceCount,
+      participantsCount: isActiveStage ? participantsCount : null,
+      advanceCount: isActiveStage ? advanceCount : null,
       roundsCount: Number.isFinite(rawStage.rounds_count as number)
         ? Math.max(1, Math.trunc(rawStage.rounds_count as number))
         : baseStage.roundsCount,
       aggregationMode: (rawStage.aggregation_mode as CustomAggregationMode | undefined) ?? baseStage.aggregationMode,
-      contributesToFinalRanking: index === activeStagesCount - 1,
+      contributesToFinalRanking: stageStructureMode === "MULTI_EVENT" ? isActiveStage : index === activeStagesCount - 1,
     } satisfies CustomStageConfig;
   });
 
   return mapped as TournamentResultConfig;
 }
-function createDefaultStages(participants: number): CustomStageConfig[] {
+function getDefaultStageName(index: number, stageStructureMode: CustomStageStructureMode = "REDUCTION") {
+  if (stageStructureMode === "MULTI_EVENT") return `Konkurencja ${index + 1}`;
+  if (index === 0) return "Kwalifikacje";
+  if (index === 1) return "Półfinał";
+  if (index === 2) return "Finał";
+  return `Etap ${index + 1}`;
+}
+
+function createDefaultStages(participants: number, stageStructureMode: CustomStageStructureMode = "REDUCTION"): CustomStageConfig[] {
   const safeParticipants = Math.max(2, Math.trunc(participants));
 
-  return [
-    {
-      id: "stage-1",
-      name: "Kwalifikacje",
-      groupsCount: 1,
-      participantsCount: safeParticipants,
-      advanceCount: null,
-      roundsCount: 1,
-      aggregationMode: "BEST",
-      contributesToFinalRanking: false,
-    },
-    {
-      id: "stage-2",
-      name: "Półfinał",
-      groupsCount: 1,
-      participantsCount: null,
-      advanceCount: null,
-      roundsCount: 1,
-      aggregationMode: "BEST",
-      contributesToFinalRanking: false,
-    },
-    {
-      id: "stage-3",
-      name: "Finał",
-      groupsCount: 1,
-      participantsCount: null,
-      advanceCount: null,
-      roundsCount: 1,
-      aggregationMode: "BEST",
-      contributesToFinalRanking: true,
-    },
-  ];
+  return Array.from({ length: MAX_CUSTOM_STAGE_LEVELS }, (_, index) => ({
+    id: `stage-${index + 1}`,
+    name: getDefaultStageName(index, stageStructureMode),
+    groupsCount: 1,
+    participantsCount: index === 0 ? safeParticipants : null,
+    advanceCount: null,
+    roundsCount: 1,
+    aggregationMode: "BEST" as CustomAggregationMode,
+    contributesToFinalRanking: index === 0,
+  }));
 }
 
 // Zapis jest etapowy, aby backend mógł wykryć potrzebę resetu i utrzymać spójność danych.
@@ -437,6 +451,16 @@ export default function TournamentBasicsSetup() {
     const r = confirmResolverRef.current;
     confirmResolverRef.current = null;
     if (r) r(value);
+  }, []);
+
+  const formatImpactList = useCallback((items: unknown, fallback: string) => {
+    const list = Array.isArray(items)
+      ? items.map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+
+    if (list.length === 0) return fallback;
+
+    return list.map((item) => `- ${item}`).join("\n");
   }, []);
 
 
@@ -610,7 +634,17 @@ export default function TournamentBasicsSetup() {
     if (!isCustomDiscipline || competitionModel !== "MASS_START") return;
 
     setResultConfig((prev) => {
+      const activeStagesCount = getActiveCustomStagesCount(prev.stages);
       const stages = prev.stages.map((stage, index) => {
+        if (prev.stageStructureMode === "MULTI_EVENT") {
+          if (index >= activeStagesCount) return stage;
+          return {
+            ...stage,
+            participantsCount: participants,
+            advanceCount: null,
+          };
+        }
+
         if (index === 0) {
           return {
             ...stage,
@@ -873,21 +907,27 @@ export default function TournamentBasicsSetup() {
       }
 
       if (competitionModel === "MASS_START") {
-        const visibleStages = resultConfig.stages.slice(0, 3);
+        const visibleStages = resultConfig.stages.slice(0, getActiveCustomStagesCount(resultConfig.stages));
+        const isMultiEvent = resultConfig.stageStructureMode === "MULTI_EVENT";
 
         for (let index = 0; index < visibleStages.length; index += 1) {
           const stage = visibleStages[index];
+          const itemLabel = isMultiEvent ? "konkurencji" : "etapu";
 
           if (!stage.name.trim()) {
-            return `Uzupełnij nazwę dla etapu ${index + 1}.`;
+            return `Uzupełnij nazwę dla ${itemLabel} ${index + 1}.`;
           }
 
           if (stage.groupsCount < 1) {
-            return `Etap ${index + 1} musi mieć co najmniej 1 grupę.`;
+            return `${isMultiEvent ? "Konkurencja" : "Etap"} ${index + 1} musi mieć co najmniej 1 grupę.`;
           }
 
-          if (index === 0 && (!stage.participantsCount || stage.participantsCount < 1)) {
-            return "Pierwszy etap w trybie 'wszyscy razem' musi mieć liczbę uczestników.";
+          if (!stage.participantsCount || stage.participantsCount < 1) {
+            return `${isMultiEvent ? "Konkurencja" : "Etap"} ${index + 1} musi mieć liczbę uczestników.`;
+          }
+
+          if (!isMultiEvent && index < visibleStages.length - 1 && (!stage.advanceCount || stage.advanceCount < 1)) {
+            return `Podaj liczbę awansujących z etapu ${index + 1}.`;
           }
         }
       }
@@ -1086,19 +1126,6 @@ export default function TournamentBasicsSetup() {
         setInitialDiscipline(discipline);
       } else {
         if (discipline !== initialDiscipline) {
-          const ok = await askConfirm({
-            title: "Zmiana dyscypliny",
-            message:
-              "Zmiana dyscypliny spowoduje usunięcie wprowadzonych wyników oraz danych pochodnych.\n\nCzy na pewno chcesz kontynuować?",
-            confirmLabel: "Zmień",
-            cancelLabel: "Anuluj",
-          });
-
-          if (!ok) {
-            setDiscipline(initialDiscipline);
-            throw new Error("Anulowano zmianę dyscypliny.");
-          }
-
           const changePayload: Record<string, any> =
             discipline === "custom"
               ? {
@@ -1107,11 +1134,48 @@ export default function TournamentBasicsSetup() {
                   competition_type: competitionType,
                   competition_model: competitionModel,
                   result_mode: "CUSTOM",
-                  result_config: serializeCustomResultConfig(resultConfig),
+                  result_config: serializeCustomResultConfig({ ...resultConfig, competition_model: competitionModel }),
                 }
               : {
                   discipline,
                 };
+
+          const dry = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/change-discipline/?dry_run=true`, currentDivisionId), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(withDivisionPayload(changePayload, currentDivisionId)),
+            toastOnError: false,
+          } as any);
+
+          if (!dry.ok) {
+            const data = await dry.json().catch(() => ({}));
+            const msg = pickFirstError(data) || "Nie udało się sprawdzić zmiany dyscypliny.";
+            setInlineError(msg);
+            throw new Error(msg);
+          }
+
+          const dryData = await dry.json().catch(() => ({}));
+          const disciplineArchiveMessages = (dryData as any)?.archive_messages;
+          const disciplineNeedsConfirmation =
+            Boolean((dryData as any)?.reset_needed) ||
+            (Array.isArray(disciplineArchiveMessages) && disciplineArchiveMessages.length > 0);
+
+          if (disciplineNeedsConfirmation) {
+            const ok = await askConfirm({
+              title: "Zmiana dyscypliny",
+              message: `Ta zmiana usunie lub przeniesie do archiwum:\n${formatImpactList(
+                disciplineArchiveMessages,
+                "- dane niedopasowane do nowej dyscypliny"
+              )}\n\nCzy chcesz zapisać zmianę?`,
+              confirmLabel: "Zapisz",
+              cancelLabel: "Anuluj",
+            });
+
+            if (!ok) {
+              setDiscipline(initialDiscipline);
+              throw new Error("Anulowano zmianę dyscypliny.");
+            }
+          }
 
           const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/change-discipline/`, currentDivisionId), {
             method: "POST",
@@ -1161,12 +1225,56 @@ export default function TournamentBasicsSetup() {
           competition_model: competitionModel,
           tournament_format: format,
           result_mode: "CUSTOM",
-          result_config: serializeCustomResultConfig(resultConfig),
+          result_config: serializeCustomResultConfig({ ...resultConfig, competition_model: competitionModel }),
           format_config: buildFormatConfig(),
         };
 
         if (isCreateMode) {
           payload.discipline = discipline;
+        }
+
+        if (!isCreateMode) {
+          const dry = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/?dry_run=true`, currentDivisionId), {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(withDivisionPayload(payload, currentDivisionId)),
+            toastOnError: false,
+          } as any);
+
+          if (!dry.ok) {
+            const data = await dry.json().catch(() => ({}));
+            const msg = pickFirstError(data) || "Nie udało się sprawdzić zmiany konfiguracji.";
+            setInlineError(msg);
+            throw new Error(msg);
+          }
+
+          const dryData = await dry.json().catch(() => ({}));
+          const archiveMessages = (dryData as any)?.archive_messages;
+          const restoreItems = (dryData as any)?.restore_items;
+
+          if (Array.isArray(archiveMessages) && archiveMessages.length > 0) {
+            const ok = await askConfirm({
+              title: "Potwierdź zmianę konfiguracji",
+              message: `Ta zmiana przeniesie do archiwum:\n${formatImpactList(archiveMessages, "- dane aktywnej konfiguracji")}\n\nCzy chcesz zapisać zmianę?`,
+              confirmLabel: "Potwierdź",
+              cancelLabel: "Anuluj",
+            });
+
+            if (!ok) throw new Error("Anulowano zapis konfiguracji.");
+
+            payload.confirmed_destructive_change = true;
+          }
+
+          if (Boolean((dryData as any)?.restore_available)) {
+            const restoreArchived = await askConfirm({
+              title: "Znaleziono wcześniejsze dane",
+              message: `Dla dodawanych konkurencji lub etapów istnieją wcześniejsze dane w archiwum:\n${formatImpactList(restoreItems, "- wcześniejsze dane struktury")}\n\nWybierz sposób zapisania konfiguracji.`,
+              confirmLabel: "Przywróć",
+              cancelLabel: "Utwórz czystą",
+            });
+
+            payload.restore_archived_mass_start = restoreArchived;
+          }
         }
 
         const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/`, currentDivisionId), {
@@ -1205,10 +1313,11 @@ export default function TournamentBasicsSetup() {
         const resetNeeded = Boolean((dryData as any)?.reset_needed);
 
         if (!isCreateMode && resetNeeded) {
+          const archiveMessages = (dryData as any)?.archive_messages;
           const ok = await askConfirm({
-            title: "Zmiana konfiguracji",
-            message: "Zmiana konfiguracji usunie istniejące mecze. Kontynuować?",
-            confirmLabel: "Kontynuuj",
+            title: "Potwierdź zmianę konfiguracji",
+            message: `Ta zmiana usunie lub przeniesie do archiwum:\n${formatImpactList(archiveMessages, "- aktywne dane rozgrywek")}\n\nCzy chcesz zapisać zmianę?`,
+            confirmLabel: "Potwierdź",
             cancelLabel: "Anuluj",
           });
           if (!ok) throw new Error("Anulowano zapis konfiguracji.");
@@ -1233,13 +1342,46 @@ export default function TournamentBasicsSetup() {
       const participantsChanged = safeParticipants !== initialParticipantsRef.current;
 
       if (!isCreateMode && participantsChanged && !isCustomDiscipline) {
-        const ok = await askConfirm({
-          title: "Zmiana uczestników",
-          message: "Zmiana liczby uczestników spowoduje reset rozgrywek. Kontynuować?",
-          confirmLabel: "Kontynuuj",
-          cancelLabel: "Anuluj",
-        });
-        if (!ok) throw new Error("Anulowano zmianę liczby uczestników.");
+        const dryTeams = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/teams/setup/?dry_run=true`, currentDivisionId), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            withDivisionPayload(
+              {
+                teams_count: safeParticipants,
+                participants_count: safeParticipants,
+              },
+              currentDivisionId
+            )
+          ),
+          toastOnError: false,
+        } as any);
+
+        if (!dryTeams.ok) {
+          const data = await dryTeams.json().catch(() => ({}));
+          const msg = pickFirstError(data) || "Nie udało się sprawdzić zmiany liczby uczestników.";
+          setInlineError(msg);
+          throw new Error(msg);
+        }
+
+        const dryTeamsData = await dryTeams.json().catch(() => ({}));
+        const participantArchiveMessages = (dryTeamsData as any)?.archive_messages;
+        const participantNeedsConfirmation =
+          Boolean((dryTeamsData as any)?.reset_needed) ||
+          (Array.isArray(participantArchiveMessages) && participantArchiveMessages.length > 0);
+
+        if (participantNeedsConfirmation) {
+          const ok = await askConfirm({
+            title: "Zmiana liczby uczestników",
+            message: `Ta zmiana usunie lub przeniesie do archiwum:\n${formatImpactList(
+              participantArchiveMessages,
+              "- dane rozgrywek powiązane z usuwanymi miejscami"
+            )}\n\nCzy chcesz zapisać zmianę?`,
+            confirmLabel: "Zapisz",
+            cancelLabel: "Anuluj",
+          });
+          if (!ok) throw new Error("Anulowano zmianę liczby uczestników.");
+        }
       }
 
       const teamsRes = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/teams/setup/`, currentDivisionId), {
@@ -1327,6 +1469,7 @@ export default function TournamentBasicsSetup() {
     buildFormatConfig,
     navigate,
     askConfirm,
+    formatImpactList,
     validateLocalBeforeSave,
     effectiveDivisionId,
   ]);
@@ -2100,6 +2243,15 @@ export default function TournamentBasicsSetup() {
               patchResultConfig({ measuredAllowTies: v });
             }}
             onMassStartValueKindChange={(v: CustomMassStartValueKind) => {
+              if (v === "POINTS") {
+                patchResultConfig({
+                  massStartValueKind: v,
+                  massStartUnitPreset: "POINTS",
+                  massStartUnitCustomLabel: "pkt",
+                  massStartBetterResult: "HIGHER",
+                });
+                return;
+              }
               patchResultConfig({ massStartValueKind: v });
             }}
             onMassStartUnitPresetChange={(v: CustomUnitPreset) => {
@@ -2125,6 +2277,12 @@ export default function TournamentBasicsSetup() {
             }}
             onMassStartAggregationModeChange={(v: CustomAggregationMode) => {
               patchResultConfig({ massStartAggregationMode: v });
+            }}
+            onStageStructureModeChange={(v: CustomStageStructureMode) => {
+              patchResultConfig({ stageStructureMode: v });
+            }}
+            onMultiEventOverallModeChange={(v: MultiEventOverallMode) => {
+              patchResultConfig({ multiEventOverallMode: v });
             }}
             onStageChange={updateStage}
           />

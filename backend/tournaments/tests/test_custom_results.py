@@ -337,3 +337,18 @@ class TournamentCustomMatchResultApiTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertFalse(self._custom_result_model().objects.filter(match=match).exists())
+
+    def test_mass_start_points_value_kind_is_normalized_to_number(self):
+        cfg = Tournament.normalize_result_config(
+            Tournament.ResultMode.CUSTOM,
+            {
+                Tournament.RESULTCFG_CUSTOM_MODE_KEY: Tournament.RESULTCFG_CUSTOM_MODE_MASS_START_MEASURED,
+                Tournament.RESULTCFG_VALUE_KIND_KEY: "POINTS",
+                Tournament.RESULTCFG_UNIT_PRESET_KEY: Tournament.RESULTCFG_UNIT_PRESET_POINTS,
+                Tournament.RESULTCFG_BETTER_RESULT_KEY: Tournament.RESULTCFG_BETTER_RESULT_HIGHER,
+            },
+        )
+
+        self.assertEqual(cfg.get(Tournament.RESULTCFG_VALUE_KIND_KEY), Tournament.RESULTCFG_VALUE_KIND_NUMBER)
+        self.assertEqual(cfg.get(Tournament.RESULTCFG_UNIT_PRESET_KEY), Tournament.RESULTCFG_UNIT_PRESET_POINTS)
+        self.assertEqual(cfg.get(Tournament.RESULTCFG_UNIT_LABEL_KEY), "pkt")

@@ -20,6 +20,9 @@ class TournamentMatchResultAndStandingsTests(TestCase):
     def _match_model(self):
         return apps.get_model("tournaments", "Match")
 
+    def _incident_model(self):
+        return apps.get_model("tournaments", "MatchIncident")
+
     def _create_tournament_context(
         self,
         *,
@@ -111,6 +114,77 @@ class TournamentMatchResultAndStandingsTests(TestCase):
         self.assertEqual(match.away_score, 1)
         self.assertTrue(match.result_entered)
         self.assertEqual(match.status, self._match_model().Status.IN_PROGRESS)
+
+    def test_manual_result_save_creates_live_goal_incidents(self):
+        _tournament, _division, stage, teams = self._create_tournament_context()
+        match = self._create_match(_tournament, stage, teams[0], teams[1])
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.patch(
+            f"/api/matches/{match.id}/result/",
+            {
+                "home_score": 3,
+                "away_score": 0,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        incident_model = self._incident_model()
+
+        self.assertEqual(
+            incident_model.objects.filter(match=match, kind="GOAL", team=teams[0]).count(),
+            3,
+        )
+        self.assertFalse(incident_model.objects.filter(match=match, kind="GOAL", team=teams[1]).exists())
+
+    def test_manual_result_decrease_requires_confirmation_before_deleting_live_incidents(self):
+        _tournament, _division, stage, teams = self._create_tournament_context()
+        match = self._create_match(_tournament, stage, teams[0], teams[1])
+
+        self.client.force_authenticate(user=self.organizer)
+
+        create_response = self.client.patch(
+            f"/api/matches/{match.id}/result/",
+            {
+                "home_score": 3,
+                "away_score": 0,
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, 200)
+
+        blocked_response = self.client.patch(
+            f"/api/matches/{match.id}/result/",
+            {
+                "home_score": 2,
+                "away_score": 0,
+            },
+            format="json",
+        )
+
+        self.assertEqual(blocked_response.status_code, 409)
+        self.assertEqual(blocked_response.json().get("code"), "SCORE_SYNC_CONFIRM_REQUIRED")
+        self.assertEqual(blocked_response.json().get("delete_count"), 1)
+
+        match.refresh_from_db()
+        self.assertEqual((match.home_score, match.away_score), (3, 0))
+        self.assertEqual(self._incident_model().objects.filter(match=match, kind="GOAL").count(), 3)
+
+        force_response = self.client.patch(
+            f"/api/matches/{match.id}/result/?force=1",
+            {
+                "home_score": 2,
+                "away_score": 0,
+            },
+            format="json",
+        )
+
+        self.assertEqual(force_response.status_code, 200)
+        match.refresh_from_db()
+        self.assertEqual((match.home_score, match.away_score), (2, 0))
+        self.assertEqual(self._incident_model().objects.filter(match=match, kind="GOAL").count(), 2)
 
     def test_other_user_cannot_save_match_result(self):
         tournament, _division, stage, teams = self._create_tournament_context()
@@ -310,6 +384,9 @@ class TournamentMatchListAndScheduleApiTests(TestCase):
 
     def _match_model(self):
         return apps.get_model("tournaments", "Match")
+
+    def _incident_model(self):
+        return apps.get_model("tournaments", "MatchIncident")
 
     def _response_items(self, response):
         data = response.json()

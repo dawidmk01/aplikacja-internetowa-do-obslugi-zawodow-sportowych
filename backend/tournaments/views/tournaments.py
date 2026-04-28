@@ -7,6 +7,7 @@ import re
 
 from django.apps import apps
 from django.db import transaction
+from django.utils import timezone
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 
@@ -127,8 +128,128 @@ def clear_standings_cache(
         model.objects.filter(**filters).delete()
 
 
+def _division_has_generated_structure(tournament: Tournament, division: Division | None = None) -> bool:
+    stage_qs = Stage.objects.filter(tournament=tournament, is_archived=False)
+    match_qs = get_model_any("tournaments", ["Match"]).objects.filter(tournament=tournament, stage__is_archived=False)
+    entry_qs = StageMassStartEntry.objects.filter(stage__tournament=tournament, stage__is_archived=False)
+
+    if division is not None:
+        stage_qs = stage_qs.filter(division=division)
+        match_qs = match_qs.filter(stage__division=division)
+        entry_qs = entry_qs.filter(stage__division=division)
+
+    return stage_qs.exists() or match_qs.exists() or entry_qs.exists()
+
+
+def _division_has_result_progress(tournament: Tournament, division: Division | None = None) -> bool:
+    match_model = get_model_any("tournaments", ["Match"])
+    match_qs = match_model.objects.filter(tournament=tournament, stage__is_archived=False)
+    result_qs = StageMassStartResult.objects.filter(stage__tournament=tournament, stage__is_archived=False, is_active=True)
+
+    if division is not None:
+        match_qs = match_qs.filter(stage__division=division)
+        result_qs = result_qs.filter(stage__division=division)
+
+    if match_qs.filter(
+        Q(result_entered=True)
+        | Q(status__in=(match_model.Status.IN_PROGRESS, match_model.Status.FINISHED))
+    ).exists():
+        return True
+
+    if result_qs.exists():
+        return True
+
+    try:
+        custom_result_model = apps.get_model("tournaments", "MatchCustomResult")
+    except LookupError:
+        custom_result_model = None
+
+    if custom_result_model is not None:
+        custom_qs = custom_result_model.objects.filter(match__tournament=tournament, match__stage__is_archived=False, is_active=True)
+        if division is not None:
+            custom_qs = custom_qs.filter(match__stage__division=division)
+        if custom_qs.exists():
+            return True
+
+    return False
+
+
+def _tournament_has_result_progress(tournament: Tournament) -> bool:
+    return _division_has_result_progress(tournament, None)
+
+
+def _division_has_schedule_progress(tournament: Tournament, division: Division | None = None) -> bool:
+    stage_qs = Stage.objects.filter(tournament=tournament, is_archived=False)
+    group_model = get_model_any("tournaments", ["Group"])
+    group_qs = group_model.objects.filter(stage__tournament=tournament, stage__is_archived=False)
+    match_model = get_model_any("tournaments", ["Match"])
+    match_qs = match_model.objects.filter(tournament=tournament, stage__is_archived=False)
+
+    if division is not None:
+        stage_qs = stage_qs.filter(division=division)
+        group_qs = group_qs.filter(stage__division=division)
+        match_qs = match_qs.filter(stage__division=division)
+
+    schedule_filter = (
+        Q(scheduled_date__isnull=False)
+        | Q(scheduled_time__isnull=False)
+        | (Q(location__isnull=False) & ~Q(location=""))
+    )
+
+    return (
+        stage_qs.filter(schedule_filter).exists()
+        or group_qs.filter(schedule_filter).exists()
+        or match_qs.filter(schedule_filter).exists()
+    )
+
+
+def _tournament_has_schedule_progress(tournament: Tournament) -> bool:
+    return _division_has_schedule_progress(tournament, None)
+
+
+def _reset_impact_messages(
+    tournament: Tournament,
+    *,
+    division: Division | None = None,
+    schedule_label: str = "dane harmonogramu",
+    result_label: str = "wprowadzone wyniki",
+) -> list[str]:
+    messages: list[str] = []
+    if _division_has_schedule_progress(tournament, division):
+        messages.append(schedule_label)
+    if _division_has_result_progress(tournament, division):
+        messages.append(result_label)
+    return messages
+
+
+def _can_keep_data_for_discipline_change(
+    tournament: Tournament,
+    *,
+    new_discipline: str,
+    new_competition_type: str,
+    new_competition_model: str,
+    new_result_mode: str,
+    new_result_config: dict | None,
+) -> bool:
+    score_disciplines = {
+        Tournament.Discipline.FOOTBALL,
+        Tournament.Discipline.HANDBALL,
+        Tournament.Discipline.BASKETBALL,
+    }
+
+    if tournament.discipline not in score_disciplines or new_discipline not in score_disciplines:
+        return False
+
+    return (
+        tournament.competition_type == new_competition_type
+        and tournament.competition_model == new_competition_model == Tournament.CompetitionModel.HEAD_TO_HEAD
+        and tournament.result_mode == new_result_mode == Tournament.ResultMode.SCORE
+        and dict(tournament.result_config or {}) == dict(new_result_config or {})
+    )
+
+
 def reset_match_results(match_model, tournament: Tournament, *, division: Division | None = None) -> None:
-    qs = match_model.objects.filter(tournament=tournament)
+    qs = match_model.objects.filter(tournament=tournament, stage__is_archived=False)
     if division is not None:
         qs = qs.filter(stage__division=division)
 
@@ -183,8 +304,18 @@ def rename_default_team_names_for_division_competition_type_change(
         team_model.objects.bulk_update(to_update, ["name"])
 
 
-def _stage_name_for_mass_start(index: int, cfg: dict) -> str:
+def _stage_name_for_mass_start(
+    index: int,
+    cfg: dict,
+    stage_structure_mode: str | None = None,
+) -> str:
     raw_name = str(cfg.get(Tournament.RESULTCFG_STAGE_NAME_KEY) or "").strip()
+
+    if stage_structure_mode == Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT:
+        if not raw_name or raw_name == f"Etap {index}":
+            return f"Konkurencja {index}"
+        return raw_name
+
     if raw_name:
         return raw_name
 
@@ -196,8 +327,154 @@ def _group_name_for_index(index: int) -> str:
     return f"Grupa {index}"
 
 
-def _default_mass_start_stage_status(index: int) -> str:
+def _default_mass_start_stage_status(index: int, stage_structure_mode: str | None = None) -> str:
+    if stage_structure_mode == Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT:
+        return Stage.Status.OPEN
     return Stage.Status.OPEN if index == 1 else Stage.Status.PLANNED
+
+
+def _mass_start_stage_structure_mode(tournament: Tournament, division: Division | None = None) -> str:
+    context = division or tournament
+    result_config = (
+        context.get_result_config()
+        if hasattr(context, "get_result_config")
+        else tournament.get_result_config()
+        if hasattr(tournament, "get_result_config")
+        else {}
+    )
+    mode = str(
+        result_config.get(Tournament.RESULTCFG_STAGE_STRUCTURE_MODE_KEY)
+        or Tournament.RESULTCFG_STAGE_STRUCTURE_REDUCTION
+    ).upper()
+    if mode not in (
+        Tournament.RESULTCFG_STAGE_STRUCTURE_REDUCTION,
+        Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+    ):
+        return Tournament.RESULTCFG_STAGE_STRUCTURE_REDUCTION
+    return mode
+
+
+
+def _archive_stage_queryset(qs, *, reason: str):
+    now = timezone.now()
+    stage_ids = list(qs.values_list("id", flat=True)) if hasattr(qs, "values_list") else [stage.id for stage in qs]
+    if not stage_ids:
+        return
+
+    Stage.objects.filter(id__in=stage_ids).update(
+        is_archived=True,
+        archived_at=now,
+        archive_reason=reason,
+    )
+
+
+def _has_stage_schedule(stage: Stage) -> bool:
+    return bool(stage.scheduled_date or stage.scheduled_time or (stage.location or "").strip())
+
+
+def _has_group_schedule(stage: Stage) -> bool:
+    return stage.groups.filter(
+        Q(scheduled_date__isnull=False)
+        | Q(scheduled_time__isnull=False)
+        | (Q(location__isnull=False) & ~Q(location=""))
+    ).exists()
+
+
+def _mass_start_stage_has_user_data(stage: Stage) -> bool:
+    return (
+        _has_stage_schedule(stage)
+        or _has_group_schedule(stage)
+        or StageMassStartResult.objects.filter(stage=stage, is_active=True).exists()
+    )
+
+
+def _mass_start_restore_candidates(
+    tournament: Tournament,
+    division: Division,
+    target_count: int,
+) -> list[Stage]:
+    active_orders = set(
+        Stage.objects.filter(
+            tournament=tournament,
+            division=division,
+            stage_type=Stage.StageType.MASS_START,
+            is_archived=False,
+        ).values_list("order", flat=True)
+    )
+    missing_orders = [order for order in range(1, target_count + 1) if order not in active_orders]
+    if not missing_orders:
+        return []
+
+    candidates: list[Stage] = []
+    for order in missing_orders:
+        stage = (
+            Stage.objects.filter(
+                tournament=tournament,
+                division=division,
+                stage_type=Stage.StageType.MASS_START,
+                order=order,
+                is_archived=True,
+            )
+            .order_by("-archived_at", "-id")
+            .first()
+        )
+        if stage is not None:
+            candidates.append(stage)
+
+    return candidates
+
+
+def analyze_mass_start_structure_change(
+    tournament: Tournament,
+    division: Division,
+    result_config: dict | None,
+) -> dict:
+    stage_cfgs = list((result_config or {}).get(Tournament.RESULTCFG_STAGES_KEY) or [])
+    target_count = len(stage_cfgs)
+
+    active_stages = list(
+        Stage.objects.filter(
+            tournament=tournament,
+            division=division,
+            stage_type=Stage.StageType.MASS_START,
+            is_archived=False,
+        ).order_by("order", "id")
+    )
+
+    archive_candidates = [stage for stage in active_stages if int(stage.order or 0) > target_count]
+    archive_messages: list[str] = []
+
+    schedule_count = sum(1 for stage in archive_candidates if _has_stage_schedule(stage) or _has_group_schedule(stage))
+    result_count = sum(
+        1
+        for stage in archive_candidates
+        if StageMassStartResult.objects.filter(stage=stage, is_active=True).exists()
+    )
+
+    if schedule_count:
+        archive_messages.append("dane harmonogramu z usuwanych konkurencji lub etapów")
+    if result_count:
+        archive_messages.append("wprowadzone wyniki z usuwanych konkurencji lub etapów")
+
+    stage_structure_mode = _mass_start_stage_structure_mode(tournament, division)
+    restore_candidates = _mass_start_restore_candidates(
+        tournament=tournament,
+        division=division,
+        target_count=target_count,
+    )
+
+    return {
+        "restore_available": bool(restore_candidates),
+        "restore_items": [
+            _stage_name_for_mass_start(
+                stage.order,
+                stage_cfgs[stage.order - 1] if 0 < stage.order <= len(stage_cfgs) else {},
+                stage_structure_mode,
+            )
+            for stage in restore_candidates
+        ],
+        "archive_messages": archive_messages,
+    }
 
 
 def _sync_mass_start_stage_entries(
@@ -207,17 +484,7 @@ def _sync_mass_start_stage_entries(
     groups: list,
     cfg: dict,
 ) -> None:
-    result_config = (
-        division.get_result_config()
-        if division is not None and hasattr(division, "get_result_config")
-        else tournament.get_result_config()
-        if hasattr(tournament, "get_result_config")
-        else {}
-    )
-    stage_structure_mode = str(
-        result_config.get(Tournament.RESULTCFG_STAGE_STRUCTURE_MODE_KEY)
-        or Tournament.RESULTCFG_STAGE_STRUCTURE_REDUCTION
-    ).upper()
+    stage_structure_mode = _mass_start_stage_structure_mode(tournament, division)
 
     if (
         stage.order != 1
@@ -238,9 +505,12 @@ def _sync_mass_start_stage_entries(
         .values_list("id", flat=True)
     )
 
-    participants_count_raw = cfg.get(Tournament.RESULTCFG_STAGE_PARTICIPANTS_COUNT_KEY)
-    participants_count = int(participants_count_raw) if participants_count_raw else None
-    selected_team_ids = active_team_ids[:participants_count] if participants_count else active_team_ids
+    if stage_structure_mode == Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT:
+        selected_team_ids = active_team_ids
+    else:
+        participants_count_raw = cfg.get(Tournament.RESULTCFG_STAGE_PARTICIPANTS_COUNT_KEY)
+        participants_count = int(participants_count_raw) if participants_count_raw else None
+        selected_team_ids = active_team_ids[:participants_count] if participants_count else active_team_ids
 
     target_groups = groups[:]
     if not target_groups:
@@ -291,7 +561,12 @@ def _sync_mass_start_stage_entries(
     StageMassStartEntry.objects.filter(stage=stage).exclude(id__in=keep_entry_ids).delete()
 
 
-def sync_custom_mass_start_structure_for_division(tournament: Tournament, division: Division) -> None:
+def sync_custom_mass_start_structure_for_division(
+    tournament: Tournament,
+    division: Division,
+    *,
+    restore_archived_mass_start: bool = False,
+) -> None:
     stage_model = get_model_any("tournaments", ["Stage"])
     group_model = get_model_any("tournaments", ["Group"])
     match_model = get_model_any("tournaments", ["Match"])
@@ -307,19 +582,18 @@ def sync_custom_mass_start_structure_for_division(tournament: Tournament, divisi
             tournament=tournament,
             division=division,
             stage_type=stage_model.StageType.MASS_START,
+            is_archived=False,
         ).order_by("order", "id")
     )
 
     if not is_custom_mass_start:
         if existing_mass_stages:
-            match_model.objects.filter(tournament=tournament, stage__in=existing_mass_stages).delete()
-            StageMassStartEntry.objects.filter(stage__in=existing_mass_stages).delete()
-            stage_model.objects.filter(id__in=[stage.id for stage in existing_mass_stages]).delete()
+            _archive_stage_queryset(existing_mass_stages, reason="MASS_START_DISABLED")
         return
 
     stage_cfgs = list(division.get_mass_start_stages() or [])
 
-    stale_stages = stage_model.objects.filter(tournament=tournament, division=division).exclude(
+    stale_stages = stage_model.objects.filter(tournament=tournament, division=division, is_archived=False).exclude(
         stage_type=stage_model.StageType.MASS_START
     )
     if stale_stages.exists():
@@ -330,12 +604,30 @@ def sync_custom_mass_start_structure_for_division(tournament: Tournament, divisi
         tournament=tournament,
         stage__division=division,
         stage__stage_type=stage_model.StageType.MASS_START,
+        stage__is_archived=False,
     ).delete()
 
     active_stage_ids: list[int] = []
+    stage_structure_mode = _mass_start_stage_structure_mode(tournament, division)
+
+    existing_by_order = {int(stage.order): stage for stage in existing_mass_stages}
 
     for index, cfg in enumerate(stage_cfgs, start=1):
-        stage = existing_mass_stages[index - 1] if index - 1 < len(existing_mass_stages) else None
+        stage = existing_by_order.get(index)
+
+        if stage is None and restore_archived_mass_start:
+            stage = (
+                stage_model.objects.filter(
+                    tournament=tournament,
+                    division=division,
+                    stage_type=stage_model.StageType.MASS_START,
+                    order=index,
+                    is_archived=True,
+                )
+                .order_by("-archived_at", "-id")
+                .first()
+            )
+
         is_new_stage = stage is None
 
         if stage is None:
@@ -344,18 +636,27 @@ def sync_custom_mass_start_structure_for_division(tournament: Tournament, divisi
                 division=division,
                 stage_type=stage_model.StageType.MASS_START,
                 order=index,
-                status=_default_mass_start_stage_status(index),
+                status=_default_mass_start_stage_status(index, stage_structure_mode),
             )
+        else:
+            stage.is_archived = False
+            stage.archived_at = None
+            stage.archive_reason = ""
 
         stage.stage_type = stage_model.StageType.MASS_START
         stage.division = division
         stage.order = index
 
         if is_new_stage:
-            stage.status = _default_mass_start_stage_status(index)
+            stage.status = _default_mass_start_stage_status(index, stage_structure_mode)
+        elif (
+            stage_structure_mode == Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT
+            and stage.status == Stage.Status.PLANNED
+        ):
+            stage.status = Stage.Status.OPEN
 
         if hasattr(stage, "name"):
-            stage.name = _stage_name_for_mass_start(index, cfg)
+            stage.name = _stage_name_for_mass_start(index, cfg, stage_structure_mode)
 
         stage.save()
         active_stage_ids.append(stage.id)
@@ -394,20 +695,32 @@ def sync_custom_mass_start_structure_for_division(tournament: Tournament, divisi
             tournament=tournament,
             division=division,
             stage_type=stage_model.StageType.MASS_START,
+            is_archived=False,
         ).exclude(id__in=active_stage_ids)
         if stale_mass_stages.exists():
-            match_model.objects.filter(tournament=tournament, stage__in=stale_mass_stages).delete()
-            StageMassStartEntry.objects.filter(stage__in=stale_mass_stages).delete()
-            stale_mass_stages.delete()
+            _archive_stage_queryset(stale_mass_stages, reason="MASS_START_STRUCTURE_REDUCED")
 
 
-def sync_custom_mass_start_structure(tournament: Tournament, *, division: Division | None = None) -> None:
+def sync_custom_mass_start_structure(
+    tournament: Tournament,
+    *,
+    division: Division | None = None,
+    restore_archived_mass_start: bool = False,
+) -> None:
     if division is not None:
-        sync_custom_mass_start_structure_for_division(tournament, division)
+        sync_custom_mass_start_structure_for_division(
+            tournament,
+            division,
+            restore_archived_mass_start=restore_archived_mass_start,
+        )
         return
 
     for current_division in tournament.divisions.all().order_by("order", "id"):
-        sync_custom_mass_start_structure_for_division(tournament, current_division)
+        sync_custom_mass_start_structure_for_division(
+            tournament,
+            current_division,
+            restore_archived_mass_start=restore_archived_mass_start,
+        )
 
 
 # ===== Widoki listy i szczegółu turnieju =====
@@ -504,7 +817,12 @@ class TournamentDetailView(RetrieveUpdateAPIView):
         ):
             return
 
-        sync_custom_mass_start_structure(tournament, division=division)
+        restore_archived = bool(getattr(self.request, "data", {}).get("restore_archived_mass_start"))
+        sync_custom_mass_start_structure(
+            tournament,
+            division=division,
+            restore_archived_mass_start=restore_archived,
+        )
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -515,6 +833,32 @@ class TournamentDetailView(RetrieveUpdateAPIView):
         archived_response = _archived_tournament_write_response(tournament)
         if archived_response is not None:
             return archived_response
+
+        dry_run = str(request.query_params.get("dry_run", "")).lower() in ("1", "true", "yes")
+        if dry_run:
+            division = resolve_request_division(request, tournament)
+            if division is None:
+                return Response({"detail": "Nie znaleziono aktywnej dywizji dla tej operacji."}, status=status.HTTP_400_BAD_REQUEST)
+
+            result_config = request.data.get("result_config")
+            analysis = (
+                analyze_mass_start_structure_change(tournament, division, result_config)
+                if isinstance(result_config, dict)
+                else {"restore_available": False, "restore_items": [], "archive_messages": []}
+            )
+
+            return Response(
+                {
+                    "division_id": division.id,
+                    "changed": True,
+                    "requires_confirmation": bool(analysis["archive_messages"] or analysis["restore_available"]),
+                    "restore_available": analysis["restore_available"],
+                    "restore_items": analysis["restore_items"],
+                    "archive_messages": analysis["archive_messages"],
+                    "detail": "Sprawdzenie zakończone.",
+                },
+                status=status.HTTP_200_OK,
+            )
 
         return super().update(request, *args, **kwargs)
 
@@ -783,7 +1127,6 @@ class ChangeDisciplineView(APIView):
             new_result_config or {},
         )
 
-        # Sygnatura obejmuje także model rywalizacji, aby nie pomijać zmiany HEAD_TO_HEAD/MASS_START.
         if new_signature == old_signature:
             return Response(
                 {"detail": "Dyscyplina nie uległa zmianie."},
@@ -812,22 +1155,61 @@ class ChangeDisciplineView(APIView):
         team_model = get_model_any("tournaments", ["Team"])
 
         comp_type_changed = new_comp_type != tournament.competition_type
+        dry_run = str(request.query_params.get("dry_run", "")).lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        generated_structure_exists = _division_has_generated_structure(tournament)
+        can_keep_existing_data = _can_keep_data_for_discipline_change(
+            tournament,
+            new_discipline=new_discipline,
+            new_competition_type=new_comp_type,
+            new_competition_model=new_comp_model,
+            new_result_mode=new_result_mode,
+            new_result_config=new_result_config,
+        )
+        impact_messages = (
+            []
+            if can_keep_existing_data
+            else _reset_impact_messages(
+                tournament,
+                schedule_label="dane harmonogramu niedopasowane do nowej dyscypliny",
+                result_label="wprowadzone wyniki niedopasowane do nowej dyscypliny",
+            )
+        )
+        reset_level = "NONE" if can_keep_existing_data else "FULL_RESET" if comp_type_changed else "STRUCTURE_ARCHIVE"
 
-        if comp_type_changed:
-            match_model.objects.filter(tournament=tournament).delete()
-            StageMassStartEntry.objects.filter(stage__tournament=tournament).delete()
-            stage_model.objects.filter(tournament=tournament).delete()
-            team_model.objects.filter(tournament=tournament).delete()
+        if dry_run:
+            return Response(
+                {
+                    "changed": True,
+                    "requires_reset": bool(generated_structure_exists and not can_keep_existing_data),
+                    "reset_needed": bool(impact_messages),
+                    "requires_confirmation": bool(impact_messages),
+                    "archive_messages": impact_messages,
+                    "preserve_results": bool(can_keep_existing_data),
+                    "reset_level": reset_level,
+                    "detail": "Sprawdzenie zmiany dyscypliny zakończone.",
+                },
+                status=status.HTTP_200_OK,
+            )
 
-            tournament.discipline = new_discipline
-            tournament.custom_discipline_name = new_custom_name
-            tournament.competition_type = new_comp_type
-            tournament.competition_model = new_comp_model
-            tournament.result_mode = new_result_mode
-            tournament.result_config = new_result_config
-            tournament.tournament_format = Tournament.TournamentFormat.LEAGUE
-            tournament.format_config = normalize_format_config(new_discipline, {})
-            tournament.status = Tournament.Status.DRAFT
+        tournament.discipline = new_discipline
+        tournament.custom_discipline_name = new_custom_name
+        tournament.competition_type = new_comp_type
+        tournament.competition_model = new_comp_model
+        tournament.result_mode = new_result_mode
+        tournament.result_config = new_result_config
+
+        if can_keep_existing_data:
+            tournament.format_config = normalize_format_config(
+                new_discipline,
+                tournament.format_config or {},
+            )
+            if tournament.status == Tournament.Status.FINISHED:
+                tournament.status = Tournament.Status.CONFIGURED
+
             tournament.save(
                 update_fields=[
                     "discipline",
@@ -836,7 +1218,6 @@ class ChangeDisciplineView(APIView):
                     "competition_model",
                     "result_mode",
                     "result_config",
-                    "tournament_format",
                     "format_config",
                     "status",
                 ]
@@ -847,14 +1228,68 @@ class ChangeDisciplineView(APIView):
                 division.competition_model = new_comp_model
                 division.result_mode = new_result_mode
                 division.result_config = dict(new_result_config or {})
-                division.tournament_format = Tournament.TournamentFormat.LEAGUE
-                division.format_config = {}
-                division.status = Tournament.Status.DRAFT
+                division.format_config = normalize_format_config(new_discipline, division.format_config or {})
+                if division.status == Tournament.Status.FINISHED:
+                    division.status = Tournament.Status.CONFIGURED
                 division.save()
 
+            clear_standings_cache(tournament)
+            return Response(
+                {
+                    "detail": "Zmieniono dyscyplinę. Zachowano zgodny harmonogram i wyniki.",
+                    "reset_level": "NONE",
+                    "next_step": "results",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        match_model.objects.filter(tournament=tournament, stage__is_archived=False).delete()
+        StageMassStartEntry.objects.filter(stage__tournament=tournament, stage__is_archived=False).delete()
+        _archive_stage_queryset(
+            stage_model.objects.filter(tournament=tournament, is_archived=False),
+            reason="DISCIPLINE_CHANGE",
+        )
+        clear_standings_cache(tournament)
+
+        if comp_type_changed:
+            team_model.objects.filter(tournament=tournament).delete()
+
+        if comp_type_changed:
+            tournament.tournament_format = Tournament.TournamentFormat.LEAGUE
+            tournament.format_config = normalize_format_config(new_discipline, {})
+        else:
+            tournament.format_config = normalize_format_config(new_discipline, tournament.format_config or {})
+        tournament.status = Tournament.Status.DRAFT
+        tournament.save(
+            update_fields=[
+                "discipline",
+                "custom_discipline_name",
+                "competition_type",
+                "competition_model",
+                "result_mode",
+                "result_config",
+                "tournament_format",
+                "format_config",
+                "status",
+            ]
+        )
+
+        for division in tournament.divisions.all().order_by("order", "id"):
+            division.competition_type = new_comp_type
+            division.competition_model = new_comp_model
+            division.result_mode = new_result_mode
+            division.result_config = dict(new_result_config or {})
+            if comp_type_changed:
+                division.tournament_format = Tournament.TournamentFormat.LEAGUE
+                division.format_config = {}
+            else:
+                division.format_config = normalize_format_config(new_discipline, division.format_config or {})
+            division.status = Tournament.Status.DRAFT
+            division.save()
+
+        if comp_type_changed:
             placeholder_teams = []
-            divisions_for_reset = list(tournament.divisions.all().order_by("order", "id"))
-            for current_division in divisions_for_reset:
+            for current_division in tournament.divisions.all().order_by("order", "id"):
                 name_prefix = get_default_slot_prefix_for_competition_type(current_division.competition_type)
                 placeholder_teams.extend(
                     [
@@ -876,67 +1311,13 @@ class ChangeDisciplineView(APIView):
             if placeholder_teams:
                 team_model.objects.bulk_create(placeholder_teams)
 
-            sync_custom_mass_start_structure(tournament)
-
-            return Response(
-                {
-                    "detail": (
-                        "Zmieniono dyscyplinę. Ponieważ zmienił się typ rozgrywki "
-                        "(drużynowy/indywidualny), wykonano pełny reset."
-                    ),
-                    "reset_level": "FULL_RESET",
-                    "next_step": "setup",
-                },
-                status=status.HTTP_200_OK,
-            )
-
-        tournament.discipline = new_discipline
-        tournament.custom_discipline_name = new_custom_name
-        tournament.competition_type = new_comp_type
-        tournament.competition_model = new_comp_model
-        tournament.result_mode = new_result_mode
-        tournament.result_config = new_result_config
-        tournament.format_config = normalize_format_config(
-            new_discipline,
-            tournament.format_config or {},
-        )
-
-        reset_match_results(match_model, tournament)
-        clear_standings_cache(tournament)
-
-        if tournament.status == Tournament.Status.FINISHED:
-            tournament.status = Tournament.Status.CONFIGURED
-
-        tournament.save(
-            update_fields=[
-                "discipline",
-                "custom_discipline_name",
-                "competition_type",
-                "competition_model",
-                "result_mode",
-                "result_config",
-                "format_config",
-                "status",
-            ]
-        )
-
-        for division in tournament.divisions.all().order_by("order", "id"):
-            division.competition_type = new_comp_type
-            division.competition_model = new_comp_model
-            division.result_mode = new_result_mode
-            division.result_config = dict(new_result_config or {})
-            division.format_config = normalize_format_config(new_discipline, division.format_config or {})
-            if division.status == Tournament.Status.FINISHED:
-                division.status = Tournament.Status.CONFIGURED
-            division.save()
-
         sync_custom_mass_start_structure(tournament)
 
         return Response(
             {
-                "detail": "Zmieniono dyscyplinę. Wyniki oraz dane pochodne zostały wyczyszczone.",
-                "reset_level": "RESULTS_ONLY",
-                "next_step": "results",
+                "detail": "Zmieniono dyscyplinę. Dane niezgodne z nową konfiguracją zostały zarchiwizowane lub usunięte.",
+                "reset_level": reset_level,
+                "next_step": "setup",
             },
             status=status.HTTP_200_OK,
         )
@@ -1010,20 +1391,30 @@ class ChangeSetupView(APIView):
         stage_model = get_model_any("tournaments", ["Stage"])
         match_model = get_model_any("tournaments", ["Match"])
 
-        reset_needed = (
-            stage_model.objects.filter(tournament=tournament, division=division).exists()
-            or match_model.objects.filter(tournament=tournament, stage__division=division).exists()
-            or StageMassStartEntry.objects.filter(stage__tournament=tournament, stage__division=division).exists()
+        generated_structure_exists = _division_has_generated_structure(tournament, division)
+        impact_messages = (
+            _reset_impact_messages(
+                tournament,
+                division=division,
+                schedule_label="dane harmonogramu aktywnej dywizji",
+                result_label="wprowadzone wyniki aktywnej dywizji",
+            )
+            if requires_reset and changed
+            else []
         )
 
-        # Tryb dry_run pozwala frontendowi potwierdzić reset przed wykonaniem operacji destrukcyjnej.
         if dry_run:
             return Response(
                 {
                     "division_id": division.id,
                     "changed": changed,
                     "requires_reset": bool(requires_reset and changed),
-                    "reset_needed": bool(reset_needed and requires_reset and changed),
+                    "reset_needed": bool(impact_messages),
+                    "requires_confirmation": bool(impact_messages),
+                    "structure_exists": bool(generated_structure_exists),
+                    "archive_messages": impact_messages,
+                    "restore_available": False,
+                    "restore_items": [],
                     "detail": "Sprawdzenie zakończone.",
                 },
                 status=status.HTTP_200_OK,
@@ -1031,10 +1422,13 @@ class ChangeSetupView(APIView):
 
         reset_performed = False
 
-        if changed and requires_reset and reset_needed:
-            match_model.objects.filter(tournament=tournament, stage__division=division).delete()
-            StageMassStartEntry.objects.filter(stage__tournament=tournament, stage__division=division).delete()
-            stage_model.objects.filter(tournament=tournament, division=division).delete()
+        if changed and requires_reset and generated_structure_exists:
+            match_model.objects.filter(tournament=tournament, stage__division=division, stage__is_archived=False).delete()
+            StageMassStartEntry.objects.filter(stage__tournament=tournament, stage__division=division, stage__is_archived=False).delete()
+            _archive_stage_queryset(
+                stage_model.objects.filter(tournament=tournament, division=division, is_archived=False),
+                reason="SETUP_RESET",
+            )
             reset_performed = True
             clear_standings_cache(tournament, division=division)
 
