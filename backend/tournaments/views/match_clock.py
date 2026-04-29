@@ -160,6 +160,49 @@ def _reject_archived_tournament(match: Match) -> Response | None:
     return None
 
 
+def _parse_requested_clock_seconds(data) -> tuple[int | None, Response | None]:
+    payload = data or {}
+    has_minute = "start_minute" in payload and payload.get("start_minute") not in (None, "")
+    has_second = "start_second" in payload and payload.get("start_second") not in (None, "")
+    has_elapsed = "start_elapsed_seconds" in payload and payload.get("start_elapsed_seconds") not in (None, "")
+
+    if not has_minute and not has_second and not has_elapsed:
+        return None, None
+
+    if has_elapsed:
+        try:
+            total = int(payload.get("start_elapsed_seconds"))
+        except (TypeError, ValueError):
+            return None, Response({"detail": "start_elapsed_seconds musi być liczbą całkowitą."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if total < 0:
+            return None, Response({"detail": "start_elapsed_seconds nie może być ujemne."}, status=status.HTTP_400_BAD_REQUEST)
+        if total > MAX_CLOCK_SECONDS:
+            return None, Response({"detail": "Czas startu przekracza maksymalny czas zegara."}, status=status.HTTP_400_BAD_REQUEST)
+        return total, None
+
+    try:
+        minute = int(payload.get("start_minute") if has_minute else 0)
+    except (TypeError, ValueError):
+        return None, Response({"detail": "start_minute musi być liczbą całkowitą."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        second = int(payload.get("start_second") if has_second else 0)
+    except (TypeError, ValueError):
+        return None, Response({"detail": "start_second musi być liczbą całkowitą."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if minute < 0:
+        return None, Response({"detail": "start_minute nie może być ujemne."}, status=status.HTTP_400_BAD_REQUEST)
+    if second < 0 or second > 59:
+        return None, Response({"detail": "start_second musi być w zakresie 0-59."}, status=status.HTTP_400_BAD_REQUEST)
+
+    total = minute * 60 + second
+    if total > MAX_CLOCK_SECONDS:
+        return None, Response({"detail": "Czas startu przekracza maksymalny czas zegara."}, status=status.HTTP_400_BAD_REQUEST)
+
+    return total, None
+
+
 class MatchClockGetView(APIView):
     permission_classes = [AllowAny]
 
@@ -182,9 +225,13 @@ class MatchClockStartView(APIView):
         except PermissionError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
+        requested_seconds, payload_error = _parse_requested_clock_seconds(request.data)
+        if payload_error is not None:
+            return payload_error
+
         now = timezone.now()
 
-        if _maybe_apply_clock_cap(match, now):
+        if requested_seconds is None and _maybe_apply_clock_cap(match, now):
             match.save(update_fields=["clock_elapsed_seconds", "clock_started_at", "clock_state"])
             _ws_emit_clock(match)
             return Response(_serialize_clock(match))
@@ -200,11 +247,17 @@ class MatchClockStartView(APIView):
         match.clock_state = Match.ClockState.RUNNING
         match.clock_started_at = now
 
+        if requested_seconds is not None:
+            match.clock_elapsed_seconds = requested_seconds
+            match.clock_added_seconds = 0
+
         allowed = _allowed_periods_for_match(match)
         if match.clock_period not in allowed or match.clock_period == _p("NONE", "NONE"):
             match.clock_period = _default_period_for_discipline(match)
 
         update_fields = ["clock_state", "clock_started_at", "clock_period"]
+        if requested_seconds is not None:
+            update_fields.extend(["clock_elapsed_seconds", "clock_added_seconds"])
         if status_changed:
             update_fields.append("status")
         if _is_extra_time_period(match.clock_period) and _ensure_went_to_extra_time(match):
@@ -255,9 +308,13 @@ class MatchClockResumeView(APIView):
         except PermissionError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
+        requested_seconds, payload_error = _parse_requested_clock_seconds(request.data)
+        if payload_error is not None:
+            return payload_error
+
         now = timezone.now()
 
-        if _maybe_apply_clock_cap(match, now):
+        if requested_seconds is None and _maybe_apply_clock_cap(match, now):
             match.save(update_fields=["clock_elapsed_seconds", "clock_started_at", "clock_state"])
             _ws_emit_clock(match)
             return Response(_serialize_clock(match))
@@ -273,7 +330,13 @@ class MatchClockResumeView(APIView):
         match.clock_state = Match.ClockState.RUNNING
         match.clock_started_at = now
 
+        if requested_seconds is not None:
+            match.clock_elapsed_seconds = requested_seconds
+            match.clock_added_seconds = 0
+
         update_fields = ["clock_state", "clock_started_at"]
+        if requested_seconds is not None:
+            update_fields.extend(["clock_elapsed_seconds", "clock_added_seconds"])
         if status_changed:
             update_fields.append("status")
         if _is_extra_time_period(match.clock_period) and _ensure_went_to_extra_time(match):

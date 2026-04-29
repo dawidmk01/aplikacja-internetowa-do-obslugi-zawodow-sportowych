@@ -1,13 +1,12 @@
 // frontend/src/components/MassStartStageCard.tsx
 // Komponent renderuje pojedynczy etap lub konkurencję MASS_START w widoku wprowadzania rezultatów.
 
-import { useMemo } from "react";
+import { Trophy } from "lucide-react";
 
-import { Lock, Save, Trophy } from "lucide-react";
-
+import type { AutosaveStatus } from "../hooks/useAutosave";
+import AutosaveIndicator from "./AutosaveIndicator";
 import { cn } from "../lib/cn";
 
-import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { Input } from "../ui/Input";
 
@@ -19,7 +18,7 @@ import type {
 } from "../types/results";
 
 type StageStructureMode = "REDUCTION" | "MULTI_EVENT";
-type ValueInputKind = "text" | "number";
+type ValueInputKind = "text";
 type ValueInputMode = "numeric" | "decimal";
 
 type Props = {
@@ -29,14 +28,22 @@ type Props = {
   canManageTournament: boolean;
   drafts: Record<string, string>;
   statusDrafts: Record<string, MassStartResultStatus>;
-  savingRows: Record<string, boolean>;
-  onDraftChange: (key: string, value: string) => void;
-  onStatusDraftChange: (key: string, value: MassStartResultStatus) => void;
-  onSaveEntry: (
+  autosaveStatuses: Record<string, AutosaveStatus | undefined>;
+  autosaveErrors: Record<string, string | undefined>;
+  onDraftChange: (
     stage: MassStartStageDTO,
     groupId: number | null,
-    entry: MassStartEntryDTO
-  ) => Promise<void>;
+    entry: MassStartEntryDTO,
+    round: MassStartEntryDTO["rounds"][number],
+    value: string
+  ) => void;
+  onStatusDraftChange: (
+    stage: MassStartStageDTO,
+    groupId: number | null,
+    entry: MassStartEntryDTO,
+    round: MassStartEntryDTO["rounds"][number],
+    value: MassStartResultStatus
+  ) => void;
 };
 
 const RESULT_STATUS_OPTIONS: Array<{ value: MassStartResultStatus; label: string }> = [
@@ -165,7 +172,7 @@ function getValueMeta(config: TournamentResultConfigDTO) {
   const valueKind = String(config.value_kind ?? "NUMBER").toUpperCase();
   const unitLabel = String(config.unit_label ?? config.unit ?? "").trim();
 
-  const inputType: ValueInputKind = valueKind === "TIME" ? "number" : "text";
+  const inputType: ValueInputKind = "text";
   const inputMode: ValueInputMode = valueKind === "TIME" ? "numeric" : "decimal";
 
   const placeholder =
@@ -186,15 +193,34 @@ function getValueMeta(config: TournamentResultConfigDTO) {
   };
 }
 
-function getEntryBusy(
-  savingRows: Record<string, boolean>,
+function getEntryAutosaveStatus(
+  statuses: Record<string, AutosaveStatus | undefined>,
   stageId: number,
   groupId: number | null,
   teamId: number
-) {
-  return Object.keys(savingRows).some(
-    (key) => key.startsWith(`${stageId}:${groupId ?? 0}:${teamId}:`) && savingRows[key]
-  );
+): AutosaveStatus | null {
+  const prefix = `${stageId}:${groupId ?? 0}:${teamId}:`;
+  const values = Object.entries(statuses)
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([, value]) => value)
+    .filter(Boolean) as AutosaveStatus[];
+
+  if (values.includes("error")) return "error";
+  if (values.includes("saving")) return "saving";
+  if (values.includes("draft")) return "draft";
+  if (values.includes("success")) return "success";
+  return null;
+}
+
+function getEntryAutosaveError(
+  errors: Record<string, string | undefined>,
+  stageId: number,
+  groupId: number | null,
+  teamId: number
+): string {
+  const prefix = `${stageId}:${groupId ?? 0}:${teamId}:`;
+  const found = Object.entries(errors).find(([key, value]) => key.startsWith(prefix) && value);
+  return String(found?.[1] ?? "");
 }
 
 function hasAnySavedResult(entry: MassStartEntryDTO) {
@@ -208,12 +234,32 @@ function hasAnySavedResult(entry: MassStartEntryDTO) {
   );
 }
 
-function getEntryTone(stageEditable: boolean, entry: MassStartEntryDTO, rowBusy: boolean) {
-  if (rowBusy) {
+function getEntryTone(
+  stageEditable: boolean,
+  entry: MassStartEntryDTO,
+  autosaveStatus: AutosaveStatus | null
+) {
+  if (autosaveStatus === "error") {
+    return {
+      wrapper: "border-rose-400/20 bg-rose-500/[0.05]",
+      chip: "border-rose-400/25 bg-rose-500/[0.10] text-rose-100",
+      dot: "bg-rose-300 shadow-[0_0_10px_rgba(251,113,133,0.35)]",
+    };
+  }
+
+  if (autosaveStatus === "saving" || autosaveStatus === "draft") {
     return {
       wrapper: "border-amber-400/20 bg-amber-500/[0.05]",
       chip: "border-amber-400/25 bg-amber-500/[0.10] text-amber-100",
       dot: "bg-amber-300 shadow-[0_0_10px_rgba(252,211,77,0.35)]",
+    };
+  }
+
+  if (autosaveStatus === "success") {
+    return {
+      wrapper: "border-emerald-400/15 bg-emerald-500/[0.04]",
+      chip: "border-emerald-400/25 bg-emerald-500/[0.10] text-emerald-100",
+      dot: "bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.35)]",
     };
   }
 
@@ -267,10 +313,10 @@ export default function MassStartStageCard({
   canManageTournament,
   drafts,
   statusDrafts,
-  savingRows,
+  autosaveStatuses,
+  autosaveErrors,
   onDraftChange,
   onStatusDraftChange,
-  onSaveEntry,
 }: Props) {
   const stageEditable = isStageEditable(stage, canManageTournament, stageStructureMode);
   const stageStatusLabel = getStageStatusLabel(stage, stageStructureMode);
@@ -285,19 +331,19 @@ export default function MassStartStageCard({
     "h-9 w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 text-sm font-semibold text-white placeholder:text-slate-500",
     "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
     "disabled:opacity-60",
-    "[color-scheme:dark]"
+    "appearance-none [color-scheme:dark]",
+    "[&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
+    "[-moz-appearance:textfield]"
   );
 
   const selectClass = cn(
     "h-9 w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 text-sm font-semibold text-white",
     "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
     "disabled:opacity-60",
-    "[color-scheme:dark]"
+    "appearance-none [color-scheme:dark]",
+    "[&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
+    "[-moz-appearance:textfield]"
   );
-
-  const saveVariant = useMemo(() => {
-    return stageEditable ? "primary" : "secondary";
-  }, [stageEditable]);
 
   return (
     <Card className={cn("mb-4 border p-4 sm:p-5", tone.card)}>
@@ -342,14 +388,19 @@ export default function MassStartStageCard({
             ) : (
               <div className="mt-4 space-y-3">
                 {group.entries.map((entry) => {
-                  const rowBusy = getEntryBusy(
-                    savingRows,
+                  const autosaveStatus = getEntryAutosaveStatus(
+                    autosaveStatuses,
                     stage.stage_id,
                     group.group_id,
                     entry.team_id
                   );
-
-                  const entryTone = getEntryTone(stageEditable, entry, rowBusy);
+                  const autosaveError = getEntryAutosaveError(
+                    autosaveErrors,
+                    stage.stage_id,
+                    group.group_id,
+                    entry.team_id
+                  );
+                  const entryTone = getEntryTone(stageEditable, entry, autosaveStatus);
 
                   return (
                     <div
@@ -361,9 +412,14 @@ export default function MassStartStageCard({
                     >
                       <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                         <div className="min-w-0 xl:max-w-[17rem]">
-                          <div className="break-words text-sm font-semibold text-white">
-                            {entry.team_name}
+                          <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                            <span className="min-w-0 break-words">{entry.team_name}</span>
+                            <AutosaveIndicator status={autosaveStatus ?? "idle"} error={autosaveError || undefined} />
                           </div>
+
+                          {autosaveError ? (
+                            <div className="mt-1 text-xs text-rose-300">{autosaveError}</div>
+                          ) : null}
 
                           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
                             <span className="inline-flex items-center gap-1.5">
@@ -386,7 +442,7 @@ export default function MassStartStageCard({
                             );
                             const value = drafts[key] ?? "";
                             const selectedStatus = statusDrafts[key] ?? round.result_status ?? "OK";
-                            const valueInputDisabled = !stageEditable || rowBusy || selectedStatus !== "OK";
+                            const valueInputDisabled = !stageEditable || selectedStatus !== "OK";
 
                             return (
                               <label key={key} className="grid gap-1 text-xs text-slate-300">
@@ -394,9 +450,15 @@ export default function MassStartStageCard({
                                 <select
                                   value={selectedStatus}
                                   onChange={(event) =>
-                                    onStatusDraftChange(key, event.target.value as MassStartResultStatus)
+                                    onStatusDraftChange(
+                                      stage,
+                                      group.group_id,
+                                      entry,
+                                      round,
+                                      event.target.value as MassStartResultStatus
+                                    )
                                   }
-                                  disabled={!stageEditable || rowBusy}
+                                  disabled={!stageEditable}
                                   className={selectClass}
                                 >
                                   {RESULT_STATUS_OPTIONS.map((option) => (
@@ -407,7 +469,9 @@ export default function MassStartStageCard({
                                 </select>
                                 <Input
                                   value={value}
-                                  onChange={(e) => onDraftChange(key, e.target.value)}
+                                  onChange={(e) =>
+                                    onDraftChange(stage, group.group_id, entry, round, e.target.value)
+                                  }
                                   type={inputType}
                                   inputMode={inputMode}
                                   placeholder={placeholder}
@@ -420,43 +484,6 @@ export default function MassStartStageCard({
                               </label>
                             );
                           })}
-                        </div>
-
-                        <div className="flex items-start xl:shrink-0">
-                          <div className="flex flex-col items-stretch gap-2 xl:min-w-[140px]">
-                            <div
-                              className={cn(
-                                "inline-flex items-center justify-center gap-2 rounded-full border px-3 py-1 text-xs",
-                                entryTone.chip
-                              )}
-                            >
-                              <span className={cn("h-2 w-2 rounded-full", entryTone.dot)} />
-                              {rowBusy
-                                ? "Zapisywanie"
-                                : stageEditable
-                                  ? hasAnySavedResult(entry)
-                                    ? "Wynik zapisany"
-                                    : "Brak zapisu"
-                                  : "Podgląd"}
-                            </div>
-
-                            <Button
-                              type="button"
-                              variant={saveVariant}
-                              leftIcon={
-                                stageEditable ? (
-                                  <Save className="h-4 w-4" />
-                                ) : (
-                                  <Lock className="h-4 w-4" />
-                                )
-                              }
-                              onClick={() => void onSaveEntry(stage, group.group_id, entry)}
-                              disabled={!stageEditable || rowBusy}
-                              className="w-full"
-                            >
-                              {rowBusy ? "Zapisywanie..." : stageEditable ? "Zapisz" : "Zablokowane"}
-                            </Button>
-                          </div>
                         </div>
                       </div>
                     </div>

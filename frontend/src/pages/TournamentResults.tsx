@@ -9,6 +9,7 @@ import { Brackets, Calendar, ChevronLeft, ChevronRight, Clock, Gauge, TimerReset
 import { apiFetch } from "../api";
 import MassStartStageCard from "../components/MassStartStageCard";
 import MatchRow from "../components/MatchRow";
+import { useAutosave, type AutosaveStatus } from "../hooks/useAutosave";
 import { useTournamentWs } from "../hooks/useTournamentWs";
 import { cn } from "../lib/cn";
 import { getLabel, RESULT_VALUE_KIND_LABELS, TIME_FORMAT_LABELS } from "../lib/sportLabels";
@@ -45,6 +46,17 @@ type DivisionSummaryDTO = { id: number; name?: string; status?: string };
 type MassStartResultSaveResponseDTO = {
   detail?: string;
   payload?: TournamentMassStartResultsResponseDTO | null;
+};
+
+type MassStartAutosavePayload = {
+  stageId: number;
+  groupId: number | null;
+  teamId: number;
+  teamName: string;
+  roundNumber: number;
+  resultStatus: MassStartResultStatus;
+  rawValue: string;
+  stageStatus: string;
 };
 
 // ===== Normalizacja danych i trybu turnieju =====
@@ -273,10 +285,10 @@ function MassStartResultsView({
   canManageTournament,
   drafts,
   statusDrafts,
-  savingRows,
+  autosaveStatuses,
+  autosaveErrors,
   onDraftChange,
   onStatusDraftChange,
-  onSaveEntry,
 }: {
   loading: boolean;
   pageTitle: string;
@@ -288,10 +300,22 @@ function MassStartResultsView({
   canManageTournament: boolean;
   drafts: Record<string, string>;
   statusDrafts: Record<string, MassStartResultStatus>;
-  savingRows: Record<string, boolean>;
-  onDraftChange: (key: string, value: string) => void;
-  onStatusDraftChange: (key: string, value: MassStartResultStatus) => void;
-  onSaveEntry: (stage: MassStartStageDTO, groupId: number | null, entry: MassStartEntryDTO) => Promise<void>;
+  autosaveStatuses: Record<string, AutosaveStatus | undefined>;
+  autosaveErrors: Record<string, string | undefined>;
+  onDraftChange: (
+    stage: MassStartStageDTO,
+    groupId: number | null,
+    entry: MassStartEntryDTO,
+    round: MassStartEntryDTO["rounds"][number],
+    value: string
+  ) => void;
+  onStatusDraftChange: (
+    stage: MassStartStageDTO,
+    groupId: number | null,
+    entry: MassStartEntryDTO,
+    round: MassStartEntryDTO["rounds"][number],
+    value: MassStartResultStatus
+  ) => void;
 }) {
   const visibleStages = useMemo(
     () => getVisibleMassStartStages(massStartData?.stages, stageStructureMode),
@@ -415,10 +439,10 @@ function MassStartResultsView({
               canManageTournament={canManageTournament}
               drafts={drafts}
               statusDrafts={statusDrafts}
-              savingRows={savingRows}
+              autosaveStatuses={autosaveStatuses}
+              autosaveErrors={autosaveErrors}
               onDraftChange={onDraftChange}
               onStatusDraftChange={onStatusDraftChange}
-              onSaveEntry={onSaveEntry}
             />
           ))}
         </div>
@@ -548,7 +572,6 @@ export default function TournamentResults() {
   const [loading, setLoading] = useState(true);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [statusDrafts, setStatusDrafts] = useState<Record<string, MassStartResultStatus>>({});
-  const [savingRows, setSavingRows] = useState<Record<string, boolean>>({});
   const [advanceBusy, setAdvanceBusy] = useState(false);
   const [fullscreenMatchId, setFullscreenMatchId] = useState<number | null>(null);
 
@@ -989,118 +1012,157 @@ export default function TournamentResults() {
       ? "Wprowadzaj wyniki meczów i korzystaj z trybu LIVE również dla dyscyplin niestandardowych z pojedynkami."
       : "Wprowadzaj wyniki meczów i kontroluj postęp rozgrywek.";
 
-  const onDraftChange = useCallback((key: string, value: string) => {
-    setDrafts((prev) => ({ ...prev, [key]: value }));
-  }, []);
-
-  const onStatusDraftChange = useCallback((key: string, value: MassStartResultStatus) => {
-    setStatusDrafts((prev) => ({ ...prev, [key]: value }));
-
-    if (value !== "OK") {
-      setDrafts((prev) => ({ ...prev, [key]: "" }));
-    }
-  }, []);
-
-  const onSaveMassStartEntry = useCallback(
-    async (stage: MassStartStageDTO, groupId: number | null, entry: MassStartEntryDTO) => {
+  const saveMassStartAutosave = useCallback(
+    async (_key: string | number, draft: MassStartAutosavePayload) => {
       if (!tournamentId) return;
 
-      const stageStatus = String(stage.stage_status ?? "").toUpperCase();
-      // W trybie wielu konkurencji zapis nie jest blokowany przez kolejność etapów redukcyjnych.
-      if (!isMassStartMultiEvent && stageStatus && stageStatus !== "OPEN") {
-        pushToast("Ten etap nie jest otwarty do zapisu rezultatów.", "info");
-        return;
+      // Zapis automatyczny zachowuje pojedynczy rezultat jako atomową jednostkę synchronizacji z backendem.
+      if (!isMassStartMultiEvent && draft.stageStatus && draft.stageStatus !== "OPEN") {
+        throw new Error("Ten etap nie jest otwarty do zapisu rezultatów.");
       }
 
-      const requests: StageMassStartResultWriteDTO[] = [];
-      for (const round of entry.rounds) {
-        const key = draftKey(stage.stage_id, groupId, entry.team_id, round.round_number);
-        const resultStatus = statusDrafts[key] ?? round.result_status ?? "OK";
-        const rawValue = (drafts[key] ?? "").trim();
+      const rawValue = draft.rawValue.trim();
+      if (draft.resultStatus === "OK" && !rawValue) return;
 
-        if (resultStatus === "OK" && !rawValue) continue;
+      const payload: StageMassStartResultWriteDTO = {
+        stage_id: draft.stageId,
+        group_id: draft.groupId,
+        team_id: draft.teamId,
+        round_number: draft.roundNumber,
+        result_status: draft.resultStatus,
+      };
 
-        const payload: StageMassStartResultWriteDTO = {
-          stage_id: stage.stage_id,
-          group_id: groupId,
-          team_id: entry.team_id,
-          round_number: round.round_number,
-          result_status: resultStatus,
-        };
-
-        if (resultStatus === "OK") {
-          const valueKind = String(customResultConfig.value_kind ?? "NUMBER").toUpperCase();
-          if (valueKind === "TIME") payload.time_ms = Number(rawValue);
-          else if (valueKind === "PLACE") payload.place_value = Number(rawValue);
-          else payload.numeric_value = rawValue;
-        }
-
-        requests.push(payload);
+      if (draft.resultStatus === "OK") {
+        const valueKind = String(customResultConfig.value_kind ?? "NUMBER").toUpperCase();
+        if (valueKind === "TIME") payload.time_ms = Number(rawValue);
+        else if (valueKind === "PLACE") payload.place_value = Number(rawValue);
+        else payload.numeric_value = rawValue;
       }
 
-      if (!requests.length) {
-        pushToast("Brak zmian do zapisania.", "info");
-        return;
-      }
+      const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/mass-start-results/`, effectiveDivisionId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        toastOnError: false,
+      } as any);
 
-      setSavingRows((prev) => {
-        const next = { ...prev };
-        for (const item of requests) {
-          next[draftKey(item.stage_id, item.group_id ?? null, item.team_id, item.round_number)] = true;
-        }
-        return next;
-      });
-
-      try {
-        let latestPayload: TournamentMassStartResultsResponseDTO | null = null;
-
-        for (const payload of requests) {
-          const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/mass-start-results/`, effectiveDivisionId), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-            toastOnError: false,
-          } as any);
-
-          const data = (await res.json().catch(() => null)) as MassStartResultSaveResponseDTO | null;
-          if (!res.ok) {
-            const fallbackMessage = isMassStartMultiEvent
-              ? "Nie udało się zapisać wyniku konkurencji."
-              : "Nie udało się zapisać wyniku etapowego.";
-            throw new Error(String(data?.detail || fallbackMessage));
-          }
-
-          if (data?.payload) {
-            latestPayload = data.payload;
-          }
-        }
-
-        pushToast(`Zapisano rezultat dla: ${entry.team_name}.`, "saved");
-
-        const autoAdvanceStage = !isMassStartMultiEvent && latestPayload
-          ? getAdvanceCandidateStage(latestPayload.stages)
-          : null;
-        if (canManageTournament && autoAdvanceStage?.stage_id === stage.stage_id) {
-          await advanceMassStartStage();
-        }
-
-        await reloadAllSilent();
-      } catch (e) {
+      const data = (await res.json().catch(() => null)) as MassStartResultSaveResponseDTO | null;
+      if (!res.ok) {
         const fallbackMessage = isMassStartMultiEvent
-          ? "Nie udało się zapisać rezultatu konkurencji."
-          : "Nie udało się zapisać rezultatu etapowego.";
-        pushToast(e instanceof Error ? e.message : fallbackMessage, "error");
-      } finally {
-        setSavingRows((prev) => {
-          const next = { ...prev };
-          for (const item of requests) {
-            delete next[draftKey(item.stage_id, item.group_id ?? null, item.team_id, item.round_number)];
-          }
-          return next;
-        });
+          ? "Nie udało się zapisać wyniku konkurencji."
+          : "Nie udało się zapisać wyniku etapowego.";
+        throw new Error(String(data?.detail || fallbackMessage));
+      }
+
+      if (data?.payload && mountedRef.current) {
+        setMassStartData(data.payload);
+      }
+
+      const autoAdvanceStage = !isMassStartMultiEvent && data?.payload
+        ? getAdvanceCandidateStage(data.payload.stages)
+        : null;
+      if (canManageTournament && autoAdvanceStage?.stage_id === draft.stageId) {
+        const advanced = await advanceMassStartStage();
+        if (advanced) await reloadAllSilent();
       }
     },
-    [advanceMassStartStage, canManageTournament, customResultConfig.value_kind, drafts, effectiveDivisionId, isMassStartMultiEvent, pushToast, reloadAllSilent, statusDrafts, tournamentId]
+    [
+      advanceMassStartStage,
+      canManageTournament,
+      customResultConfig.value_kind,
+      effectiveDivisionId,
+      isMassStartMultiEvent,
+      reloadAllSilent,
+      tournamentId,
+    ]
+  );
+
+  const {
+    statuses: autosaveStatuses,
+    errors: autosaveErrors,
+    update: updateAutosave,
+    clearDraft: clearAutosaveDraft,
+  } = useAutosave<MassStartAutosavePayload>({
+    onSave: saveMassStartAutosave,
+    debounceMs: 900,
+    successResetMs: 1800,
+    toastOnError: true,
+    getErrorMessage: (error) =>
+      error instanceof Error ? error.message : "Nie udało się zapisać rezultatu automatycznie.",
+  });
+
+  const queueMassStartAutosave = useCallback(
+    (
+      stage: MassStartStageDTO,
+      groupId: number | null,
+      entry: MassStartEntryDTO,
+      round: MassStartEntryDTO["rounds"][number],
+      resultStatus: MassStartResultStatus,
+      rawValue: string
+    ) => {
+      const key = draftKey(stage.stage_id, groupId, entry.team_id, round.round_number);
+      const normalizedStatus = String(resultStatus ?? "OK").toUpperCase() as MassStartResultStatus;
+      const safeStatus: MassStartResultStatus = ["OK", "DNS", "DNF", "DSQ"].includes(normalizedStatus)
+        ? normalizedStatus
+        : "OK";
+      const normalizedValue = safeStatus === "OK" ? rawValue : "";
+
+      if (safeStatus === "OK" && !normalizedValue.trim()) {
+        clearAutosaveDraft(key);
+        return;
+      }
+
+      updateAutosave(key, {
+        stageId: stage.stage_id,
+        groupId,
+        teamId: entry.team_id,
+        teamName: entry.team_name,
+        roundNumber: round.round_number,
+        resultStatus: safeStatus,
+        rawValue: normalizedValue,
+        stageStatus: String(stage.stage_status ?? "").toUpperCase(),
+      });
+    },
+    [clearAutosaveDraft, updateAutosave]
+  );
+
+  const onDraftChange = useCallback(
+    (
+      stage: MassStartStageDTO,
+      groupId: number | null,
+      entry: MassStartEntryDTO,
+      round: MassStartEntryDTO["rounds"][number],
+      value: string
+    ) => {
+      const key = draftKey(stage.stage_id, groupId, entry.team_id, round.round_number);
+      setDrafts((prev) => ({ ...prev, [key]: value }));
+
+      const resultStatus = statusDrafts[key] ?? round.result_status ?? "OK";
+      queueMassStartAutosave(stage, groupId, entry, round, resultStatus, value);
+    },
+    [queueMassStartAutosave, statusDrafts]
+  );
+
+  const onStatusDraftChange = useCallback(
+    (
+      stage: MassStartStageDTO,
+      groupId: number | null,
+      entry: MassStartEntryDTO,
+      round: MassStartEntryDTO["rounds"][number],
+      value: MassStartResultStatus
+    ) => {
+      const key = draftKey(stage.stage_id, groupId, entry.team_id, round.round_number);
+      const nextValue = value === "OK" ? drafts[key] ?? "" : "";
+
+      setStatusDrafts((prev) => ({ ...prev, [key]: value }));
+
+      if (value !== "OK") {
+        setDrafts((prev) => ({ ...prev, [key]: "" }));
+      }
+
+      queueMassStartAutosave(stage, groupId, entry, round, value, nextValue);
+    },
+    [drafts, queueMassStartAutosave]
   );
 
   const renderMatch = useCallback(
@@ -1171,10 +1233,10 @@ export default function TournamentResults() {
         canManageTournament={canManageTournament}
         drafts={drafts}
         statusDrafts={statusDrafts}
-        savingRows={savingRows}
+        autosaveStatuses={autosaveStatuses}
+        autosaveErrors={autosaveErrors}
         onDraftChange={onDraftChange}
         onStatusDraftChange={onStatusDraftChange}
-        onSaveEntry={onSaveMassStartEntry}
       />
     );
   }

@@ -656,6 +656,7 @@ export function IncidentsPanel({
 
         setIncidents((prev) => prev.map((x) => (x.id === incidentId ? data : x)));
         await loadIncidents();
+        await onAfterRecompute?.();
         onRequestClockReload?.();
       } catch (e: any) {
         setError(e?.message || "Nie udało się zaktualizować incydentu.");
@@ -667,7 +668,7 @@ export function IncidentsPanel({
         });
       }
     },
-    [loadIncidents, onRequestClockReload]
+    [loadIncidents, onAfterRecompute, onRequestClockReload]
   );
 
   const saveEdit = useCallback(

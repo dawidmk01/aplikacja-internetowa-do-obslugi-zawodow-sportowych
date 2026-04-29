@@ -523,9 +523,11 @@ export default function MatchRow({
   const [liveIncidentsReloadToken, setLiveIncidentsReloadToken] = useState(0);
 
   const incidentDeleteProceedRef = useRef<null | (() => void)>(null);
+  const forceDraftSyncAfterLiveRecomputeRef = useRef(false);
 
   useEffect(() => {
-    if (!isDirty) {
+    if (!isDirty || forceDraftSyncAfterLiveRecomputeRef.current) {
+      forceDraftSyncAfterLiveRecomputeRef.current = false;
       setDraft(originalDraft);
       setEdited(false);
     }
@@ -599,6 +601,11 @@ export default function MatchRow({
       // Rodzic może mieć własną obsługę.
     }
   }, [onReload]);
+
+  const handleLiveRecompute = useCallback(async () => {
+    forceDraftSyncAfterLiveRecomputeRef.current = true;
+    await doReload();
+  }, [doReload]);
 
   const requestLiveIncidentsReload = useCallback(() => {
     setLiveIncidentsReloadToken((value) => value + 1);
@@ -1310,9 +1317,9 @@ export default function MatchRow({
           isFullscreenMode && "h-full min-h-0",
           isFullscreenMode && !compactFullscreenOperatorMode && "grid xl:grid-cols-[minmax(300px,360px)_minmax(0,1fr)]"
         )}
-      > 
+      >
         {!compactFullscreenOperatorMode ? (
-          <div className={cn(isFullscreenMode && "min-h-0 overflow-y-auto border-white/10 p-4 sm:p-5 xl:border-r xl:p-6")}> 
+          <div className={cn(isFullscreenMode && "min-h-0 overflow-y-auto border-white/10 p-4 sm:p-5 xl:border-r xl:p-6")}>
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="min-w-0 truncate text-sm font-semibold text-white sm:text-base">
               {homeName} <span className="font-semibold text-white/70">vs</span> {awayName}
@@ -2044,7 +2051,7 @@ export default function MatchRow({
               }));
               setEdited(true);
             }}
-            onAfterRecompute={doReload}
+            onAfterRecompute={handleLiveRecompute}
             externalIncidentsReloadToken={liveIncidentsReloadToken}
           />
           </div>

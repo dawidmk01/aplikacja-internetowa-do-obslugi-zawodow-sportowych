@@ -6,6 +6,7 @@ import { cn } from "../../lib/cn";
 import { Button } from "../../ui/Button";
 import { Card } from "../../ui/Card";
 import { InlineAlert } from "../../ui/InlineAlert";
+import { Input } from "../../ui/Input";
 import { Select, type SelectOption } from "../../ui/Select";
 
 import ConfirmChangeModal from "../ConfirmChangeModal";
@@ -221,9 +222,14 @@ export function ClockPanel({
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [pendingConfirmBusy, setPendingConfirmBusy] = useState(false);
 
+  const [manualStartMinute, setManualStartMinute] = useState("");
+  const [manualStartSecond, setManualStartSecond] = useState("");
+
   useEffect(() => {
     setBreakMode(readBreakMode(matchId));
     setPendingConfirm(null);
+    setManualStartMinute("");
+    setManualStartSecond("");
     setError(null);
   }, [matchId]);
 
@@ -386,6 +392,57 @@ export function ClockPanel({
     onMetaChange?.(meta);
   }, [meta, onMetaChange]);
 
+  const manualStartAvailable =
+    clock?.clock_state === "NOT_STARTED" || clock?.clock_state === "STOPPED" || clock?.clock_state === "PAUSED";
+
+  const selectedManualStartSeconds = useMemo(() => {
+    const minuteRaw = manualStartMinute.trim();
+    const secondRaw = manualStartSecond.trim();
+
+    if (!minuteRaw && !secondRaw) return null;
+
+    const minute = minuteRaw ? Number(minuteRaw) : 0;
+    const second = secondRaw ? Number(secondRaw) : 0;
+
+    if (!Number.isInteger(minute) || minute < 0) return null;
+    if (!Number.isInteger(second) || second < 0 || second > 59) return null;
+
+    return minute * 60 + second;
+  }, [manualStartMinute, manualStartSecond]);
+
+  const buildManualStartPayload = useCallback((): { start_minute: number; start_second: number } | null | undefined => {
+    const minuteRaw = manualStartMinute.trim();
+    const secondRaw = manualStartSecond.trim();
+
+    if (!minuteRaw && !secondRaw) return undefined;
+
+    const minute = minuteRaw ? Number(minuteRaw) : 0;
+    const second = secondRaw ? Number(secondRaw) : 0;
+
+    if (!Number.isInteger(minute) || minute < 0) {
+      setError("Minuta startu musi być nieujemną liczbą całkowitą.");
+      return null;
+    }
+
+    if (!Number.isInteger(second) || second < 0 || second > 59) {
+      setError("Sekunda startu musi być w zakresie 0-59.");
+      return null;
+    }
+
+    const maxSeconds = Number(clock?.max_clock_seconds ?? 3 * 60 * 60);
+    if (minute * 60 + second > maxSeconds) {
+      setError("Wybrany czas przekracza maksymalny czas zegara.");
+      return null;
+    }
+
+    return { start_minute: minute, start_second: second };
+  }, [clock?.max_clock_seconds, manualStartMinute, manualStartSecond]);
+
+  const clearManualStartDraft = useCallback(() => {
+    setManualStartMinute("");
+    setManualStartSecond("");
+  }, []);
+
   const inProgress = matchStatus === "IN_PROGRESS" || matchStatus === "RUNNING";
 
   const primaryLabel = useMemo(() => {
@@ -422,13 +479,20 @@ export function ClockPanel({
     }
 
     if (clock.clock_state === "NOT_STARTED" || clock.clock_state === "STOPPED") {
+      const manualPayload = buildManualStartPayload();
+      if (manualPayload === null) return;
+
       clearBreak(matchId);
       setBreakMode(BreakMode.NONE);
-      await postClock("start/");
+      await postClock("start/", manualPayload);
+      clearManualStartDraft();
       return;
     }
 
     if (clock.clock_state === "PAUSED" && breakMode === BreakMode.INTERMISSION) {
+      const manualPayload = buildManualStartPayload();
+      if (manualPayload === null) return;
+
       const allowExtraTimeStart = canEnterNextExtraTimePeriod(discipline, clock.clock_period, scoreContext);
 
       const next = getNextPeriodFromIntermission(discipline, clock.clock_period, { allowExtraTimeStart });
@@ -439,16 +503,33 @@ export function ClockPanel({
 
       clearBreak(matchId);
       setBreakMode(BreakMode.NONE);
-      await postClock("resume/");
+      await postClock("resume/", manualPayload);
+      clearManualStartDraft();
       return;
     }
 
     if (clock.clock_state === "PAUSED") {
+      const manualPayload = buildManualStartPayload();
+      if (manualPayload === null) return;
+
       clearBreak(matchId);
       setBreakMode(BreakMode.NONE);
-      await postClock("resume/");
+      await postClock("resume/", manualPayload);
+      clearManualStartDraft();
     }
-  }, [breakMode, canEdit, clock, discipline, loadClock, matchId, onEnterExtraTime, postClock, scoreContext]);
+  }, [
+    breakMode,
+    buildManualStartPayload,
+    canEdit,
+    clearManualStartDraft,
+    clock,
+    discipline,
+    loadClock,
+    matchId,
+    onEnterExtraTime,
+    postClock,
+    scoreContext,
+  ]);
 
   const setLocalBreak = useCallback(
     (mode: BreakModeT) => {
@@ -684,6 +765,57 @@ export function ClockPanel({
             Odśwież
           </Button>
         </div>
+
+        {manualStartAvailable ? (
+          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-white">Start od wskazanego czasu</div>
+                <div className="mt-1 text-xs text-slate-400">
+                  Wartość dotyczy bieżącego okresu gry. Przy pustych polach zegar kontynuuje obecny czas.
+                </div>
+                {selectedManualStartSeconds != null ? (
+                  <div className="mt-1 text-xs text-slate-300">
+                    Wybrany czas: <span className="font-semibold text-white">{formatClock(selectedManualStartSeconds)}</span>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 sm:w-[260px]">
+                <label className="grid gap-1 text-xs font-medium text-slate-300">
+                  Minuta
+                  <Input
+                    type="number"
+                    min={0}
+                    step={1}
+                    inputMode="numeric"
+                    value={manualStartMinute}
+                    onChange={(event) => setManualStartMinute(event.target.value)}
+                    disabled={disableActions}
+                    placeholder="np. 35"
+                    className="h-9 rounded-xl"
+                  />
+                </label>
+
+                <label className="grid gap-1 text-xs font-medium text-slate-300">
+                  Sekunda
+                  <Input
+                    type="number"
+                    min={0}
+                    max={59}
+                    step={1}
+                    inputMode="numeric"
+                    value={manualStartSecond}
+                    onChange={(event) => setManualStartSecond(event.target.value)}
+                    disabled={disableActions}
+                    placeholder="np. 20"
+                    className="h-9 rounded-xl"
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         <div className="flex flex-wrap items-center gap-3">
           {canShowPeriodSelect ? (

@@ -108,6 +108,48 @@ class TournamentMatchClockApiTests(TestCase):
         self.assertEqual(match.clock_state, self._match_model().ClockState.RUNNING)
         self.assertIsNotNone(match.clock_started_at)
 
+    def test_organizer_can_start_match_clock_from_selected_time(self):
+        _tournament, match, _second_match = self._create_context()
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.post(
+            f"/api/matches/{match.id}/clock/start/",
+            {
+                "start_minute": 12,
+                "start_second": 34,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        match.refresh_from_db()
+
+        self.assertEqual(match.clock_state, self._match_model().ClockState.RUNNING)
+        self.assertEqual(match.clock_elapsed_seconds, 12 * 60 + 34)
+        self.assertEqual(match.clock_added_seconds, 0)
+        self.assertIsNotNone(match.clock_started_at)
+
+    def test_clock_start_rejects_invalid_selected_second(self):
+        _tournament, match, _second_match = self._create_context()
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.post(
+            f"/api/matches/{match.id}/clock/start/",
+            {
+                "start_minute": 1,
+                "start_second": 60,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+        match.refresh_from_db()
+
+        self.assertEqual(match.clock_state, self._match_model().ClockState.NOT_STARTED)
+        self.assertEqual(match.clock_elapsed_seconds, 0)
+
     def test_starting_one_match_clock_does_not_change_other_match_clock(self):
         _tournament, first_match, second_match = self._create_context()
         self.client.force_authenticate(user=self.organizer)
@@ -189,6 +231,33 @@ class TournamentMatchClockApiTests(TestCase):
 
         self.assertEqual(match.clock_state, self._match_model().ClockState.RUNNING)
         self.assertEqual(match.clock_elapsed_seconds, 45)
+        self.assertIsNotNone(match.clock_started_at)
+
+    def test_organizer_can_resume_paused_match_clock_from_selected_time(self):
+        _tournament, match, _second_match = self._create_context()
+        match.clock_state = self._match_model().ClockState.PAUSED
+        match.clock_elapsed_seconds = 45
+        match.clock_added_seconds = 30
+        match.save(update_fields=["clock_state", "clock_elapsed_seconds", "clock_added_seconds"])
+
+        self.client.force_authenticate(user=self.organizer)
+
+        response = self.client.post(
+            f"/api/matches/{match.id}/clock/resume/",
+            {
+                "start_minute": 7,
+                "start_second": 5,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        match.refresh_from_db()
+
+        self.assertEqual(match.clock_state, self._match_model().ClockState.RUNNING)
+        self.assertEqual(match.clock_elapsed_seconds, 7 * 60 + 5)
+        self.assertEqual(match.clock_added_seconds, 0)
         self.assertIsNotNone(match.clock_started_at)
 
     def test_organizer_can_stop_running_match_clock(self):
