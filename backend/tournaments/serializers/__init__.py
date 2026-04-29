@@ -6,7 +6,7 @@ from .assistants import (
     AssistantPermissionsSerializer,
     TournamentAssistantSerializer,
 )
-from .generate import GenerateTournamentSerializer
+from .generation import GenerateTournamentSerializer
 from .incidents import MatchIncidentCreateSerializer, MatchIncidentSerializer
 from .mass_start_results import (
     StageMassStartResultSerializer,
@@ -20,7 +20,7 @@ from .matches import (
     MatchSerializer,
 )
 from .teams import TeamSerializer, TeamUpdateSerializer
-from .tournament import TournamentMetaUpdateSerializer, TournamentSerializer
+from .tournaments import TournamentMetaUpdateSerializer, TournamentSerializer
 
 __all__ = [
     "TournamentSerializer",

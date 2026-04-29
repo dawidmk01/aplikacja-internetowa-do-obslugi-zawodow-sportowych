@@ -90,6 +90,7 @@ type Props = {
   onRequestConfirmIncidentDelete?: (req: IncidentDeleteRequest, proceed: () => void) => void;
   onAfterRecompute?: () => Promise<void> | void;
   onRequestClockReload?: () => void;
+  layoutMode?: "default" | "fullscreen";
 };
 
 const WRESTLING_PLAYER_KINDS = new Set<string>([
@@ -210,6 +211,7 @@ export function IncidentsPanel({
   onRequestConfirmIncidentDelete,
   onAfterRecompute,
   onRequestClockReload,
+  layoutMode = "default",
 }: Props) {
   const [incidents, setIncidents] = useState<IncidentDTO[]>([]);
   const [loading, setLoading] = useState(false);
@@ -712,25 +714,15 @@ export function IncidentsPanel({
 
   const showListToggle = sortedIncidents.length > 3;
   const disableActions = !canEdit || loading;
+  const isFullscreen = layoutMode === "fullscreen";
 
   return (
-    <Card className="p-4">
+    <Card className={cn("p-4", isFullscreen && "flex h-full min-h-0 flex-col overflow-hidden")}> 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-base font-extrabold text-white">Incydenty</div>
-
-        {showListToggle ? (
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => setShowAllIncidents((v) => !v)}
-            className="px-3 py-2"
-          >
-            {showAllIncidents ? "Zwiń" : `Pokaż wszystkie (${sortedIncidents.length})`}
-          </Button>
-        ) : null}
       </div>
 
-      <div className="mt-3 grid gap-3">
+      <div className={cn("mt-3 grid gap-3", isFullscreen && "min-h-0 flex-1 overflow-y-auto pr-1")}>
         <div className="grid gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
           <div className="grid gap-2">
             <div className="flex items-center justify-between gap-2">
@@ -781,11 +773,11 @@ export function IncidentsPanel({
               {!draft.side ? <div className="text-xs text-slate-400">Nie wybrano</div> : null}
             </div>
 
-            <div className="flex flex-wrap gap-2">
+            <div className={cn("flex flex-wrap gap-2", isFullscreen && "grid grid-cols-2 gap-2")}>
               <Button
                 type="button"
                 variant="secondary"
-                className={cn("rounded-full px-3 py-1 text-xs", draft.side === "HOME" && "border-emerald-400/20 bg-emerald-500/15")}
+                className={cn("rounded-full px-3 py-1 text-xs", isFullscreen && "w-full justify-center", draft.side === "HOME" && "border-emerald-400/20 bg-emerald-500/15")}
                 onClick={() => setDraft((d) => ({ ...d, side: "HOME" }))}
                 disabled={disableActions}
               >
@@ -795,7 +787,7 @@ export function IncidentsPanel({
               <Button
                 type="button"
                 variant="secondary"
-                className={cn("rounded-full px-3 py-1 text-xs", draft.side === "AWAY" && "border-emerald-400/20 bg-emerald-500/15")}
+                className={cn("rounded-full px-3 py-1 text-xs", isFullscreen && "w-full justify-center", draft.side === "AWAY" && "border-emerald-400/20 bg-emerald-500/15")}
                 onClick={() => setDraft((d) => ({ ...d, side: "AWAY" }))}
                 disabled={disableActions}
               >
@@ -1169,6 +1161,19 @@ export function IncidentsPanel({
               );
             })
           )}
+
+          {showListToggle ? (
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setShowAllIncidents((v) => !v)}
+                className="px-3 py-2 text-xs"
+              >
+                {showAllIncidents ? "Zwiń listę" : `Pokaż wszystkie (${sortedIncidents.length})`}
+              </Button>
+            </div>
+          ) : null}
         </div>
       </div>
     </Card>

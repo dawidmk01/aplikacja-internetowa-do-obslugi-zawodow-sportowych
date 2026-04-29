@@ -4,7 +4,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 
-import { Brackets, Calendar, Clock, Gauge, TimerReset } from "lucide-react";
+import { Brackets, Calendar, ChevronLeft, ChevronRight, Clock, Gauge, TimerReset, X } from "lucide-react";
 
 import { apiFetch } from "../api";
 import MassStartStageCard from "../components/MassStartStageCard";
@@ -68,6 +68,11 @@ function normalizeMatchList(raw: unknown): MatchLike[] {
     return (raw as { results: MatchLike[] }).results;
   }
   return [];
+}
+
+function isStartedMatch(match: MatchLike): boolean {
+  const status = String((match as MatchDTO).status ?? "").toUpperCase();
+  return status === "IN_PROGRESS" || status === "RUNNING";
 }
 
 function getResultConfig(tournament: TournamentDTO | null): TournamentResultConfigDTO {
@@ -422,6 +427,103 @@ function MassStartResultsView({
   );
 }
 
+type MatchFullscreenOverlayProps = {
+  tournamentId: string;
+  tournament: TournamentDTO;
+  match: MatchLike;
+  activeIndex: number;
+  totalMatches: number;
+  canGoPrevious: boolean;
+  canGoNext: boolean;
+  onClose: () => void;
+  onPrevious: () => void;
+  onNext: () => void;
+  onReload: () => Promise<void> | void;
+  onToast: (text: string, kind?: ToastKind) => void;
+};
+
+function MatchFullscreenOverlay({
+  tournamentId,
+  tournament,
+  match,
+  activeIndex,
+  totalMatches,
+  canGoPrevious,
+  canGoNext,
+  onClose,
+  onPrevious,
+  onNext,
+  onReload,
+  onToast,
+}: MatchFullscreenOverlayProps) {
+  const counterLabel = totalMatches > 0 ? `${activeIndex + 1}/${totalMatches}` : "0/0";
+
+  return (
+    <div className="fixed inset-0 z-[140] overflow-hidden bg-slate-950 text-white">
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.16),transparent_32%),radial-gradient(circle_at_bottom_right,rgba(16,185,129,0.13),transparent_30%)]" />
+
+      <div className="absolute right-3 top-2 z-40 flex items-center gap-2 sm:right-4">
+        <div className="hidden h-8 items-center rounded-full border border-white/10 bg-slate-950/80 px-3 text-xs font-semibold text-slate-200 shadow-xl shadow-black/20 backdrop-blur-xl sm:inline-flex">
+          Rozpoczęte mecze: {counterLabel}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className={cn(
+            "inline-flex h-8 items-center justify-center gap-1.5 rounded-full border border-white/10 bg-slate-950/80 px-3 text-xs font-semibold text-slate-200 shadow-xl shadow-black/20 backdrop-blur-xl transition",
+            "hover:border-white/20 hover:bg-white/[0.10] hover:text-white",
+            "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+          )}
+        >
+          <X className="h-3.5 w-3.5 shrink-0" />
+          <span>Zamknij</span>
+        </button>
+      </div>
+
+      <div className="relative h-screen min-h-0">
+        <main className="relative h-full min-h-0 overflow-hidden">
+          <button
+            type="button"
+            onClick={onPrevious}
+            disabled={!canGoPrevious}
+            aria-label="Poprzedni rozpoczęty mecz"
+            className={cn(
+              "absolute left-3 top-1/2 z-20 hidden h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-slate-900/80 text-slate-100 shadow-2xl backdrop-blur transition xl:inline-flex",
+              "hover:border-cyan-300/30 hover:bg-cyan-300/10",
+              "disabled:pointer-events-none disabled:opacity-30"
+            )}
+          >
+            <ChevronLeft className="h-6 w-6" />
+          </button>
+
+          <button
+            type="button"
+            onClick={onNext}
+            disabled={!canGoNext}
+            aria-label="Następny rozpoczęty mecz"
+            className={cn(
+              "absolute right-3 top-1/2 z-20 hidden h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-slate-900/80 text-slate-100 shadow-2xl backdrop-blur transition xl:inline-flex",
+              "hover:border-cyan-300/30 hover:bg-cyan-300/10",
+              "disabled:pointer-events-none disabled:opacity-30"
+            )}
+          >
+            <ChevronRight className="h-6 w-6" />
+          </button>
+
+          <MatchRow
+            tournamentId={tournamentId}
+            tournament={tournament}
+            match={match as MatchDTO}
+            onReload={onReload}
+            onToast={onToast}
+            displayMode="fullscreen"
+          />
+        </main>
+      </div>
+    </div>
+  );
+}
+
 export default function TournamentResults() {
   const { id } = useParams<{ id: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -448,6 +550,7 @@ export default function TournamentResults() {
   const [statusDrafts, setStatusDrafts] = useState<Record<string, MassStartResultStatus>>({});
   const [savingRows, setSavingRows] = useState<Record<string, boolean>>({});
   const [advanceBusy, setAdvanceBusy] = useState(false);
+  const [fullscreenMatchId, setFullscreenMatchId] = useState<number | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -468,10 +571,11 @@ export default function TournamentResults() {
     toast.info(message);
   }, []);
 
-  const reloadAll = useCallback(async () => {
+  const reloadAll = useCallback(async (options?: { silent?: boolean }) => {
     if (!tournamentId) return;
 
-    if (mountedRef.current) setLoading(true);
+    const silent = Boolean(options?.silent);
+    if (!silent && mountedRef.current) setLoading(true);
 
     try {
       const tRes = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/`, effectiveDivisionId));
@@ -525,14 +629,38 @@ export default function TournamentResults() {
     } catch (e) {
       pushToast(e instanceof Error ? e.message : "Wystąpił błąd podczas ładowania.", "error");
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (!silent && mountedRef.current) setLoading(false);
     }
   }, [effectiveDivisionId, pushToast, requestedDivisionId, setSearchParams, tournamentId]);
+
+  const reloadAllSilent = useCallback(async () => {
+    await reloadAll({ silent: true });
+  }, [reloadAll]);
+
+  const silentReloadTimerRef = useRef<number | null>(null);
+
+  const scheduleSilentReload = useCallback(() => {
+    if (silentReloadTimerRef.current !== null) return;
+
+    silentReloadTimerRef.current = window.setTimeout(() => {
+      silentReloadTimerRef.current = null;
+      void reloadAllSilent();
+    }, 250);
+  }, [reloadAllSilent]);
 
   useEffect(() => {
     if (!tournamentId) return;
     void reloadAll();
   }, [reloadAll, tournamentId]);
+
+  useEffect(() => {
+    return () => {
+      if (silentReloadTimerRef.current !== null) {
+        window.clearTimeout(silentReloadTimerRef.current);
+        silentReloadTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!massStartData) return;
@@ -569,14 +697,8 @@ export default function TournamentResults() {
     onEvent: ({ event }) => {
       const normalized = String(event).replaceAll(".", "_");
 
-      if (
-        normalized === "matches_changed" ||
-        normalized === "incidents_changed" ||
-        normalized === "clock_changed" ||
-        normalized === "commentary_changed" ||
-        normalized === "mass_start_results_changed"
-      ) {
-        void reloadAll();
+      if (normalized === "matches_changed" || normalized === "mass_start_results_changed") {
+        scheduleSilentReload();
       }
     },
   });
@@ -622,6 +744,71 @@ export default function TournamentResults() {
     () => matches.some((m) => String((m as MatchDTO).stage_type ?? "").toUpperCase() === "KNOCKOUT"),
     [matches]
   );
+
+  const fullscreenMatch = useMemo(
+    () => matches.find((item) => Number((item as MatchDTO).id) === fullscreenMatchId) ?? null,
+    [fullscreenMatchId, matches]
+  );
+
+  const startedMatches = useMemo(
+    () => matches.filter((item) => isStartedMatch(item) && !isByeMatch(item)),
+    [matches]
+  );
+
+  const fullscreenNavigationMatches = useMemo(() => {
+    if (!fullscreenMatch) return startedMatches;
+    if (startedMatches.some((item) => Number((item as MatchDTO).id) === Number((fullscreenMatch as MatchDTO).id))) {
+      return startedMatches;
+    }
+    return [fullscreenMatch, ...startedMatches];
+  }, [fullscreenMatch, startedMatches]);
+
+  const fullscreenMatchIndex = useMemo(() => {
+    if (!fullscreenMatch) return -1;
+    return fullscreenNavigationMatches.findIndex(
+      (item) => Number((item as MatchDTO).id) === Number((fullscreenMatch as MatchDTO).id)
+    );
+  }, [fullscreenMatch, fullscreenNavigationMatches]);
+
+  const canNavigateFullscreenMatches = fullscreenNavigationMatches.length > 1 && fullscreenMatchIndex >= 0;
+
+  const switchFullscreenMatch = useCallback(
+    (direction: -1 | 1) => {
+      if (!canNavigateFullscreenMatches) return;
+
+      const nextIndex =
+        (fullscreenMatchIndex + direction + fullscreenNavigationMatches.length) % fullscreenNavigationMatches.length;
+      const nextMatch = fullscreenNavigationMatches[nextIndex] as MatchDTO | undefined;
+      if (nextMatch?.id) setFullscreenMatchId(Number(nextMatch.id));
+    },
+    [canNavigateFullscreenMatches, fullscreenMatchIndex, fullscreenNavigationMatches]
+  );
+
+  useEffect(() => {
+    if (!fullscreenMatchId) return;
+    if (fullscreenMatch) return;
+    setFullscreenMatchId(null);
+  }, [fullscreenMatch, fullscreenMatchId]);
+
+  useEffect(() => {
+    if (!fullscreenMatch || typeof window === "undefined" || typeof document === "undefined") return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFullscreenMatchId(null);
+      if (event.key === "ArrowLeft") switchFullscreenMatch(-1);
+      if (event.key === "ArrowRight") switchFullscreenMatch(1);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [fullscreenMatch, switchFullscreenMatch]);
 
   const groupsFinished = useMemo(() => {
     const groupMatches = matches.filter((m) => String((m as MatchDTO).stage_type ?? "").toUpperCase() === "GROUP");
@@ -897,7 +1084,7 @@ export default function TournamentResults() {
           await advanceMassStartStage();
         }
 
-        await reloadAll();
+        await reloadAllSilent();
       } catch (e) {
         const fallbackMessage = isMassStartMultiEvent
           ? "Nie udało się zapisać rezultatu konkurencji."
@@ -913,7 +1100,7 @@ export default function TournamentResults() {
         });
       }
     },
-    [advanceMassStartStage, canManageTournament, customResultConfig.value_kind, drafts, effectiveDivisionId, isMassStartMultiEvent, pushToast, reloadAll, statusDrafts, tournamentId]
+    [advanceMassStartStage, canManageTournament, customResultConfig.value_kind, drafts, effectiveDivisionId, isMassStartMultiEvent, pushToast, reloadAllSilent, statusDrafts, tournamentId]
   );
 
   const renderMatch = useCallback(
@@ -946,13 +1133,14 @@ export default function TournamentResults() {
             tournamentId={tournamentId}
             tournament={tournament as TournamentDTO}
             match={m as unknown as MatchDTO}
-            onReload={reloadAll}
+            onReload={reloadAllSilent}
             onToast={(text, kind) => pushToast(text, (kind ?? "info") as ToastKind)}
+            onOpenFullscreen={() => setFullscreenMatchId(Number((m as MatchDTO).id))}
           />
         </div>
       );
     },
-    [pushToast, reloadAll, tournament, tournamentId]
+    [pushToast, reloadAllSilent, tournament, tournamentId]
   );
   if (!tournamentId) {
     return (
@@ -992,22 +1180,41 @@ export default function TournamentResults() {
   }
 
   return (
-    <TournamentMatchesScaffold
-      tournamentId={tournamentId}
-      tournamentFormat={tournamentFormat}
-      title={pageTitle}
-      description={pageDescription}
-      loading={loading}
-      matches={matches}
-      headerSlot={
-        <>
-          {customModeCard}
-          {stageAdvanceCard}
-        </>
-      }
-      storageScope="results"
-      renderMatch={renderMatch}
-    />
+    <>
+      <TournamentMatchesScaffold
+        tournamentId={tournamentId}
+        tournamentFormat={tournamentFormat}
+        title={pageTitle}
+        description={pageDescription}
+        loading={loading}
+        matches={matches}
+        headerSlot={
+          <>
+            {customModeCard}
+            {stageAdvanceCard}
+          </>
+        }
+        storageScope="results"
+        renderMatch={renderMatch}
+      />
+
+      {fullscreenMatch && tournament ? (
+        <MatchFullscreenOverlay
+          tournamentId={tournamentId}
+          tournament={tournament as TournamentDTO}
+          match={fullscreenMatch}
+          activeIndex={Math.max(0, fullscreenMatchIndex)}
+          totalMatches={fullscreenNavigationMatches.length}
+          canGoPrevious={canNavigateFullscreenMatches}
+          canGoNext={canNavigateFullscreenMatches}
+          onClose={() => setFullscreenMatchId(null)}
+          onPrevious={() => switchFullscreenMatch(-1)}
+          onNext={() => switchFullscreenMatch(1)}
+          onReload={reloadAllSilent}
+          onToast={(text, kind) => pushToast(text, (kind ?? "info") as ToastKind)}
+        />
+      ) : null}
+    </>
   );
 }
 

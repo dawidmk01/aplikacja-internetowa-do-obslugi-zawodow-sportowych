@@ -1,4 +1,4 @@
-# backend/tournaments/serializers/tournament.py
+# backend/tournaments/serializers/tournaments.py
 # Plik definiuje serializery odpowiedzialne za walidację wspólnych danych turnieju oraz aktywnej dywizji.
 
 from __future__ import annotations

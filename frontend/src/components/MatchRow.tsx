@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Gauge, TimerReset } from "lucide-react";
+import { Gauge, Maximize2, TimerReset } from "lucide-react";
 
 import { apiFetch } from "../api";
 import { cn } from "../lib/cn";
@@ -35,6 +35,8 @@ type Props = {
 
   onReload: () => Promise<void> | void;
   onToast?: (text: string, kind?: ToastKind) => void;
+  displayMode?: "row" | "fullscreen";
+  onOpenFullscreen?: () => void;
 };
 
 type WrestlingFields = {
@@ -102,6 +104,32 @@ type CustomResultDraft = {
   numeric_value: string;
   time_ms: string;
 };
+
+function livePanelStorageKey(tournamentId: string, matchId: number) {
+  return `turniejepro.results.live.open.${tournamentId}.${matchId}`;
+}
+
+function readLivePanelOpen(tournamentId: string, matchId: number): boolean {
+  if (typeof window === "undefined") return false;
+
+  try {
+    return window.sessionStorage.getItem(livePanelStorageKey(tournamentId, matchId)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeLivePanelOpen(tournamentId: string, matchId: number, open: boolean) {
+  if (typeof window === "undefined") return;
+
+  try {
+    const key = livePanelStorageKey(tournamentId, matchId);
+    if (open) window.sessionStorage.setItem(key, "1");
+    else window.sessionStorage.removeItem(key);
+  } catch {
+    // Brak dostępu do sessionStorage nie blokuje panelu live.
+  }
+}
 
 function lower(s: string | null | undefined) {
   return (s ?? "").toLowerCase();
@@ -391,7 +419,16 @@ function getCustomValueSummary(
   return "-";
 }
 
-export default function MatchRow({ tournamentId, tournament, match, onReload, onToast }: Props) {
+export default function MatchRow({
+  tournamentId,
+  tournament,
+  match,
+  onReload,
+  onToast,
+  displayMode = "row",
+  onOpenFullscreen,
+}: Props) {
+  const isFullscreenMode = displayMode === "fullscreen";
   const tn = isTennis(tournament);
   const hb = isHandball(tournament);
   const bb = isBasketball(tournament);
@@ -477,7 +514,7 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
   const [busy, setBusy] = useState(false);
   const [edited, setEdited] = useState(false);
 
-  const [openLive, setOpenLive] = useState(false);
+  const [openLive, setOpenLive] = useState(() => isFullscreenMode || readLivePanelOpen(tournamentId, match.id));
   const [editFinished, setEditFinished] = useState(false);
 
   const [skipScoreSyncConfirm, setSkipScoreSyncConfirm] = useState(false);
@@ -566,6 +603,20 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
   const requestLiveIncidentsReload = useCallback(() => {
     setLiveIncidentsReloadToken((value) => value + 1);
   }, []);
+
+  useEffect(() => {
+    setOpenLive(readLivePanelOpen(tournamentId, match.id));
+  }, [match.id, tournamentId]);
+
+  const toggleLivePanel = useCallback(() => {
+    if (isFullscreenMode) return;
+
+    setOpenLive((current) => {
+      const next = !current;
+      writeLivePanelOpen(tournamentId, match.id, next);
+      return next;
+    });
+  }, [isFullscreenMode, match.id, tournamentId]);
 
   const updateMatchScore = useCallback(
     async ({ force, op }: { force?: boolean; op: ConfirmScoreSyncOp }) => {
@@ -1020,21 +1071,278 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
   const customUnitLabel = String(resultConfig.unit_label ?? resultConfig.unit ?? "").trim();
   const homeCustomResult = getCustomResultForTeam(match, match.home_team_id);
   const awayCustomResult = getCustomResultForTeam(match, match.away_team_id);
+  const livePanelVisible = supportsLiveMode && (isFullscreenMode || openLive);
+  const compactFullscreenOperatorMode = isFullscreenMode && supportsLiveMode && !customMode && !tn && !wt;
 
-  return (
-    <Card className={cn("mb-4 border p-3 sm:p-4", tone.card)}>
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 truncate text-sm font-semibold text-white sm:text-base">
-          {homeName} <span className="font-semibold text-white/70">vs</span> {awayName}
+  const compactFullscreenOperatorPanel = compactFullscreenOperatorMode ? (
+    <Card className="h-full min-h-0 overflow-hidden border border-white/10 bg-white/[0.03] p-4">
+      <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="truncate text-lg font-semibold text-white">
+              {homeName} <span className="text-white/60">vs</span> {awayName}
+            </div>
+            <div className="mt-1 text-xs text-slate-400">Szybka obsługa meczu i wyniku.</div>
+          </div>
+
+          <div className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs", tone.badge)}>
+            <span className={cn("h-2 w-2 rounded-full", tone.dot)} />
+            {uiStatusLabelFromBackend(match.status)}
+          </div>
         </div>
 
-        <div className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs", tone.badge)}>
-          <span className={cn("h-2 w-2 rounded-full", tone.dot)} />
-          {uiStatusLabelFromBackend(match.status)}
+        <div className="flex items-center gap-3">
+          <Input
+            unstyled
+            type="number"
+            min={0}
+            inputMode="numeric"
+            name={`match-${match.id}-home_score-fullscreen`}
+            aria-label={`Wynik gospodarzy: ${homeName}`}
+            value={scoreToInputValue(draft.home_score ?? 0)}
+            disabled={!canEditResult}
+            onChange={(e) => setDraft((d) => ({ ...d, home_score: inputValueToScore(e.target.value) }))}
+            className={cn(scoreInputClass, "h-12 w-[84px] text-2xl")}
+          />
+          <span className="px-0.5 text-2xl font-extrabold text-white/80">:</span>
+          <Input
+            unstyled
+            type="number"
+            min={0}
+            inputMode="numeric"
+            name={`match-${match.id}-away_score-fullscreen`}
+            aria-label={`Wynik gości: ${awayName}`}
+            value={scoreToInputValue(draft.away_score ?? 0)}
+            disabled={!canEditResult}
+            onChange={(e) => setDraft((d) => ({ ...d, away_score: inputValueToScore(e.target.value) }))}
+            className={cn(scoreInputClass, "h-12 w-[84px] text-2xl")}
+          />
+        </div>
+
+        <div className="grid gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={onDynamicStatusButton}
+            disabled={busy}
+            className="h-11 rounded-xl justify-center text-sm"
+          >
+            {dynamicLabel}
+          </Button>
+
+          {match.status !== "SCHEDULED" ? (
+            <Button
+              type="button"
+              onClick={onSetScheduledClick}
+              disabled={busy || !canAttemptSetScheduledSafe}
+              title={
+                canAttemptSetScheduledSafe
+                  ? 'Ustawia status meczu na "Zaplanowany" oraz resetuje zegar. Działa tylko, gdy wynik jest 0:0 oraz nie ma żadnych incydentów.'
+                  : "Dostępne tylko przy wyniku 0:0 (bez dogrywki, karnych, setów i rozstrzygnięcia walki). Dodatkowo mecz musi nie mieć żadnych incydentów."
+              }
+              variant="secondary"
+              size="sm"
+              className="h-11 rounded-xl justify-center text-sm"
+            >
+              Ustaw jako zaplanowany
+            </Button>
+          ) : null}
+
+          <Button
+            type="button"
+            onClick={onSaveClick}
+            disabled={busy || !isDirty || lockByFinished}
+            variant={saveVariant}
+            size="sm"
+            className={cn("h-11 rounded-xl justify-center text-sm", edited && !isDirty ? "opacity-95" : "")}
+          >
+            {match.status === "FINISHED" ? (editFinished ? "Zapisz zmiany" : "Zapisz wynik") : "Zapisz wynik"}
+          </Button>
+
+          {match.status === "FINISHED" && !editFinished ? (
+            <Button
+              type="button"
+              onClick={() => setEditFinished(true)}
+              disabled={busy}
+              variant="secondary"
+              size="sm"
+              className="h-11 rounded-xl justify-center text-sm"
+            >
+              Wprowadź zmiany
+            </Button>
+          ) : null}
+
+          {match.status === "FINISHED" && editFinished ? (
+            <Button
+              type="button"
+              onClick={() => setEditFinished(false)}
+              disabled={busy}
+              variant="danger"
+              size="sm"
+              className="h-11 rounded-xl justify-center text-sm"
+            >
+              Anuluj edycję
+            </Button>
+          ) : null}
+        </div>
+
+        <div className="grid gap-3 rounded-2xl border border-white/10 bg-white/[0.02] p-3">
+          <Checkbox
+            checked={!!draft.went_to_extra_time}
+            onCheckedChange={(checked) =>
+              setDraft((d) => ({
+                ...d,
+                went_to_extra_time: checked,
+                home_extra_time_score: checked ? (d.home_extra_time_score ?? 0) : null,
+                away_extra_time_score: checked ? (d.away_extra_time_score ?? 0) : null,
+              }))
+            }
+            disabled={!canEditResult || (bb && !basketballOvertimeAvailable)}
+            label={bb ? "Dogrywka po remisie" : "Dogrywka"}
+          />
+
+          {draft.went_to_extra_time ? (
+            <div className="grid gap-2">
+              <div className="text-xs text-slate-400">Wynik dogrywki</div>
+              <div className="flex items-center gap-2">
+                <Input
+                  unstyled
+                  type="number"
+                  min={0}
+                  inputMode="numeric"
+                  name={`match-${match.id}-home_extra_time_score-fullscreen`}
+                  aria-label="Wynik dogrywki - gospodarze"
+                  value={scoreToInputValue(draft.home_extra_time_score ?? 0)}
+                  disabled={!canEditResult}
+                  onChange={(e) => setDraft((d) => ({ ...d, home_extra_time_score: inputValueToScore(e.target.value) }))}
+                  className={miniScoreInputClass}
+                />
+                <span className="px-0.5 text-sm font-extrabold text-white/70">:</span>
+                <Input
+                  unstyled
+                  type="number"
+                  min={0}
+                  inputMode="numeric"
+                  name={`match-${match.id}-away_extra_time_score-fullscreen`}
+                  aria-label="Wynik dogrywki - goście"
+                  value={scoreToInputValue(draft.away_extra_time_score ?? 0)}
+                  disabled={!canEditResult}
+                  onChange={(e) => setDraft((d) => ({ ...d, away_extra_time_score: inputValueToScore(e.target.value) }))}
+                  className={miniScoreInputClass}
+                />
+              </div>
+            </div>
+          ) : null}
+
+          {bb && !basketballOvertimeAvailable ? (
+            <div className="text-xs text-slate-400">Dogrywka jest dostępna tylko przy remisie po czasie podstawowym.</div>
+          ) : null}
+
+          {bb ? (
+            <div className="text-xs text-slate-400">Koszykówka nie obsługuje rzutów karnych. Przy remisie wpisz punkty dogrywki.</div>
+          ) : (
+            <div className={cn("inline-flex", hb ? "opacity-60" : "")}>
+              <Checkbox
+                checked={!!draft.decided_by_penalties}
+                onCheckedChange={(checked) =>
+                  setDraft((d) => ({
+                    ...d,
+                    decided_by_penalties: checked,
+                    home_penalty_score: checked ? (d.home_penalty_score ?? 0) : null,
+                    away_penalty_score: checked ? (d.away_penalty_score ?? 0) : null,
+                  }))
+                }
+                disabled={!canEditResult || hb}
+                label="Rozstrzygnięcie w rzutach karnych"
+              />
+            </div>
+          )}
+
+          {!bb && draft.decided_by_penalties ? (
+            <div className="grid gap-2">
+              <div className="text-xs text-slate-400">Rzuty karne</div>
+              <div className="flex items-center gap-2">
+                <Input
+                  unstyled
+                  type="number"
+                  min={0}
+                  inputMode="numeric"
+                  name={`match-${match.id}-home_penalty_score-fullscreen`}
+                  aria-label="Karne - gospodarze"
+                  value={scoreToInputValue(draft.home_penalty_score ?? 0)}
+                  disabled={!canEditResult}
+                  onChange={(e) => setDraft((d) => ({ ...d, home_penalty_score: inputValueToScore(e.target.value) }))}
+                  className={miniScoreInputClass}
+                />
+                <span className="px-0.5 text-sm font-extrabold text-white/70">:</span>
+                <Input
+                  unstyled
+                  type="number"
+                  min={0}
+                  inputMode="numeric"
+                  name={`match-${match.id}-away_penalty_score-fullscreen`}
+                  aria-label="Karne - goście"
+                  value={scoreToInputValue(draft.away_penalty_score ?? 0)}
+                  disabled={!canEditResult}
+                  onChange={(e) => setDraft((d) => ({ ...d, away_penalty_score: inputValueToScore(e.target.value) }))}
+                  className={miniScoreInputClass}
+                />
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
+    </Card>
+  ) : null;
 
-      {!customMode ? (
+  return (
+    <Card
+      className={cn(
+        isFullscreenMode
+          ? "h-full min-h-0 overflow-hidden rounded-none border-0 bg-slate-950/40 p-0"
+          : "mb-4 border p-3 sm:p-4",
+        tone.card
+      )}
+    >
+      <div
+        className={cn(
+          isFullscreenMode && "h-full min-h-0",
+          isFullscreenMode && !compactFullscreenOperatorMode && "grid xl:grid-cols-[minmax(300px,360px)_minmax(0,1fr)]"
+        )}
+      > 
+        {!compactFullscreenOperatorMode ? (
+          <div className={cn(isFullscreenMode && "min-h-0 overflow-y-auto border-white/10 p-4 sm:p-5 xl:border-r xl:p-6")}> 
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0 truncate text-sm font-semibold text-white sm:text-base">
+              {homeName} <span className="font-semibold text-white/70">vs</span> {awayName}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <div className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs", tone.badge)}>
+                <span className={cn("h-2 w-2 rounded-full", tone.dot)} />
+                {uiStatusLabelFromBackend(match.status)}
+              </div>
+
+              {onOpenFullscreen && supportsLiveMode && !isFullscreenMode ? (
+                <button
+                  type="button"
+                  onClick={onOpenFullscreen}
+                  title="Otwórz tryb pełnoekranowej obsługi meczu"
+                  aria-label="Otwórz tryb pełnoekranowej obsługi meczu"
+                  className={cn(
+                    "inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/[0.05] text-slate-100 transition",
+                    "hover:border-cyan-300/30 hover:bg-cyan-300/10 hover:text-white",
+                    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-cyan-300/20"
+                  )}
+                >
+                  <Maximize2 className="h-4 w-4" />
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {!customMode ? (
         <div className="mt-3 flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
             <Input
@@ -1075,12 +1383,12 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
           ) : null}
 
           <div className="flex flex-wrap items-center gap-2">
-            {supportsLiveMode ? (
+            {supportsLiveMode && !isFullscreenMode ? (
               <Button
                 type="button"
                 variant="secondary"
                 size="sm"
-                onClick={() => setOpenLive((v) => !v)}
+                onClick={toggleLivePanel}
                 className={cn(
                   "h-9 rounded-xl",
                   openLive
@@ -1280,12 +1588,12 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {supportsLiveMode ? (
+            {supportsLiveMode && !isFullscreenMode ? (
               <Button
                 type="button"
                 variant="secondary"
                 size="sm"
-                onClick={() => setOpenLive((v) => !v)}
+                onClick={toggleLivePanel}
                 className={cn(
                   "h-9 rounded-xl",
                   openLive
@@ -1690,13 +1998,26 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
         </div>
       ) : null}
 
-      {supportsLiveMode && openLive ? (
-        <div className="mt-3 border-t border-white/10 pt-3">
+          </div>
+        ) : null}
+
+        {livePanelVisible ? (
+          <div
+            className={cn(
+              compactFullscreenOperatorMode
+                ? "h-full min-h-0 p-4 sm:p-5 xl:p-6"
+                : isFullscreenMode
+                  ? "min-h-0 overflow-y-auto bg-slate-950/25 p-4 sm:p-5 xl:p-6"
+                  : "mt-3 border-t border-white/10 pt-3"
+            )}
+          >
           <MatchLivePanel
             tournamentId={tournamentId}
             discipline={tournament.discipline}
             goalScope={goalScope as never}
             canEdit={!lockByFinished}
+            layoutMode={isFullscreenMode ? "fullscreen" : "default"}
+            auxiliaryPanel={compactFullscreenOperatorPanel}
             onRequestConfirmIncidentDelete={onRequestConfirmIncidentDelete}
             scoreContext={{
               home: Number(draft.home_score ?? 0) || 0,
@@ -1726,8 +2047,13 @@ export default function MatchRow({ tournamentId, tournament, match, onReload, on
             onAfterRecompute={doReload}
             externalIncidentsReloadToken={liveIncidentsReloadToken}
           />
-        </div>
-      ) : null}
+          </div>
+        ) : isFullscreenMode ? (
+          <div className="flex min-h-0 items-center justify-center p-6 text-center text-sm text-slate-400">
+            Tryb LIVE nie jest dostępny dla tego meczu.
+          </div>
+        ) : null}
+      </div>
 
       <ConfirmChangeModal
         open={!!confirmScoreSync}

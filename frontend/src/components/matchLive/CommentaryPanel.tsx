@@ -69,6 +69,7 @@ type Props = {
   discipline: string;
   homeTeamName: string;
   awayTeamName: string;
+  layoutMode?: "default" | "fullscreen";
 };
 
 const PHRASE_TYPE_OPTIONS: SelectOption<PhraseUiType>[] = [
@@ -360,6 +361,7 @@ export function CommentaryPanel({
   discipline,
   homeTeamName,
   awayTeamName,
+  layoutMode = "default",
 }: Props) {
   const normalizedDiscipline = useMemo(() => normalizeDiscipline(discipline), [discipline]);
   const canSwitchPreset = useMemo(() => supportsSportPreset(normalizedDiscipline), [normalizedDiscipline]);
@@ -702,9 +704,10 @@ export function CommentaryPanel({
 
   const addEntryDisabled = !canEdit || !draft.trim() || entrySubmitting;
   const addPhraseDisabled = !newPhrase.trim() || dictSubmitting;
+  const isFullscreen = layoutMode === "fullscreen";
 
   return (
-    <Card className="p-4">
+    <Card className={cn("p-4", isFullscreen && "flex h-full min-h-0 flex-col")}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-base font-extrabold text-white">Komentarz na żywo</div>
         <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-white">
@@ -712,8 +715,8 @@ export function CommentaryPanel({
         </span>
       </div>
 
-      <div className="mt-3 grid min-w-0 gap-3">
-        <Card className="bg-white/[0.03] p-3">
+      <div className={cn("mt-3 grid min-w-0 gap-3", isFullscreen && "min-h-0 flex-1 grid-rows-[auto_auto_minmax(0,1fr)]")}>
+        <Card className={cn("bg-white/[0.03] p-3", isFullscreen && "shrink-0")}>
           <Textarea
             unstyled
             ref={textareaRef}
@@ -746,7 +749,7 @@ export function CommentaryPanel({
           </div>
         </Card>
 
-        <Card className="bg-white/[0.03] p-3">
+        <Card className={cn("bg-white/[0.03] p-3", isFullscreen && "max-h-[34vh] shrink-0 overflow-y-auto")}>
           <div className="grid gap-3">
             <div className="grid gap-2 md:grid-cols-[280px_1fr] md:items-end">
               <div className="grid gap-1">
@@ -907,7 +910,7 @@ export function CommentaryPanel({
           </div>
         </Card>
 
-        <div className="grid gap-2">
+        <div className={cn("grid gap-2", isFullscreen && "min-h-0 overflow-y-auto pr-1")}>
           {entriesLoading ? (
             <Card className="bg-white/[0.03] px-3 py-3">
               <div className="text-sm text-slate-300">Wczytywanie komentarzy...</div>

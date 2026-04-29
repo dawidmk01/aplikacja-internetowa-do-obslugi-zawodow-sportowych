@@ -82,6 +82,7 @@ type Props = {
   onEnterExtraTime?: () => void;
   onAfterRecompute?: () => Promise<void> | void;
   onRequestIncidentsReload?: () => void;
+  layoutMode?: "default" | "fullscreen";
 };
 
 const WRESTLING_PERIOD_OPTIONS: Array<{ value: ClockPeriod; label: string }> = [
@@ -205,6 +206,7 @@ export function ClockPanel({
   onEnterExtraTime,
   onAfterRecompute,
   onRequestIncidentsReload,
+  layoutMode = "default",
 }: Props) {
   const [clock, setClock] = useState<MatchClockDTO | null>(null);
   const [clockTick, setClockTick] = useState(0);
@@ -582,8 +584,10 @@ export function ClockPanel({
     [canEdit, loadClock, postClock]
   );
 
+  const isFullscreen = layoutMode === "fullscreen";
+
   return (
-    <Card className={cn("p-4", headerBg)}>
+    <Card className={cn("p-4", headerBg, isFullscreen && "flex h-full min-h-0 flex-col overflow-hidden")}>
       {pendingConfirm ? (
         <ConfirmChangeModal
           open={!!pendingConfirm}
@@ -618,7 +622,7 @@ export function ClockPanel({
       ) : null}
 
 
-      <div className="flex flex-col gap-3">
+      <div className={cn("flex flex-col gap-3", isFullscreen && "min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]")}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="text-base font-extrabold text-white">Zegar</div>
 
