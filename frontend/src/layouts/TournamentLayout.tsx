@@ -101,7 +101,7 @@ export default function TournamentLayout() {
 
   return (
     <TournamentFlowGuardProvider>
-      <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 sm:py-8 xl:px-8">
+      <div className="mx-auto w-full max-w-7xl py-6 sm:py-8">
         {loading ? (
           <PanelStateCard title="Ładowanie panelu..." loading />
         ) : error ? (

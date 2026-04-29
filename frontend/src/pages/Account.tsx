@@ -557,7 +557,7 @@ export default function Account() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-[1100px]">
+    <div className="mx-auto w-full max-w-7xl">
       <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <div className="text-2xl font-bold text-white">Moje konto</div>

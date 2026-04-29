@@ -531,14 +531,14 @@ export function TournamentMassStartScheduleScaffold<
 
   if (loading) {
     return (
-      <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6">
+      <div className="w-full">
         <Card className="p-6 text-slate-200">Ładowanie...</Card>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6">
+    <div className="w-full">
       <div className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight text-white">{title}</h1>
         {description ? <p className="mt-1 text-sm text-slate-400">{description}</p> : null}

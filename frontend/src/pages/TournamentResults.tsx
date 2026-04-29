@@ -323,7 +323,7 @@ function MassStartResultsView({
   const stageEntityLabel = getStageEntityLabel(stageStructureMode);
 
   return (
-    <div className="w-full py-6">
+    <div className="w-full">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
           <div className="text-2xl font-extrabold text-white">{pageTitle}</div>
@@ -362,7 +362,7 @@ function MassStartResultsView({
                       <th className="px-4 py-3">{overallValueHeader(overallMode)}</th>
                       {overallEvents.map((event) => (
                         <th key={event.stage_id} className="min-w-[140px] px-4 py-3">
-                          {event.stage_name ?? `Konkurencja ${event.stage_id}`} 
+                          {event.stage_name ?? `Konkurencja ${event.stage_id}`}
                         </th>
                       ))}
                       <th className="px-4 py-3">Ukończone</th>
@@ -956,7 +956,7 @@ export default function TournamentResults() {
   );
   if (!tournamentId) {
     return (
-      <div className="w-full py-6">
+      <div className="w-full">
         <Card className="p-6 text-slate-200">Brak ID turnieju.</Card>
       </div>
     );
@@ -964,7 +964,7 @@ export default function TournamentResults() {
 
   if (!loading && !tournament) {
     return (
-      <div className="w-full py-6">
+      <div className="w-full">
         <Card className="p-6 text-slate-200">Nie znaleziono turnieju.</Card>
       </div>
     );
@@ -1010,3 +1010,4 @@ export default function TournamentResults() {
     />
   );
 }
+

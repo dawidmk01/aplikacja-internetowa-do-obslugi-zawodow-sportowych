@@ -149,7 +149,7 @@ export default function PublicMatchesBar({
       side={side}
       className={className}
       zIndexClassName={isTop ? (underFlowNav ? "z-30" : "z-40") : "z-50"}
-      maxWidthClassName="max-w-[1400px]"
+      maxWidthClassName="max-w-7xl 2xl:max-w-[96rem] [min-width:1920px]:max-w-[110rem] [min-width:2560px]:max-w-[128rem]"
       topGapPx={topGapPx}
       topOffsetCss={topOffsetCss}
       spacerHeightClassName={spacerHeightClassName ?? "h-16 sm:h-[72px]"}

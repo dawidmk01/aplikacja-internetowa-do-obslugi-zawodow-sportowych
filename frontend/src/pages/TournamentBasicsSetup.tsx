@@ -1776,8 +1776,8 @@ export default function TournamentBasicsSetup() {
   const showLeagueOrGroupConfig = format === "LEAGUE" || format === "MIXED";
   const showKnockoutConfig = format === "CUP" || format === "MIXED";
   const usesPanelLayoutShell = !isCreateMode;
-  const pageClassName = usesPanelLayoutShell ? "w-full space-y-6" : "w-full space-y-6 py-8";
-  const loadingClassName = usesPanelLayoutShell ? "w-full" : "w-full py-8";
+  const pageClassName = usesPanelLayoutShell ? "w-full space-y-6" : "mx-auto w-full max-w-7xl space-y-6 py-8";
+  const loadingClassName = usesPanelLayoutShell ? "w-full" : "mx-auto w-full max-w-7xl py-8";
 
   const clearInlineError = useCallback(() => {
     if (inlineError) setInlineError(null);

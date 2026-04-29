@@ -139,7 +139,9 @@ export default function App() {
                 element={
                   <ProtectedRoute>
                     <TournamentFlowGuardProvider>
-                      <TournamentBasicsSetup />
+                      <div className="mx-auto w-full max-w-7xl">
+                        <TournamentBasicsSetup />
+                      </div>
                     </TournamentFlowGuardProvider>
                   </ProtectedRoute>
                 }

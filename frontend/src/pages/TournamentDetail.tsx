@@ -6,8 +6,6 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { apiFetch } from "../api";
 import { useTournamentWs, type TournamentWsEvent } from "../hooks/useTournamentWs";
-import { cn } from "../lib/cn";
-
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { Input } from "../ui/Input";
@@ -746,15 +744,7 @@ export default function TournamentDetail() {
   }
 
   return (
-    <div
-      className={cn(
-        "mx-auto w-full px-4 py-6 sm:px-6",
-        "max-w-7xl",
-        "2xl:max-w-[96rem]",
-        "[min-width:1920px]:max-w-[110rem]",
-        "[min-width:2560px]:max-w-[128rem]"
-      )}
-    >
+    <div className="w-full">
       <TournamentDetailTabs
         tournament={tournament}
         activeTab={activeTab}

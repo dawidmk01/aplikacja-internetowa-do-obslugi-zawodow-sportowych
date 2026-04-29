@@ -62,6 +62,11 @@ export default function NavBar({ userEmail, onLogout }: Props) {
   const isAuthenticated = Boolean(userEmail);
   const accountLabel = getAccountEmailLabel(userEmail);
   const accountInitial = (accountLabel || "?").slice(0, 1).toUpperCase();
+  const isPublicTournamentPage = /^\/tournaments\/[^/]+(?:\/standings)?$/.test(location.pathname);
+  const usesWideShell = location.pathname === "/" || isPublicTournamentPage;
+  const shellMaxWidthClassName = usesWideShell
+    ? "max-w-7xl 2xl:max-w-[96rem] [min-width:1920px]:max-w-[110rem] [min-width:2560px]:max-w-[128rem]"
+    : "max-w-7xl";
 
   const authedLinks = useMemo(
     () =>
@@ -131,7 +136,7 @@ export default function NavBar({ userEmail, onLogout }: Props) {
             : "border-transparent bg-transparent py-5"
         )}
       >
-        <div className="mx-auto flex w-full max-w-[1400px] items-center justify-between px-4 sm:px-6 lg:px-8">
+        <div className={cn("mx-auto flex w-full items-center justify-between px-4 sm:px-6 lg:px-8", shellMaxWidthClassName)}>
           <Link to="/" className="group flex items-center gap-3">
             <div
               className={cn(

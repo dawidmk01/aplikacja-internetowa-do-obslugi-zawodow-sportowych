@@ -641,7 +641,7 @@ function TournamentStandingsView({
   const tableSectionTitle = isCustom ? "Klasyfikacja" : "Klasyfikacja";
 
   return (
-    <div className={cn(showHeader ? "px-4 py-4 sm:px-0" : "p-0", "mx-auto w-full max-w-7xl")}>
+    <div className={cn(showHeader ? "py-4" : "p-0", "w-full")}>
       {showHeader ? (
         <div className="mb-4">
           <div className="text-sm text-slate-300">{isCustom ? "Ranking" : "Wyniki"}</div>

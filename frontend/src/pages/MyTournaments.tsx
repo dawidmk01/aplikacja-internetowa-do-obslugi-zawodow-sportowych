@@ -1120,7 +1120,7 @@ export default function MyTournaments() {
   }, [activeTab]);
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-6 px-4 sm:px-6 xl:px-8">
+    <div className="mx-auto w-full max-w-7xl space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold text-white sm:text-3xl">Moje turnieje</h1>

@@ -1416,8 +1416,8 @@ export default function TournamentTeams() {
   const collapseBtnBase =
     "inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-slate-200 hover:bg-white/[0.07] transition disabled:opacity-60 disabled:hover:bg-white/[0.04]";
 
-  if (loading) return <div className="w-full py-6 text-slate-200/80">Ładowanie...</div>;
-  if (!tournament) return <div className="w-full py-6 text-rose-300">Brak danych turnieju.</div>;
+  if (loading) return <div className="w-full text-slate-200/80">Ładowanie...</div>;
+  if (!tournament) return <div className="w-full text-rose-300">Brak danych turnieju.</div>;
 
   const entityLabels = getEntityLabels(tournament);
   const titleLabel = entityLabels.pluralCapitalized;
@@ -1427,7 +1427,7 @@ export default function TournamentTeams() {
     !playersLoading && (undoStacksRef.current[getActiveTeamId()]?.length ?? 0) > 0;
 
   return (
-    <div className="w-full py-6">
+    <div className="w-full">
       <div className="mb-4 min-w-0">
         <div className="text-2xl font-extrabold text-slate-100">Uczestnicy</div>
         <div className="mt-1 text-sm leading-relaxed text-slate-300/90">

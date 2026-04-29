@@ -1120,7 +1120,7 @@ export default function TournamentSchedule() {
 
   if (!tournamentId) {
     return (
-      <div className="w-full py-6">
+      <div className="w-full">
         <Card className="p-6 text-slate-200">Brak ID turnieju.</Card>
       </div>
     );
@@ -1128,7 +1128,7 @@ export default function TournamentSchedule() {
 
   if (!loading && !tournament) {
     return (
-      <div className="w-full py-6">
+      <div className="w-full">
         <Card className="p-6 text-slate-200">Nie znaleziono turnieju.</Card>
       </div>
     );
