@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Eye, EyeOff, Loader2, Lock, LogIn, Mail, UserPlus } from "lucide-react";
+import { CheckCircle2, Eye, EyeOff, Loader2, Lock, LogIn, Mail, UserPlus, XCircle } from "lucide-react";
 
 import { apiFetch, setAccess } from "../api";
 import { cn } from "../lib/cn";
@@ -21,6 +21,49 @@ type Props = {
 
 function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+type PasswordRule = {
+  id: string;
+  label: string;
+  valid: boolean;
+};
+
+function getPasswordRules(password: string, email: string): PasswordRule[] {
+  void email;
+
+  return [
+    {
+      id: "length",
+      label: "Co najmniej 8 znaków",
+      valid: password.length >= 8,
+    },
+    {
+      id: "lowercase",
+      label: "Co najmniej jedna mała litera",
+      valid: /[a-z]/.test(password),
+    },
+    {
+      id: "uppercase",
+      label: "Co najmniej jedna duża litera",
+      valid: /[A-Z]/.test(password),
+    },
+    {
+      id: "digitOrSpecial",
+      label: "Co najmniej jedna cyfra albo znak specjalny",
+      valid: /[0-9]|[^A-Za-z0-9]/.test(password),
+    },
+  ];
+}
+
+function firstPasswordRuleError(password: string, email: string): string | null {
+  const failedRule = getPasswordRules(password, email).find((rule) => !rule.valid);
+
+  if (!failedRule) {
+    return null;
+  }
+
+  return failedRule.label.endsWith(".") ? failedRule.label : `${failedRule.label}.`;
 }
 
 function pickFirstError(data: unknown): string | null {
@@ -83,7 +126,39 @@ function translateAuthError(message?: string | null, mode: "login" | "register" 
   }
 
   if (normalized.includes("password is too similar")) {
-    return "Hasło jest zbyt podobne do danych konta.";
+    return "Hasło jest zbyt podobne do adresu e-mail.";
+  }
+
+  if (
+    normalized.includes("hasło jest zbyt podobne do adresu e-mail") ||
+    normalized.includes("hasło nie może być takie samo") ||
+    normalized.includes("password_matches_email")
+  ) {
+    return "Hasło jest zbyt podobne do adresu e-mail.";
+  }
+
+  if (
+    normalized.includes("małą literę") ||
+    normalized.includes("mala litere") ||
+    normalized.includes("password_missing_lowercase")
+  ) {
+    return "Hasło musi zawierać co najmniej jedną małą literę.";
+  }
+
+  if (
+    normalized.includes("dużą literę") ||
+    normalized.includes("duza litere") ||
+    normalized.includes("password_missing_uppercase")
+  ) {
+    return "Hasło musi zawierać co najmniej jedną dużą literę.";
+  }
+
+  if (
+    normalized.includes("cyfrę albo znak specjalny") ||
+    normalized.includes("cyfre albo znak specjalny") ||
+    normalized.includes("password_missing_digit_or_special")
+  ) {
+    return "Hasło musi zawierać co najmniej jedną cyfrę albo znak specjalny.";
   }
 
   if (normalized.includes("user with this email") || normalized.includes("already exists")) {
@@ -104,8 +179,10 @@ export default function Login({ onLogin }: Props) {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [passwordConfirm, setPasswordConfirm] = useState("");
 
   const [showPassword, setShowPassword] = useState(false);
+  const [showPasswordConfirm, setShowPasswordConfirm] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -114,6 +191,7 @@ export default function Login({ onLogin }: Props) {
   useEffect(() => {
     setMode(urlMode === "register" ? "register" : "login");
     setError(null);
+    setPasswordConfirm("");
   }, [urlMode]);
 
   const nextQs = useMemo(() => {
@@ -141,6 +219,21 @@ export default function Login({ onLogin }: Props) {
 
     if (!password) {
       return "Hasło jest wymagane.";
+    }
+
+    if (mode === "register") {
+      const passwordRuleError = firstPasswordRuleError(password, normalizedEmail);
+      if (passwordRuleError) {
+        return passwordRuleError;
+      }
+
+      if (!passwordConfirm) {
+        return "Powtórzenie hasła jest wymagane.";
+      }
+
+      if (password !== passwordConfirm) {
+        return "Hasła nie są identyczne.";
+      }
     }
 
     return null;
@@ -206,6 +299,7 @@ export default function Login({ onLogin }: Props) {
         }
 
         setPassword("");
+        setPasswordConfirm("");
         setSuccess("Konto utworzone. Możesz się teraz zalogować.");
         goLogin();
       }
@@ -221,6 +315,9 @@ export default function Login({ onLogin }: Props) {
     "rounded-2xl bg-white/[0.04]",
     "text-white placeholder:text-slate-500"
   );
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const passwordRules = getPasswordRules(password, normalizedEmail);
 
   return (
     <div className="mx-auto max-w-md py-8 sm:py-10">
@@ -346,7 +443,68 @@ export default function Login({ onLogin }: Props) {
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </Button>
               </div>
+
+              {mode === "register" ? (
+                <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+                  <div className="text-xs font-medium text-slate-300">Wymagania hasła</div>
+                  <div className="mt-2 space-y-1.5">
+                    {passwordRules.map((rule) => (
+                      <div
+                        key={rule.id}
+                        className={cn(
+                          "flex items-center gap-2 text-xs",
+                          rule.valid ? "text-emerald-300" : "text-slate-400"
+                        )}
+                      >
+                        {rule.valid ? (
+                          <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        ) : (
+                          <XCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        )}
+                        <span>{rule.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
+
+            {mode === "register" ? (
+              <div>
+                <label htmlFor="login_password_confirm" className="text-sm font-medium text-slate-200">
+                  Powtórz hasło
+                </label>
+                <div className="relative mt-2">
+                  <Lock
+                    className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                    aria-hidden="true"
+                  />
+                  <Input
+                    id="login_password_confirm"
+                    type={showPasswordConfirm ? "text" : "password"}
+                    className={cn(inputBase, "pr-10")}
+                    value={passwordConfirm}
+                    autoComplete="new-password"
+                    placeholder="••••••••"
+                    onChange={(e) => setPasswordConfirm(e.target.value)}
+                  />
+
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowPasswordConfirm((v) => !v)}
+                    className={cn(
+                      "absolute right-2 top-1/2 h-8 min-h-0 -translate-y-1/2 rounded-xl p-2",
+                      "text-slate-300 hover:bg-white/5 hover:text-white"
+                    )}
+                    aria-label={showPasswordConfirm ? "Ukryj powtórzone hasło" : "Pokaż powtórzone hasło"}
+                  >
+                    {showPasswordConfirm ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
 
             <div className="pt-2">
               <Button

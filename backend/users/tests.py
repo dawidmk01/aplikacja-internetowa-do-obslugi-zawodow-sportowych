@@ -334,6 +334,76 @@ class AuthFlowTests(APITestCase):
         self.assertIn("detail", response.data)
         self.assertFalse(User.objects.filter(email=self.email).exists())
 
+    def test_register_rejects_password_too_similar_to_email(self):
+        response = self.client.post(
+            self.register_url,
+            {
+                "email": self.email,
+                "password": self.email,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("detail", response.data)
+        self.assertFalse(User.objects.filter(email=self.email).exists())
+
+    def test_register_rejects_password_too_similar_to_email_local_part(self):
+        response = self.client.post(
+            self.register_url,
+            {
+                "email": self.email,
+                "password": "dawid",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("detail", response.data)
+        self.assertFalse(User.objects.filter(email=self.email).exists())
+
+    def test_register_rejects_password_without_uppercase(self):
+        response = self.client.post(
+            self.register_url,
+            {
+                "email": self.email,
+                "password": "bezpiecznehaslo1",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("detail", response.data)
+        self.assertFalse(User.objects.filter(email=self.email).exists())
+
+    def test_register_rejects_password_without_lowercase(self):
+        response = self.client.post(
+            self.register_url,
+            {
+                "email": self.email,
+                "password": "BEZPIECZNEHASLO1",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("detail", response.data)
+        self.assertFalse(User.objects.filter(email=self.email).exists())
+
+    def test_register_rejects_password_without_digit_or_special(self):
+        response = self.client.post(
+            self.register_url,
+            {
+                "email": self.email,
+                "password": "BezpieczneHaslo",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("detail", response.data)
+        self.assertFalse(User.objects.filter(email=self.email).exists())
+
     # ===== Logowanie i historia logowań =====
 
     def test_login_returns_access_and_refresh_cookie(self):
