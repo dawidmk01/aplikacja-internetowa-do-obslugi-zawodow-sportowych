@@ -13,7 +13,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from tournaments.access import can_edit_tournament_detail
-from tournaments.models import Division, Team, Tournament
+from tournaments.models import Division, Stage, Team, Tournament
+from tournaments.services.match_generation import BYE_TEAM_NAME, ensure_matches_generated
 
 
 def _division_payload(division: Division) -> dict:
@@ -30,6 +31,36 @@ def _division_payload(division: Division) -> dict:
 
 def _all_divisions_payload(tournament: Tournament) -> list[dict]:
     return [_division_payload(item) for item in tournament.divisions.all().order_by("order", "id")]
+
+
+def _division_has_generated_structure(tournament: Tournament, division: Division) -> bool:
+    return Stage.objects.filter(tournament=tournament, division=division, is_archived=False).exists()
+
+
+def _active_participants_count(tournament: Tournament, division: Division) -> int:
+    return (
+        Team.objects.filter(tournament=tournament, division=division, is_active=True)
+        .exclude(name=BYE_TEAM_NAME)
+        .count()
+    )
+
+
+def _ensure_division_structure_if_ready(tournament: Tournament, division: Division | None) -> bool:
+    if division is None or division.is_archived or division.status == Tournament.Status.FINISHED:
+        return False
+
+    if not _division_has_generated_structure(tournament, division):
+        if _active_participants_count(tournament, division) < 2:
+            return False
+        ensure_matches_generated(tournament, division=division)
+
+    if _division_has_generated_structure(tournament, division):
+        if division.status == Tournament.Status.DRAFT:
+            division.status = Tournament.Status.CONFIGURED
+            division.save(update_fields=["status"])
+        return True
+
+    return False
 
 
 def _get_slot_prefix(competition_type: str | None) -> str:
@@ -137,6 +168,8 @@ class TournamentDivisionListCreateView(APIView):
         if source_division is None:
             source_division = tournament.get_default_division()
 
+        _ensure_division_structure_if_ready(tournament, source_division)
+
         next_order = (
             tournament.divisions.order_by("-order", "-id").first().order + 1
             if tournament.divisions.exists()
@@ -162,6 +195,9 @@ class TournamentDivisionListCreateView(APIView):
                 Team(tournament=tournament, division=division, name=f"{slot_prefix} 2", is_active=True),
             ]
         )
+
+        # Nowo utworzona dywizja jest od razu doprowadzana do spójnej struktury startowej.
+        _ensure_division_structure_if_ready(tournament, division)
 
         return Response(
             {

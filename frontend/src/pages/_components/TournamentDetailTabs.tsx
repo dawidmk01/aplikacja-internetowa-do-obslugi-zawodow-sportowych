@@ -2,7 +2,7 @@
 // Komponent renderuje zakładki panelu ustawień turnieju oraz porządkuje główne obszary konfiguracji.
 
 import type { ReactNode } from "react";
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { QRCodeCanvas } from "qrcode.react";
 import {
   BarChart3,
@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 
+import { apiFetch } from "../../api";
 import { cn } from "../../lib/cn";
 
 import { Button } from "../../ui/Button";
@@ -65,6 +66,31 @@ export type TournamentPanelStats = {
   secondary_progress_label?: string | null;
 };
 
+type TournamentStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
+
+export type TournamentDivisionSummary = {
+  id: number;
+  name?: string | null;
+  slug?: string | null;
+  order?: number | null;
+  is_default?: boolean;
+  is_archived?: boolean;
+  status?: TournamentStatus | string | null;
+  tournament_format?: "LEAGUE" | "CUP" | "MIXED" | string | null;
+  competition_type?: "TEAM" | "INDIVIDUAL" | string | null;
+  competition_model?: "HEAD_TO_HEAD" | "MASS_START" | string | null;
+};
+
+type DetailsStatsScope = "ALL" | `DIVISION_${number}`;
+
+type DivisionPreviewStats = {
+  teamsCount: number;
+  playersCount: number;
+  allMatchesCount: number;
+  activeMatchesCount: number;
+  finishedMatchesCount: number;
+};
+
 export type Tournament = {
   id: number;
   name: string;
@@ -75,7 +101,7 @@ export type Tournament = {
     stage_structure_mode?: "REDUCTION" | "MULTI_EVENT" | string;
   } | null;
   tournament_format: "LEAGUE" | "CUP" | "MIXED";
-  status: "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
+  status: TournamentStatus;
   is_published: boolean;
   access_code: string | null;
   description: string | null;
@@ -87,6 +113,8 @@ export type Tournament = {
   participants_self_rename_approval_required?: boolean;
   my_role: "ORGANIZER" | "ASSISTANT" | null;
   my_permissions?: MyPermissions;
+  active_division_id?: number | null;
+  divisions?: TournamentDivisionSummary[];
   panel_stats?: TournamentPanelStats;
 };
 
@@ -178,6 +206,43 @@ function formatTournamentFormatLabel(format: Tournament["tournament_format"] | s
   if (format === "CUP") return "Puchar";
   if (format === "MIXED") return "Grupy + puchar";
   return format || "Brak";
+}
+
+function detailsScopeForDivision(divisionId: number): DetailsStatsScope {
+  return `DIVISION_${divisionId}`;
+}
+
+function divisionIdFromDetailsScope(scope: DetailsStatsScope): number | null {
+  if (!scope.startsWith("DIVISION_")) return null;
+  const parsed = Number(scope.replace("DIVISION_", ""));
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function extractApiList(payload: any): any[] {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.results)) return payload.results;
+  return [];
+}
+
+function isSystemByeName(value: unknown): boolean {
+  return String(value ?? "").trim().toUpperCase() === "__SYSTEM_BYE__";
+}
+
+function isRealPanelMatch(match: any): boolean {
+  return !isSystemByeName(match?.home_team_name) && !isSystemByeName(match?.away_team_name);
+}
+
+function isActiveMatchStatus(status: unknown): boolean {
+  return status === "IN_PROGRESS" || status === "RUNNING";
+}
+
+function isFinishedMatchStatus(status: unknown): boolean {
+  return status === "FINISHED";
+}
+
+function readPlayersCount(team: any): number {
+  const parsed = Number(team?.players_count);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -475,8 +540,93 @@ export function TournamentDetailTabs(props: Props) {
   const joinQrRef = useRef<HTMLCanvasElement | null>(null);
 
   const panelStats = tournament.panel_stats;
-  const hasMultipleDivisions = Number(panelStats?.divisions_count ?? 0) > 1;
+  const divisions = useMemo<TournamentDivisionSummary[]>(() => {
+    return [...(tournament.divisions ?? [])]
+      .filter((division) => !division.is_archived)
+      .sort((left, right) => {
+        const orderDiff = Number(left.order ?? 0) - Number(right.order ?? 0);
+        if (orderDiff !== 0) return orderDiff;
+        return Number(left.id ?? 0) - Number(right.id ?? 0);
+      });
+  }, [tournament.divisions]);
+
+  const hasMultipleDivisions = divisions.length > 1 || Number(panelStats?.divisions_count ?? 0) > 1;
   const isIndividualCompetition = tournament.competition_type === "INDIVIDUAL";
+  const [detailsScope, setDetailsScope] = useState<DetailsStatsScope>("ALL");
+  const [divisionPreviewStats, setDivisionPreviewStats] = useState<Record<number, DivisionPreviewStats>>({});
+  const [divisionStatsLoadingId, setDivisionStatsLoadingId] = useState<number | null>(null);
+  const [divisionStatsError, setDivisionStatsError] = useState<string | null>(null);
+
+  const selectedDetailsDivisionId = divisionIdFromDetailsScope(detailsScope);
+  const selectedDetailsDivision = useMemo(() => {
+    if (!selectedDetailsDivisionId) return null;
+    return divisions.find((division) => division.id === selectedDetailsDivisionId) ?? null;
+  }, [divisions, selectedDetailsDivisionId]);
+
+  useEffect(() => {
+    if (detailsScope === "ALL") return;
+    const divisionId = divisionIdFromDetailsScope(detailsScope);
+    if (!divisionId || !divisions.some((division) => division.id === divisionId)) {
+      setDetailsScope("ALL");
+    }
+  }, [detailsScope, divisions]);
+
+  useEffect(() => {
+    if (!selectedDetailsDivisionId || divisionPreviewStats[selectedDetailsDivisionId]) {
+      return;
+    }
+
+    let cancelled = false;
+    setDivisionStatsLoadingId(selectedDetailsDivisionId);
+    setDivisionStatsError(null);
+
+    (async () => {
+      try {
+        const query = `division_id=${selectedDetailsDivisionId}`;
+        const [teamsRes, matchesRes] = await Promise.all([
+          apiFetch(`/api/tournaments/${tournament.id}/teams/?${query}`, { toastOnError: false }),
+          apiFetch(`/api/tournaments/${tournament.id}/matches/?${query}`, { toastOnError: false }),
+        ]);
+
+        if (!teamsRes.ok || !matchesRes.ok) {
+          throw new Error("Nie udało się pobrać danych dywizji.");
+        }
+
+        const [teamsPayload, matchesPayload] = await Promise.all([
+          teamsRes.json().catch(() => []),
+          matchesRes.json().catch(() => []),
+        ]);
+
+        const teams = extractApiList(teamsPayload);
+        const matches = extractApiList(matchesPayload).filter(isRealPanelMatch);
+
+        const nextStats: DivisionPreviewStats = {
+          teamsCount: teams.length,
+          playersCount: teams.reduce((sum, team) => sum + readPlayersCount(team), 0),
+          allMatchesCount: matches.length,
+          activeMatchesCount: matches.filter((match) => isActiveMatchStatus(match?.status)).length,
+          finishedMatchesCount: matches.filter((match) => isFinishedMatchStatus(match?.status)).length,
+        };
+
+        if (!cancelled) {
+          setDivisionPreviewStats((prev) => ({ ...prev, [selectedDetailsDivisionId]: nextStats }));
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setDivisionStatsError(e?.message ?? "Nie udało się pobrać danych dywizji.");
+        }
+      } finally {
+        if (!cancelled) {
+          setDivisionStatsLoadingId((current) => (current === selectedDetailsDivisionId ? null : current));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [divisionPreviewStats, selectedDetailsDivisionId, tournament.id]);
+
   const primaryParticipantsLabel = hasMultipleDivisions
     ? "Uczestnicy"
     : isIndividualCompetition
@@ -514,11 +664,54 @@ export function TournamentDetailTabs(props: Props) {
     ].filter(Boolean).length;
   };
 
+  const formatStatNumber = (value?: number | null) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
   const formatProgress = (current?: number | null, total?: number | null) => {
-    const safeCurrent = Number.isFinite(Number(current)) ? Number(current) : 0;
-    const safeTotal = Number.isFinite(Number(total)) ? Number(total) : 0;
+    const safeCurrent = formatStatNumber(current);
+    const safeTotal = formatStatNumber(total);
     return `${safeCurrent}/${safeTotal}`;
   };
+
+  const globalAllMatchesCount = formatStatNumber(panelStats?.primary_progress_total ?? panelStats?.secondary_progress_total);
+  const globalActiveMatchesCount = formatStatNumber(panelStats?.primary_progress_current);
+  const globalFinishedMatchesCount = formatStatNumber(panelStats?.secondary_progress_current);
+
+  const selectedDivisionStats = selectedDetailsDivisionId ? divisionPreviewStats[selectedDetailsDivisionId] : null;
+  const isDivisionStatsLoading = Boolean(selectedDetailsDivisionId && divisionStatsLoadingId === selectedDetailsDivisionId);
+  const detailStatsScopeLabel = selectedDetailsDivision ? selectedDetailsDivision.name || `Dywizja ${selectedDetailsDivision.id}` : "Cały turniej";
+  const detailStatusLabel = selectedDetailsDivision
+    ? formatStatusLabel(selectedDetailsDivision.status)
+    : panelStats?.status_label ?? formatStatusLabel(tournament.status);
+  const detailFormatLabel = formatTournamentFormatLabel(selectedDetailsDivision?.tournament_format ?? tournament.tournament_format);
+  const detailParticipantsCount = selectedDetailsDivisionId
+    ? selectedDivisionStats?.teamsCount ?? 0
+    : panelStats?.teams_count ?? 0;
+  const detailPlayersCount = selectedDetailsDivisionId
+    ? selectedDivisionStats?.playersCount ?? 0
+    : panelStats?.players_count ?? 0;
+  const detailAllMatchesCount = selectedDetailsDivisionId
+    ? selectedDivisionStats?.allMatchesCount ?? 0
+    : globalAllMatchesCount;
+  const detailActiveMatchesCount = selectedDetailsDivisionId
+    ? selectedDivisionStats?.activeMatchesCount ?? 0
+    : globalActiveMatchesCount;
+  const detailFinishedMatchesCount = selectedDetailsDivisionId
+    ? selectedDivisionStats?.finishedMatchesCount ?? 0
+    : globalFinishedMatchesCount;
+  const showDetailPlayersCount = selectedDetailsDivisionId ? detailPlayersCount > 0 : showPlayersCount;
+  const showMassStartProgress = !selectedDetailsDivisionId && panelStats?.progress_mode === "MASS_START";
+  const detailsScopeOptions = useMemo(() => {
+    return [
+      { value: "ALL" as DetailsStatsScope, label: "Cały turniej" },
+      ...divisions.map((division) => ({
+        value: detailsScopeForDivision(division.id),
+        label: division.name ? `Dywizja: ${division.name}` : `Dywizja ${division.id}`,
+      })),
+    ];
+  }, [divisions]);
 
   const renderOverviewTab = () => (
     <div className="space-y-4">
@@ -661,43 +854,65 @@ export function TournamentDetailTabs(props: Props) {
     </div>
   );
 
-  const massStartStageProgressLabel =
-    String(tournament.result_config?.stage_structure_mode ?? "").toUpperCase() === "MULTI_EVENT"
-      ? "Konkurencje zakończone"
-      : "Etapy zakończone";
-
   const renderDetailsTab = () => (
     <div className="space-y-4">
       <Card className="p-5">
-        <div className="min-w-0">
-          <div className="text-base font-extrabold text-slate-100">Informacje o turnieju</div>
-          <div className="mt-1 text-sm text-slate-300/90 break-words">
-            Zbiorczy podgląd najważniejszych danych dla całego turnieju.
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="text-base font-extrabold text-slate-100">Informacje o turnieju</div>
+            <div className="mt-1 text-sm text-slate-300/90 break-words">
+              Podgląd najważniejszych danych dla całego turnieju albo wybranej dywizji.
+            </div>
           </div>
+
+          {hasMultipleDivisions ? (
+            <div className="w-full lg:w-72">
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Zakres podglądu</div>
+              <Select<DetailsStatsScope>
+                value={detailsScope}
+                onChange={(nextScope) => setDetailsScope(nextScope)}
+                options={detailsScopeOptions}
+                ariaLabel="Zakres podglądu informacji o turnieju"
+                size="md"
+                align="end"
+                buttonClassName="min-h-[42px] rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-left text-sm text-slate-100 transition hover:border-white/20"
+                menuClassName="rounded-2xl"
+              />
+            </div>
+          ) : null}
         </div>
+
+        {selectedDetailsDivisionId && divisionStatsError ? (
+          <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-500/[0.08] px-4 py-3 text-sm text-amber-100">
+            {divisionStatsError}
+          </div>
+        ) : null}
 
         <div className="mt-5 grid gap-4 xl:grid-cols-2">
           <Card className="bg-white/[0.04] p-4">
-            <KeyValue k="Status" v={panelStats?.status_label ?? formatStatusLabel(tournament.status)} />
+            <KeyValue k="Zakres" v={detailStatsScopeLabel} />
+            <KeyValue k="Status" v={detailStatusLabel} />
             <KeyValue k="Dyscyplina" v={formatDisciplineLabel(tournament.discipline)} />
-            <KeyValue k="Format" v={formatTournamentFormatLabel(tournament.tournament_format)} />
+            <KeyValue k="Format" v={detailFormatLabel} />
             <KeyValue k="Widoczność" v={isPublishedDraft ? "Publiczny" : "Prywatny"} />
-            <KeyValue k="Dywizje" v={panelStats?.divisions_count ?? 0} />
+            {!selectedDetailsDivisionId ? <KeyValue k="Dywizje" v={panelStats?.divisions_count ?? 0} /> : null}
           </Card>
 
           <Card className="bg-white/[0.04] p-4">
-            <KeyValue k={primaryParticipantsLabel} v={panelStats?.teams_count ?? 0} />
-            {showPlayersCount ? <KeyValue k="Zawodnicy" v={panelStats?.players_count ?? 0} /> : null}
-            {panelStats?.progress_mode === "MASS_START" ? (
-              <>
-                <KeyValue k="Rezultaty" v={formatProgress(panelStats?.primary_progress_current, panelStats?.primary_progress_total)} />
-                <KeyValue k={massStartStageProgressLabel} v={formatProgress(panelStats?.stages_closed, panelStats?.stages_total)} />
-              </>
+            {isDivisionStatsLoading ? (
+              <div className="mb-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-slate-300">
+                Ładowanie danych dywizji...
+              </div>
+            ) : null}
+            <KeyValue k={primaryParticipantsLabel} v={detailParticipantsCount} />
+            {showDetailPlayersCount ? <KeyValue k="Zawodnicy" v={detailPlayersCount} /> : null}
+            {showMassStartProgress ? (
+              <KeyValue k="Rezultaty" v={formatProgress(panelStats?.primary_progress_current, panelStats?.primary_progress_total)} />
             ) : (
               <>
-                <KeyValue k="Mecze w trakcie" v={formatProgress(panelStats?.primary_progress_current, panelStats?.primary_progress_total)} />
-                <KeyValue k="Mecze zakończone" v={formatProgress(panelStats?.secondary_progress_current, panelStats?.secondary_progress_total)} />
-                <KeyValue k={massStartStageProgressLabel} v={formatProgress(panelStats?.stages_closed, panelStats?.stages_total)} />
+                <KeyValue k="Wszystkie mecze" v={detailAllMatchesCount} />
+                <KeyValue k="Mecze w trakcie" v={detailActiveMatchesCount} />
+                <KeyValue k="Mecze zakończone" v={detailFinishedMatchesCount} />
               </>
             )}
           </Card>

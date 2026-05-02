@@ -3,11 +3,7 @@
 
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
-import {
-  ChevronDown,
-  ChevronUp,
-  Layers3,
-} from "lucide-react";
+import { ChevronDown, ChevronUp, Layers3 } from "lucide-react";
 
 import { cn } from "../../lib/cn";
 import {
@@ -45,9 +41,11 @@ const WRESTLING_COMPETITION_MODE_OPTIONS = [
   { value: "AUTO", label: WRESTLING_COMPETITION_MODE_LABELS.AUTO },
   { value: "NORDIC", label: WRESTLING_COMPETITION_MODE_LABELS.NORDIC },
   { value: "TWO_POOLS", label: WRESTLING_COMPETITION_MODE_LABELS.TWO_POOLS },
-  { value: "ELIMINATION_REPECHAGE", label: WRESTLING_COMPETITION_MODE_LABELS.ELIMINATION_REPECHAGE },
+  {
+    value: "ELIMINATION_REPECHAGE",
+    label: WRESTLING_COMPETITION_MODE_LABELS.ELIMINATION_REPECHAGE,
+  },
 ] as const;
-
 
 export type Discipline =
   | "football"
@@ -63,7 +61,9 @@ export type TournamentFormat = "LEAGUE" | "CUP" | "MIXED";
 export type CompetitionType = "TEAM" | "INDIVIDUAL";
 export type CompetitionModel = "HEAD_TO_HEAD" | "MASS_START";
 
-export type CustomHeadToHeadMode = "HEAD_TO_HEAD_POINTS" | "MASS_START_MEASURED";
+export type CustomHeadToHeadMode =
+  | "HEAD_TO_HEAD_POINTS"
+  | "MASS_START_MEASURED";
 export type CustomMassStartValueKind = "TIME" | "NUMBER" | "POINTS" | "PLACE";
 export type CustomMeasuredValueKind = "TIME" | "NUMBER" | "PLACE";
 
@@ -71,7 +71,10 @@ export type CustomBetterResult = "HIGHER" | "LOWER";
 export type CustomTimeFormat = "HH:MM:SS" | "MM:SS" | "MM:SS.hh" | "SS.hh";
 export type CustomAggregationMode = "SUM" | "AVERAGE" | "BEST" | "LAST_ROUND";
 export type CustomStageStructureMode = "REDUCTION" | "MULTI_EVENT";
-export type MultiEventOverallMode = "POINTS_BY_RANK" | "SUM_RANKS" | "SUM_RESULTS";
+export type MultiEventOverallMode =
+  | "POINTS_BY_RANK"
+  | "SUM_RANKS"
+  | "SUM_RESULTS";
 export type CustomUnitPreset =
   | "POINTS"
   | "SECONDS"
@@ -144,12 +147,19 @@ export type TournamentResultConfig = {
   stages: CustomStageConfig[];
 };
 
-export type HandballTableDrawMode = "ALLOW_DRAW" | "PENALTIES" | "OVERTIME_PENALTIES";
+export type HandballTableDrawMode =
+  | "ALLOW_DRAW"
+  | "PENALTIES"
+  | "OVERTIME_PENALTIES";
 export type HandballKnockoutTiebreak = "OVERTIME_PENALTIES" | "PENALTIES";
 export type HandballPointsMode = "2_1_0" | "3_1_0" | "3_2_1_0";
 export type BasketballResolutionMode = "OVERTIME_ONLY";
 export type WrestlingStyle = "FREESTYLE" | "GRECO_ROMAN";
-export type WrestlingCompetitionMode = "AUTO" | "NORDIC" | "TWO_POOLS" | "ELIMINATION_REPECHAGE";
+export type WrestlingCompetitionMode =
+  | "AUTO"
+  | "NORDIC"
+  | "TWO_POOLS"
+  | "ELIMINATION_REPECHAGE";
 
 export type TennisBestOf = 3 | 5;
 export type TennisPointsMode = "NONE" | "PLT";
@@ -170,6 +180,8 @@ export type StructureDivisionItem = {
   isActive?: boolean;
   statusLabel?: string;
 };
+
+export type SummaryScope = "ALL" | `DIVISION_${number}`;
 
 type ThirdPlaceSelectValue = "NONE" | "ONE_MATCH" | "TWO_MATCHES";
 
@@ -225,7 +237,8 @@ export const COMPETITION_MODEL_OPTIONS: SelectOption<CompetitionModel>[] = [
   {
     value: "HEAD_TO_HEAD",
     label: COMPETITION_MODEL_LABELS.HEAD_TO_HEAD,
-    description: "Uczestnik przeciwko uczestnikowi albo drużyna przeciwko drużynie.",
+    description:
+      "Uczestnik przeciwko uczestnikowi albo drużyna przeciwko drużynie.",
   },
   {
     value: "MASS_START",
@@ -247,23 +260,26 @@ export const HEAD_TO_HEAD_MODE_OPTIONS: SelectOption<CustomHeadToHeadMode>[] = [
   },
 ];
 
-export const MASS_START_VALUE_KIND_OPTIONS: SelectOption<CustomMassStartValueKind>[] = [
-  { value: "TIME", label: RESULT_VALUE_KIND_LABELS.TIME },
-  { value: "NUMBER", label: RESULT_VALUE_KIND_LABELS.NUMBER },
-  { value: "POINTS", label: RESULT_VALUE_KIND_LABELS.POINTS },
-  { value: "PLACE", label: RESULT_VALUE_KIND_LABELS.PLACE },
-];
+export const MASS_START_VALUE_KIND_OPTIONS: SelectOption<CustomMassStartValueKind>[] =
+  [
+    { value: "TIME", label: RESULT_VALUE_KIND_LABELS.TIME },
+    { value: "NUMBER", label: RESULT_VALUE_KIND_LABELS.NUMBER },
+    { value: "POINTS", label: RESULT_VALUE_KIND_LABELS.POINTS },
+    { value: "PLACE", label: RESULT_VALUE_KIND_LABELS.PLACE },
+  ];
 
-export const MEASURED_VALUE_KIND_OPTIONS: SelectOption<CustomMeasuredValueKind>[] = [
-  { value: "TIME", label: RESULT_VALUE_KIND_LABELS.TIME },
-  { value: "NUMBER", label: RESULT_VALUE_KIND_LABELS.NUMBER },
-  { value: "PLACE", label: RESULT_VALUE_KIND_LABELS.PLACE },
-];
+export const MEASURED_VALUE_KIND_OPTIONS: SelectOption<CustomMeasuredValueKind>[] =
+  [
+    { value: "TIME", label: RESULT_VALUE_KIND_LABELS.TIME },
+    { value: "NUMBER", label: RESULT_VALUE_KIND_LABELS.NUMBER },
+    { value: "PLACE", label: RESULT_VALUE_KIND_LABELS.PLACE },
+  ];
 
-export const CUSTOM_BETTER_RESULT_OPTIONS: SelectOption<CustomBetterResult>[] = [
-  { value: "HIGHER", label: BETTER_RESULT_LABELS.HIGHER },
-  { value: "LOWER", label: BETTER_RESULT_LABELS.LOWER },
-];
+export const CUSTOM_BETTER_RESULT_OPTIONS: SelectOption<CustomBetterResult>[] =
+  [
+    { value: "HIGHER", label: BETTER_RESULT_LABELS.HIGHER },
+    { value: "LOWER", label: BETTER_RESULT_LABELS.LOWER },
+  ];
 
 export const CUSTOM_TIME_FORMAT_OPTIONS: SelectOption<CustomTimeFormat>[] = [
   { value: "HH:MM:SS", label: TIME_FORMAT_LABELS["HH:MM:SS"] },
@@ -317,27 +333,42 @@ export const THIRD_PLACE_OPTIONS: SelectOption<ThirdPlaceSelectValue>[] = [
   { value: "TWO_MATCHES", label: "Tak - 2 mecze" },
 ];
 
-export const CUSTOM_MATCH_SERIES_OPTIONS: SelectOption<CustomMatchSeriesMode>[] = [
-  { value: "ONE_MATCH", label: "1 mecz" },
-  { value: "TWO_MATCHES", label: "2 mecze (dwumecz)" },
-  { value: "BEST_OF_3", label: "Do 2 wygranych" },
-  { value: "BEST_OF_5", label: "Do 3 wygranych" },
-  { value: "BEST_OF_7", label: "Do 4 wygranych" },
-  { value: "BEST_OF_9", label: "Do 5 wygranych" },
-];
+export const CUSTOM_MATCH_SERIES_OPTIONS: SelectOption<CustomMatchSeriesMode>[] =
+  [
+    { value: "ONE_MATCH", label: "1 mecz" },
+    { value: "TWO_MATCHES", label: "2 mecze (dwumecz)" },
+    { value: "BEST_OF_3", label: "Do 2 wygranych" },
+    { value: "BEST_OF_5", label: "Do 3 wygranych" },
+    { value: "BEST_OF_7", label: "Do 4 wygranych" },
+    { value: "BEST_OF_9", label: "Do 5 wygranych" },
+  ];
 
-export const CUSTOM_GROUP_RESOLUTION_OPTIONS: SelectOption<CustomGroupResolutionMode>[] = [
-  { value: "DRAW_ALLOWED", label: "Remis" },
-  { value: "OVERTIME_ONLY", label: "Dogrywka (możliwy remis)" },
-  { value: "DECIDING_SHOTS_ONLY", label: "Rzuty rozstrzygające (pewny zwycięzca)" },
-  { value: "OVERTIME_DECIDING_SHOTS", label: "Dogrywka + rzuty rozstrzygające (pewny zwycięzca)" },
-];
+export const CUSTOM_GROUP_RESOLUTION_OPTIONS: SelectOption<CustomGroupResolutionMode>[] =
+  [
+    { value: "DRAW_ALLOWED", label: "Remis" },
+    { value: "OVERTIME_ONLY", label: "Dogrywka (możliwy remis)" },
+    {
+      value: "DECIDING_SHOTS_ONLY",
+      label: "Rzuty rozstrzygające (pewny zwycięzca)",
+    },
+    {
+      value: "OVERTIME_DECIDING_SHOTS",
+      label: "Dogrywka + rzuty rozstrzygające (pewny zwycięzca)",
+    },
+  ];
 
-export const CUSTOM_KNOCKOUT_RESOLUTION_OPTIONS: SelectOption<CustomKnockoutResolutionMode>[] = [
-  { value: "OVERTIME_ONLY", label: "Dogrywka" },
-  { value: "DECIDING_SHOTS_ONLY", label: "Rzuty rozstrzygające (pewny zwycięzca)" },
-  { value: "OVERTIME_DECIDING_SHOTS", label: "Dogrywka + rzuty rozstrzygające (pewny zwycięzca)" },
-];
+export const CUSTOM_KNOCKOUT_RESOLUTION_OPTIONS: SelectOption<CustomKnockoutResolutionMode>[] =
+  [
+    { value: "OVERTIME_ONLY", label: "Dogrywka" },
+    {
+      value: "DECIDING_SHOTS_ONLY",
+      label: "Rzuty rozstrzygające (pewny zwycięzca)",
+    },
+    {
+      value: "OVERTIME_DECIDING_SHOTS",
+      label: "Dogrywka + rzuty rozstrzygające (pewny zwycięzca)",
+    },
+  ];
 
 export const HB_POINTS_OPTIONS: SelectOption<HandballPointsMode>[] = [
   { value: "2_1_0", label: "2-1-0 (W-R-P)" },
@@ -354,7 +385,8 @@ export const TENNIS_POINTS_MODE_OPTIONS: SelectOption<TennisPointsMode>[] = [
   {
     value: "NONE",
     label: TENNIS_POINTS_MODE_LABELS.NONE,
-    description: "Tabela bez osobnej kolumny punktów. O kolejności decydują zwycięstwa, sety, gemy i bezpośredni mecz.",
+    description:
+      "Tabela bez osobnej kolumny punktów. O kolejności decydują zwycięstwa, sety, gemy i bezpośredni mecz.",
   },
   {
     value: "PLT",
@@ -369,18 +401,21 @@ export const HB_TABLE_DRAW_OPTIONS: SelectOption<HandballTableDrawMode>[] = [
   { value: "OVERTIME_PENALTIES", label: "Remis - dogrywka + karne" },
 ];
 
-export const HB_KNOCKOUT_TIEBREAK_OPTIONS: SelectOption<HandballKnockoutTiebreak>[] = [
-  { value: "OVERTIME_PENALTIES", label: "Dogrywka + karne" },
-  { value: "PENALTIES", label: "Od razu karne" },
-];
+export const HB_KNOCKOUT_TIEBREAK_OPTIONS: SelectOption<HandballKnockoutTiebreak>[] =
+  [
+    { value: "OVERTIME_PENALTIES", label: "Dogrywka + karne" },
+    { value: "PENALTIES", label: "Od razu karne" },
+  ];
 
-export const BASKETBALL_RESOLUTION_OPTIONS: SelectOption<BasketballResolutionMode>[] = [
-  {
-    value: "OVERTIME_ONLY",
-    label: "Dogrywka po remisie",
-    description: "Remis po czasie podstawowym jest rozstrzygany dogrywką. Karne nie są dostępne.",
-  },
-];
+export const BASKETBALL_RESOLUTION_OPTIONS: SelectOption<BasketballResolutionMode>[] =
+  [
+    {
+      value: "OVERTIME_ONLY",
+      label: "Dogrywka po remisie",
+      description:
+        "Remis po czasie podstawowym jest rozstrzygany dogrywką. Karne nie są dostępne.",
+    },
+  ];
 
 export function disciplineLabel(code?: Discipline, customName?: string) {
   if (code === "custom") {
@@ -428,7 +463,11 @@ function timeFormatLabel(v?: CustomTimeFormat | null) {
 }
 
 function wrestlingCompetitionModeLabel(v?: WrestlingCompetitionMode) {
-  return getLabel(WRESTLING_COMPETITION_MODE_LABELS, v, WRESTLING_COMPETITION_MODE_LABELS.AUTO);
+  return getLabel(
+    WRESTLING_COMPETITION_MODE_LABELS,
+    v,
+    WRESTLING_COMPETITION_MODE_LABELS.AUTO,
+  );
 }
 
 function unitPresetLabel(v?: CustomUnitPreset, customLabel?: string) {
@@ -443,7 +482,7 @@ function aggregationModeLabel(v?: CustomAggregationMode) {
 function measuredSummary(config: TournamentResultConfig) {
   const unit = unitPresetLabel(
     config.measuredUnitPreset,
-    config.measuredUnitCustomLabel
+    config.measuredUnitCustomLabel,
   );
 
   if (config.measuredValueKind === "TIME") {
@@ -460,7 +499,7 @@ function measuredSummary(config: TournamentResultConfig) {
 function massStartSummary(config: TournamentResultConfig) {
   const unit = unitPresetLabel(
     config.massStartUnitPreset,
-    config.massStartUnitCustomLabel
+    config.massStartUnitCustomLabel,
   );
 
   if (config.massStartValueKind === "TIME") {
@@ -475,11 +514,17 @@ function massStartSummary(config: TournamentResultConfig) {
 }
 
 function matchSeriesModeLabel(mode?: CustomMatchSeriesMode) {
-  return CUSTOM_MATCH_SERIES_OPTIONS.find((option) => option.value === mode)?.label ?? "1 mecz";
+  return (
+    CUSTOM_MATCH_SERIES_OPTIONS.find((option) => option.value === mode)
+      ?.label ?? "1 mecz"
+  );
 }
 
 function groupResolutionModeLabel(mode?: CustomGroupResolutionMode) {
-  return CUSTOM_GROUP_RESOLUTION_OPTIONS.find((option) => option.value === mode)?.label ?? "Remis";
+  return (
+    CUSTOM_GROUP_RESOLUTION_OPTIONS.find((option) => option.value === mode)
+      ?.label ?? "Remis"
+  );
 }
 
 function bestOfFromSeriesMode(mode?: CustomMatchSeriesMode): number | null {
@@ -494,7 +539,9 @@ function legsCountFromSeriesMode(mode?: CustomMatchSeriesMode): number {
   return mode === "TWO_MATCHES" ? 2 : 1;
 }
 
-function deriveSeriesMode(config: TournamentResultConfig): CustomMatchSeriesMode {
+function deriveSeriesMode(
+  config: TournamentResultConfig,
+): CustomMatchSeriesMode {
   if (config.customMatchSeriesMode) return config.customMatchSeriesMode;
   if (config.bestOf === 9) return "BEST_OF_9";
   if (config.bestOf === 7) return "BEST_OF_7";
@@ -504,24 +551,30 @@ function deriveSeriesMode(config: TournamentResultConfig): CustomMatchSeriesMode
   return "ONE_MATCH";
 }
 
-function deriveGroupResolutionMode(config: TournamentResultConfig): CustomGroupResolutionMode {
+function deriveGroupResolutionMode(
+  config: TournamentResultConfig,
+): CustomGroupResolutionMode {
   if (config.groupResolutionMode) return config.groupResolutionMode;
   if (config.allowDraw) return "DRAW_ALLOWED";
-  if (config.allowOvertime && config.allowShootout) return "OVERTIME_DECIDING_SHOTS";
+  if (config.allowOvertime && config.allowShootout)
+    return "OVERTIME_DECIDING_SHOTS";
   if (config.allowShootout) return "DECIDING_SHOTS_ONLY";
   return "OVERTIME_ONLY";
 }
 
-function deriveKnockoutResolutionMode(config: TournamentResultConfig): CustomKnockoutResolutionMode {
+function deriveKnockoutResolutionMode(
+  config: TournamentResultConfig,
+): CustomKnockoutResolutionMode {
   if (config.knockoutResolutionMode) return config.knockoutResolutionMode;
-  if (config.allowOvertime && config.allowShootout) return "OVERTIME_DECIDING_SHOTS";
+  if (config.allowOvertime && config.allowShootout)
+    return "OVERTIME_DECIDING_SHOTS";
   if (config.allowShootout) return "DECIDING_SHOTS_ONLY";
   return "OVERTIME_ONLY";
 }
 
 function getThirdPlaceSelectValue(
   thirdPlace: boolean,
-  thirdPlaceMatches: 1 | 2
+  thirdPlaceMatches: 1 | 2,
 ): ThirdPlaceSelectValue {
   if (!thirdPlace) return "NONE";
   return thirdPlaceMatches === 2 ? "TWO_MATCHES" : "ONE_MATCH";
@@ -536,8 +589,17 @@ const BOOLEAN_SELECT_OPTIONS: SelectOption<BooleanSelectValue>[] = [
   { value: "YES", label: "Tak" },
 ];
 
-const ACTIVE_STAGES_OPTIONS: SelectOption<number>[] = Array.from({ length: MAX_CUSTOM_STAGE_LEVELS }, (_, i) => ({ value: i + 1, label: `${i + 1} ${i === 0 ? "etap" : i < 4 ? "etapy" : "etapów"}` }));
-const STAGE_STRUCTURE_MODE_OPTIONS: SelectOption<CustomStageStructureMode>[] = [{ value: "REDUCTION", label: STAGE_STRUCTURE_MODE_LABELS.REDUCTION }, { value: "MULTI_EVENT", label: STAGE_STRUCTURE_MODE_LABELS.MULTI_EVENT }];
+const ACTIVE_STAGES_OPTIONS: SelectOption<number>[] = Array.from(
+  { length: MAX_CUSTOM_STAGE_LEVELS },
+  (_, i) => ({
+    value: i + 1,
+    label: `${i + 1} ${i === 0 ? "etap" : i < 4 ? "etapy" : "etapów"}`,
+  }),
+);
+const STAGE_STRUCTURE_MODE_OPTIONS: SelectOption<CustomStageStructureMode>[] = [
+  { value: "REDUCTION", label: STAGE_STRUCTURE_MODE_LABELS.REDUCTION },
+  { value: "MULTI_EVENT", label: STAGE_STRUCTURE_MODE_LABELS.MULTI_EVENT },
+];
 
 const MULTI_EVENT_OVERALL_MODE_LABELS: Record<MultiEventOverallMode, string> = {
   POINTS_BY_RANK: "Punkty za miejsca",
@@ -545,11 +607,18 @@ const MULTI_EVENT_OVERALL_MODE_LABELS: Record<MultiEventOverallMode, string> = {
   SUM_RESULTS: "Suma wyników",
 };
 
-const MULTI_EVENT_OVERALL_MODE_OPTIONS: SelectOption<MultiEventOverallMode>[] = [
-  { value: "POINTS_BY_RANK", label: MULTI_EVENT_OVERALL_MODE_LABELS.POINTS_BY_RANK },
-  { value: "SUM_RANKS", label: MULTI_EVENT_OVERALL_MODE_LABELS.SUM_RANKS },
-  { value: "SUM_RESULTS", label: MULTI_EVENT_OVERALL_MODE_LABELS.SUM_RESULTS },
-];
+const MULTI_EVENT_OVERALL_MODE_OPTIONS: SelectOption<MultiEventOverallMode>[] =
+  [
+    {
+      value: "POINTS_BY_RANK",
+      label: MULTI_EVENT_OVERALL_MODE_LABELS.POINTS_BY_RANK,
+    },
+    { value: "SUM_RANKS", label: MULTI_EVENT_OVERALL_MODE_LABELS.SUM_RANKS },
+    {
+      value: "SUM_RESULTS",
+      label: MULTI_EVENT_OVERALL_MODE_LABELS.SUM_RESULTS,
+    },
+  ];
 
 function boolToSelectValue(value: boolean): BooleanSelectValue {
   return value ? "YES" : "NO";
@@ -560,9 +629,14 @@ function selectValueToBool(value: BooleanSelectValue): boolean {
 }
 
 function getActiveStagesCount(stages: CustomStageConfig[]) {
-  for (let index = Math.min(stages.length, MAX_CUSTOM_STAGE_LEVELS) - 1; index >= 0; index -= 1) {
+  for (
+    let index = Math.min(stages.length, MAX_CUSTOM_STAGE_LEVELS) - 1;
+    index >= 0;
+    index -= 1
+  ) {
     const stage = stages[index];
-    if (stage?.participantsCount != null || stage?.advanceCount != null) return index + 1;
+    if (stage?.participantsCount != null || stage?.advanceCount != null)
+      return index + 1;
   }
 
   return 1;
@@ -578,15 +652,17 @@ function getStageWarnings(
   activeStagesCount: number,
   totalParticipants: number,
   previousStage: CustomStageConfig | null,
-  stageStructureMode: CustomStageStructureMode
+  stageStructureMode: CustomStageStructureMode,
 ) {
   const warnings: string[] = [];
   const isMultiEvent = stageStructureMode === "MULTI_EVENT";
   const effectiveParticipants = isMultiEvent
-    ? stage.participantsCount ?? totalParticipants
+    ? (stage.participantsCount ?? totalParticipants)
     : index === 0
       ? totalParticipants
-      : previousStage?.advanceCount ?? previousStage?.participantsCount ?? totalParticipants;
+      : (previousStage?.advanceCount ??
+        previousStage?.participantsCount ??
+        totalParticipants);
   const minParticipants = getStageMinParticipants(stage.groupsCount);
   const itemLabel = isMultiEvent ? "konkurencji" : "etapu";
 
@@ -599,19 +675,25 @@ function getStageWarnings(
   }
 
   if (effectiveParticipants < minParticipants) {
-    warnings.push(`Dla ${stage.groupsCount} grup potrzebujesz co najmniej ${minParticipants} uczestników ${itemLabel}.`);
+    warnings.push(
+      `Dla ${stage.groupsCount} grup potrzebujesz co najmniej ${minParticipants} uczestników ${itemLabel}.`,
+    );
   }
 
   if (isMultiEvent) {
     if (stage.advanceCount != null) {
-      warnings.push("W trybie wieloboju konkurencje nie przekazują awansu dalej.");
+      warnings.push(
+        "W trybie wieloboju konkurencje nie przekazują awansu dalej.",
+      );
     }
     return warnings;
   }
 
   if (stage.advanceCount != null) {
     if (stage.advanceCount > effectiveParticipants) {
-      warnings.push("Liczba awansujących nie może być większa niż liczba uczestników etapu.");
+      warnings.push(
+        "Liczba awansujących nie może być większa niż liczba uczestników etapu.",
+      );
     }
 
     if (stage.advanceCount < 1) {
@@ -620,7 +702,9 @@ function getStageWarnings(
   }
 
   if (index === activeStagesCount - 1 && stage.advanceCount != null) {
-    warnings.push("Ostatni aktywny etap powinien mieć pustą liczbę awansujących.");
+    warnings.push(
+      "Ostatni aktywny etap powinien mieć pustą liczbę awansujących.",
+    );
   }
 
   if (index < activeStagesCount - 1 && stage.advanceCount == null) {
@@ -662,44 +746,68 @@ function getStructureValidationMessages(params: {
     const activeStages = stages.slice(0, activeStagesCount);
 
     activeStages.forEach((stage, index) => {
-      messages.push(...getStageWarnings(
-        stage,
-        index,
-        activeStagesCount,
-        participants,
-        index > 0 ? activeStages[index - 1] : null,
-        resultConfig.stageStructureMode
-      ));
+      messages.push(
+        ...getStageWarnings(
+          stage,
+          index,
+          activeStagesCount,
+          participants,
+          index > 0 ? activeStages[index - 1] : null,
+          resultConfig.stageStructureMode,
+        ),
+      );
     });
-
   }
 
   if (format === "MIXED" && groupsCount > 1 && minGroupSize < 2) {
-    messages.push("W fazie grupowej każda grupa musi mieć co najmniej 2 uczestników.");
+    messages.push(
+      "W fazie grupowej każda grupa musi mieć co najmniej 2 uczestników.",
+    );
   }
 
   if (discipline === "custom" && competitionModel === "HEAD_TO_HEAD") {
     if (resultConfig.headToHeadMode === "HEAD_TO_HEAD_POINTS") {
-      if (resultConfig.bestOf != null && ![3, 5, 7, 9].includes(resultConfig.bestOf)) {
-        messages.push("Tryb serii do określonej liczby zwycięstw może mieć tylko wartości 3, 5, 7 lub 9.");
+      if (
+        resultConfig.bestOf != null &&
+        ![3, 5, 7, 9].includes(resultConfig.bestOf)
+      ) {
+        messages.push(
+          "Tryb serii do określonej liczby zwycięstw może mieć tylko wartości 3, 5, 7 lub 9.",
+        );
       }
 
-      if (resultConfig.legsCount != null && (resultConfig.legsCount < 1 || resultConfig.legsCount > 2)) {
+      if (
+        resultConfig.legsCount != null &&
+        (resultConfig.legsCount < 1 || resultConfig.legsCount > 2)
+      ) {
         messages.push("Liczba pojedynków może wynosić tylko 1 lub 2.");
       }
 
-      if (resultConfig.allowShootout && !resultConfig.allowOvertime && resultConfig.pointsShootoutWin === resultConfig.pointsWin) {
-        messages.push("Przy własnej punktacji warto odróżnić zwykłą wygraną od wygranej po rzutach rozstrzygających.");
+      if (
+        resultConfig.allowShootout &&
+        !resultConfig.allowOvertime &&
+        resultConfig.pointsShootoutWin === resultConfig.pointsWin
+      ) {
+        messages.push(
+          "Przy własnej punktacji warto odróżnić zwykłą wygraną od wygranej po rzutach rozstrzygających.",
+        );
       }
     }
 
-    if (resultConfig.headToHeadMode === "MASS_START_MEASURED" && resultConfig.measuredValueKind === "TIME" && !resultConfig.measuredTimeFormat) {
+    if (
+      resultConfig.headToHeadMode === "MASS_START_MEASURED" &&
+      resultConfig.measuredValueKind === "TIME" &&
+      !resultConfig.measuredTimeFormat
+    ) {
       messages.push("Dla wyniku czasowego wybierz format czasu.");
     }
   }
 
   if (discipline === "custom" && competitionModel === "MASS_START") {
-    if (resultConfig.massStartValueKind === "TIME" && !resultConfig.massStartTimeFormat) {
+    if (
+      resultConfig.massStartValueKind === "TIME" &&
+      !resultConfig.massStartTimeFormat
+    ) {
       messages.push("Dla wyniku czasowego wybierz format czasu.");
     }
   }
@@ -726,7 +834,8 @@ function FormatCopyBar({
     return null;
   }
 
-  const selectedValue = copySourceDivisionId ?? copyDivisionOptions[0]?.value ?? null;
+  const selectedValue =
+    copySourceDivisionId ?? copyDivisionOptions[0]?.value ?? null;
   if (selectedValue == null) {
     return null;
   }
@@ -735,7 +844,9 @@ function FormatCopyBar({
     <div className="mb-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
       <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
         <div className="space-y-2">
-          <div className="text-xs font-semibold text-slate-300">Kopiuj ustawienia formatu z dywizji</div>
+          <div className="text-xs font-semibold text-slate-300">
+            Kopiuj ustawienia formatu z dywizji
+          </div>
           <Select<number>
             value={selectedValue}
             disabled={disableForm}
@@ -758,7 +869,8 @@ function FormatCopyBar({
       </div>
 
       <div className="mt-2 text-xs text-slate-400">
-        Skopiowane zostaną ustawienia formatu aktywnej dywizji. Po skopiowaniu nadal możesz je edytować ręcznie.
+        Skopiowane zostaną ustawienia formatu aktywnej dywizji. Po skopiowaniu
+        nadal możesz je edytować ręcznie.
       </div>
     </div>
   );
@@ -809,7 +921,9 @@ function DivisionSection({
   onSaveDivisionRename?: (divisionId: number) => void;
   onArchiveDivision?: (divisionId: number) => void;
 }) {
-  const [expandedDivisionId, setExpandedDivisionId] = useState<number | null>(null);
+  const [expandedDivisionId, setExpandedDivisionId] = useState<number | null>(
+    null,
+  );
 
   useEffect(() => {
     if (editingDivisionId != null) {
@@ -819,7 +933,9 @@ function DivisionSection({
 
     setExpandedDivisionId((current) => {
       if (current == null) return null;
-      return visibleDivisions.some((division) => division.id === current) ? current : null;
+      return visibleDivisions.some((division) => division.id === current)
+        ? current
+        : null;
     });
   }, [editingDivisionId, visibleDivisions]);
 
@@ -834,12 +950,15 @@ function DivisionSection({
       <div className="text-sm font-semibold text-white">Dywizje</div>
 
       <div className="mt-1 text-sm text-slate-300">
-        Nazwa i opis turnieju pozostają globalne. Dywizje rozdzielają konfigurację rozgrywek oraz liczbę uczestników.
+        Nazwa i opis turnieju pozostają globalne. Dywizje rozdzielają
+        konfigurację rozgrywek oraz liczbę uczestników.
       </div>
 
       {canEditDivisions && (
         <div className="mt-4 rounded-2xl border border-white/10 bg-black/10 p-4">
-          <div className="text-xs font-semibold text-slate-300">Dodaj dywizję</div>
+          <div className="text-xs font-semibold text-slate-300">
+            Dodaj dywizję
+          </div>
           <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
             <Input
               value={newDivisionName}
@@ -872,7 +991,7 @@ function DivisionSection({
                   "min-w-0 rounded-2xl border p-3 transition",
                   isActive
                     ? "border-cyan-400/40 bg-cyan-400/10 shadow-[0_0_0_1px_rgba(34,211,238,0.08)]"
-                    : "border-white/10 bg-black/10"
+                    : "border-white/10 bg-black/10",
                 )}
               >
                 <div className="flex items-start justify-between gap-3">
@@ -882,10 +1001,20 @@ function DivisionSection({
                     onClick={() => onDivisionSwitch?.(division.id)}
                     className="min-w-0 flex-1 text-left"
                   >
-                    <div className={cn("truncate text-sm font-semibold", isActive ? "text-cyan-100" : "text-white")}>
+                    <div
+                      className={cn(
+                        "truncate text-sm font-semibold",
+                        isActive ? "text-cyan-100" : "text-white",
+                      )}
+                    >
                       {division.name}
                     </div>
-                    <div className={cn("mt-1 text-xs", isActive ? "text-cyan-200/80" : "text-slate-400")}>
+                    <div
+                      className={cn(
+                        "mt-1 text-xs",
+                        isActive ? "text-cyan-200/80" : "text-slate-400",
+                      )}
+                    >
                       {division.statusLabel ?? "-"}
                       {division.isDefault ? " - podstawowa" : ""}
                     </div>
@@ -897,8 +1026,18 @@ function DivisionSection({
                       variant="ghost"
                       size="sm"
                       className="h-8 shrink-0 rounded-full border border-white/10 bg-white/[0.04] px-3 text-xs text-slate-200 hover:bg-white/[0.07]"
-                      rightIcon={isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                      onClick={() => setExpandedDivisionId((current) => (current === division.id ? null : division.id))}
+                      rightIcon={
+                        isExpanded ? (
+                          <ChevronUp className="h-4 w-4" />
+                        ) : (
+                          <ChevronDown className="h-4 w-4" />
+                        )
+                      }
+                      onClick={() =>
+                        setExpandedDivisionId((current) =>
+                          current === division.id ? null : division.id,
+                        )
+                      }
                       disabled={disableForm}
                     >
                       Więcej
@@ -913,7 +1052,9 @@ function DivisionSection({
                         <Input
                           value={editingDivisionName}
                           disabled={disableForm}
-                          onChange={(e) => onEditingDivisionNameChange?.(e.target.value)}
+                          onChange={(e) =>
+                            onEditingDivisionNameChange?.(e.target.value)
+                          }
                         />
 
                         <div className="flex items-center justify-end gap-2 overflow-x-auto pb-0.5">
@@ -935,7 +1076,9 @@ function DivisionSection({
                             variant="secondary"
                             size="sm"
                             className="h-8 shrink-0 rounded-xl px-3"
-                            disabled={disableForm || !editingDivisionName.trim()}
+                            disabled={
+                              disableForm || !editingDivisionName.trim()
+                            }
                             onClick={() => onSaveDivisionRename?.(division.id)}
                           >
                             Zapisz nazwę
@@ -983,7 +1126,9 @@ function DivisionSection({
           <InlineAlert variant="info" title="Aktywna dywizja">
             {activeDivisionName ?? "Aktywna dywizja"}
             {activeDivisionStatusLabel ? ` - ${activeDivisionStatusLabel}` : ""}
-            {" - utwórz kolejną dywizję, aby rozdzielić konfigurację i uczestników."}
+            {
+              " - utwórz kolejną dywizję, aby rozdzielić konfigurację i uczestników."
+            }
           </InlineAlert>
         </div>
       )}
@@ -993,10 +1138,12 @@ function DivisionSection({
           "mt-4 rounded-2xl border p-4 transition",
           activeDivision
             ? "border-cyan-400/40 bg-cyan-400/10 shadow-[0_0_0_1px_rgba(34,211,238,0.08)]"
-            : "border-white/10 bg-black/10"
+            : "border-white/10 bg-black/10",
         )}
       >
-        <div className="text-xs font-semibold text-slate-300">Liczba uczestników wybranej dywizji</div>
+        <div className="text-xs font-semibold text-slate-300">
+          Liczba uczestników wybranej dywizji
+        </div>
         <div className="mt-3 max-w-xs space-y-2">
           <Input
             type="number"
@@ -1006,7 +1153,12 @@ function DivisionSection({
             value={participants}
             onChange={(e) => onParticipantsChange(Number(e.target.value))}
           />
-          <div className={cn("text-xs", activeDivision ? "text-cyan-200/80" : "text-slate-400")}>
+          <div
+            className={cn(
+              "text-xs",
+              activeDivision ? "text-cyan-200/80" : "text-slate-400",
+            )}
+          >
             {activeDivisionName ?? "Aktywna dywizja"}
             {activeDivisionStatusLabel ? ` - ${activeDivisionStatusLabel}` : ""}
           </div>
@@ -1088,12 +1240,15 @@ function StageCard({
 }) {
   const isMultiEvent = stageStructureMode === "MULTI_EVENT";
   const effectiveParticipants = isMultiEvent
-    ? stage.participantsCount ?? totalParticipants
+    ? (stage.participantsCount ?? totalParticipants)
     : index === 0
       ? totalParticipants
       : Math.max(0, previousStageParticipants);
   const minParticipants = getStageMinParticipants(stage.groupsCount);
-  const maxParticipants = Math.max(2, isMultiEvent ? totalParticipants : effectiveParticipants);
+  const maxParticipants = Math.max(
+    2,
+    isMultiEvent ? totalParticipants : effectiveParticipants,
+  );
   const titlePrefix = isMultiEvent ? "Konkurencja" : "Etap";
   const defaultName = isMultiEvent
     ? `Konkurencja ${index + 1}`
@@ -1136,24 +1291,39 @@ function StageCard({
             min={1}
             max={Math.max(1, Math.floor(maxParticipants / 2))}
             disabled={disabled}
-            onChange={(next) => onChange({ groupsCount: Math.max(1, next ?? 1) })}
+            onChange={(next) =>
+              onChange({ groupsCount: Math.max(1, next ?? 1) })
+            }
           />
           <div className="text-xs text-slate-400">
-            Przy {stage.groupsCount} grupach potrzebujesz minimum {minParticipants} uczestników.
+            Przy {stage.groupsCount} grupach potrzebujesz minimum{" "}
+            {minParticipants} uczestników.
           </div>
         </div>
 
         <div className="space-y-2">
           <div className="text-xs font-semibold text-slate-300">
-            {isMultiEvent ? "Liczba uczestników w konkurencji" : "Liczba uczestników w etapie"}
+            {isMultiEvent
+              ? "Liczba uczestników w konkurencji"
+              : "Liczba uczestników w etapie"}
           </div>
           <NumberInput
             value={effectiveParticipants}
-            min={isMultiEvent ? 1 : index === 0 ? totalParticipants : minParticipants}
+            min={
+              isMultiEvent
+                ? 1
+                : index === 0
+                  ? totalParticipants
+                  : minParticipants
+            }
             max={maxParticipants}
             disabled={disabled || !isMultiEvent}
-            onChange={(next) => onChange({ participantsCount: Math.max(1, next ?? 1) })}
-            placeholder={isMultiEvent ? "Np. 16" : "Liczba wyliczana automatycznie"}
+            onChange={(next) =>
+              onChange({ participantsCount: Math.max(1, next ?? 1) })
+            }
+            placeholder={
+              isMultiEvent ? "Np. 16" : "Liczba wyliczana automatycznie"
+            }
           />
           <div className="text-xs text-slate-400">
             {isMultiEvent
@@ -1166,14 +1336,20 @@ function StageCard({
 
         {!isMultiEvent && (
           <div className="space-y-2">
-            <div className="text-xs font-semibold text-slate-300">Ilu przechodzi dalej łącznie</div>
+            <div className="text-xs font-semibold text-slate-300">
+              Ilu przechodzi dalej łącznie
+            </div>
             <NumberInput
               value={stage.advanceCount}
               min={1}
               max={stage.participantsCount ?? maxParticipants}
               disabled={disabled || isLastActiveStage}
-              onChange={(next) => onChange({ advanceCount: isLastActiveStage ? null : next })}
-              placeholder={isLastActiveStage ? "Ostatni etap - puste" : "Np. 20"}
+              onChange={(next) =>
+                onChange({ advanceCount: isLastActiveStage ? null : next })
+              }
+              placeholder={
+                isLastActiveStage ? "Ostatni etap - puste" : "Np. 20"
+              }
             />
             <div className="text-xs text-slate-400">
               {isLastActiveStage
@@ -1192,14 +1368,23 @@ function StageCard({
             min={1}
             max={20}
             disabled={disabled}
-            onChange={(next) => onChange({ roundsCount: Math.max(1, next ?? 1) })}
+            onChange={(next) =>
+              onChange({ roundsCount: Math.max(1, next ?? 1) })
+            }
           />
         </div>
       </div>
 
       {stageWarnings.length > 0 && (
         <div className="mt-4">
-          <InlineAlert variant="warning" title={isMultiEvent ? "Sprawdź ustawienia konkurencji" : "Sprawdź ustawienia etapu"}>
+          <InlineAlert
+            variant="warning"
+            title={
+              isMultiEvent
+                ? "Sprawdź ustawienia konkurencji"
+                : "Sprawdź ustawienia etapu"
+            }
+          >
             <ul className="list-disc space-y-1 pl-5">
               {stageWarnings.map((warning) => (
                 <li key={warning}>{warning}</li>
@@ -1267,13 +1452,19 @@ export function BasicsCard({
   return (
     <Card className="flex min-h-[26rem] flex-col p-6">
       <div className="min-w-0">
-        <div className="text-base font-semibold text-white">Podstawowe informacje</div>
-        <div className="text-sm text-slate-300">Nazwa i opis widoczne w podglądzie turnieju.</div>
+        <div className="text-base font-semibold text-white">
+          Podstawowe informacje
+        </div>
+        <div className="text-sm text-slate-300">
+          Nazwa i opis widoczne w podglądzie turnieju.
+        </div>
       </div>
 
       <div className="mt-5 flex flex-1 flex-col gap-4">
         <div className="space-y-2">
-          <div className="text-xs font-semibold text-slate-300">Nazwa turnieju</div>
+          <div className="text-xs font-semibold text-slate-300">
+            Nazwa turnieju
+          </div>
           <Input
             value={name}
             disabled={disableForm}
@@ -1283,7 +1474,9 @@ export function BasicsCard({
         </div>
 
         <div className="flex flex-1 flex-col space-y-2">
-          <div className="text-xs font-semibold text-slate-300">Opis turnieju</div>
+          <div className="text-xs font-semibold text-slate-300">
+            Opis turnieju
+          </div>
           <div className="relative flex-1">
             <Textarea
               unstyled
@@ -1294,12 +1487,13 @@ export function BasicsCard({
               className={cn(
                 "h-full min-h-[110px] w-full resize-y rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-100",
                 "focus-visible:border-white/20 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
-                "disabled:pointer-events-none disabled:opacity-60"
+                "disabled:pointer-events-none disabled:opacity-60",
               )}
             />
           </div>
           <div className="text-xs text-slate-400">
-            Opcjonalnie. Jeśli nie podasz opisu, w podglądzie zostanie pominięty.
+            Opcjonalnie. Jeśli nie podasz opisu, w podglądzie zostanie
+            pominięty.
           </div>
         </div>
 
@@ -1314,7 +1508,8 @@ export function BasicsCard({
             </Button>
             {!isTournamentCreated && (
               <div className="mt-2 text-xs text-slate-400">
-                Po utworzeniu turnieju odblokujesz sekcje struktury i podsumowania.
+                Po utworzeniu turnieju odblokujesz sekcje struktury i
+                podsumowania.
               </div>
             )}
           </div>
@@ -1544,7 +1739,9 @@ export function StructureCard({
   onAllowShootoutChange?: (v: boolean) => void;
   onCustomMatchSeriesModeChange?: (v: CustomMatchSeriesMode) => void;
   onCustomGroupResolutionModeChange?: (v: CustomGroupResolutionMode) => void;
-  onCustomKnockoutResolutionModeChange?: (v: CustomKnockoutResolutionMode) => void;
+  onCustomKnockoutResolutionModeChange?: (
+    v: CustomKnockoutResolutionMode,
+  ) => void;
   onPointsWinChange?: (v: number | null) => void;
   onPointsDrawChange?: (v: number | null) => void;
   onPointsLossChange?: (v: number | null) => void;
@@ -1600,9 +1797,13 @@ export function StructureCard({
   const massStartIsPlace = resultConfig.massStartValueKind === "PLACE";
   const customSeriesMode = deriveSeriesMode(resultConfig);
   const customGroupResolutionMode = deriveGroupResolutionMode(resultConfig);
-  const customKnockoutResolutionMode = deriveKnockoutResolutionMode(resultConfig);
+  const customKnockoutResolutionMode =
+    deriveKnockoutResolutionMode(resultConfig);
 
-  const thirdPlaceValue = getThirdPlaceSelectValue(thirdPlace, thirdPlaceMatches);
+  const thirdPlaceValue = getThirdPlaceSelectValue(
+    thirdPlace,
+    thirdPlaceMatches,
+  );
   const activeStagesCount = getActiveStagesCount(resultConfig.stages);
   const stageStructureMode = resultConfig.stageStructureMode ?? "REDUCTION";
   const isMultiEventStructure = stageStructureMode === "MULTI_EVENT";
@@ -1625,7 +1826,9 @@ export function StructureCard({
     onBestOfChange?.(bestOf);
   };
 
-  const handleCustomGroupResolutionModeChange = (value: CustomGroupResolutionMode) => {
+  const handleCustomGroupResolutionModeChange = (
+    value: CustomGroupResolutionMode,
+  ) => {
     onCustomGroupResolutionModeChange?.(value);
 
     if (value === "DRAW_ALLOWED") {
@@ -1654,7 +1857,9 @@ export function StructureCard({
     onAllowShootoutChange?.(true);
   };
 
-  const handleCustomKnockoutResolutionModeChange = (value: CustomKnockoutResolutionMode) => {
+  const handleCustomKnockoutResolutionModeChange = (
+    value: CustomKnockoutResolutionMode,
+  ) => {
     onCustomKnockoutResolutionModeChange?.(value);
 
     if (value === "OVERTIME_ONLY") {
@@ -1725,11 +1930,13 @@ export function StructureCard({
         return;
       }
 
-      const participantsCount = index === 0 ? participants : previousStageAdvanceOrParticipants;
+      const participantsCount =
+        index === 0 ? participants : previousStageAdvanceOrParticipants;
       const advanceCount =
         index === activeCount - 1
           ? null
-          : stage.advanceCount ?? Math.max(2, Math.floor(participantsCount / 2));
+          : (stage.advanceCount ??
+            Math.max(2, Math.floor(participantsCount / 2)));
 
       onStageChange(stage.id, {
         participantsCount,
@@ -1743,7 +1950,10 @@ export function StructureCard({
   };
 
   const handleActiveStagesChange = (value: number) => {
-    const safeValue = Math.max(1, Math.min(MAX_CUSTOM_STAGE_LEVELS, Math.trunc(value)));
+    const safeValue = Math.max(
+      1,
+      Math.min(MAX_CUSTOM_STAGE_LEVELS, Math.trunc(value)),
+    );
     const defaults = getDefaultStages(stageStructureMode);
 
     if (!onStageChange) {
@@ -1776,11 +1986,13 @@ export function StructureCard({
         return;
       }
 
-      const participantsCount = index === 0 ? participants : previousStageAdvanceOrParticipants;
+      const participantsCount =
+        index === 0 ? participants : previousStageAdvanceOrParticipants;
       const advanceCount =
         index === safeValue - 1
           ? null
-          : stage.advanceCount ?? Math.max(2, Math.floor(participantsCount / 2));
+          : (stage.advanceCount ??
+            Math.max(2, Math.floor(participantsCount / 2)));
 
       onStageChange(stage.id, {
         participantsCount,
@@ -1794,14 +2006,27 @@ export function StructureCard({
   };
 
   return (
-    <Card className={cn("p-6", !isTournamentCreated && "pointer-events-none opacity-60 blur-[1px]")}>
+    <Card
+      className={cn(
+        "p-6",
+        !isTournamentCreated && "pointer-events-none opacity-60 blur-[1px]",
+      )}
+    >
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-base font-semibold text-white">Struktura rozgrywek</div>
-          <div className="text-sm text-slate-300">Dobierz parametry dyscypliny, formatu i etapów.</div>
+          <div className="text-base font-semibold text-white">
+            Struktura rozgrywek
+          </div>
+          <div className="text-sm text-slate-300">
+            Dobierz parametry dyscypliny, formatu i etapów.
+          </div>
         </div>
 
-        <Button onClick={onSave} disabled={disableForm || validationMessages.length > 0} variant="secondary">
+        <Button
+          onClick={onSave}
+          disabled={disableForm || validationMessages.length > 0}
+          variant="secondary"
+        >
           {saving ? "Zapisywanie..." : "Zapisz"}
         </Button>
       </div>
@@ -1823,7 +2048,9 @@ export function StructureCard({
 
         <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <div className="space-y-2">
-            <div className="text-xs font-semibold text-slate-300">Dyscyplina</div>
+            <div className="text-xs font-semibold text-slate-300">
+              Dyscyplina
+            </div>
             <Select<Discipline>
               value={discipline}
               disabled={disableForm}
@@ -1836,7 +2063,9 @@ export function StructureCard({
           {!isCustomDiscipline && !isWrestling && (
             <>
               <div className="space-y-2">
-                <div className="text-xs font-semibold text-slate-300">Format turnieju</div>
+                <div className="text-xs font-semibold text-slate-300">
+                  Format turnieju
+                </div>
                 <Select<TournamentFormat>
                   value={format}
                   disabled={disableForm}
@@ -1845,24 +2074,29 @@ export function StructureCard({
                   ariaLabel="Format turnieju"
                 />
               </div>
-
             </>
           )}
 
           {isCustomDiscipline && (
             <>
               <div className="space-y-2">
-                <div className="text-xs font-semibold text-slate-300">Nazwa dyscypliny</div>
+                <div className="text-xs font-semibold text-slate-300">
+                  Nazwa dyscypliny
+                </div>
                 <Input
                   value={customDisciplineName}
                   disabled={disableForm}
-                  onChange={(e) => onCustomDisciplineNameChange?.(e.target.value)}
+                  onChange={(e) =>
+                    onCustomDisciplineNameChange?.(e.target.value)
+                  }
                   placeholder="Np. Bieg na 400 m, Bench Press"
                 />
               </div>
 
               <div className="space-y-2">
-                <div className="text-xs font-semibold text-slate-300">Typ uczestnictwa</div>
+                <div className="text-xs font-semibold text-slate-300">
+                  Typ uczestnictwa
+                </div>
                 <Select<CompetitionType>
                   value={competitionType}
                   disabled={disableForm}
@@ -1873,7 +2107,9 @@ export function StructureCard({
               </div>
 
               <div className="space-y-2">
-                <div className="text-xs font-semibold text-slate-300">Model rywalizacji</div>
+                <div className="text-xs font-semibold text-slate-300">
+                  Model rywalizacji
+                </div>
                 <Select<CompetitionModel>
                   value={competitionModel}
                   disabled={disableForm}
@@ -1885,7 +2121,9 @@ export function StructureCard({
 
               {isHeadToHead && (
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-300">Format turnieju</div>
+                  <div className="text-xs font-semibold text-slate-300">
+                    Format turnieju
+                  </div>
                   <Select<TournamentFormat>
                     value={format}
                     disabled={disableForm}
@@ -1895,7 +2133,6 @@ export function StructureCard({
                   />
                 </div>
               )}
-
             </>
           )}
         </div>
@@ -1944,7 +2181,9 @@ export function StructureCard({
             <div className="mt-4 space-y-4">
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-300">Typ wyniku</div>
+                  <div className="text-xs font-semibold text-slate-300">
+                    Typ wyniku
+                  </div>
                   <Select<CustomHeadToHeadMode>
                     value={resultConfig.headToHeadMode}
                     disabled={disableForm}
@@ -1953,7 +2192,8 @@ export function StructureCard({
                       {
                         value: "HEAD_TO_HEAD_POINTS",
                         label: "Własne zasady punktacji",
-                        description: "Punkty do klasyfikacji za różne typy rozstrzygnięcia.",
+                        description:
+                          "Punkty do klasyfikacji za różne typy rozstrzygnięcia.",
                       },
                       {
                         value: "MASS_START_MEASURED",
@@ -1968,49 +2208,106 @@ export function StructureCard({
 
               {resultConfig.headToHeadMode === "HEAD_TO_HEAD_POINTS" ? (
                 <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
-                  <div className="mb-3 text-sm font-semibold text-white">Własne zasady punktacji</div>
+                  <div className="mb-3 text-sm font-semibold text-white">
+                    Własne zasady punktacji
+                  </div>
                   <div className="mb-4 text-sm text-slate-300">
-                    Punkty przyznawane do klasyfikacji za poszczególne typy rozstrzygnięcia. Dozwolone są także wartości ujemne.
+                    Punkty przyznawane do klasyfikacji za poszczególne typy
+                    rozstrzygnięcia. Dozwolone są także wartości ujemne.
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                      <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Wygrana</div>
-                        <NumberInput value={resultConfig.pointsWin} disabled={disableForm} onChange={onPointsWinChange ?? (() => undefined)} />
+                    <div className="space-y-2">
+                      <div className="text-xs font-semibold text-slate-300">
+                        Wygrana
                       </div>
-                      <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Remis</div>
-                        <NumberInput value={resultConfig.pointsDraw} disabled={disableForm} onChange={onPointsDrawChange ?? (() => undefined)} />
-                      </div>
-                      <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Porażka</div>
-                        <NumberInput value={resultConfig.pointsLoss} disabled={disableForm} onChange={onPointsLossChange ?? (() => undefined)} />
-                      </div>
-                      <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Wygrana po dogrywce</div>
-                        <NumberInput value={resultConfig.pointsOvertimeWin} disabled={disableForm || !resultConfig.allowOvertime} onChange={onPointsOvertimeWinChange ?? (() => undefined)} />
-                      </div>
-                      <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Porażka po dogrywce</div>
-                        <NumberInput value={resultConfig.pointsOvertimeLoss} disabled={disableForm || !resultConfig.allowOvertime} onChange={onPointsOvertimeLossChange ?? (() => undefined)} />
-                      </div>
-                      <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Wygrana po karnych</div>
-                        <NumberInput value={resultConfig.pointsShootoutWin} disabled={disableForm || !resultConfig.allowShootout} onChange={onPointsShootoutWinChange ?? (() => undefined)} />
-                      </div>
-                      <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Porażka po karnych</div>
-                        <NumberInput value={resultConfig.pointsShootoutLoss} disabled={disableForm || !resultConfig.allowShootout} onChange={onPointsShootoutLossChange ?? (() => undefined)} />
-                      </div>
+                      <NumberInput
+                        value={resultConfig.pointsWin}
+                        disabled={disableForm}
+                        onChange={onPointsWinChange ?? (() => undefined)}
+                      />
                     </div>
+                    <div className="space-y-2">
+                      <div className="text-xs font-semibold text-slate-300">
+                        Remis
+                      </div>
+                      <NumberInput
+                        value={resultConfig.pointsDraw}
+                        disabled={disableForm}
+                        onChange={onPointsDrawChange ?? (() => undefined)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-xs font-semibold text-slate-300">
+                        Porażka
+                      </div>
+                      <NumberInput
+                        value={resultConfig.pointsLoss}
+                        disabled={disableForm}
+                        onChange={onPointsLossChange ?? (() => undefined)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-xs font-semibold text-slate-300">
+                        Wygrana po dogrywce
+                      </div>
+                      <NumberInput
+                        value={resultConfig.pointsOvertimeWin}
+                        disabled={disableForm || !resultConfig.allowOvertime}
+                        onChange={
+                          onPointsOvertimeWinChange ?? (() => undefined)
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-xs font-semibold text-slate-300">
+                        Porażka po dogrywce
+                      </div>
+                      <NumberInput
+                        value={resultConfig.pointsOvertimeLoss}
+                        disabled={disableForm || !resultConfig.allowOvertime}
+                        onChange={
+                          onPointsOvertimeLossChange ?? (() => undefined)
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-xs font-semibold text-slate-300">
+                        Wygrana po karnych
+                      </div>
+                      <NumberInput
+                        value={resultConfig.pointsShootoutWin}
+                        disabled={disableForm || !resultConfig.allowShootout}
+                        onChange={
+                          onPointsShootoutWinChange ?? (() => undefined)
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-xs font-semibold text-slate-300">
+                        Porażka po karnych
+                      </div>
+                      <NumberInput
+                        value={resultConfig.pointsShootoutLoss}
+                        disabled={disableForm || !resultConfig.allowShootout}
+                        onChange={
+                          onPointsShootoutLossChange ?? (() => undefined)
+                        }
+                      />
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
-                  <div className="mb-3 text-sm font-semibold text-white">Wynik mierzalny w pojedynku</div>
+                  <div className="mb-3 text-sm font-semibold text-white">
+                    Wynik mierzalny w pojedynku
+                  </div>
 
                   <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                     <div className="space-y-2">
-                      <div className="text-xs font-semibold text-slate-300">Typ wyniku</div>
+                      <div className="text-xs font-semibold text-slate-300">
+                        Typ wyniku
+                      </div>
                       <Select<CustomMeasuredValueKind>
                         value={resultConfig.measuredValueKind}
                         disabled={disableForm}
@@ -2022,11 +2319,15 @@ export function StructureCard({
 
                     {measuredIsTime ? (
                       <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Format czasu</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Format czasu
+                        </div>
                         <Select<CustomTimeFormat>
                           value={resultConfig.measuredTimeFormat ?? "MM:SS.hh"}
                           disabled={disableForm}
-                          onChange={(value) => onMeasuredTimeFormatChange?.(value)}
+                          onChange={(value) =>
+                            onMeasuredTimeFormatChange?.(value)
+                          }
                           options={CUSTOM_TIME_FORMAT_OPTIONS}
                           ariaLabel="Format czasu mierzalnego wyniku"
                         />
@@ -2034,11 +2335,15 @@ export function StructureCard({
                     ) : (
                       <>
                         <div className="space-y-2">
-                          <div className="text-xs font-semibold text-slate-300">Jednostka</div>
+                          <div className="text-xs font-semibold text-slate-300">
+                            Jednostka
+                          </div>
                           <Select<CustomUnitPreset>
                             value={resultConfig.measuredUnitPreset}
                             disabled={disableForm}
-                            onChange={(value) => onMeasuredUnitPresetChange?.(value)}
+                            onChange={(value) =>
+                              onMeasuredUnitPresetChange?.(value)
+                            }
                             options={UNIT_PRESET_OPTIONS}
                             ariaLabel="Jednostka wyniku mierzalnego"
                           />
@@ -2046,11 +2351,17 @@ export function StructureCard({
 
                         {measuredUsesCustomUnit && (
                           <div className="space-y-2">
-                            <div className="text-xs font-semibold text-slate-300">Własna jednostka</div>
+                            <div className="text-xs font-semibold text-slate-300">
+                              Własna jednostka
+                            </div>
                             <Input
                               value={resultConfig.measuredUnitCustomLabel}
                               disabled={disableForm}
-                              onChange={(e) => onMeasuredUnitCustomLabelChange?.(e.target.value)}
+                              onChange={(e) =>
+                                onMeasuredUnitCustomLabelChange?.(
+                                  e.target.value,
+                                )
+                              }
                               placeholder="Np. trafienia"
                             />
                           </div>
@@ -2059,22 +2370,30 @@ export function StructureCard({
                         {!measuredIsPlace && (
                           <>
                             <div className="space-y-2">
-                              <div className="text-xs font-semibold text-slate-300">Lepszy wynik</div>
+                              <div className="text-xs font-semibold text-slate-300">
+                                Lepszy wynik
+                              </div>
                               <Select<CustomBetterResult>
                                 value={resultConfig.measuredBetterResult}
                                 disabled={disableForm}
-                                onChange={(value) => onMeasuredBetterResultChange?.(value)}
+                                onChange={(value) =>
+                                  onMeasuredBetterResultChange?.(value)
+                                }
                                 options={CUSTOM_BETTER_RESULT_OPTIONS}
                                 ariaLabel="Lepszy wynik mierzalny"
                               />
                             </div>
 
                             <div className="space-y-2">
-                              <div className="text-xs font-semibold text-slate-300">Miejsca po przecinku</div>
+                              <div className="text-xs font-semibold text-slate-300">
+                                Miejsca po przecinku
+                              </div>
                               <Select<number>
                                 value={resultConfig.measuredDecimalPlaces ?? 0}
                                 disabled={disableForm}
-                                onChange={(value) => onMeasuredDecimalPlacesChange?.(value)}
+                                onChange={(value) =>
+                                  onMeasuredDecimalPlacesChange?.(value)
+                                }
                                 options={DECIMAL_PLACES_OPTIONS}
                                 ariaLabel="Miejsca po przecinku"
                               />
@@ -2085,16 +2404,21 @@ export function StructureCard({
                     )}
 
                     <div className="space-y-2">
-                      <div className="text-xs font-semibold text-slate-300">Remisy</div>
+                      <div className="text-xs font-semibold text-slate-300">
+                        Remisy
+                      </div>
                       <Select<BooleanSelectValue>
-                        value={boolToSelectValue(resultConfig.measuredAllowTies)}
+                        value={boolToSelectValue(
+                          resultConfig.measuredAllowTies,
+                        )}
                         disabled={disableForm}
-                        onChange={(value) => onMeasuredAllowTiesChange?.(selectValueToBool(value))}
+                        onChange={(value) =>
+                          onMeasuredAllowTiesChange?.(selectValueToBool(value))
+                        }
                         options={BOOLEAN_SELECT_OPTIONS}
                         ariaLabel="Remisy w wyniku mierzalnym"
                       />
                     </div>
-
                   </div>
                 </div>
               )}
@@ -2104,7 +2428,9 @@ export function StructureCard({
           {isMassStart && (
             <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <div className="space-y-2">
-                <div className="text-xs font-semibold text-slate-300">Typ wyniku</div>
+                <div className="text-xs font-semibold text-slate-300">
+                  Typ wyniku
+                </div>
                 <Select<CustomMassStartValueKind>
                   value={resultConfig.massStartValueKind}
                   disabled={disableForm}
@@ -2116,7 +2442,9 @@ export function StructureCard({
 
               {massStartIsTime ? (
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-300">Format czasu</div>
+                  <div className="text-xs font-semibold text-slate-300">
+                    Format czasu
+                  </div>
                   <Select<CustomTimeFormat>
                     value={resultConfig.massStartTimeFormat ?? "MM:SS.hh"}
                     disabled={disableForm}
@@ -2128,7 +2456,9 @@ export function StructureCard({
               ) : (
                 <>
                   <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Jednostka</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Jednostka
+                    </div>
                     <Select<CustomUnitPreset>
                       value={resultConfig.massStartUnitPreset}
                       disabled={disableForm}
@@ -2140,11 +2470,15 @@ export function StructureCard({
 
                   {massStartUsesCustomUnit && (
                     <div className="space-y-2">
-                      <div className="text-xs font-semibold text-slate-300">Własna jednostka</div>
+                      <div className="text-xs font-semibold text-slate-300">
+                        Własna jednostka
+                      </div>
                       <Input
                         value={resultConfig.massStartUnitCustomLabel}
                         disabled={disableForm}
-                        onChange={(e) => onMassStartUnitCustomLabelChange?.(e.target.value)}
+                        onChange={(e) =>
+                          onMassStartUnitCustomLabelChange?.(e.target.value)
+                        }
                         placeholder="Np. próby"
                       />
                     </div>
@@ -2153,22 +2487,30 @@ export function StructureCard({
                   {!massStartIsPlace && (
                     <>
                       <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Lepszy wynik</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Lepszy wynik
+                        </div>
                         <Select<CustomBetterResult>
                           value={resultConfig.massStartBetterResult}
                           disabled={disableForm}
-                          onChange={(value) => onMassStartBetterResultChange?.(value)}
+                          onChange={(value) =>
+                            onMassStartBetterResultChange?.(value)
+                          }
                           options={CUSTOM_BETTER_RESULT_OPTIONS}
                           ariaLabel="Lepszy wynik wszyscy razem"
                         />
                       </div>
 
                       <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Miejsca po przecinku</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Miejsca po przecinku
+                        </div>
                         <Select<number>
                           value={resultConfig.massStartDecimalPlaces ?? 0}
                           disabled={disableForm}
-                          onChange={(value) => onMassStartDecimalPlacesChange?.(value)}
+                          onChange={(value) =>
+                            onMassStartDecimalPlacesChange?.(value)
+                          }
                           options={DECIMAL_PLACES_OPTIONS}
                           ariaLabel="Miejsca po przecinku wszyscy razem"
                         />
@@ -2179,18 +2521,24 @@ export function StructureCard({
               )}
 
               <div className="space-y-2">
-                <div className="text-xs font-semibold text-slate-300">Remisy</div>
+                <div className="text-xs font-semibold text-slate-300">
+                  Remisy
+                </div>
                 <Select<BooleanSelectValue>
                   value={boolToSelectValue(resultConfig.massStartAllowTies)}
                   disabled={disableForm}
-                  onChange={(value) => onMassStartAllowTiesChange?.(selectValueToBool(value))}
+                  onChange={(value) =>
+                    onMassStartAllowTiesChange?.(selectValueToBool(value))
+                  }
                   options={BOOLEAN_SELECT_OPTIONS}
                   ariaLabel="Remisy wszyscy razem"
                 />
               </div>
 
               <div className="space-y-2">
-                <div className="text-xs font-semibold text-slate-300">Rundy / próby domyślnie</div>
+                <div className="text-xs font-semibold text-slate-300">
+                  Rundy / próby domyślnie
+                </div>
                 <NumberInput
                   value={resultConfig.massStartRoundsCount}
                   min={1}
@@ -2201,11 +2549,15 @@ export function StructureCard({
               </div>
 
               <div className="space-y-2">
-                <div className="text-xs font-semibold text-slate-300">Domyślne liczenie wyniku</div>
+                <div className="text-xs font-semibold text-slate-300">
+                  Domyślne liczenie wyniku
+                </div>
                 <Select<CustomAggregationMode>
                   value={resultConfig.massStartAggregationMode}
                   disabled={disableForm}
-                  onChange={(value) => onMassStartAggregationModeChange?.(value)}
+                  onChange={(value) =>
+                    onMassStartAggregationModeChange?.(value)
+                  }
                   options={AGGREGATION_MODE_OPTIONS}
                   ariaLabel="Agregacja wyniku wszyscy razem"
                 />
@@ -2217,14 +2569,20 @@ export function StructureCard({
 
       {isCustomDiscipline && isHeadToHead && (
         <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-          <div className="text-sm font-semibold text-white">Parametry formatu</div>
+          <div className="text-sm font-semibold text-white">
+            Parametry formatu
+          </div>
 
           {resultConfig.headToHeadMode === "HEAD_TO_HEAD_POINTS" && (
             <div className="mt-4 rounded-2xl border border-white/10 bg-black/10 p-4">
-              <div className="text-sm font-semibold text-white">Model meczu / serii</div>
+              <div className="text-sm font-semibold text-white">
+                Model meczu / serii
+              </div>
               <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-300">Model meczu / serii</div>
+                  <div className="text-xs font-semibold text-slate-300">
+                    Model meczu / serii
+                  </div>
                   <Select<CustomMatchSeriesMode>
                     value={customSeriesMode}
                     disabled={disableForm}
@@ -2239,25 +2597,35 @@ export function StructureCard({
 
           {resultConfig.headToHeadMode === "MASS_START_MEASURED" && (
             <div className="mt-4 rounded-2xl border border-white/10 bg-black/10 p-4">
-              <div className="text-sm font-semibold text-white">Model pojedynku</div>
+              <div className="text-sm font-semibold text-white">
+                Model pojedynku
+              </div>
               <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-300">Liczba prób / rund w pojedynku</div>
+                  <div className="text-xs font-semibold text-slate-300">
+                    Liczba prób / rund w pojedynku
+                  </div>
                   <NumberInput
                     value={resultConfig.roundsCount}
                     min={1}
                     max={10}
                     disabled={disableForm}
-                    onChange={onHeadToHeadRoundsCountChange ?? (() => undefined)}
+                    onChange={
+                      onHeadToHeadRoundsCountChange ?? (() => undefined)
+                    }
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-300">Jak liczyć wynik prób</div>
+                  <div className="text-xs font-semibold text-slate-300">
+                    Jak liczyć wynik prób
+                  </div>
                   <Select<CustomAggregationMode>
                     value={resultConfig.aggregationMode}
                     disabled={disableForm}
-                    onChange={(value) => onHeadToHeadAggregationModeChange?.(value)}
+                    onChange={(value) =>
+                      onHeadToHeadAggregationModeChange?.(value)
+                    }
                     options={AGGREGATION_MODE_OPTIONS}
                     ariaLabel="Agregacja prób w pojedynku"
                   />
@@ -2268,10 +2636,14 @@ export function StructureCard({
 
           {format === "LEAGUE" && (
             <div className="mt-4 rounded-2xl border border-white/10 bg-black/10 p-4">
-              <div className="text-sm font-semibold text-white">{isWrestling ? "Zapasy" : "Liga"}</div>
+              <div className="text-sm font-semibold text-white">
+                {isWrestling ? "Zapasy" : "Liga"}
+              </div>
               <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-300">Mecze każdy z każdym</div>
+                  <div className="text-xs font-semibold text-slate-300">
+                    Mecze każdy z każdym
+                  </div>
                   <Select<1 | 2>
                     value={leagueMatches}
                     disabled={disableForm}
@@ -2285,7 +2657,9 @@ export function StructureCard({
                 </div>
 
                 <div className="space-y-2 md:col-span-2 xl:col-span-2">
-                  <div className="text-xs font-semibold text-slate-300">Rozstrzygnięcie meczu po czasie podstawowym</div>
+                  <div className="text-xs font-semibold text-slate-300">
+                    Rozstrzygnięcie meczu po czasie podstawowym
+                  </div>
                   <Select<CustomGroupResolutionMode>
                     value={customGroupResolutionMode}
                     disabled={disableForm}
@@ -2301,27 +2675,36 @@ export function StructureCard({
           {format === "MIXED" && (
             <div className="mt-4 space-y-4">
               <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
-                <div className="text-sm font-semibold text-white">Faza grupowa</div>
+                <div className="text-sm font-semibold text-white">
+                  Faza grupowa
+                </div>
                 <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                   <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Liczba grup</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Liczba grup
+                    </div>
                     <Input
                       type="number"
                       min={1}
                       max={maxGroupsForMin2PerGroup}
                       disabled={disableForm}
                       value={groupsCount}
-                      onChange={(e) => onGroupsCountChange(Number(e.target.value))}
+                      onChange={(e) =>
+                        onGroupsCountChange(Number(e.target.value))
+                      }
                     />
                     {groupSizes.length > 0 && (
                       <div className="text-xs text-slate-400">
-                        Rozmiary grup: {groupSizes.join(", ")} (min: {minGroupSize})
+                        Rozmiary grup: {groupSizes.join(", ")} (min:{" "}
+                        {minGroupSize})
                       </div>
                     )}
                   </div>
 
                   <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Mecze w grupach</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Mecze w grupach
+                    </div>
                     <Select<1 | 2>
                       value={groupMatches}
                       disabled={disableForm}
@@ -2332,18 +2715,25 @@ export function StructureCard({
                   </div>
 
                   <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Awans z grupy</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Awans z grupy
+                    </div>
                     <Select<number>
                       value={advanceFromGroup}
                       disabled={disableForm || minGroupSize < 2}
                       onChange={onAdvanceFromGroupChange}
-                      options={advanceOptions.map((v) => ({ value: v, label: String(v) }))}
+                      options={advanceOptions.map((v) => ({
+                        value: v,
+                        label: String(v),
+                      }))}
                       ariaLabel="Awans z grupy"
                     />
                   </div>
 
                   <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Rozstrzygnięcie meczu po czasie podstawowym</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Rozstrzygnięcie meczu po czasie podstawowym
+                    </div>
                     <Select<CustomGroupResolutionMode>
                       value={customGroupResolutionMode}
                       disabled={disableForm}
@@ -2356,10 +2746,14 @@ export function StructureCard({
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
-                <div className="text-sm font-semibold text-white">Faza pucharowa</div>
+                <div className="text-sm font-semibold text-white">
+                  Faza pucharowa
+                </div>
                 <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                   <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Rundy (mecze)</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Rundy (mecze)
+                    </div>
                     <Select<1 | 2>
                       value={cupMatches}
                       disabled={disableForm}
@@ -2370,7 +2764,9 @@ export function StructureCard({
                   </div>
 
                   <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Finał</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Finał
+                    </div>
                     <Select<1 | 2>
                       value={finalMatches}
                       disabled={disableForm}
@@ -2384,7 +2780,9 @@ export function StructureCard({
                   </div>
 
                   <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Mecz o 3. miejsce</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Mecz o 3. miejsce
+                    </div>
                     <Select<ThirdPlaceSelectValue>
                       value={thirdPlaceValue}
                       disabled={disableForm}
@@ -2395,7 +2793,9 @@ export function StructureCard({
                   </div>
 
                   <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Rozstrzygnięcie remisu w fazie pucharowej</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Rozstrzygnięcie remisu w fazie pucharowej
+                    </div>
                     <Select<CustomKnockoutResolutionMode>
                       value={customKnockoutResolutionMode}
                       disabled={disableForm}
@@ -2411,10 +2811,14 @@ export function StructureCard({
 
           {format === "CUP" && (
             <div className="mt-4 rounded-2xl border border-white/10 bg-black/10 p-4">
-              <div className="text-sm font-semibold text-white">Faza pucharowa</div>
+              <div className="text-sm font-semibold text-white">
+                Faza pucharowa
+              </div>
               <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-300">Rundy (mecze)</div>
+                  <div className="text-xs font-semibold text-slate-300">
+                    Rundy (mecze)
+                  </div>
                   <Select<1 | 2>
                     value={cupMatches}
                     disabled={disableForm}
@@ -2425,7 +2829,9 @@ export function StructureCard({
                 </div>
 
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-300">Finał</div>
+                  <div className="text-xs font-semibold text-slate-300">
+                    Finał
+                  </div>
                   <Select<1 | 2>
                     value={finalMatches}
                     disabled={disableForm}
@@ -2439,7 +2845,9 @@ export function StructureCard({
                 </div>
 
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-300">Mecz o 3. miejsce</div>
+                  <div className="text-xs font-semibold text-slate-300">
+                    Mecz o 3. miejsce
+                  </div>
                   <Select<ThirdPlaceSelectValue>
                     value={thirdPlaceValue}
                     disabled={disableForm}
@@ -2450,7 +2858,9 @@ export function StructureCard({
                 </div>
 
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-300">Rozstrzygnięcie remisu w fazie pucharowej</div>
+                  <div className="text-xs font-semibold text-slate-300">
+                    Rozstrzygnięcie remisu w fazie pucharowej
+                  </div>
                   <Select<CustomKnockoutResolutionMode>
                     value={customKnockoutResolutionMode}
                     disabled={disableForm}
@@ -2467,11 +2877,15 @@ export function StructureCard({
 
       {isCustomDiscipline && isMassStart && (
         <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-          <div className="text-sm font-semibold text-white">Struktura rywalizacji</div>
+          <div className="text-sm font-semibold text-white">
+            Struktura rywalizacji
+          </div>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className="space-y-2">
-              <div className="text-xs font-semibold text-slate-300">Typ struktury</div>
+              <div className="text-xs font-semibold text-slate-300">
+                Typ struktury
+              </div>
               <Select<CustomStageStructureMode>
                 value={stageStructureMode}
                 disabled={disableForm}
@@ -2483,20 +2897,28 @@ export function StructureCard({
 
             <div className="space-y-2">
               <div className="text-xs font-semibold text-slate-300">
-                {isMultiEventStructure ? "Liczba aktywnych konkurencji" : "Liczba aktywnych etapów"}
+                {isMultiEventStructure
+                  ? "Liczba aktywnych konkurencji"
+                  : "Liczba aktywnych etapów"}
               </div>
               <Select<number>
                 value={activeStagesCount}
                 disabled={disableForm}
                 onChange={handleActiveStagesChange}
                 options={ACTIVE_STAGES_OPTIONS}
-                ariaLabel={isMultiEventStructure ? "Liczba aktywnych konkurencji" : "Liczba aktywnych etapów"}
+                ariaLabel={
+                  isMultiEventStructure
+                    ? "Liczba aktywnych konkurencji"
+                    : "Liczba aktywnych etapów"
+                }
               />
             </div>
 
             {isMultiEventStructure && (
               <div className="space-y-2">
-                <div className="text-xs font-semibold text-slate-300">Klasyfikacja łączna</div>
+                <div className="text-xs font-semibold text-slate-300">
+                  Klasyfikacja łączna
+                </div>
                 <Select<MultiEventOverallMode>
                   value={resultConfig.multiEventOverallMode}
                   disabled={disableForm}
@@ -2509,57 +2931,69 @@ export function StructureCard({
           </div>
 
           <div className="mt-4 space-y-4">
-            {resultConfig.stages.slice(0, activeStagesCount).map((stage, index) => {
-              const activeStages = resultConfig.stages.slice(0, activeStagesCount);
-              const previousStageParticipants =
-                index === 0
-                  ? participants
-                  : activeStages[index - 1].advanceCount ?? activeStages[index - 1].participantsCount ?? participants;
+            {resultConfig.stages
+              .slice(0, activeStagesCount)
+              .map((stage, index) => {
+                const activeStages = resultConfig.stages.slice(
+                  0,
+                  activeStagesCount,
+                );
+                const previousStageParticipants =
+                  index === 0
+                    ? participants
+                    : (activeStages[index - 1].advanceCount ??
+                      activeStages[index - 1].participantsCount ??
+                      participants);
 
-              return (
-                <StageCard
-                  key={stage.id}
-                  index={index}
-                  stage={stage}
-                  stageStructureMode={stageStructureMode}
-                  disabled={disableForm}
-                  isLastActiveStage={index === activeStagesCount - 1}
-                  totalParticipants={participants}
-                  previousStageParticipants={previousStageParticipants}
-                  stageWarnings={getStageWarnings(
-                    stage,
-                    index,
-                    activeStagesCount,
-                    participants,
-                    index > 0 ? activeStages[index - 1] : null,
-                    stageStructureMode
-                  )}
-                  onChange={(patch) => {
-                    onStageChange?.(stage.id, patch);
+                return (
+                  <StageCard
+                    key={stage.id}
+                    index={index}
+                    stage={stage}
+                    stageStructureMode={stageStructureMode}
+                    disabled={disableForm}
+                    isLastActiveStage={index === activeStagesCount - 1}
+                    totalParticipants={participants}
+                    previousStageParticipants={previousStageParticipants}
+                    stageWarnings={getStageWarnings(
+                      stage,
+                      index,
+                      activeStagesCount,
+                      participants,
+                      index > 0 ? activeStages[index - 1] : null,
+                      stageStructureMode,
+                    )}
+                    onChange={(patch) => {
+                      onStageChange?.(stage.id, patch);
 
-                    if (!onStageChange) {
-                      return;
-                    }
-
-                    if (stageStructureMode === "REDUCTION" && patch.advanceCount !== undefined) {
-                      const nextStage = activeStages[index + 1];
-                      if (nextStage) {
-                        onStageChange(nextStage.id, {
-                          participantsCount: patch.advanceCount,
-                        });
+                      if (!onStageChange) {
+                        return;
                       }
-                    }
-                  }}
-                />
-              );
-            })}
+
+                      if (
+                        stageStructureMode === "REDUCTION" &&
+                        patch.advanceCount !== undefined
+                      ) {
+                        const nextStage = activeStages[index + 1];
+                        if (nextStage) {
+                          onStageChange(nextStage.id, {
+                            participantsCount: patch.advanceCount,
+                          });
+                        }
+                      }
+                    }}
+                  />
+                );
+              })}
           </div>
         </div>
       )}
 
       {showStandardFormatConfig && (
         <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-          <div className="text-sm font-semibold text-white">Parametry formatu</div>
+          <div className="text-sm font-semibold text-white">
+            Parametry formatu
+          </div>
 
           <div className="mt-4">
             <FormatCopyBar
@@ -2573,14 +3007,17 @@ export function StructureCard({
           </div>
 
           <div className="mt-4 space-y-4">
-            {((showLeagueOrGroupConfig && format === "LEAGUE") || isWrestling) && (
+            {((showLeagueOrGroupConfig && format === "LEAGUE") ||
+              isWrestling) && (
               <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
                 <div className="text-sm font-semibold text-white">Liga</div>
 
                 <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                   {!isWrestling ? (
                     <div className="space-y-2">
-                      <div className="text-xs font-semibold text-slate-300">Mecze każdy z każdym</div>
+                      <div className="text-xs font-semibold text-slate-300">
+                        Mecze każdy z każdym
+                      </div>
                       <Select<1 | 2>
                         value={leagueMatches}
                         disabled={disableForm}
@@ -2597,7 +3034,9 @@ export function StructureCard({
                   {isTennis && (
                     <>
                       <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Format meczu</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Format meczu
+                        </div>
                         <Select<TennisBestOf>
                           value={tennisBestOf}
                           disabled={disableForm}
@@ -2608,7 +3047,9 @@ export function StructureCard({
                       </div>
 
                       <div className="space-y-2 md:col-span-2 xl:col-span-2">
-                        <div className="text-xs font-semibold text-slate-300">System klasyfikacji</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          System klasyfikacji
+                        </div>
                         <Select<TennisPointsMode>
                           value={tennisPointsMode}
                           disabled={disableForm}
@@ -2617,7 +3058,11 @@ export function StructureCard({
                           ariaLabel="Tenis - system klasyfikacji"
                         />
                         <div className="text-xs text-slate-400">
-                          {TENNIS_POINTS_MODE_OPTIONS.find((x) => x.value === tennisPointsMode)?.description}
+                          {
+                            TENNIS_POINTS_MODE_OPTIONS.find(
+                              (x) => x.value === tennisPointsMode,
+                            )?.description
+                          }
                         </div>
                       </div>
                     </>
@@ -2626,7 +3071,9 @@ export function StructureCard({
                   {isHandball && (
                     <>
                       <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Punktacja</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Punktacja
+                        </div>
                         <Select<HandballPointsMode>
                           value={hbPointsMode}
                           disabled={disableForm}
@@ -2637,7 +3084,9 @@ export function StructureCard({
                       </div>
 
                       <div className="space-y-2 md:col-span-2 xl:col-span-2">
-                        <div className="text-xs font-semibold text-slate-300">Rozstrzyganie meczów</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Rozstrzyganie meczów
+                        </div>
                         <Select<HandballTableDrawMode>
                           value={hbTableDrawMode}
                           disabled={disableForm || hbPointsMode === "3_2_1_0"}
@@ -2652,7 +3101,9 @@ export function StructureCard({
                   {isBasketball && (
                     <>
                       <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Rozstrzyganie remisu</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Rozstrzyganie remisu
+                        </div>
                         <Select<BasketballResolutionMode>
                           value={basketballResolutionMode}
                           disabled={disableForm}
@@ -2663,9 +3114,12 @@ export function StructureCard({
                       </div>
 
                       <div className="space-y-2 md:col-span-2 xl:col-span-2">
-                        <div className="text-xs font-semibold text-slate-300">Zasada</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Zasada
+                        </div>
                         <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-200">
-                          Remis po czasie podstawowym jest rozstrzygany dogrywką. Karne nie są dostępne.
+                          Remis po czasie podstawowym jest rozstrzygany
+                          dogrywką. Karne nie są dostępne.
                         </div>
                       </div>
                     </>
@@ -2673,7 +3127,9 @@ export function StructureCard({
                   {isWrestling && (
                     <>
                       <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Styl</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Styl
+                        </div>
                         <Select<WrestlingStyle>
                           value={wrestlingStyle}
                           disabled={disableForm}
@@ -2684,20 +3140,30 @@ export function StructureCard({
                       </div>
 
                       <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Tryb zawodów</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Tryb zawodów
+                        </div>
                         <Select<WrestlingCompetitionMode>
                           value={wrestlingCompetitionMode}
                           disabled={disableForm}
-                          onChange={(value) => onWrestlingCompetitionModeChange?.(value)}
+                          onChange={(value) =>
+                            onWrestlingCompetitionModeChange?.(value)
+                          }
                           options={WRESTLING_COMPETITION_MODE_OPTIONS}
                           ariaLabel="Zapasy - tryb zawodów"
                         />
                       </div>
 
                       <div className="space-y-2 md:col-span-2 xl:col-span-2">
-                        <div className="text-xs font-semibold text-slate-300">Zasada</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Zasada
+                        </div>
                         <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-200">
-                          Zapasy działają jako dyscyplina indywidualna w modelu pojedynków. Klasyczny format turnieju nie jest tu wybierany osobno - strukturę zawodów definiuje tryb zawodów. Kategorie Women, U20, U17 i U15 konfiguruj przez dywizje.
+                          Zapasy działają jako dyscyplina indywidualna w modelu
+                          pojedynków. Klasyczny format turnieju nie jest tu
+                          wybierany osobno - strukturę zawodów definiuje tryb
+                          zawodów. Kategorie Women, U20, U17 i U15 konfiguruj
+                          przez dywizje.
                         </div>
                       </div>
                     </>
@@ -2706,7 +3172,9 @@ export function StructureCard({
                   {isBasketball && (
                     <>
                       <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Rozstrzyganie remisu</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Rozstrzyganie remisu
+                        </div>
                         <Select<BasketballResolutionMode>
                           value={basketballResolutionMode}
                           disabled={disableForm}
@@ -2717,9 +3185,12 @@ export function StructureCard({
                       </div>
 
                       <div className="space-y-2 md:col-span-2 xl:col-span-2">
-                        <div className="text-xs font-semibold text-slate-300">Zasada</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Zasada
+                        </div>
                         <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-200">
-                          Remis po czasie podstawowym jest rozstrzygany dogrywką. Karne nie są dostępne.
+                          Remis po czasie podstawowym jest rozstrzygany
+                          dogrywką. Karne nie są dostępne.
                         </div>
                       </div>
                     </>
@@ -2730,28 +3201,37 @@ export function StructureCard({
 
             {showLeagueOrGroupConfig && format === "MIXED" && (
               <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
-                <div className="text-sm font-semibold text-white">Faza grupowa</div>
+                <div className="text-sm font-semibold text-white">
+                  Faza grupowa
+                </div>
 
                 <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                   <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Liczba grup</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Liczba grup
+                    </div>
                     <Input
                       type="number"
                       min={1}
                       max={maxGroupsForMin2PerGroup}
                       disabled={disableForm}
                       value={groupsCount}
-                      onChange={(e) => onGroupsCountChange(Number(e.target.value))}
+                      onChange={(e) =>
+                        onGroupsCountChange(Number(e.target.value))
+                      }
                     />
                     {groupSizes.length > 0 && (
                       <div className="text-xs text-slate-400">
-                        Rozmiary grup: {groupSizes.join(", ")} (min: {minGroupSize})
+                        Rozmiary grup: {groupSizes.join(", ")} (min:{" "}
+                        {minGroupSize})
                       </div>
                     )}
                   </div>
 
                   <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Mecze w grupach</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Mecze w grupach
+                    </div>
                     <Select<1 | 2>
                       value={groupMatches}
                       disabled={disableForm}
@@ -2762,12 +3242,17 @@ export function StructureCard({
                   </div>
 
                   <div className="space-y-2 md:col-span-2 xl:col-span-2">
-                    <div className="text-xs font-semibold text-slate-300">Awans z grupy</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Awans z grupy
+                    </div>
                     <Select<number>
                       value={advanceFromGroup}
                       disabled={disableForm || minGroupSize < 2}
                       onChange={onAdvanceFromGroupChange}
-                      options={advanceOptions.map((v) => ({ value: v, label: String(v) }))}
+                      options={advanceOptions.map((v) => ({
+                        value: v,
+                        label: String(v),
+                      }))}
                       ariaLabel="Awans z grupy"
                     />
                   </div>
@@ -2775,7 +3260,9 @@ export function StructureCard({
                   {isTennis && (
                     <>
                       <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Format meczu</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Format meczu
+                        </div>
                         <Select<TennisBestOf>
                           value={tennisBestOf}
                           disabled={disableForm}
@@ -2786,7 +3273,9 @@ export function StructureCard({
                       </div>
 
                       <div className="space-y-2 md:col-span-2 xl:col-span-2">
-                        <div className="text-xs font-semibold text-slate-300">System klasyfikacji</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          System klasyfikacji
+                        </div>
                         <Select<TennisPointsMode>
                           value={tennisPointsMode}
                           disabled={disableForm}
@@ -2801,7 +3290,9 @@ export function StructureCard({
                   {isHandball && (
                     <>
                       <div className="space-y-2">
-                        <div className="text-xs font-semibold text-slate-300">Punktacja</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Punktacja
+                        </div>
                         <Select<HandballPointsMode>
                           value={hbPointsMode}
                           disabled={disableForm}
@@ -2812,7 +3303,9 @@ export function StructureCard({
                       </div>
 
                       <div className="space-y-2 md:col-span-2 xl:col-span-2">
-                        <div className="text-xs font-semibold text-slate-300">Rozstrzyganie meczów</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          Rozstrzyganie meczów
+                        </div>
                         <Select<HandballTableDrawMode>
                           value={hbTableDrawMode}
                           disabled={disableForm || hbPointsMode === "3_2_1_0"}
@@ -2829,11 +3322,15 @@ export function StructureCard({
 
             {showKnockoutConfig && (
               <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
-                <div className="text-sm font-semibold text-white">Faza pucharowa</div>
+                <div className="text-sm font-semibold text-white">
+                  Faza pucharowa
+                </div>
 
                 <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Rundy (mecze)</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Rundy (mecze)
+                    </div>
                     <Select<1 | 2>
                       value={cupMatches}
                       disabled={disableForm || isTennis}
@@ -2844,7 +3341,9 @@ export function StructureCard({
                   </div>
 
                   <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Finał</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Finał
+                    </div>
                     <Select<1 | 2>
                       value={finalMatches}
                       disabled={disableForm || isTennis}
@@ -2858,7 +3357,9 @@ export function StructureCard({
                   </div>
 
                   <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-300">Mecz o 3. miejsce</div>
+                    <div className="text-xs font-semibold text-slate-300">
+                      Mecz o 3. miejsce
+                    </div>
                     <Select<ThirdPlaceSelectValue>
                       value={isTennis ? "ONE_MATCH" : thirdPlaceValue}
                       disabled={disableForm || isTennis}
@@ -2870,7 +3371,9 @@ export function StructureCard({
 
                   {isTennis && (
                     <div className="space-y-2">
-                      <div className="text-xs font-semibold text-slate-300">Format meczu</div>
+                      <div className="text-xs font-semibold text-slate-300">
+                        Format meczu
+                      </div>
                       <Select<TennisBestOf>
                         value={tennisBestOf}
                         disabled={disableForm}
@@ -2883,7 +3386,9 @@ export function StructureCard({
 
                   {isHandball && (
                     <div className="space-y-2 md:col-span-2 xl:col-span-3">
-                      <div className="text-xs font-semibold text-slate-300">Rozstrzyganie remisów</div>
+                      <div className="text-xs font-semibold text-slate-300">
+                        Rozstrzyganie remisów
+                      </div>
                       <Select<HandballKnockoutTiebreak>
                         value={hbKnockoutTiebreak}
                         disabled={disableForm}
@@ -2896,7 +3401,9 @@ export function StructureCard({
 
                   {isBasketball && (
                     <div className="space-y-2 md:col-span-2 xl:col-span-3">
-                      <div className="text-xs font-semibold text-slate-300">Rozstrzyganie remisów</div>
+                      <div className="text-xs font-semibold text-slate-300">
+                        Rozstrzyganie remisów
+                      </div>
                       <Select<BasketballResolutionMode>
                         value={basketballResolutionMode}
                         disabled={disableForm}
@@ -2905,7 +3412,8 @@ export function StructureCard({
                         ariaLabel="Koszykówka - rozstrzyganie remisów w pucharze"
                       />
                       <div className="text-xs text-slate-400">
-                        Remis po czasie podstawowym jest rozstrzygany dogrywką. Karne nie są dostępne.
+                        Remis po czasie podstawowym jest rozstrzygany dogrywką.
+                        Karne nie są dostępne.
                       </div>
                     </div>
                   )}
@@ -2917,6 +3425,13 @@ export function StructureCard({
       )}
     </Card>
   );
+}
+
+function inferSummaryFormatFromPreview(preview: MatchesPreview): TournamentFormat | null {
+  if (preview.groupTotal > 0 && preview.koTotal > 0) return "MIXED";
+  if (preview.groupTotal > 0) return "LEAGUE";
+  if (preview.koTotal > 0) return "CUP";
+  return null;
 }
 
 export function SummaryCard({
@@ -2933,6 +3448,16 @@ export function SummaryCard({
   basketballResolutionMode = "OVERTIME_ONLY",
   wrestlingStyle = "FREESTYLE",
   wrestlingCompetitionMode = "AUTO",
+  summaryScope,
+  summaryScopeOptions = [],
+  onSummaryScopeChange,
+  summaryScopeLabel,
+  summaryDisciplineLabel,
+  summaryFormatLabel,
+  summaryFormat = null,
+  summaryStatsLoading = false,
+  summaryStatsError = null,
+  summaryIsExternal = false,
 }: {
   isTournamentCreated: boolean;
   discipline: Discipline;
@@ -2947,6 +3472,16 @@ export function SummaryCard({
   basketballResolutionMode?: BasketballResolutionMode;
   wrestlingStyle?: WrestlingStyle;
   wrestlingCompetitionMode?: WrestlingCompetitionMode;
+  summaryScope?: SummaryScope;
+  summaryScopeOptions?: SelectOption<SummaryScope>[];
+  onSummaryScopeChange?: (scope: SummaryScope) => void;
+  summaryScopeLabel?: string;
+  summaryDisciplineLabel?: string;
+  summaryFormatLabel?: string;
+  summaryFormat?: TournamentFormat | null;
+  summaryStatsLoading?: boolean;
+  summaryStatsError?: string | null;
+  summaryIsExternal?: boolean;
 }) {
   const isCustomDiscipline = discipline === "custom";
   const isWrestling = discipline === "wrestling";
@@ -2955,12 +3490,34 @@ export function SummaryCard({
 
   const customSeriesMode = deriveSeriesMode(resultConfig);
   const customGroupResolutionMode = deriveGroupResolutionMode(resultConfig);
+  const displayDisciplineLabel =
+    summaryDisciplineLabel ?? disciplineLabel(discipline, customDisciplineName);
+  const displayFormatLabel = summaryFormatLabel ?? formatLabel(format);
+  const sectionTitle = summaryScopeLabel
+    ? `Podsumowanie - ${summaryScopeLabel}`
+    : "Podsumowanie dywizji";
+  const totalMatchesLabel = summaryIsExternal
+    ? "Łączna liczba meczów"
+    : "Szac. łączna liczba meczów";
+  const showSummaryScopeControl = Boolean(
+    summaryScope && onSummaryScopeChange && summaryScopeOptions.length > 1,
+  );
+  const externalSummaryFormat =
+    summaryFormat ?? inferSummaryFormatFromPreview(preview);
+  const showExternalTableMatches =
+    externalSummaryFormat === "LEAGUE" ||
+    externalSummaryFormat === "MIXED" ||
+    (!externalSummaryFormat && preview.groupTotal > 0);
+  const showExternalKnockoutMatches =
+    externalSummaryFormat === "CUP" ||
+    externalSummaryFormat === "MIXED" ||
+    (!externalSummaryFormat && preview.koTotal > 0);
 
   return (
     <Card
       className={cn(
         "relative min-h-[26rem] overflow-hidden p-6",
-        !isTournamentCreated && "pointer-events-none opacity-60 blur-[1px]"
+        !isTournamentCreated && "pointer-events-none opacity-60 blur-[1px]",
       )}
     >
       <div className="pointer-events-none absolute inset-0">
@@ -2969,47 +3526,132 @@ export function SummaryCard({
       </div>
 
       <div className="relative">
-        <div className="min-w-0">
-          <div className="text-base font-semibold text-white">Podsumowanie</div>
-          <div className="mt-1 text-sm text-slate-300">Ogólne informacje o turnieju oraz skrót aktywnej dywizji.</div>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <div className="text-base font-semibold text-white">
+              Podsumowanie
+            </div>
+            <div className="mt-1 text-sm text-slate-300">
+              {showSummaryScopeControl
+                ? "Podgląd parametrów dla całego turnieju albo wybranej dywizji."
+                : "Ogólne informacje o turnieju oraz skrót aktywnej dywizji."}
+            </div>
+          </div>
+
+          {showSummaryScopeControl && summaryScope && onSummaryScopeChange ? (
+            <div className="w-full sm:w-64">
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Zakres podglądu
+              </div>
+              <Select<SummaryScope>
+                value={summaryScope}
+                onChange={onSummaryScopeChange}
+                options={summaryScopeOptions}
+                ariaLabel="Zakres podsumowania konfiguracji"
+                size="md"
+                align="end"
+                buttonClassName="min-h-[42px] rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-left text-sm text-slate-100 transition hover:border-white/20"
+                menuClassName="rounded-2xl"
+              />
+            </div>
+          ) : null}
         </div>
+
+        {summaryStatsError ? (
+          <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-500/[0.08] px-4 py-3 text-sm text-amber-100">
+            {summaryStatsError}
+          </div>
+        ) : null}
+
+        {summaryStatsLoading ? (
+          <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-slate-300">
+            Ładowanie danych podsumowania...
+          </div>
+        ) : null}
 
         <div className="mt-4 grid gap-2">
-          <StatRow label="Dyscyplina" value={disciplineLabel(discipline, customDisciplineName)} />
-          {!isCustomDiscipline || isHeadToHead ? <StatRow label="Format" value={formatLabel(format)} /> : null}
+          <StatRow label="Dyscyplina" value={displayDisciplineLabel} />
+          {!isCustomDiscipline || isHeadToHead || summaryFormatLabel ? (
+            <StatRow label="Format" value={displayFormatLabel} />
+          ) : null}
         </div>
 
-        <div className="mt-5 text-xs font-semibold uppercase tracking-wide text-slate-400">Podsumowanie dywizji</div>
+        <div className="mt-5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+          {sectionTitle}
+        </div>
 
         <div className="mt-2 grid gap-2">
-          {!isCustomDiscipline ? (
+          {summaryIsExternal ? (
+            <>
+              <StatRow label="Uczestnicy" value={participants} />
+              {showExternalTableMatches ? (
+                <StatRow label="Mecze fazy tabeli" value={preview.groupTotal} />
+              ) : null}
+              {showExternalKnockoutMatches ? (
+                <StatRow label="Mecze fazy pucharowej" value={preview.koTotal} />
+              ) : null}
+              <StatRow label={totalMatchesLabel} value={preview.total} />
+            </>
+          ) : !isCustomDiscipline ? (
             <>
               <StatRow label="Uczestnicy" value={participants} />
               {format === "MIXED" && (
                 <>
                   <StatRow label="Liczba grup" value={preview.groups} />
-                  <StatRow label="Awansujących do pucharu" value={preview.advancing} />
+                  <StatRow
+                    label="Awansujących do pucharu"
+                    value={preview.advancing}
+                  />
                 </>
               )}
-              {format !== "CUP" && <StatRow label="Mecze fazy tabeli" value={preview.groupTotal} />}
-              {format !== "LEAGUE" && <StatRow label="Mecze fazy pucharowej" value={preview.koTotal} />}
+              {format !== "CUP" && (
+                <StatRow label="Mecze fazy tabeli" value={preview.groupTotal} />
+              )}
+              {format !== "LEAGUE" && (
+                <StatRow
+                  label="Mecze fazy pucharowej"
+                  value={preview.koTotal}
+                />
+              )}
               {discipline === "basketball" ? (
-                <StatRow label="Rozstrzyganie remisu" value={basketballResolutionModeLabel(basketballResolutionMode)} />
+                <StatRow
+                  label="Rozstrzyganie remisu"
+                  value={basketballResolutionModeLabel(
+                    basketballResolutionMode,
+                  )}
+                />
               ) : null}
-              {isWrestling ? <StatRow label="Styl" value={getLabel(WRESTLING_STYLE_LABELS, wrestlingStyle, WRESTLING_STYLE_LABELS.FREESTYLE)} /> : null}
+              {isWrestling ? (
+                <StatRow
+                  label="Styl"
+                  value={getLabel(
+                    WRESTLING_STYLE_LABELS,
+                    wrestlingStyle,
+                    WRESTLING_STYLE_LABELS.FREESTYLE,
+                  )}
+                />
+              ) : null}
               {isWrestling ? (
                 <StatRow
                   label="Tryb zawodów"
-                  value={wrestlingCompetitionModeLabel(wrestlingCompetitionMode)}
+                  value={wrestlingCompetitionModeLabel(
+                    wrestlingCompetitionMode,
+                  )}
                 />
               ) : null}
-              <StatRow label="Szac. łączna liczba meczów" value={preview.total} />
+              <StatRow label={totalMatchesLabel} value={preview.total} />
             </>
           ) : (
             <>
               <StatRow label="Uczestnicy" value={participants} />
-              <StatRow label="Typ uczestnictwa" value={competitionTypeLabel(competitionType)} />
-              <StatRow label="Model rywalizacji" value={competitionModelLabel(competitionModel)} />
+              <StatRow
+                label="Typ uczestnictwa"
+                value={competitionTypeLabel(competitionType)}
+              />
+              <StatRow
+                label="Model rywalizacji"
+                value={competitionModelLabel(competitionModel)}
+              />
 
               {isHeadToHead && (
                 <>
@@ -3026,7 +3668,9 @@ export function SummaryCard({
                       />
                       <StatRow
                         label="Rozstrzygnięcie grupowe"
-                        value={groupResolutionModeLabel(customGroupResolutionMode)}
+                        value={groupResolutionModeLabel(
+                          customGroupResolutionMode,
+                        )}
                       />
                       <StatRow
                         label="Model meczu / serii"
@@ -3050,15 +3694,32 @@ export function SummaryCard({
 
               {isMassStart && (
                 <>
-                  <StatRow label="Typ wyniku" value={massStartValueKindLabel(resultConfig.massStartValueKind)} />
-                  <StatRow label="Jednostka / ranking" value={massStartSummary(resultConfig)} />
+                  <StatRow
+                    label="Typ wyniku"
+                    value={massStartValueKindLabel(
+                      resultConfig.massStartValueKind,
+                    )}
+                  />
+                  <StatRow
+                    label="Jednostka / ranking"
+                    value={massStartSummary(resultConfig)}
+                  />
                   <StatRow
                     label="Rundy domyślne"
                     value={`${resultConfig.massStartRoundsCount} • ${aggregationModeLabel(resultConfig.massStartAggregationMode)}`}
                   />
-                  <StatRow label="Tryb struktury" value={stageStructureModeLabel(resultConfig.stageStructureMode)} />
                   <StatRow
-                    label={resultConfig.stageStructureMode === "MULTI_EVENT" ? "Liczba konkurencji" : "Liczba etapów"}
+                    label="Tryb struktury"
+                    value={stageStructureModeLabel(
+                      resultConfig.stageStructureMode,
+                    )}
+                  />
+                  <StatRow
+                    label={
+                      resultConfig.stageStructureMode === "MULTI_EVENT"
+                        ? "Liczba konkurencji"
+                        : "Liczba etapów"
+                    }
                     value={getActiveStagesCount(resultConfig.stages)}
                   />
                 </>
@@ -3067,36 +3728,47 @@ export function SummaryCard({
           )}
         </div>
 
-        {isCustomDiscipline && isMassStart && getActiveStagesCount(resultConfig.stages) > 0 && (
-          <div className="mt-4 space-y-2">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-              {resultConfig.stageStructureMode === "MULTI_EVENT" ? "Konkurencje" : "Etapy"}
-            </div>
+        {isCustomDiscipline &&
+          isMassStart &&
+          getActiveStagesCount(resultConfig.stages) > 0 && (
+            <div className="mt-4 space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                {resultConfig.stageStructureMode === "MULTI_EVENT"
+                  ? "Konkurencje"
+                  : "Etapy"}
+              </div>
 
-            <div className="space-y-2">
-              {resultConfig.stages.slice(0, getActiveStagesCount(resultConfig.stages)).map((stage, index) => (
-                <div
-                  key={stage.id}
-                  className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2"
-                >
-                  <div className="text-sm font-semibold text-white">
-                    {index + 1}. {stage.name || (resultConfig.stageStructureMode === "MULTI_EVENT" ? `Konkurencja ${index + 1}` : `Etap ${index + 1}`)}
-                  </div>
-                  <div className="mt-1 text-xs leading-relaxed text-slate-300">
-                    {resultConfig.stageStructureMode === "MULTI_EVENT"
-                      ? `grupy/serie: ${stage.groupsCount} • uczestnicy: ${stage.participantsCount ?? "-"} • próby: ${stage.roundsCount}`
-                      : `grupy: ${stage.groupsCount} • uczestnicy: ${stage.participantsCount ?? "-"} • awans: ${stage.advanceCount ?? "-"} • rundy: ${stage.roundsCount}`}
-                  </div>
-                </div>
-              ))}
+              <div className="space-y-2">
+                {resultConfig.stages
+                  .slice(0, getActiveStagesCount(resultConfig.stages))
+                  .map((stage, index) => (
+                    <div
+                      key={stage.id}
+                      className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2"
+                    >
+                      <div className="text-sm font-semibold text-white">
+                        {index + 1}.{" "}
+                        {stage.name ||
+                          (resultConfig.stageStructureMode === "MULTI_EVENT"
+                            ? `Konkurencja ${index + 1}`
+                            : `Etap ${index + 1}`)}
+                      </div>
+                      <div className="mt-1 text-xs leading-relaxed text-slate-300">
+                        {resultConfig.stageStructureMode === "MULTI_EVENT"
+                          ? `grupy/serie: ${stage.groupsCount} • uczestnicy: ${stage.participantsCount ?? "-"} • próby: ${stage.roundsCount}`
+                          : `grupy: ${stage.groupsCount} • uczestnicy: ${stage.participantsCount ?? "-"} • awans: ${stage.advanceCount ?? "-"} • rundy: ${stage.roundsCount}`}
+                      </div>
+                    </div>
+                  ))}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
         {isAssistantReadOnly && (
           <div className="mt-4">
             <InlineAlert variant="info" title="Tryb podglądu">
-              Jako asystent nie możesz zmieniać konfiguracji bez uprawnienia "tournament_edit".
+              Jako asystent nie możesz zmieniać konfiguracji bez uprawnienia
+              "tournament_edit".
             </InlineAlert>
           </div>
         )}
@@ -3105,7 +3777,10 @@ export function SummaryCard({
   );
 }
 
-function defaultStageName(index: number, stageStructureMode: CustomStageStructureMode) {
+function defaultStageName(
+  index: number,
+  stageStructureMode: CustomStageStructureMode,
+) {
   if (stageStructureMode === "MULTI_EVENT") return `Konkurencja ${index + 1}`;
   if (index === 0) return "Kwalifikacje";
   if (index === 1) return "Półfinał";
@@ -3113,7 +3788,9 @@ function defaultStageName(index: number, stageStructureMode: CustomStageStructur
   return `Etap ${index + 1}`;
 }
 
-export function getDefaultStages(stageStructureMode: CustomStageStructureMode = "REDUCTION"): CustomStageConfig[] {
+export function getDefaultStages(
+  stageStructureMode: CustomStageStructureMode = "REDUCTION",
+): CustomStageConfig[] {
   return Array.from({ length: MAX_CUSTOM_STAGE_LEVELS }, (_, index) => ({
     id: `stage-${index + 1}`,
     name: defaultStageName(index, stageStructureMode),
@@ -3122,7 +3799,8 @@ export function getDefaultStages(stageStructureMode: CustomStageStructureMode = 
     advanceCount: null,
     roundsCount: 1,
     aggregationMode: "BEST" as CustomAggregationMode,
-    contributesToFinalRanking: stageStructureMode === "MULTI_EVENT" ? index === 0 : false,
+    contributesToFinalRanking:
+      stageStructureMode === "MULTI_EVENT" ? index === 0 : false,
   }));
 }
 

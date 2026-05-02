@@ -198,7 +198,7 @@ class TournamentDivisionApiTests(TestCase):
         teams = list(Team.objects.filter(tournament=tournament, division=division).order_by("id"))
 
         self.assertFalse(division.is_default)
-        self.assertEqual(division.status, Tournament.Status.DRAFT)
+        self.assertEqual(division.status, Tournament.Status.CONFIGURED)
         self.assertEqual([team.name for team in teams], ["Drużyna 1", "Drużyna 2"])
 
     def test_other_user_cannot_create_division(self):

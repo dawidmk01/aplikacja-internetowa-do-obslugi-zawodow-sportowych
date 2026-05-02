@@ -162,8 +162,6 @@ export default function TournamentDetail() {
       const code = accessCodeRef.current.trim();
       const params = new URLSearchParams();
       if (code) params.set("code", code);
-      if (effectiveDivisionId) params.set("division_id", String(effectiveDivisionId));
-
       const url = `/api/tournaments/${id}/` + (params.toString() ? `?${params.toString()}` : "");
       const res = await apiFetch(url, { toastOnError: false });
 

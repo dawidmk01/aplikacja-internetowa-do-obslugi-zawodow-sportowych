@@ -2,7 +2,12 @@
 // Strona obsługuje konfigurację podstawowych parametrów turnieju przed kolejnymi etapami.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import {
+  useLocation,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle } from "lucide-react";
 
@@ -43,6 +48,7 @@ import {
   type HandballTableDrawMode,
   type MatchesPreview,
   type MultiEventOverallMode,
+  type SummaryScope,
   type TennisBestOf,
   type TennisPointsMode,
   type TournamentFormat,
@@ -59,6 +65,9 @@ type DivisionSummaryDTO = {
   is_default?: boolean;
   is_archived?: boolean;
   status?: DivisionStatus;
+  tournament_format?: TournamentFormat | null;
+  competition_type?: CompetitionType | null;
+  competition_model?: CompetitionModel | null;
 };
 
 type TournamentDTO = {
@@ -83,7 +92,135 @@ type TournamentDTO = {
   my_permissions?: Record<string, boolean>;
 };
 
-type TeamDTO = { id: number; name: string };
+type TeamDTO = { id: number; name: string; players_count?: number | null };
+
+type SummaryScopeStats = {
+  participants: number;
+  preview: MatchesPreview;
+  tournamentFormat: TournamentFormat | null;
+};
+
+function summaryScopeForDivision(divisionId: number): SummaryScope {
+  return `DIVISION_${divisionId}`;
+}
+
+function divisionIdFromSummaryScope(scope: SummaryScope): number | null {
+  if (!scope.startsWith("DIVISION_")) return null;
+  const parsed = Number(scope.replace("DIVISION_", ""));
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function extractApiList(payload: any): any[] {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.results)) return payload.results;
+  return [];
+}
+
+function isSystemByeName(value: unknown): boolean {
+  return (
+    String(value ?? "")
+      .trim()
+      .toUpperCase() === "__SYSTEM_BYE__"
+  );
+}
+
+function isRealPanelMatch(match: any): boolean {
+  if (match?.is_technical === true) return false;
+  return (
+    !isSystemByeName(match?.home_team_name) &&
+    !isSystemByeName(match?.away_team_name)
+  );
+}
+
+function isTableStageType(stageType: unknown): boolean {
+  const value = String(stageType ?? "").toUpperCase();
+  return value === "LEAGUE" || value === "GROUP" || value === "GROUPS";
+}
+
+function formatLabelForSummary(
+  formatValue: TournamentFormat | string | null | undefined,
+): string {
+  if (formatValue === "LEAGUE") return "Liga";
+  if (formatValue === "CUP") return "Puchar";
+  if (formatValue === "MIXED") return "Grupy + puchar";
+  return formatValue ? String(formatValue) : "Zależny od dywizji";
+}
+
+function buildPreviewFromMatches(matchesPayload: any): MatchesPreview {
+  const matches = extractApiList(matchesPayload).filter(isRealPanelMatch);
+  const groupTotal = matches.filter((match) =>
+    isTableStageType(match?.stage_type),
+  ).length;
+  const koTotal = Math.max(0, matches.length - groupTotal);
+
+  return {
+    total: matches.length,
+    groupTotal,
+    koTotal,
+    groups: 0,
+    advancing: 0,
+  };
+}
+
+function parseTeamCount(teamsPayload: any): number {
+  return extractApiList(teamsPayload).filter(
+    (team) => !isSystemByeName(team?.name),
+  ).length;
+}
+
+function parseTournamentFormat(value: unknown): TournamentFormat | null {
+  if (value === "LEAGUE" || value === "CUP" || value === "MIXED") {
+    return value;
+  }
+
+  return null;
+}
+
+function parseDivisionSummaryStats(
+  teamsPayload: any,
+  matchesPayload: any,
+  tournamentPayload: any = null,
+): SummaryScopeStats {
+  return {
+    participants: parseTeamCount(teamsPayload),
+    preview: buildPreviewFromMatches(matchesPayload),
+    tournamentFormat: parseTournamentFormat(tournamentPayload?.tournament_format),
+  };
+}
+
+function mergeSummaryStats(items: SummaryScopeStats[]): SummaryScopeStats {
+  const merged = items.reduce<SummaryScopeStats>(
+    (acc, item) => ({
+      participants: acc.participants + item.participants,
+      preview: {
+        total: acc.preview.total + item.preview.total,
+        groupTotal: acc.preview.groupTotal + item.preview.groupTotal,
+        koTotal: acc.preview.koTotal + item.preview.koTotal,
+        groups: 0,
+        advancing: 0,
+      },
+      tournamentFormat: acc.tournamentFormat,
+    }),
+    {
+      participants: 0,
+      preview: { total: 0, groupTotal: 0, koTotal: 0, groups: 0, advancing: 0 },
+      tournamentFormat: null,
+    },
+  );
+
+  const formats = items
+    .map((item) => item.tournamentFormat)
+    .filter((item): item is TournamentFormat => Boolean(item));
+  const firstFormat = formats[0] ?? null;
+  const sameFormat = Boolean(
+    firstFormat && formats.length === items.length && formats.every((item) => item === firstFormat),
+  );
+
+  return {
+    ...merged,
+    tournamentFormat: sameFormat ? firstFormat : null,
+  };
+}
 
 function parseDivisionId(value: string | null | undefined): number | null {
   if (!value) return null;
@@ -98,7 +235,10 @@ function withDivisionQuery(url: string, divisionId: number | null | undefined) {
   return `${url}${separator}division_id=${divisionId}`;
 }
 
-function withDivisionPayload<T extends Record<string, any>>(payload: T, divisionId: number | null | undefined): T {
+function withDivisionPayload<T extends Record<string, any>>(
+  payload: T,
+  divisionId: number | null | undefined,
+): T {
   if (!divisionId) return payload;
   return { ...payload, division_id: divisionId };
 }
@@ -143,7 +283,13 @@ function pickFirstError(payload: any): string | null {
   if (typeof payload === "string") return payload;
   if (typeof payload?.detail === "string") return payload.detail;
 
-  const tryKeys = ["non_field_errors", "name", "description", "discipline", "tournament_format"];
+  const tryKeys = [
+    "non_field_errors",
+    "name",
+    "description",
+    "discipline",
+    "tournament_format",
+  ];
   for (const k of tryKeys) {
     const v = payload?.[k];
     if (typeof v === "string") return v;
@@ -157,8 +303,6 @@ function pickFirstError(payload: any): string | null {
 
   return null;
 }
-
-
 
 type BackendCustomStageConfig = {
   id?: string;
@@ -212,20 +356,29 @@ const RESULT_CONFIG_KEY_MAP = {
 } as const;
 
 function getActiveCustomStagesCount(stages: CustomStageConfig[]): number {
-  for (let index = Math.min(stages.length, MAX_CUSTOM_STAGE_LEVELS) - 1; index >= 0; index -= 1) {
+  for (
+    let index = Math.min(stages.length, MAX_CUSTOM_STAGE_LEVELS) - 1;
+    index >= 0;
+    index -= 1
+  ) {
     const stage = stages[index];
-    if (stage?.participantsCount != null || stage?.advanceCount != null) return index + 1;
+    if (stage?.participantsCount != null || stage?.advanceCount != null)
+      return index + 1;
   }
   return 1;
 }
 
-function serializeCustomStage(stage: CustomStageConfig, stageStructureMode: CustomStageStructureMode) {
+function serializeCustomStage(
+  stage: CustomStageConfig,
+  stageStructureMode: CustomStageStructureMode,
+) {
   return {
     id: stage.id,
     name: stage.name,
     groups_count: stage.groupsCount,
     participants_count: stage.participantsCount,
-    advance_count: stageStructureMode === "MULTI_EVENT" ? null : stage.advanceCount,
+    advance_count:
+      stageStructureMode === "MULTI_EVENT" ? null : stage.advanceCount,
     rounds_count: stage.roundsCount,
     aggregation_mode: stage.aggregationMode,
   };
@@ -236,7 +389,9 @@ function serializeCustomResultConfig(config: TournamentResultConfig) {
     competition_model: config.competition_model,
   };
 
-  for (const [frontendKey, backendKey] of Object.entries(RESULT_CONFIG_KEY_MAP)) {
+  for (const [frontendKey, backendKey] of Object.entries(
+    RESULT_CONFIG_KEY_MAP,
+  )) {
     const value = (config as any)[frontendKey];
     if (value !== undefined) {
       payload[backendKey] = value;
@@ -244,21 +399,35 @@ function serializeCustomResultConfig(config: TournamentResultConfig) {
   }
 
   if (config.competition_model === "MASS_START") {
-    const massStartBackendValueKind = config.massStartValueKind === "POINTS" ? "NUMBER" : config.massStartValueKind;
-    const massStartUnitPreset = config.massStartValueKind === "POINTS" ? "POINTS" : config.massStartUnitPreset;
-    const massStartUnitLabel = config.massStartValueKind === "POINTS" ? "pkt" : config.massStartUnitCustomLabel || "";
+    const massStartBackendValueKind =
+      config.massStartValueKind === "POINTS"
+        ? "NUMBER"
+        : config.massStartValueKind;
+    const massStartUnitPreset =
+      config.massStartValueKind === "POINTS"
+        ? "POINTS"
+        : config.massStartUnitPreset;
+    const massStartUnitLabel =
+      config.massStartValueKind === "POINTS"
+        ? "pkt"
+        : config.massStartUnitCustomLabel || "";
 
     payload.custom_mode = "MASS_START_MEASURED";
     payload.value_kind = massStartBackendValueKind;
     payload.unit_preset = massStartUnitPreset;
     payload.unit = massStartUnitLabel;
     payload.unit_label = massStartUnitLabel;
-    payload.better_result = config.massStartValueKind === "POINTS" ? "HIGHER" : config.massStartBetterResult;
+    payload.better_result =
+      config.massStartValueKind === "POINTS"
+        ? "HIGHER"
+        : config.massStartBetterResult;
     payload.decimal_places =
-      massStartBackendValueKind === "TIME" || massStartBackendValueKind === "PLACE"
+      massStartBackendValueKind === "TIME" ||
+      massStartBackendValueKind === "PLACE"
         ? null
         : config.massStartDecimalPlaces;
-    payload.time_format = massStartBackendValueKind === "TIME" ? config.massStartTimeFormat : null;
+    payload.time_format =
+      massStartBackendValueKind === "TIME" ? config.massStartTimeFormat : null;
     payload.allow_ties = config.massStartAllowTies;
     payload.rounds_count = config.massStartRoundsCount;
     payload.aggregation_mode = config.massStartAggregationMode;
@@ -267,7 +436,9 @@ function serializeCustomResultConfig(config: TournamentResultConfig) {
     payload.stages = Array.isArray(config.stages)
       ? config.stages
           .slice(0, getActiveCustomStagesCount(config.stages))
-          .map((stage) => serializeCustomStage(stage, config.stageStructureMode))
+          .map((stage) =>
+            serializeCustomStage(stage, config.stageStructureMode),
+          )
       : [];
 
     return payload;
@@ -277,7 +448,10 @@ function serializeCustomResultConfig(config: TournamentResultConfig) {
   return payload;
 }
 
-function deserializeCustomResultConfig(rawConfig: any, participants: number): TournamentResultConfig {
+function deserializeCustomResultConfig(
+  rawConfig: any,
+  participants: number,
+): TournamentResultConfig {
   const defaults = getDefaultResultConfig();
   const safeParticipants = Math.max(2, Math.trunc(participants));
   const raw = rawConfig && typeof rawConfig === "object" ? rawConfig : {};
@@ -287,41 +461,77 @@ function deserializeCustomResultConfig(rawConfig: any, participants: number): To
     competition_model: raw.competition_model ?? defaults.competition_model,
   };
 
-  for (const [frontendKey, backendKey] of Object.entries(RESULT_CONFIG_KEY_MAP)) {
+  for (const [frontendKey, backendKey] of Object.entries(
+    RESULT_CONFIG_KEY_MAP,
+  )) {
     if (raw[backendKey] !== undefined) {
       mapped[frontendKey] = raw[backendKey];
     }
   }
 
   if (mapped.competition_model === "MASS_START") {
-    const backendMassStartValueKind = raw.value_kind ?? raw.mass_start_value_kind ?? defaults.massStartValueKind;
-    const backendMassStartUnitPreset = raw.unit_preset ?? raw.mass_start_unit_preset ?? defaults.massStartUnitPreset;
+    const backendMassStartValueKind =
+      raw.value_kind ??
+      raw.mass_start_value_kind ??
+      defaults.massStartValueKind;
+    const backendMassStartUnitPreset =
+      raw.unit_preset ??
+      raw.mass_start_unit_preset ??
+      defaults.massStartUnitPreset;
     const backendMassStartUnitLabel =
-      raw.unit_label ?? raw.unit ?? raw.mass_start_unit_custom_label ?? defaults.massStartUnitCustomLabel;
+      raw.unit_label ??
+      raw.unit ??
+      raw.mass_start_unit_custom_label ??
+      defaults.massStartUnitCustomLabel;
     mapped.massStartValueKind =
-      backendMassStartValueKind === "NUMBER" && backendMassStartUnitPreset === "POINTS"
+      backendMassStartValueKind === "NUMBER" &&
+      backendMassStartUnitPreset === "POINTS"
         ? "POINTS"
         : backendMassStartValueKind;
     mapped.massStartUnitPreset = backendMassStartUnitPreset;
     mapped.massStartUnitCustomLabel = backendMassStartUnitLabel;
-    mapped.massStartBetterResult = raw.better_result ?? raw.mass_start_better_result ?? defaults.massStartBetterResult;
-    mapped.massStartDecimalPlaces = raw.decimal_places ?? raw.mass_start_decimal_places ?? defaults.massStartDecimalPlaces;
-    mapped.massStartTimeFormat = raw.time_format ?? raw.mass_start_time_format ?? defaults.massStartTimeFormat;
-    mapped.massStartAllowTies = raw.allow_ties ?? raw.mass_start_allow_ties ?? defaults.massStartAllowTies;
-    mapped.massStartRoundsCount = raw.rounds_count ?? raw.mass_start_rounds_count ?? defaults.massStartRoundsCount;
+    mapped.massStartBetterResult =
+      raw.better_result ??
+      raw.mass_start_better_result ??
+      defaults.massStartBetterResult;
+    mapped.massStartDecimalPlaces =
+      raw.decimal_places ??
+      raw.mass_start_decimal_places ??
+      defaults.massStartDecimalPlaces;
+    mapped.massStartTimeFormat =
+      raw.time_format ??
+      raw.mass_start_time_format ??
+      defaults.massStartTimeFormat;
+    mapped.massStartAllowTies =
+      raw.allow_ties ??
+      raw.mass_start_allow_ties ??
+      defaults.massStartAllowTies;
+    mapped.massStartRoundsCount =
+      raw.rounds_count ??
+      raw.mass_start_rounds_count ??
+      defaults.massStartRoundsCount;
     mapped.massStartAggregationMode =
-      raw.aggregation_mode ?? raw.mass_start_aggregation_mode ?? defaults.massStartAggregationMode;
+      raw.aggregation_mode ??
+      raw.mass_start_aggregation_mode ??
+      defaults.massStartAggregationMode;
   }
 
-  const stageStructureMode: CustomStageStructureMode = raw.stage_structure_mode === "MULTI_EVENT" ? "MULTI_EVENT" : "REDUCTION";
+  const stageStructureMode: CustomStageStructureMode =
+    raw.stage_structure_mode === "MULTI_EVENT" ? "MULTI_EVENT" : "REDUCTION";
   mapped.stageStructureMode = stageStructureMode;
   mapped.multiEventOverallMode =
-    raw.multi_event_overall_mode === "SUM_RANKS" || raw.multi_event_overall_mode === "SUM_RESULTS"
+    raw.multi_event_overall_mode === "SUM_RANKS" ||
+    raw.multi_event_overall_mode === "SUM_RESULTS"
       ? raw.multi_event_overall_mode
       : "POINTS_BY_RANK";
   const baseStages = createDefaultStages(safeParticipants, stageStructureMode);
-  const incomingStages: BackendCustomStageConfig[] = Array.isArray(raw.stages) ? raw.stages.slice(0, MAX_CUSTOM_STAGE_LEVELS) : [];
-  const activeStagesCount = Math.max(1, Math.min(MAX_CUSTOM_STAGE_LEVELS, incomingStages.length || 1));
+  const incomingStages: BackendCustomStageConfig[] = Array.isArray(raw.stages)
+    ? raw.stages.slice(0, MAX_CUSTOM_STAGE_LEVELS)
+    : [];
+  const activeStagesCount = Math.max(
+    1,
+    Math.min(MAX_CUSTOM_STAGE_LEVELS, incomingStages.length || 1),
+  );
 
   let previousAdvance: number | null = safeParticipants;
   mapped.stages = baseStages.map((baseStage, index) => {
@@ -331,7 +541,10 @@ function deserializeCustomResultConfig(rawConfig: any, participants: number): To
     if (!rawStage) {
       return {
         ...baseStage,
-        name: stageStructureMode === "MULTI_EVENT" ? `Konkurencja ${index + 1}` : baseStage.name,
+        name:
+          stageStructureMode === "MULTI_EVENT"
+            ? `Konkurencja ${index + 1}`
+            : baseStage.name,
         participantsCount:
           isActiveStage && stageStructureMode === "MULTI_EVENT"
             ? safeParticipants
@@ -339,7 +552,10 @@ function deserializeCustomResultConfig(rawConfig: any, participants: number): To
               ? safeParticipants
               : null,
         advanceCount: null,
-        contributesToFinalRanking: stageStructureMode === "MULTI_EVENT" ? isActiveStage : index === activeStagesCount - 1,
+        contributesToFinalRanking:
+          stageStructureMode === "MULTI_EVENT"
+            ? isActiveStage
+            : index === activeStagesCount - 1,
       } satisfies CustomStageConfig;
     }
 
@@ -354,16 +570,24 @@ function deserializeCustomResultConfig(rawConfig: any, participants: number): To
         : Math.max(1, Math.trunc(rawParticipantsCount));
 
     const advanceCount =
-      stageStructureMode === "MULTI_EVENT" || rawStage.advance_count === null || rawStage.advance_count === undefined
+      stageStructureMode === "MULTI_EVENT" ||
+      rawStage.advance_count === null ||
+      rawStage.advance_count === undefined
         ? null
         : Math.max(1, Math.trunc(rawStage.advance_count));
 
-    previousAdvance = stageStructureMode === "MULTI_EVENT" ? safeParticipants : advanceCount ?? participantsCount ?? previousAdvance;
+    previousAdvance =
+      stageStructureMode === "MULTI_EVENT"
+        ? safeParticipants
+        : (advanceCount ?? participantsCount ?? previousAdvance);
 
     return {
       ...baseStage,
       id: typeof rawStage.id === "string" ? rawStage.id : baseStage.id,
-      name: typeof rawStage.name === "string" && rawStage.name.trim() ? rawStage.name : baseStage.name,
+      name:
+        typeof rawStage.name === "string" && rawStage.name.trim()
+          ? rawStage.name
+          : baseStage.name,
       groupsCount: Number.isFinite(rawStage.groups_count as number)
         ? Math.max(1, Math.trunc(rawStage.groups_count as number))
         : baseStage.groupsCount,
@@ -372,14 +596,22 @@ function deserializeCustomResultConfig(rawConfig: any, participants: number): To
       roundsCount: Number.isFinite(rawStage.rounds_count as number)
         ? Math.max(1, Math.trunc(rawStage.rounds_count as number))
         : baseStage.roundsCount,
-      aggregationMode: (rawStage.aggregation_mode as CustomAggregationMode | undefined) ?? baseStage.aggregationMode,
-      contributesToFinalRanking: stageStructureMode === "MULTI_EVENT" ? isActiveStage : index === activeStagesCount - 1,
+      aggregationMode:
+        (rawStage.aggregation_mode as CustomAggregationMode | undefined) ??
+        baseStage.aggregationMode,
+      contributesToFinalRanking:
+        stageStructureMode === "MULTI_EVENT"
+          ? isActiveStage
+          : index === activeStagesCount - 1,
     } satisfies CustomStageConfig;
   });
 
   return mapped as TournamentResultConfig;
 }
-function getDefaultStageName(index: number, stageStructureMode: CustomStageStructureMode = "REDUCTION") {
+function getDefaultStageName(
+  index: number,
+  stageStructureMode: CustomStageStructureMode = "REDUCTION",
+) {
   if (stageStructureMode === "MULTI_EVENT") return `Konkurencja ${index + 1}`;
   if (index === 0) return "Kwalifikacje";
   if (index === 1) return "Półfinał";
@@ -387,7 +619,10 @@ function getDefaultStageName(index: number, stageStructureMode: CustomStageStruc
   return `Etap ${index + 1}`;
 }
 
-function createDefaultStages(participants: number, stageStructureMode: CustomStageStructureMode = "REDUCTION"): CustomStageConfig[] {
+function createDefaultStages(
+  participants: number,
+  stageStructureMode: CustomStageStructureMode = "REDUCTION",
+): CustomStageConfig[] {
   const safeParticipants = Math.max(2, Math.trunc(participants));
 
   return Array.from({ length: MAX_CUSTOM_STAGE_LEVELS }, (_, index) => ({
@@ -428,12 +663,19 @@ export default function TournamentBasicsSetup() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmTitle, setConfirmTitle] = useState<string>("Potwierdzenie");
   const [confirmMessage, setConfirmMessage] = useState<string>("");
-  const [confirmConfirmLabel, setConfirmConfirmLabel] = useState<string>("Kontynuuj");
-  const [confirmCancelLabel, setConfirmCancelLabel] = useState<string>("Anuluj");
+  const [confirmConfirmLabel, setConfirmConfirmLabel] =
+    useState<string>("Kontynuuj");
+  const [confirmCancelLabel, setConfirmCancelLabel] =
+    useState<string>("Anuluj");
   const confirmResolverRef = useRef<((value: boolean) => void) | null>(null);
 
   const askConfirm = useCallback(
-    (opts: { title?: string; message: string; confirmLabel?: string; cancelLabel?: string }) => {
+    (opts: {
+      title?: string;
+      message: string;
+      confirmLabel?: string;
+      cancelLabel?: string;
+    }) => {
       setConfirmTitle(opts.title ?? "Potwierdzenie");
       setConfirmMessage(opts.message);
       setConfirmConfirmLabel(opts.confirmLabel ?? "Kontynuuj");
@@ -443,7 +685,7 @@ export default function TournamentBasicsSetup() {
         confirmResolverRef.current = resolve;
       });
     },
-    []
+    [],
   );
 
   const resolveConfirm = useCallback((value: boolean) => {
@@ -463,22 +705,31 @@ export default function TournamentBasicsSetup() {
     return list.map((item) => `- ${item}`).join("\n");
   }, []);
 
-
   const [myRole, setMyRole] = useState<"ORGANIZER" | "ASSISTANT" | null>(null);
   const [myPerms, setMyPerms] = useState<Record<string, boolean>>({});
 
   // ===== Kontekst aktywnej dywizji =====
   const [divisions, setDivisions] = useState<DivisionSummaryDTO[]>([]);
-  const [activeDivisionId, setActiveDivisionId] = useState<number | null>(requestedDivisionId);
-  const [activeDivisionName, setActiveDivisionName] = useState<string | null>(null);
-  const [activeDivisionStatus, setActiveDivisionStatus] = useState<DivisionStatus | null>(null);
+  const [activeDivisionId, setActiveDivisionId] = useState<number | null>(
+    requestedDivisionId,
+  );
+  const [activeDivisionName, setActiveDivisionName] = useState<string | null>(
+    null,
+  );
+  const [activeDivisionStatus, setActiveDivisionStatus] =
+    useState<DivisionStatus | null>(null);
   const [newDivisionName, setNewDivisionName] = useState("");
   const [divisionActionLoading, setDivisionActionLoading] = useState(false);
-  const [editingDivisionId, setEditingDivisionId] = useState<number | null>(null);
+  const [editingDivisionId, setEditingDivisionId] = useState<number | null>(
+    null,
+  );
   const [editingDivisionName, setEditingDivisionName] = useState("");
-  const [copySourceDivisionId, setCopySourceDivisionId] = useState<number | null>(null);
+  const [copySourceDivisionId, setCopySourceDivisionId] = useState<
+    number | null
+  >(null);
 
-  const canEditTournament = myRole === "ORGANIZER" || Boolean(myPerms?.tournament_edit);
+  const canEditTournament =
+    myRole === "ORGANIZER" || Boolean(myPerms?.tournament_edit);
   const isAssistantReadOnly = !isCreateMode && !canEditTournament;
   const effectiveDivisionId = requestedDivisionId ?? activeDivisionId;
   const visibleDivisions = useMemo(() => {
@@ -509,6 +760,41 @@ export default function TournamentBasicsSetup() {
       }));
   }, [effectiveDivisionId, visibleDivisions]);
 
+  const activeSummaryScope = effectiveDivisionId
+    ? summaryScopeForDivision(effectiveDivisionId)
+    : "ALL";
+  const summaryScopeInitializedRef = useRef(false);
+  const previousActiveSummaryScopeRef = useRef<SummaryScope | null>(null);
+  const [summaryScope, setSummaryScope] = useState<SummaryScope>("ALL");
+  const [summaryScopeStats, setSummaryScopeStats] = useState<
+    Partial<Record<SummaryScope, SummaryScopeStats>>
+  >({});
+  const [summaryStatsLoadingScope, setSummaryStatsLoadingScope] =
+    useState<SummaryScope | null>(null);
+  const [summaryStatsError, setSummaryStatsError] = useState<string | null>(
+    null,
+  );
+  const [summaryStatsReloadKey, setSummaryStatsReloadKey] = useState(0);
+
+  const invalidateSummaryStats = useCallback(() => {
+    setSummaryScopeStats({});
+    setSummaryStatsReloadKey((key) => key + 1);
+  }, []);
+
+  const summaryScopeOptions = useMemo(() => {
+    if (isCreateMode || visibleDivisions.length <= 1) return [];
+
+    return [
+      { value: "ALL" as SummaryScope, label: "Cały turniej" },
+      ...visibleDivisions.map((division) => ({
+        value: summaryScopeForDivision(division.id),
+        label: division.name
+          ? `Dywizja: ${division.name}`
+          : `Dywizja ${division.id}`,
+        description: getDivisionStatusLabel(division.status),
+      })),
+    ];
+  }, [isCreateMode, visibleDivisions]);
 
   const handleDivisionSwitch = useCallback(
     async (nextDivisionId: number) => {
@@ -517,7 +803,8 @@ export default function TournamentBasicsSetup() {
       if (dirty) {
         const ok = await askConfirm({
           title: "Zmiana dywizji",
-          message: "Masz niezapisane zmiany. Po przejściu do innej dywizji bieżący formularz zostanie odświeżony. Kontynuować?",
+          message:
+            "Masz niezapisane zmiany. Po przejściu do innej dywizji bieżący formularz zostanie odświeżony. Kontynuować?",
           confirmLabel: "Przejdź",
           cancelLabel: "Zostań",
         });
@@ -529,9 +816,16 @@ export default function TournamentBasicsSetup() {
       nextSearch.set("division_id", String(nextDivisionId));
       setSearchParams(nextSearch, { replace: false });
     },
-    [askConfirm, dirty, effectiveDivisionId, loading, saving, searchParams, setSearchParams]
+    [
+      askConfirm,
+      dirty,
+      effectiveDivisionId,
+      loading,
+      saving,
+      searchParams,
+      setSearchParams,
+    ],
   );
-
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -540,7 +834,8 @@ export default function TournamentBasicsSetup() {
   const [initialDescription, setInitialDescription] = useState("");
 
   const [discipline, setDiscipline] = useState<Discipline>("football");
-  const [initialDiscipline, setInitialDiscipline] = useState<Discipline>("football");
+  const [initialDiscipline, setInitialDiscipline] =
+    useState<Discipline>("football");
 
   const [format, setFormat] = useState<TournamentFormat>("LEAGUE");
   const [participants, setParticipants] = useState(8);
@@ -551,13 +846,15 @@ export default function TournamentBasicsSetup() {
   const [groupMatches, setGroupMatches] = useState<1 | 2>(1);
   const [advanceFromGroup, setAdvanceFromGroup] = useState(2);
 
-  const [hbTableDrawMode, setHbTableDrawMode] = useState<HandballTableDrawMode>("ALLOW_DRAW");
+  const [hbTableDrawMode, setHbTableDrawMode] =
+    useState<HandballTableDrawMode>("ALLOW_DRAW");
   const [hbPointsMode, setHbPointsMode] = useState<HandballPointsMode>("2_1_0");
   const [hbKnockoutTiebreak, setHbKnockoutTiebreak] =
     useState<HandballKnockoutTiebreak>("OVERTIME_PENALTIES");
   const [basketballResolutionMode, setBasketballResolutionMode] =
     useState<BasketballResolutionMode>("OVERTIME_ONLY");
-  const [wrestlingStyle, setWrestlingStyle] = useState<WrestlingStyle>("FREESTYLE");
+  const [wrestlingStyle, setWrestlingStyle] =
+    useState<WrestlingStyle>("FREESTYLE");
   const [wrestlingCompetitionMode, setWrestlingCompetitionMode] =
     useState<WrestlingCompetitionMode>("AUTO");
 
@@ -567,19 +864,24 @@ export default function TournamentBasicsSetup() {
   const [thirdPlaceMatches, setThirdPlaceMatches] = useState<1 | 2>(1);
 
   const [tennisBestOf, setTennisBestOf] = useState<TennisBestOf>(3);
-  const [tennisPointsMode, setTennisPointsMode] = useState<TennisPointsMode>("NONE");
+  const [tennisPointsMode, setTennisPointsMode] =
+    useState<TennisPointsMode>("NONE");
 
   // ===== Lokalny stan pod nowy formularz custom (UI-only w tym etapie) =====
-  const [competitionType, setCompetitionType] = useState<CompetitionType>("INDIVIDUAL");
-  const [competitionModel, setCompetitionModel] = useState<CompetitionModel>("MASS_START");
+  const [competitionType, setCompetitionType] =
+    useState<CompetitionType>("INDIVIDUAL");
+  const [competitionModel, setCompetitionModel] =
+    useState<CompetitionModel>("MASS_START");
   const [customDisciplineName, setCustomDisciplineName] = useState("");
-  const [resultConfig, setResultConfig] = useState<TournamentResultConfig>(() => {
-    const config = getDefaultResultConfig();
-    return {
-      ...config,
-      stages: createDefaultStages(8),
-    };
-  });
+  const [resultConfig, setResultConfig] = useState<TournamentResultConfig>(
+    () => {
+      const config = getDefaultResultConfig();
+      return {
+        ...config,
+        stages: createDefaultStages(8),
+      };
+    },
+  );
 
   const isHandball = discipline === "handball";
   const isBasketball = discipline === "basketball";
@@ -623,7 +925,10 @@ export default function TournamentBasicsSetup() {
     }
 
     setCopySourceDivisionId((prev) => {
-      if (prev != null && copyDivisionOptions.some((option) => option.value === prev)) {
+      if (
+        prev != null &&
+        copyDivisionOptions.some((option) => option.value === prev)
+      ) {
         return prev;
       }
       return copyDivisionOptions[0].value;
@@ -689,11 +994,11 @@ export default function TournamentBasicsSetup() {
   }, [format, minGroupSize]);
 
   const advanceOptions = useMemo(() => {
-    if (format !== "MIXED" || minGroupSize < 2) return [1, 2].filter((x) => x <= Math.max(1, minGroupSize));
+    if (format !== "MIXED" || minGroupSize < 2)
+      return [1, 2].filter((x) => x <= Math.max(1, minGroupSize));
     const maxOpt = Math.min(minGroupSize, 8);
     return Array.from({ length: maxOpt }, (_, i) => i + 1);
   }, [format, minGroupSize]);
-
 
   useEffect(() => {
     if (isCreateMode) return;
@@ -705,26 +1010,34 @@ export default function TournamentBasicsSetup() {
       try {
         const tournamentRes = await apiFetch(
           withDivisionQuery(`/api/tournaments/${id}/`, requestedDivisionId),
-          { toastOnError: false } as any
+          { toastOnError: false } as any,
         );
 
         if (!tournamentRes.ok) {
           const data = await tournamentRes.json().catch(() => ({}));
-          setInlineError(pickFirstError(data) || "Nie udało się pobrać danych turnieju.");
+          setInlineError(
+            pickFirstError(data) || "Nie udało się pobrać danych turnieju.",
+          );
           return;
         }
 
         const tournament: TournamentDTO = await tournamentRes.json();
-        const resolvedDivisionId = tournament.active_division_id ?? requestedDivisionId ?? null;
+        const resolvedDivisionId =
+          tournament.active_division_id ?? requestedDivisionId ?? null;
 
         const teamsRes = await apiFetch(
-          withDivisionQuery(`/api/tournaments/${id}/teams/`, resolvedDivisionId),
-          { toastOnError: false } as any
+          withDivisionQuery(
+            `/api/tournaments/${id}/teams/`,
+            resolvedDivisionId,
+          ),
+          { toastOnError: false } as any,
         );
 
         if (!teamsRes.ok) {
           const data = await teamsRes.json().catch(() => ({}));
-          setInlineError(pickFirstError(data) || "Nie udało się pobrać listy uczestników.");
+          setInlineError(
+            pickFirstError(data) || "Nie udało się pobrać listy uczestników.",
+          );
           return;
         }
 
@@ -732,7 +1045,9 @@ export default function TournamentBasicsSetup() {
 
         setMyRole(tournament.my_role ?? null);
         setMyPerms(tournament.my_permissions ?? {});
-        setDivisions(Array.isArray(tournament.divisions) ? tournament.divisions : []);
+        setDivisions(
+          Array.isArray(tournament.divisions) ? tournament.divisions : [],
+        );
         setActiveDivisionId(resolvedDivisionId);
         setActiveDivisionName(tournament.active_division_name ?? null);
         setActiveDivisionStatus(tournament.division_status ?? null);
@@ -780,12 +1095,22 @@ export default function TournamentBasicsSetup() {
         setThirdPlaceMatches(cfg.third_place_matches === 2 ? 2 : 1);
 
         setHbTableDrawMode(cfg.handball_table_draw_mode ?? "ALLOW_DRAW");
-        setHbKnockoutTiebreak(cfg.handball_knockout_tiebreak ?? "OVERTIME_PENALTIES");
+        setHbKnockoutTiebreak(
+          cfg.handball_knockout_tiebreak ?? "OVERTIME_PENALTIES",
+        );
         setHbPointsMode(cfg.handball_points_mode ?? "2_1_0");
-        setBasketballResolutionMode(cfg.basketball_resolution_mode ?? "OVERTIME_ONLY");
-        const savedWrestlingStyle = String(cfg.wrestling_style ?? "FREESTYLE").toUpperCase();
-        setWrestlingStyle(savedWrestlingStyle === "GRECO_ROMAN" ? "GRECO_ROMAN" : "FREESTYLE");
-        const savedWrestlingMode = String(cfg.wrestling_competition_mode ?? "AUTO").toUpperCase();
+        setBasketballResolutionMode(
+          cfg.basketball_resolution_mode ?? "OVERTIME_ONLY",
+        );
+        const savedWrestlingStyle = String(
+          cfg.wrestling_style ?? "FREESTYLE",
+        ).toUpperCase();
+        setWrestlingStyle(
+          savedWrestlingStyle === "GRECO_ROMAN" ? "GRECO_ROMAN" : "FREESTYLE",
+        );
+        const savedWrestlingMode = String(
+          cfg.wrestling_competition_mode ?? "AUTO",
+        ).toUpperCase();
         setWrestlingCompetitionMode(
           savedWrestlingMode === "NORDIC"
             ? "NORDIC"
@@ -793,7 +1118,7 @@ export default function TournamentBasicsSetup() {
               ? "TWO_POOLS"
               : savedWrestlingMode === "ELIMINATION_REPECHAGE"
                 ? "ELIMINATION_REPECHAGE"
-                : "AUTO"
+                : "AUTO",
         );
 
         setTennisBestOf(cfg.tennis_best_of === 5 ? 5 : 3);
@@ -801,15 +1126,22 @@ export default function TournamentBasicsSetup() {
         setTennisPointsMode(tpm === "PLT" ? "PLT" : "NONE");
 
         if (tournament.discipline === "custom") {
-          setCompetitionType((tournament.competition_type as CompetitionType) ?? "INDIVIDUAL");
-          setCompetitionModel((tournament.competition_model as CompetitionModel) ?? "MASS_START");
+          setCompetitionType(
+            (tournament.competition_type as CompetitionType) ?? "INDIVIDUAL",
+          );
+          setCompetitionModel(
+            (tournament.competition_model as CompetitionModel) ?? "MASS_START",
+          );
           setCustomDisciplineName(tournament.custom_discipline_name ?? "");
 
           const incoming =
-            tournament.result_config && typeof tournament.result_config === "object"
+            tournament.result_config &&
+            typeof tournament.result_config === "object"
               ? tournament.result_config
               : {};
-          setResultConfig(deserializeCustomResultConfig(incoming, currentCount));
+          setResultConfig(
+            deserializeCustomResultConfig(incoming, currentCount),
+          );
         } else {
           setCompetitionType("INDIVIDUAL");
           setCompetitionModel("MASS_START");
@@ -827,7 +1159,9 @@ export default function TournamentBasicsSetup() {
           setSearchParams(nextSearch, { replace: true });
         }
       } catch {
-        toast.error("Brak połączenia z serwerem. Spróbuj ponownie.", { title: "Sieć" });
+        toast.error("Brak połączenia z serwerem. Spróbuj ponownie.", {
+          title: "Sieć",
+        });
       } finally {
         setLoading(false);
       }
@@ -851,7 +1185,13 @@ export default function TournamentBasicsSetup() {
 
     if (format === "LEAGUE") {
       const matches = ((p * (p - 1)) / 2) * leagueMatches;
-      return { total: matches, groupTotal: matches, koTotal: 0, groups: 0, advancing: 0 };
+      return {
+        total: matches,
+        groupTotal: matches,
+        koTotal: 0,
+        groups: 0,
+        advancing: 0,
+      };
     }
 
     if (format === "CUP") {
@@ -859,18 +1199,33 @@ export default function TournamentBasicsSetup() {
       const finalCount = finalMatches;
       const thirdCount = thirdPlace ? thirdPlaceMatches : 0;
       const koTotal = roundsMatches + finalCount + thirdCount;
-      return { total: koTotal, groupTotal: 0, koTotal, groups: 0, advancing: 0 };
+      return {
+        total: koTotal,
+        groupTotal: 0,
+        koTotal,
+        groups: 0,
+        advancing: 0,
+      };
     }
 
     const safeGroups = clampInt(groupsCount, 1, Math.max(1, Math.floor(p / 2)));
     const sizes = splitIntoGroups(p, safeGroups);
-    const groupTotal = sizes.reduce((sum, size) => sum + roundRobinMatches(size, groupMatches), 0);
+    const groupTotal = sizes.reduce(
+      (sum, size) => sum + roundRobinMatches(size, groupMatches),
+      0,
+    );
     const minSize = sizes.length ? Math.min(...sizes) : 2;
     const adv = clampInt(advanceFromGroup, 1, Math.max(1, minSize));
     const advancing = sizes.length * adv;
 
     if (advancing < 2) {
-      return { total: groupTotal, groupTotal, koTotal: 0, groups: sizes.length, advancing };
+      return {
+        total: groupTotal,
+        groupTotal,
+        koTotal: 0,
+        groups: sizes.length,
+        advancing,
+      };
     }
 
     const koRoundsMatches = Math.max(0, (advancing - 2) * cupMatches);
@@ -878,7 +1233,13 @@ export default function TournamentBasicsSetup() {
     const thirdCount = thirdPlace ? thirdPlaceMatches : 0;
     const koTotal = koRoundsMatches + finalCount + thirdCount;
 
-    return { total: groupTotal + koTotal, groupTotal, koTotal, groups: sizes.length, advancing };
+    return {
+      total: groupTotal + koTotal,
+      groupTotal,
+      koTotal,
+      groups: sizes.length,
+      advancing,
+    };
   }, [
     format,
     participants,
@@ -895,9 +1256,192 @@ export default function TournamentBasicsSetup() {
     resultConfig.stages,
   ]);
 
+  useEffect(() => {
+    const previousActiveScope = previousActiveSummaryScopeRef.current;
+    previousActiveSummaryScopeRef.current = activeSummaryScope;
+
+    if (isCreateMode || visibleDivisions.length <= 1) {
+      summaryScopeInitializedRef.current = false;
+      setSummaryScope(activeSummaryScope);
+      return;
+    }
+
+    const allowedScopes = new Set(
+      summaryScopeOptions.map((option) => option.value),
+    );
+
+    if (!summaryScopeInitializedRef.current) {
+      summaryScopeInitializedRef.current = true;
+      setSummaryScope(activeSummaryScope);
+      return;
+    }
+
+    if (
+      previousActiveScope &&
+      summaryScope === previousActiveScope &&
+      activeSummaryScope !== previousActiveScope
+    ) {
+      setSummaryScope(activeSummaryScope);
+      return;
+    }
+
+    if (!allowedScopes.has(summaryScope)) {
+      setSummaryScope(activeSummaryScope);
+    }
+  }, [
+    activeSummaryScope,
+    isCreateMode,
+    summaryScope,
+    summaryScopeOptions,
+    visibleDivisions.length,
+  ]);
+
+  const selectedSummaryDivisionId = divisionIdFromSummaryScope(summaryScope);
+  const selectedSummaryDivision = useMemo(() => {
+    if (!selectedSummaryDivisionId) return null;
+    return (
+      visibleDivisions.find(
+        (division) => division.id === selectedSummaryDivisionId,
+      ) ?? null
+    );
+  }, [selectedSummaryDivisionId, visibleDivisions]);
+
+  useEffect(() => {
+    if (isCreateMode || visibleDivisions.length <= 1 || !id) return;
+    if (summaryScope === activeSummaryScope) {
+      setSummaryStatsError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setSummaryStatsLoadingScope(summaryScope);
+    setSummaryStatsError(null);
+
+    const fetchDivisionStats = async (
+      divisionId: number,
+    ): Promise<SummaryScopeStats> => {
+      const query = `division_id=${divisionId}`;
+      const [teamsRes, matchesRes, tournamentRes] = await Promise.all([
+        apiFetch(`/api/tournaments/${id}/teams/?${query}`, {
+          toastOnError: false,
+        }),
+        apiFetch(`/api/tournaments/${id}/matches/?${query}`, {
+          toastOnError: false,
+        }),
+        apiFetch(`/api/tournaments/${id}/?${query}`, {
+          toastOnError: false,
+        }),
+      ]);
+
+      if (!teamsRes.ok || !matchesRes.ok) {
+        throw new Error("Nie udało się pobrać danych podsumowania.");
+      }
+
+      const [teamsPayload, matchesPayload, tournamentPayload] = await Promise.all([
+        teamsRes.json().catch(() => []),
+        matchesRes.json().catch(() => []),
+        tournamentRes.ok ? tournamentRes.json().catch(() => null) : Promise.resolve(null),
+      ]);
+
+      return parseDivisionSummaryStats(
+        teamsPayload,
+        matchesPayload,
+        tournamentPayload,
+      );
+    };
+
+    (async () => {
+      try {
+        const stats =
+          summaryScope === "ALL"
+            ? mergeSummaryStats(
+                await Promise.all(
+                  visibleDivisions.map((division) =>
+                    fetchDivisionStats(division.id),
+                  ),
+                ),
+              )
+            : selectedSummaryDivisionId
+              ? await fetchDivisionStats(selectedSummaryDivisionId)
+              : null;
+
+        if (!stats) return;
+
+        if (!cancelled) {
+          setSummaryScopeStats((prev) => ({ ...prev, [summaryScope]: stats }));
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setSummaryStatsError(
+            e?.message ?? "Nie udało się pobrać danych podsumowania.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setSummaryStatsLoadingScope((current) =>
+            current === summaryScope ? null : current,
+          );
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeSummaryScope,
+    id,
+    isCreateMode,
+    selectedSummaryDivisionId,
+    summaryScope,
+    summaryStatsReloadKey,
+    visibleDivisions,
+  ]);
+
+  const isExternalSummaryScope =
+    !isCreateMode &&
+    visibleDivisions.length > 1 &&
+    summaryScope !== activeSummaryScope;
+  const externalSummaryStats = isExternalSummaryScope
+    ? summaryScopeStats[summaryScope]
+    : null;
+  const emptySummaryPreview: MatchesPreview = {
+    total: 0,
+    groupTotal: 0,
+    koTotal: 0,
+    groups: 0,
+    advancing: 0,
+  };
+  const summaryParticipants = isExternalSummaryScope
+    ? (externalSummaryStats?.participants ?? 0)
+    : participants;
+  const summaryPreview = isExternalSummaryScope
+    ? (externalSummaryStats?.preview ?? emptySummaryPreview)
+    : preview;
+  const summaryScopeLabel =
+    summaryScope === "ALL"
+      ? "Cały turniej"
+      : selectedSummaryDivision?.name ||
+        (selectedSummaryDivisionId
+          ? `Dywizja ${selectedSummaryDivisionId}`
+          : (activeDivisionName ?? "Aktywna dywizja"));
+  const summaryFormatValue = isExternalSummaryScope
+    ? (externalSummaryStats?.tournamentFormat ??
+      parseTournamentFormat(selectedSummaryDivision?.tournament_format))
+    : null;
+  const summaryFormatLabel = isExternalSummaryScope
+    ? formatLabelForSummary(summaryFormatValue)
+    : undefined;
+  const summaryStatsLoading =
+    isExternalSummaryScope && summaryStatsLoadingScope === summaryScope;
+  const summaryStatsErrorForCard = isExternalSummaryScope
+    ? summaryStatsError
+    : null;
+
   const validateLocalBeforeSave = (): string | null => {
     const trimmedName = name.trim();
-    if (!trimmedName) return "Wpisz nazwę turnieju - bez tego nie da się przejść dalej.";
+    if (!trimmedName)
+      return "Wpisz nazwę turnieju - bez tego nie da się przejść dalej.";
 
     const p = clampInt(participants, 2, 10_000);
 
@@ -907,7 +1451,10 @@ export default function TournamentBasicsSetup() {
       }
 
       if (competitionModel === "MASS_START") {
-        const visibleStages = resultConfig.stages.slice(0, getActiveCustomStagesCount(resultConfig.stages));
+        const visibleStages = resultConfig.stages.slice(
+          0,
+          getActiveCustomStagesCount(resultConfig.stages),
+        );
         const isMultiEvent = resultConfig.stageStructureMode === "MULTI_EVENT";
 
         for (let index = 0; index < visibleStages.length; index += 1) {
@@ -926,7 +1473,11 @@ export default function TournamentBasicsSetup() {
             return `${isMultiEvent ? "Konkurencja" : "Etap"} ${index + 1} musi mieć liczbę uczestników.`;
           }
 
-          if (!isMultiEvent && index < visibleStages.length - 1 && (!stage.advanceCount || stage.advanceCount < 1)) {
+          if (
+            !isMultiEvent &&
+            index < visibleStages.length - 1 &&
+            (!stage.advanceCount || stage.advanceCount < 1)
+          ) {
             return `Podaj liczbę awansujących z etapu ${index + 1}.`;
           }
         }
@@ -962,7 +1513,11 @@ export default function TournamentBasicsSetup() {
       }
     }
 
-    if (isWrestling && (wrestlingStyle !== "FREESTYLE" && wrestlingStyle !== "GRECO_ROMAN")) {
+    if (
+      isWrestling &&
+      wrestlingStyle !== "FREESTYLE" &&
+      wrestlingStyle !== "GRECO_ROMAN"
+    ) {
       return "Zapasy: wybierz poprawny styl.";
     }
 
@@ -1051,431 +1606,551 @@ export default function TournamentBasicsSetup() {
     return finalConfig;
   };
 
-  const saveAll = useCallback(async (): Promise<{ tournamentId: number; divisionId: number | null }> => {
-    if (isAssistantReadOnly) {
-      const msg = "Tryb podglądu: brak uprawnień do zmiany konfiguracji.";
-      setInlineError(msg);
-      throw new Error(msg);
-    }
+  type SaveAllOptions = { force?: boolean; silent?: boolean };
 
-    const localMsg = validateLocalBeforeSave();
-    if (localMsg) {
-      if (localMsg.startsWith("Uwaga:")) {
-        const ok = await askConfirm({
-          title: "Zapis konfiguracji",
-          message: `${localMsg}\n\nKontynuować zapis?`,
-          confirmLabel: "Zapisz",
-          cancelLabel: "Anuluj",
-        });
-        if (!ok) {
-          setInlineError("Anulowano zapis konfiguracji.");
-          throw new Error("Anulowano zapis konfiguracji.");
-        }
-      } else {
-        setInlineError(localMsg);
-        throw new Error(localMsg);
+  const saveAll = useCallback(
+    async (
+      options: SaveAllOptions = {},
+    ): Promise<{ tournamentId: number; divisionId: number | null }> => {
+      if (isAssistantReadOnly) {
+        const msg = "Tryb podglądu: brak uprawnień do zmiany konfiguracji.";
+        setInlineError(msg);
+        throw new Error(msg);
       }
-    }
 
-    if (!isCreateMode && !dirty) return { tournamentId: Number(id), divisionId: effectiveDivisionId ?? null };
-
-    setSaving(true);
-    setInlineError(null);
-
-    let createdId: number | null = null;
-    let currentDivisionId = effectiveDivisionId;
-
-    try {
-      const trimmedName = name.trim();
-      const trimmedDesc = description.trim();
-      let tournamentId = Number(id);
-
-      if (isCreateMode) {
-        const createRes = await apiFetch("/api/tournaments/", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: trimmedName,
-            description: trimmedDesc ? trimmedDesc : null,
-            discipline,
-          }),
-          toastOnError: false,
-        } as any);
-
-        if (!createRes.ok) {
-          const data = await createRes.json().catch(() => ({}));
-          const msg = pickFirstError(data) || "Nie udało się utworzyć turnieju.";
-          setInlineError(msg);
-          throw new Error(msg);
+      const localMsg = validateLocalBeforeSave();
+      if (localMsg) {
+        if (localMsg.startsWith("Uwaga:")) {
+          const ok = await askConfirm({
+            title: "Zapis konfiguracji",
+            message: `${localMsg}\n\nKontynuować zapis?`,
+            confirmLabel: "Zapisz",
+            cancelLabel: "Anuluj",
+          });
+          if (!ok) {
+            setInlineError("Anulowano zapis konfiguracji.");
+            throw new Error("Anulowano zapis konfiguracji.");
+          }
+        } else {
+          setInlineError(localMsg);
+          throw new Error(localMsg);
         }
+      }
 
-        const created = await createRes.json();
-        createdId = created.id;
-        tournamentId = created.id;
-        currentDivisionId = created.active_division_id ?? currentDivisionId ?? null;
+      if (!isCreateMode && !dirty && !options.force) {
+        return {
+          tournamentId: Number(id),
+          divisionId: effectiveDivisionId ?? null,
+        };
+      }
 
-        if (Array.isArray(created.divisions)) {
-          setDivisions(created.divisions);
-        }
-        setActiveDivisionId(currentDivisionId);
-        setActiveDivisionName(created.active_division_name ?? null);
-        setActiveDivisionStatus(created.division_status ?? null);
+      setSaving(true);
+      setInlineError(null);
 
-        setInitialName(trimmedName);
-        setInitialDescription(trimmedDesc);
-        setInitialDiscipline(discipline);
-      } else {
-        if (discipline !== initialDiscipline) {
-          const changePayload: Record<string, any> =
-            discipline === "custom"
-              ? {
-                  discipline,
-                  custom_discipline_name: customDisciplineName.trim(),
-                  competition_type: competitionType,
-                  competition_model: competitionModel,
-                  result_mode: "CUSTOM",
-                  result_config: serializeCustomResultConfig({ ...resultConfig, competition_model: competitionModel }),
-                }
-              : {
-                  discipline,
-                };
+      let createdId: number | null = null;
+      let currentDivisionId = effectiveDivisionId;
 
-          const dry = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/change-discipline/?dry_run=true`, currentDivisionId), {
+      try {
+        const trimmedName = name.trim();
+        const trimmedDesc = description.trim();
+        let tournamentId = Number(id);
+
+        if (isCreateMode) {
+          const createRes = await apiFetch("/api/tournaments/", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(withDivisionPayload(changePayload, currentDivisionId)),
+            body: JSON.stringify({
+              name: trimmedName,
+              description: trimmedDesc ? trimmedDesc : null,
+              discipline,
+            }),
             toastOnError: false,
           } as any);
 
-          if (!dry.ok) {
-            const data = await dry.json().catch(() => ({}));
-            const msg = pickFirstError(data) || "Nie udało się sprawdzić zmiany dyscypliny.";
+          if (!createRes.ok) {
+            const data = await createRes.json().catch(() => ({}));
+            const msg =
+              pickFirstError(data) || "Nie udało się utworzyć turnieju.";
             setInlineError(msg);
             throw new Error(msg);
           }
 
-          const dryData = await dry.json().catch(() => ({}));
-          const disciplineArchiveMessages = (dryData as any)?.archive_messages;
-          const disciplineNeedsConfirmation =
-            Boolean((dryData as any)?.reset_needed) ||
-            (Array.isArray(disciplineArchiveMessages) && disciplineArchiveMessages.length > 0);
+          const created = await createRes.json();
+          createdId = created.id;
+          tournamentId = created.id;
+          currentDivisionId =
+            created.active_division_id ?? currentDivisionId ?? null;
 
-          if (disciplineNeedsConfirmation) {
-            const ok = await askConfirm({
-              title: "Zmiana dyscypliny",
-              message: `Ta zmiana usunie lub przeniesie do archiwum:\n${formatImpactList(
-                disciplineArchiveMessages,
-                "- dane niedopasowane do nowej dyscypliny"
-              )}\n\nCzy chcesz zapisać zmianę?`,
-              confirmLabel: "Zapisz",
-              cancelLabel: "Anuluj",
-            });
+          if (Array.isArray(created.divisions)) {
+            setDivisions(created.divisions);
+          }
+          setActiveDivisionId(currentDivisionId);
+          setActiveDivisionName(created.active_division_name ?? null);
+          setActiveDivisionStatus(created.division_status ?? null);
 
-            if (!ok) {
-              setDiscipline(initialDiscipline);
-              throw new Error("Anulowano zmianę dyscypliny.");
+          setInitialName(trimmedName);
+          setInitialDescription(trimmedDesc);
+          setInitialDiscipline(discipline);
+        } else {
+          if (discipline !== initialDiscipline) {
+            const changePayload: Record<string, any> =
+              discipline === "custom"
+                ? {
+                    discipline,
+                    custom_discipline_name: customDisciplineName.trim(),
+                    competition_type: competitionType,
+                    competition_model: competitionModel,
+                    result_mode: "CUSTOM",
+                    result_config: serializeCustomResultConfig({
+                      ...resultConfig,
+                      competition_model: competitionModel,
+                    }),
+                  }
+                : {
+                    discipline,
+                  };
+
+            const dry = await apiFetch(
+              withDivisionQuery(
+                `/api/tournaments/${tournamentId}/change-discipline/?dry_run=true`,
+                currentDivisionId,
+              ),
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(
+                  withDivisionPayload(changePayload, currentDivisionId),
+                ),
+                toastOnError: false,
+              } as any,
+            );
+
+            if (!dry.ok) {
+              const data = await dry.json().catch(() => ({}));
+              const msg =
+                pickFirstError(data) ||
+                "Nie udało się sprawdzić zmiany dyscypliny.";
+              setInlineError(msg);
+              throw new Error(msg);
+            }
+
+            const dryData = await dry.json().catch(() => ({}));
+            const disciplineArchiveMessages = (dryData as any)
+              ?.archive_messages;
+            const disciplineNeedsConfirmation =
+              Boolean((dryData as any)?.reset_needed) ||
+              (Array.isArray(disciplineArchiveMessages) &&
+                disciplineArchiveMessages.length > 0);
+
+            if (disciplineNeedsConfirmation) {
+              const ok = await askConfirm({
+                title: "Zmiana dyscypliny",
+                message: `Ta zmiana usunie lub przeniesie do archiwum:\n${formatImpactList(
+                  disciplineArchiveMessages,
+                  "- dane niedopasowane do nowej dyscypliny",
+                )}\n\nCzy chcesz zapisać zmianę?`,
+                confirmLabel: "Zapisz",
+                cancelLabel: "Anuluj",
+              });
+
+              if (!ok) {
+                setDiscipline(initialDiscipline);
+                throw new Error("Anulowano zmianę dyscypliny.");
+              }
+            }
+
+            const res = await apiFetch(
+              withDivisionQuery(
+                `/api/tournaments/${tournamentId}/change-discipline/`,
+                currentDivisionId,
+              ),
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(
+                  withDivisionPayload(changePayload, currentDivisionId),
+                ),
+                toastOnError: false,
+              } as any,
+            );
+
+            if (!res.ok) {
+              const data = await res.json().catch(() => ({}));
+              const msg =
+                pickFirstError(data) || "Nie udało się zmienić dyscypliny.";
+              setInlineError(msg);
+              throw new Error(msg);
+            }
+
+            setInitialDiscipline(discipline);
+          }
+
+          const patch: Record<string, any> = {};
+          if (trimmedName !== initialName) patch.name = trimmedName;
+          if (trimmedDesc !== initialDescription)
+            patch.description = trimmedDesc ? trimmedDesc : null;
+
+          if (Object.keys(patch).length) {
+            const res = await apiFetch(
+              withDivisionQuery(
+                `/api/tournaments/${tournamentId}/`,
+                currentDivisionId,
+              ),
+              {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(
+                  withDivisionPayload(patch, currentDivisionId),
+                ),
+                toastOnError: false,
+              } as any,
+            );
+
+            if (!res.ok) {
+              const data = await res.json().catch(() => ({}));
+              const msg =
+                pickFirstError(data) ||
+                "Nie udało się zapisać danych turnieju.";
+              setInlineError(msg);
+              throw new Error(msg);
+            }
+
+            setInitialName(trimmedName);
+            setInitialDescription(trimmedDesc);
+          }
+        }
+
+        if (isCustomDiscipline) {
+          const payload: Record<string, any> = {
+            custom_discipline_name: customDisciplineName.trim(),
+            competition_type: competitionType,
+            competition_model: competitionModel,
+            tournament_format: format,
+            result_mode: "CUSTOM",
+            result_config: serializeCustomResultConfig({
+              ...resultConfig,
+              competition_model: competitionModel,
+            }),
+            format_config: buildFormatConfig(),
+          };
+
+          if (isCreateMode) {
+            payload.discipline = discipline;
+          }
+
+          if (!isCreateMode) {
+            const dry = await apiFetch(
+              withDivisionQuery(
+                `/api/tournaments/${tournamentId}/?dry_run=true`,
+                currentDivisionId,
+              ),
+              {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(
+                  withDivisionPayload(payload, currentDivisionId),
+                ),
+                toastOnError: false,
+              } as any,
+            );
+
+            if (!dry.ok) {
+              const data = await dry.json().catch(() => ({}));
+              const msg =
+                pickFirstError(data) ||
+                "Nie udało się sprawdzić zmiany konfiguracji.";
+              setInlineError(msg);
+              throw new Error(msg);
+            }
+
+            const dryData = await dry.json().catch(() => ({}));
+            const archiveMessages = (dryData as any)?.archive_messages;
+            const restoreItems = (dryData as any)?.restore_items;
+
+            if (Array.isArray(archiveMessages) && archiveMessages.length > 0) {
+              const ok = await askConfirm({
+                title: "Potwierdź zmianę konfiguracji",
+                message: `Ta zmiana przeniesie do archiwum:\n${formatImpactList(archiveMessages, "- dane aktywnej konfiguracji")}\n\nCzy chcesz zapisać zmianę?`,
+                confirmLabel: "Potwierdź",
+                cancelLabel: "Anuluj",
+              });
+
+              if (!ok) throw new Error("Anulowano zapis konfiguracji.");
+
+              payload.confirmed_destructive_change = true;
+            }
+
+            if (Boolean((dryData as any)?.restore_available)) {
+              const restoreArchived = await askConfirm({
+                title: "Znaleziono wcześniejsze dane",
+                message: `Dla dodawanych konkurencji lub etapów istnieją wcześniejsze dane w archiwum:\n${formatImpactList(restoreItems, "- wcześniejsze dane struktury")}\n\nWybierz sposób zapisania konfiguracji.`,
+                confirmLabel: "Przywróć",
+                cancelLabel: "Utwórz czystą",
+              });
+
+              payload.restore_archived_mass_start = restoreArchived;
             }
           }
 
-          const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/change-discipline/`, currentDivisionId), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(withDivisionPayload(changePayload, currentDivisionId)),
-            toastOnError: false,
-          } as any);
+          const res = await apiFetch(
+            withDivisionQuery(
+              `/api/tournaments/${tournamentId}/`,
+              currentDivisionId,
+            ),
+            {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(
+                withDivisionPayload(payload, currentDivisionId),
+              ),
+              toastOnError: false,
+            } as any,
+          );
 
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            const msg = pickFirstError(data) || "Nie udało się zmienić dyscypliny.";
+            const msg =
+              pickFirstError(data) || "Błąd zapisu konfiguracji custom.";
             setInlineError(msg);
             throw new Error(msg);
           }
 
           setInitialDiscipline(discipline);
-        }
+        } else {
+          const format_config = buildFormatConfig();
 
-        const patch: Record<string, any> = {};
-        if (trimmedName !== initialName) patch.name = trimmedName;
-        if (trimmedDesc !== initialDescription) patch.description = trimmedDesc ? trimmedDesc : null;
-
-        if (Object.keys(patch).length) {
-          const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/`, currentDivisionId), {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(withDivisionPayload(patch, currentDivisionId)),
-            toastOnError: false,
-          } as any);
-
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            const msg = pickFirstError(data) || "Nie udało się zapisać danych turnieju.";
-            setInlineError(msg);
-            throw new Error(msg);
-          }
-
-          setInitialName(trimmedName);
-          setInitialDescription(trimmedDesc);
-        }
-      }
-
-      if (isCustomDiscipline) {
-        const payload: Record<string, any> = {
-          custom_discipline_name: customDisciplineName.trim(),
-          competition_type: competitionType,
-          competition_model: competitionModel,
-          tournament_format: format,
-          result_mode: "CUSTOM",
-          result_config: serializeCustomResultConfig({ ...resultConfig, competition_model: competitionModel }),
-          format_config: buildFormatConfig(),
-        };
-
-        if (isCreateMode) {
-          payload.discipline = discipline;
-        }
-
-        if (!isCreateMode) {
-          const dry = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/?dry_run=true`, currentDivisionId), {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(withDivisionPayload(payload, currentDivisionId)),
-            toastOnError: false,
-          } as any);
+          const dry = await apiFetch(
+            withDivisionQuery(
+              `/api/tournaments/${tournamentId}/setup/?dry_run=true`,
+              currentDivisionId,
+            ),
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(
+                withDivisionPayload(
+                  { tournament_format: format, format_config },
+                  currentDivisionId,
+                ),
+              ),
+              toastOnError: false,
+            } as any,
+          );
 
           if (!dry.ok) {
             const data = await dry.json().catch(() => ({}));
-            const msg = pickFirstError(data) || "Nie udało się sprawdzić zmiany konfiguracji.";
+            const msg = pickFirstError(data) || "Błąd walidacji konfiguracji.";
             setInlineError(msg);
             throw new Error(msg);
           }
 
           const dryData = await dry.json().catch(() => ({}));
-          const archiveMessages = (dryData as any)?.archive_messages;
-          const restoreItems = (dryData as any)?.restore_items;
+          const resetNeeded = Boolean((dryData as any)?.reset_needed);
 
-          if (Array.isArray(archiveMessages) && archiveMessages.length > 0) {
+          if (!isCreateMode && resetNeeded) {
+            const archiveMessages = (dryData as any)?.archive_messages;
             const ok = await askConfirm({
               title: "Potwierdź zmianę konfiguracji",
-              message: `Ta zmiana przeniesie do archiwum:\n${formatImpactList(archiveMessages, "- dane aktywnej konfiguracji")}\n\nCzy chcesz zapisać zmianę?`,
+              message: `Ta zmiana usunie lub przeniesie do archiwum:\n${formatImpactList(archiveMessages, "- aktywne dane rozgrywek")}\n\nCzy chcesz zapisać zmianę?`,
               confirmLabel: "Potwierdź",
               cancelLabel: "Anuluj",
             });
-
             if (!ok) throw new Error("Anulowano zapis konfiguracji.");
-
-            payload.confirmed_destructive_change = true;
           }
 
-          if (Boolean((dryData as any)?.restore_available)) {
-            const restoreArchived = await askConfirm({
-              title: "Znaleziono wcześniejsze dane",
-              message: `Dla dodawanych konkurencji lub etapów istnieją wcześniejsze dane w archiwum:\n${formatImpactList(restoreItems, "- wcześniejsze dane struktury")}\n\nWybierz sposób zapisania konfiguracji.`,
-              confirmLabel: "Przywróć",
-              cancelLabel: "Utwórz czystą",
-            });
-
-            payload.restore_archived_mass_start = restoreArchived;
-          }
-        }
-
-        const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/`, currentDivisionId), {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(withDivisionPayload(payload, currentDivisionId)),
-          toastOnError: false,
-        } as any);
-
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          const msg = pickFirstError(data) || "Błąd zapisu konfiguracji custom.";
-          setInlineError(msg);
-          throw new Error(msg);
-        }
-
-        setInitialDiscipline(discipline);
-      } else {
-        const format_config = buildFormatConfig();
-
-        const dry = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/setup/?dry_run=true`, currentDivisionId), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(withDivisionPayload({ tournament_format: format, format_config }, currentDivisionId)),
-          toastOnError: false,
-        } as any);
-
-        if (!dry.ok) {
-          const data = await dry.json().catch(() => ({}));
-          const msg = pickFirstError(data) || "Błąd walidacji konfiguracji.";
-          setInlineError(msg);
-          throw new Error(msg);
-        }
-
-        const dryData = await dry.json().catch(() => ({}));
-        const resetNeeded = Boolean((dryData as any)?.reset_needed);
-
-        if (!isCreateMode && resetNeeded) {
-          const archiveMessages = (dryData as any)?.archive_messages;
-          const ok = await askConfirm({
-            title: "Potwierdź zmianę konfiguracji",
-            message: `Ta zmiana usunie lub przeniesie do archiwum:\n${formatImpactList(archiveMessages, "- aktywne dane rozgrywek")}\n\nCzy chcesz zapisać zmianę?`,
-            confirmLabel: "Potwierdź",
-            cancelLabel: "Anuluj",
-          });
-          if (!ok) throw new Error("Anulowano zapis konfiguracji.");
-        }
-
-        const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/setup/`, currentDivisionId), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(withDivisionPayload({ tournament_format: format, format_config }, currentDivisionId)),
-          toastOnError: false,
-        } as any);
-
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          const msg = pickFirstError(data) || "Błąd zapisu konfiguracji.";
-          setInlineError(msg);
-          throw new Error(msg);
-        }
-      }
-
-      const safeParticipants = clampInt(participants, 2, 10_000);
-      const participantsChanged = safeParticipants !== initialParticipantsRef.current;
-
-      if (!isCreateMode && participantsChanged && !isCustomDiscipline) {
-        const dryTeams = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/teams/setup/?dry_run=true`, currentDivisionId), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(
-            withDivisionPayload(
-              {
-                teams_count: safeParticipants,
-                participants_count: safeParticipants,
-              },
-              currentDivisionId
-            )
-          ),
-          toastOnError: false,
-        } as any);
-
-        if (!dryTeams.ok) {
-          const data = await dryTeams.json().catch(() => ({}));
-          const msg = pickFirstError(data) || "Nie udało się sprawdzić zmiany liczby uczestników.";
-          setInlineError(msg);
-          throw new Error(msg);
-        }
-
-        const dryTeamsData = await dryTeams.json().catch(() => ({}));
-        const participantArchiveMessages = (dryTeamsData as any)?.archive_messages;
-        const participantNeedsConfirmation =
-          Boolean((dryTeamsData as any)?.reset_needed) ||
-          (Array.isArray(participantArchiveMessages) && participantArchiveMessages.length > 0);
-
-        if (participantNeedsConfirmation) {
-          const ok = await askConfirm({
-            title: "Zmiana liczby uczestników",
-            message: `Ta zmiana usunie lub przeniesie do archiwum:\n${formatImpactList(
-              participantArchiveMessages,
-              "- dane rozgrywek powiązane z usuwanymi miejscami"
-            )}\n\nCzy chcesz zapisać zmianę?`,
-            confirmLabel: "Zapisz",
-            cancelLabel: "Anuluj",
-          });
-          if (!ok) throw new Error("Anulowano zmianę liczby uczestników.");
-        }
-      }
-
-      const teamsRes = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/teams/setup/`, currentDivisionId), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          withDivisionPayload(
+          const res = await apiFetch(
+            withDivisionQuery(
+              `/api/tournaments/${tournamentId}/setup/`,
+              currentDivisionId,
+            ),
             {
-              teams_count: safeParticipants,
-              participants_count: safeParticipants,
-            },
-            currentDivisionId
-          )
-        ),
-        toastOnError: false,
-      } as any);
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(
+                withDivisionPayload(
+                  { tournament_format: format, format_config },
+                  currentDivisionId,
+                ),
+              ),
+              toastOnError: false,
+            } as any,
+          );
 
-      if (!teamsRes.ok) {
-        const data = await teamsRes.json().catch(() => ({}));
-        const msg = pickFirstError(data) || "Nie udało się ustawić liczby uczestników.";
-        setInlineError(msg);
-        throw new Error(msg);
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            const msg = pickFirstError(data) || "Błąd zapisu konfiguracji.";
+            setInlineError(msg);
+            throw new Error(msg);
+          }
+        }
+
+        const safeParticipants = clampInt(participants, 2, 10_000);
+        const participantsChanged =
+          safeParticipants !== initialParticipantsRef.current;
+
+        if (!isCreateMode && participantsChanged && !isCustomDiscipline) {
+          const dryTeams = await apiFetch(
+            withDivisionQuery(
+              `/api/tournaments/${tournamentId}/teams/setup/?dry_run=true`,
+              currentDivisionId,
+            ),
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(
+                withDivisionPayload(
+                  {
+                    teams_count: safeParticipants,
+                    participants_count: safeParticipants,
+                  },
+                  currentDivisionId,
+                ),
+              ),
+              toastOnError: false,
+            } as any,
+          );
+
+          if (!dryTeams.ok) {
+            const data = await dryTeams.json().catch(() => ({}));
+            const msg =
+              pickFirstError(data) ||
+              "Nie udało się sprawdzić zmiany liczby uczestników.";
+            setInlineError(msg);
+            throw new Error(msg);
+          }
+
+          const dryTeamsData = await dryTeams.json().catch(() => ({}));
+          const participantArchiveMessages = (dryTeamsData as any)
+            ?.archive_messages;
+          const participantNeedsConfirmation =
+            Boolean((dryTeamsData as any)?.reset_needed) ||
+            (Array.isArray(participantArchiveMessages) &&
+              participantArchiveMessages.length > 0);
+
+          if (participantNeedsConfirmation) {
+            const ok = await askConfirm({
+              title: "Zmiana liczby uczestników",
+              message: `Ta zmiana usunie lub przeniesie do archiwum:\n${formatImpactList(
+                participantArchiveMessages,
+                "- dane rozgrywek powiązane z usuwanymi miejscami",
+              )}\n\nCzy chcesz zapisać zmianę?`,
+              confirmLabel: "Zapisz",
+              cancelLabel: "Anuluj",
+            });
+            if (!ok) throw new Error("Anulowano zmianę liczby uczestników.");
+          }
+        }
+
+        const teamsRes = await apiFetch(
+          withDivisionQuery(
+            `/api/tournaments/${tournamentId}/teams/setup/`,
+            currentDivisionId,
+          ),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(
+              withDivisionPayload(
+                {
+                  teams_count: safeParticipants,
+                  participants_count: safeParticipants,
+                },
+                currentDivisionId,
+              ),
+            ),
+            toastOnError: false,
+          } as any,
+        );
+
+        if (!teamsRes.ok) {
+          const data = await teamsRes.json().catch(() => ({}));
+          const msg =
+            pickFirstError(data) || "Nie udało się ustawić liczby uczestników.";
+          setInlineError(msg);
+          throw new Error(msg);
+        }
+
+        initialParticipantsRef.current = safeParticipants;
+        createdIdRef.current = String(tournamentId);
+        invalidateSummaryStats();
+
+        if (isCreateMode) {
+          navigate(
+            `/tournaments/${tournamentId}/detail/setup${currentDivisionId ? `?division_id=${currentDivisionId}` : ""}`,
+            { replace: true },
+          );
+        } else if (!options.silent) {
+          toast.success("Zapisano konfigurację.", { title: "Turniej" });
+        }
+
+        return { tournamentId, divisionId: currentDivisionId ?? null };
+      } catch (e: any) {
+        const msg = e?.message || "Nie udało się zapisać.";
+        if (isCreateMode && createdId) {
+          navigate(`/tournaments/${createdId}/setup`, {
+            replace: true,
+            state: { flashError: msg },
+          });
+          return {
+            tournamentId: createdId,
+            divisionId: currentDivisionId ?? null,
+          };
+        }
+        throw e;
+      } finally {
+        setSaving(false);
       }
-
-      initialParticipantsRef.current = safeParticipants;
-      createdIdRef.current = String(tournamentId);
-
-      if (isCreateMode) {
-        navigate(`/tournaments/${tournamentId}/detail/setup${currentDivisionId ? `?division_id=${currentDivisionId}` : ""}`, { replace: true });
-      } else {
-        toast.success("Zapisano konfigurację.", { title: "Turniej" });
-      }
-
-      return { tournamentId, divisionId: currentDivisionId ?? null };
-    } catch (e: any) {
-      const msg = e?.message || "Nie udało się zapisać.";
-      if (isCreateMode && createdId) {
-        navigate(`/tournaments/${createdId}/setup`, {
-          replace: true,
-          state: { flashError: msg },
-        });
-        return { tournamentId: createdId, divisionId: currentDivisionId ?? null };
-      }
-      throw e;
-    } finally {
-      setSaving(false);
-    }
-  }, [
-    isAssistantReadOnly,
-    isCreateMode,
-    dirty,
-    id,
-    name,
-    description,
-    discipline,
-    initialDiscipline,
-    initialName,
-    initialDescription,
-    format,
-    participants,
-    leagueMatches,
-    groupsCount,
-    groupMatches,
-    advanceFromGroup,
-    cupMatches,
-    finalMatches,
-    thirdPlace,
-    thirdPlaceMatches,
-    hbTableDrawMode,
-    hbKnockoutTiebreak,
-    hbPointsMode,
-    basketballResolutionMode,
-    wrestlingStyle,
-    wrestlingCompetitionMode,
-    tennisBestOf,
-    tennisPointsMode,
-    isBasketball,
-    isWrestling,
-    isTennis,
-    isCustomDiscipline,
-    customDisciplineName,
-    competitionType,
-    competitionModel,
-    resultConfig,
-    buildFormatConfig,
-    navigate,
-    askConfirm,
-    formatImpactList,
-    validateLocalBeforeSave,
-    effectiveDivisionId,
-  ]);
+    },
+    [
+      isAssistantReadOnly,
+      isCreateMode,
+      dirty,
+      id,
+      name,
+      description,
+      discipline,
+      initialDiscipline,
+      initialName,
+      initialDescription,
+      format,
+      participants,
+      leagueMatches,
+      groupsCount,
+      groupMatches,
+      advanceFromGroup,
+      cupMatches,
+      finalMatches,
+      thirdPlace,
+      thirdPlaceMatches,
+      hbTableDrawMode,
+      hbKnockoutTiebreak,
+      hbPointsMode,
+      basketballResolutionMode,
+      wrestlingStyle,
+      wrestlingCompetitionMode,
+      tennisBestOf,
+      tennisPointsMode,
+      isBasketball,
+      isWrestling,
+      isTennis,
+      isCustomDiscipline,
+      customDisciplineName,
+      competitionType,
+      competitionModel,
+      resultConfig,
+      buildFormatConfig,
+      navigate,
+      askConfirm,
+      formatImpactList,
+      validateLocalBeforeSave,
+      effectiveDivisionId,
+      invalidateSummaryStats,
+    ],
+  );
 
   const createDivision = useCallback(async () => {
-    if (isCreateMode || !id || !canEditTournament || divisionActionLoading) return;
+    if (isCreateMode || !id || !canEditTournament || divisionActionLoading)
+      return;
 
     const trimmedName = newDivisionName.trim();
     if (!trimmedName) {
@@ -1487,9 +2162,7 @@ export default function TournamentBasicsSetup() {
       setDivisionActionLoading(true);
       setInlineError(null);
 
-      if (dirty) {
-        await saveAll();
-      }
+      await saveAll({ force: true, silent: true });
 
       const res = await apiFetch(`/api/tournaments/${id}/divisions/`, {
         method: "POST",
@@ -1510,9 +2183,12 @@ export default function TournamentBasicsSetup() {
 
       const data = await res.json();
       const division = data?.division;
-      const divisionsPayload = Array.isArray(data?.divisions) ? data.divisions : [];
+      const divisionsPayload = Array.isArray(data?.divisions)
+        ? data.divisions
+        : [];
 
       setDivisions(divisionsPayload);
+      invalidateSummaryStats();
       setNewDivisionName("");
 
       if (division?.id) {
@@ -1535,13 +2211,15 @@ export default function TournamentBasicsSetup() {
     isCreateMode,
     newDivisionName,
     saveAll,
+    invalidateSummaryStats,
     searchParams,
     setSearchParams,
   ]);
 
   const archiveDivision = useCallback(
     async (division: DivisionSummaryDTO) => {
-      if (isCreateMode || !id || !canEditTournament || divisionActionLoading) return;
+      if (isCreateMode || !id || !canEditTournament || divisionActionLoading)
+        return;
 
       const ok = await askConfirm({
         title: "Archiwizacja dywizji",
@@ -1555,25 +2233,33 @@ export default function TournamentBasicsSetup() {
         setDivisionActionLoading(true);
         setInlineError(null);
 
-        const res = await apiFetch(`/api/tournaments/${id}/divisions/${division.id}/`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ is_archived: true }),
-          toastOnError: false,
-        } as any);
+        const res = await apiFetch(
+          `/api/tournaments/${id}/divisions/${division.id}/`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ is_archived: true }),
+            toastOnError: false,
+          } as any,
+        );
 
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          const msg = pickFirstError(data) || "Nie udało się zarchiwizować dywizji.";
+          const msg =
+            pickFirstError(data) || "Nie udało się zarchiwizować dywizji.";
           setInlineError(msg);
           return;
         }
 
         const data = await res.json();
-        const divisionsPayload = Array.isArray(data?.divisions) ? data.divisions : [];
-        const fallbackDivisionId = parseDivisionId(String(data?.fallback_division_id ?? "")) ?? null;
+        const divisionsPayload = Array.isArray(data?.divisions)
+          ? data.divisions
+          : [];
+        const fallbackDivisionId =
+          parseDivisionId(String(data?.fallback_division_id ?? "")) ?? null;
 
         setDivisions(divisionsPayload);
+        invalidateSummaryStats();
 
         if (division.id === effectiveDivisionId && fallbackDivisionId) {
           const nextSearch = new URLSearchParams(searchParams);
@@ -1595,14 +2281,16 @@ export default function TournamentBasicsSetup() {
       effectiveDivisionId,
       id,
       isCreateMode,
+      invalidateSummaryStats,
       searchParams,
       setSearchParams,
-    ]
+    ],
   );
 
   const saveDivisionRename = useCallback(
     async (division: DivisionSummaryDTO) => {
-      if (isCreateMode || !id || !canEditTournament || divisionActionLoading) return;
+      if (isCreateMode || !id || !canEditTournament || divisionActionLoading)
+        return;
 
       const trimmedName = editingDivisionName.trim();
       if (!trimmedName) {
@@ -1614,24 +2302,31 @@ export default function TournamentBasicsSetup() {
         setDivisionActionLoading(true);
         setInlineError(null);
 
-        const res = await apiFetch(`/api/tournaments/${id}/divisions/${division.id}/`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: trimmedName }),
-          toastOnError: false,
-        } as any);
+        const res = await apiFetch(
+          `/api/tournaments/${id}/divisions/${division.id}/`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: trimmedName }),
+            toastOnError: false,
+          } as any,
+        );
 
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          const msg = pickFirstError(data) || "Nie udało się zmienić nazwy dywizji.";
+          const msg =
+            pickFirstError(data) || "Nie udało się zmienić nazwy dywizji.";
           setInlineError(msg);
           return;
         }
 
         const data = await res.json();
-        const divisionsPayload = Array.isArray(data?.divisions) ? data.divisions : [];
+        const divisionsPayload = Array.isArray(data?.divisions)
+          ? data.divisions
+          : [];
 
         setDivisions(divisionsPayload);
+        invalidateSummaryStats();
         if (division.id === effectiveDivisionId) {
           setActiveDivisionName(trimmedName);
         }
@@ -1651,14 +2346,18 @@ export default function TournamentBasicsSetup() {
       editingDivisionName,
       effectiveDivisionId,
       id,
+      invalidateSummaryStats,
       isCreateMode,
-    ]
+    ],
   );
 
   const copyFormatFromDivision = useCallback(async () => {
-    if (isCreateMode || !id || !canEditTournament || !copySourceDivisionId) return;
+    if (isCreateMode || !id || !canEditTournament || !copySourceDivisionId)
+      return;
 
-    const sourceDivision = visibleDivisions.find((division) => division.id === copySourceDivisionId);
+    const sourceDivision = visibleDivisions.find(
+      (division) => division.id === copySourceDivisionId,
+    );
     const sourceDivisionName = sourceDivision?.name ?? "wybranej dywizji";
 
     const ok = await askConfirm({
@@ -1675,12 +2374,13 @@ export default function TournamentBasicsSetup() {
 
       const response = await apiFetch(
         withDivisionQuery(`/api/tournaments/${id}/`, copySourceDivisionId),
-        { toastOnError: false } as any
+        { toastOnError: false } as any,
       );
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        const msg = pickFirstError(data) || "Nie udało się skopiować ustawień formatu.";
+        const msg =
+          pickFirstError(data) || "Nie udało się skopiować ustawień formatu.";
         setInlineError(msg);
         return;
       }
@@ -1709,29 +2409,44 @@ export default function TournamentBasicsSetup() {
       setThirdPlaceMatches(sourceConfig.third_place_matches === 2 ? 2 : 1);
 
       setHbTableDrawMode(sourceConfig.handball_table_draw_mode ?? "ALLOW_DRAW");
-      setHbKnockoutTiebreak(sourceConfig.handball_knockout_tiebreak ?? "OVERTIME_PENALTIES");
+      setHbKnockoutTiebreak(
+        sourceConfig.handball_knockout_tiebreak ?? "OVERTIME_PENALTIES",
+      );
       setHbPointsMode(sourceConfig.handball_points_mode ?? "2_1_0");
-      setBasketballResolutionMode(sourceConfig.basketball_resolution_mode ?? "OVERTIME_ONLY");
+      setBasketballResolutionMode(
+        sourceConfig.basketball_resolution_mode ?? "OVERTIME_ONLY",
+      );
 
       setTennisBestOf(sourceConfig.tennis_best_of === 5 ? 5 : 3);
-      const tennisMode = (sourceConfig.tennis_points_mode ?? "NONE").toString().toUpperCase();
+      const tennisMode = (sourceConfig.tennis_points_mode ?? "NONE")
+        .toString()
+        .toUpperCase();
       setTennisPointsMode(tennisMode === "PLT" ? "PLT" : "NONE");
 
       if (discipline === "custom") {
-        setCompetitionType((sourceTournament.competition_type as CompetitionType) ?? "INDIVIDUAL");
-        setCompetitionModel((sourceTournament.competition_model as CompetitionModel) ?? "MASS_START");
+        setCompetitionType(
+          (sourceTournament.competition_type as CompetitionType) ??
+            "INDIVIDUAL",
+        );
+        setCompetitionModel(
+          (sourceTournament.competition_model as CompetitionModel) ??
+            "MASS_START",
+        );
         setResultConfig(
           deserializeCustomResultConfig(
-            sourceTournament.result_config && typeof sourceTournament.result_config === "object"
+            sourceTournament.result_config &&
+              typeof sourceTournament.result_config === "object"
               ? sourceTournament.result_config
               : {},
-            participants
-          )
+            participants,
+          ),
         );
       }
 
       markDirty();
-      toast.success("Skopiowano ustawienia formatu z wybranej dywizji.", { title: "Dywizje" });
+      toast.success("Skopiowano ustawienia formatu z wybranej dywizji.", {
+        title: "Dywizje",
+      });
     } catch {
       setInlineError("Nie udało się skopiować ustawień formatu.");
     } finally {
@@ -1752,7 +2467,10 @@ export default function TournamentBasicsSetup() {
   const goNext = useCallback(async () => {
     try {
       const { tournamentId, divisionId } = await saveAll();
-      navigate(`/tournaments/${tournamentId}/detail${divisionId ? `?division_id=${divisionId}` : ""}`, { replace: true });
+      navigate(
+        `/tournaments/${tournamentId}/detail${divisionId ? `?division_id=${divisionId}` : ""}`,
+        { replace: true },
+      );
     } catch (e: any) {
       const msg = e?.message || "Nie udało się zapisać.";
       setInlineError(msg);
@@ -1771,13 +2489,18 @@ export default function TournamentBasicsSetup() {
     return () => registerSave(null);
   }, [registerSave, saveAll, isAssistantReadOnly]);
 
-  const disableForm = loading || saving || divisionActionLoading || isAssistantReadOnly;
+  const disableForm =
+    loading || saving || divisionActionLoading || isAssistantReadOnly;
   const isTournamentCreated = !isCreateMode || Boolean(createdIdRef.current);
   const showLeagueOrGroupConfig = format === "LEAGUE" || format === "MIXED";
   const showKnockoutConfig = format === "CUP" || format === "MIXED";
   const usesPanelLayoutShell = !isCreateMode;
-  const pageClassName = usesPanelLayoutShell ? "w-full space-y-6" : "mx-auto w-full max-w-7xl space-y-6 py-8";
-  const loadingClassName = usesPanelLayoutShell ? "w-full" : "mx-auto w-full max-w-7xl py-8";
+  const pageClassName = usesPanelLayoutShell
+    ? "w-full space-y-6"
+    : "mx-auto w-full max-w-7xl space-y-6 py-8";
+  const loadingClassName = usesPanelLayoutShell
+    ? "w-full"
+    : "mx-auto w-full max-w-7xl py-8";
 
   const clearInlineError = useCallback(() => {
     if (inlineError) setInlineError(null);
@@ -1786,7 +2509,8 @@ export default function TournamentBasicsSetup() {
   useEffect(() => {
     if (!dirty || saving) return;
 
-    const message = "Masz niezapisane zmiany. Czy chcesz porzucić zmiany i opuścić stronę?";
+    const message =
+      "Masz niezapisane zmiany. Czy chcesz porzucić zmiany i opuścić stronę?";
 
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
@@ -1795,7 +2519,8 @@ export default function TournamentBasicsSetup() {
 
     const handleDocumentClick = (event: MouseEvent) => {
       if (event.defaultPrevented || event.button !== 0) return;
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+        return;
 
       const target = event.target as HTMLElement | null;
       const anchor = target?.closest("a[href]") as HTMLAnchorElement | null;
@@ -1831,7 +2556,7 @@ export default function TournamentBasicsSetup() {
       markDirty();
       clearInlineError();
     },
-    [clearInlineError, markDirty]
+    [clearInlineError, markDirty],
   );
 
   const onDescriptionChange = useCallback(
@@ -1840,7 +2565,7 @@ export default function TournamentBasicsSetup() {
       markDirty();
       clearInlineError();
     },
-    [clearInlineError, markDirty]
+    [clearInlineError, markDirty],
   );
 
   const onDisciplineChange = useCallback(
@@ -1863,7 +2588,7 @@ export default function TournamentBasicsSetup() {
       markDirty();
       clearInlineError();
     },
-    [clearInlineError, markDirty, participants]
+    [clearInlineError, markDirty, participants],
   );
 
   const onFormatChange = useCallback(
@@ -1873,7 +2598,7 @@ export default function TournamentBasicsSetup() {
       clearInlineError();
       if (v !== "CUP") setThirdPlace(false);
     },
-    [clearInlineError, markDirty]
+    [clearInlineError, markDirty],
   );
 
   const onParticipantsChange = useCallback(
@@ -1887,7 +2612,7 @@ export default function TournamentBasicsSetup() {
         setGroupsCount((prev) => clampInt(prev, 1, gMax));
       }
     },
-    [format, isCustomDiscipline, clearInlineError, markDirty]
+    [format, isCustomDiscipline, clearInlineError, markDirty],
   );
 
   const patchResultConfig = useCallback(
@@ -1896,19 +2621,21 @@ export default function TournamentBasicsSetup() {
       markDirty();
       clearInlineError();
     },
-    [clearInlineError, markDirty]
+    [clearInlineError, markDirty],
   );
 
   const updateStage = useCallback(
     (stageId: string, patch: Partial<CustomStageConfig>) => {
       setResultConfig((prev) => ({
         ...prev,
-        stages: prev.stages.map((stage) => (stage.id === stageId ? { ...stage, ...patch } : stage)),
+        stages: prev.stages.map((stage) =>
+          stage.id === stageId ? { ...stage, ...patch } : stage,
+        ),
       }));
       markDirty();
       clearInlineError();
     },
-    [clearInlineError, markDirty]
+    [clearInlineError, markDirty],
   );
 
   if (loading) {
@@ -1947,7 +2674,11 @@ export default function TournamentBasicsSetup() {
 
       <AnimatePresence>
         {inlineError && (
-          <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}>
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+          >
             <div className="space-y-2">
               <InlineAlert variant="error" title="Nie udało się zapisać">
                 {inlineError}
@@ -1964,7 +2695,6 @@ export default function TournamentBasicsSetup() {
 
       <div className="grid items-start gap-6 lg:grid-cols-[1.6fr_1fr]">
         <div className="space-y-6">
-
           <BasicsCard
             disableForm={disableForm}
             isCreateMode={isCreateMode}
@@ -1978,12 +2708,12 @@ export default function TournamentBasicsSetup() {
                 setInlineError(null);
                 await saveAll();
               } catch (e: any) {
-                setInlineError(e?.message || "Nie udało się utworzyć turnieju.");
+                setInlineError(
+                  e?.message || "Nie udało się utworzyć turnieju.",
+                );
               }
             }}
           />
-
-
 
           <StructureCard
             isTournamentCreated={isTournamentCreated}
@@ -1994,7 +2724,11 @@ export default function TournamentBasicsSetup() {
             participants={participants}
             showDivisionSection={!isCreateMode}
             activeDivisionName={activeDivisionName}
-            activeDivisionStatusLabel={activeDivisionStatus ? getDivisionStatusLabel(activeDivisionStatus) : null}
+            activeDivisionStatusLabel={
+              activeDivisionStatus
+                ? getDivisionStatusLabel(activeDivisionStatus)
+                : null
+            }
             visibleDivisions={structureDivisionItems}
             showDivisionTiles={shouldShowDivisionTiles}
             canEditDivisions={canEditTournament}
@@ -2079,7 +2813,9 @@ export default function TournamentBasicsSetup() {
               clearInlineError();
             }}
             onGroupsCountChange={(raw) => {
-              setGroupsCount(clampInt(Number(raw), 1, maxGroupsForMin2PerGroup));
+              setGroupsCount(
+                clampInt(Number(raw), 1, maxGroupsForMin2PerGroup),
+              );
               markDirty();
               clearInlineError();
             }}
@@ -2310,8 +3046,8 @@ export default function TournamentBasicsSetup() {
             isTournamentCreated={isTournamentCreated}
             discipline={discipline}
             format={format}
-            participants={participants}
-            preview={preview}
+            participants={summaryParticipants}
+            preview={summaryPreview}
             isAssistantReadOnly={isAssistantReadOnly}
             competitionType={competitionType}
             competitionModel={competitionModel}
@@ -2320,6 +3056,15 @@ export default function TournamentBasicsSetup() {
             basketballResolutionMode={basketballResolutionMode}
             wrestlingStyle={wrestlingStyle}
             wrestlingCompetitionMode={wrestlingCompetitionMode}
+            summaryScope={summaryScope}
+            summaryScopeOptions={summaryScopeOptions}
+            onSummaryScopeChange={setSummaryScope}
+            summaryScopeLabel={summaryScopeLabel}
+            summaryFormatLabel={summaryFormatLabel}
+            summaryFormat={summaryFormatValue}
+            summaryStatsLoading={summaryStatsLoading}
+            summaryStatsError={summaryStatsErrorForCard}
+            summaryIsExternal={isExternalSummaryScope}
           />
         </div>
       </div>
