@@ -1284,7 +1284,7 @@ function StageCard({
 
         <div className="space-y-2">
           <div className="text-xs font-semibold text-slate-300">
-            {isMultiEvent ? "Liczba grup / serii" : "Liczba grup"}
+            Liczba grup
           </div>
           <NumberInput
             value={stage.groupsCount}
@@ -1301,38 +1301,32 @@ function StageCard({
           </div>
         </div>
 
-        <div className="space-y-2">
-          <div className="text-xs font-semibold text-slate-300">
-            {isMultiEvent
-              ? "Liczba uczestników w konkurencji"
-              : "Liczba uczestników w etapie"}
+        {isMultiEvent ? (
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-xs leading-relaxed text-slate-300">
+            Liczba uczestników wynika z aktywnej dywizji. W tej konkurencji startują wszyscy aktywni uczestnicy dywizji.
           </div>
-          <NumberInput
-            value={effectiveParticipants}
-            min={
-              isMultiEvent
-                ? 1
-                : index === 0
-                  ? totalParticipants
-                  : minParticipants
-            }
-            max={maxParticipants}
-            disabled={disabled || !isMultiEvent}
-            onChange={(next) =>
-              onChange({ participantsCount: Math.max(1, next ?? 1) })
-            }
-            placeholder={
-              isMultiEvent ? "Np. 16" : "Liczba wyliczana automatycznie"
-            }
-          />
-          <div className="text-xs text-slate-400">
-            {isMultiEvent
-              ? "Można wpisać mniejszą liczbę, jeżeli uczestnik nie startuje w tej konkurencji."
-              : index === 0
+        ) : (
+          <div className="space-y-2">
+            <div className="text-xs font-semibold text-slate-300">
+              Liczba uczestników w etapie
+            </div>
+            <NumberInput
+              value={effectiveParticipants}
+              min={index === 0 ? totalParticipants : minParticipants}
+              max={maxParticipants}
+              disabled={true}
+              onChange={(next) =>
+                onChange({ participantsCount: Math.max(1, next ?? 1) })
+              }
+              placeholder="Liczba wyliczana automatycznie"
+            />
+            <div className="text-xs text-slate-400">
+              {index === 0
                 ? "Pierwszy etap zawsze startuje z pełną liczbą uczestników turnieju."
                 : "Ta wartość wynika z liczby awansujących z poprzedniego etapu."}
+            </div>
           </div>
-        </div>
+        )}
 
         {!isMultiEvent && (
           <div className="space-y-2">
@@ -2535,18 +2529,20 @@ export function StructureCard({
                 />
               </div>
 
-              <div className="space-y-2">
-                <div className="text-xs font-semibold text-slate-300">
-                  Rundy / próby domyślnie
+              {!isMultiEventStructure && (
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-slate-300">
+                    Rundy / próby domyślnie
+                  </div>
+                  <NumberInput
+                    value={resultConfig.massStartRoundsCount}
+                    min={1}
+                    max={20}
+                    disabled={disableForm}
+                    onChange={onMassStartRoundsCountChange ?? (() => undefined)}
+                  />
                 </div>
-                <NumberInput
-                  value={resultConfig.massStartRoundsCount}
-                  min={1}
-                  max={20}
-                  disabled={disableForm}
-                  onChange={onMassStartRoundsCountChange ?? (() => undefined)}
-                />
-              </div>
+              )}
 
               <div className="space-y-2">
                 <div className="text-xs font-semibold text-slate-300">
@@ -3512,6 +3508,10 @@ export function SummaryCard({
     externalSummaryFormat === "CUP" ||
     externalSummaryFormat === "MIXED" ||
     (!externalSummaryFormat && preview.koTotal > 0);
+  const showExternalMixedParams =
+    externalSummaryFormat === "MIXED" ||
+    (!externalSummaryFormat &&
+      (preview.groups > 0 || preview.advancing > 0));
 
   return (
     <Card
@@ -3584,6 +3584,15 @@ export function SummaryCard({
           {summaryIsExternal ? (
             <>
               <StatRow label="Uczestnicy" value={participants} />
+              {showExternalMixedParams ? (
+                <>
+                  <StatRow label="Liczba grup" value={preview.groups} />
+                  <StatRow
+                    label="Awansujących do pucharu"
+                    value={preview.advancing}
+                  />
+                </>
+              ) : null}
               {showExternalTableMatches ? (
                 <StatRow label="Mecze fazy tabeli" value={preview.groupTotal} />
               ) : null}
@@ -3704,10 +3713,12 @@ export function SummaryCard({
                     label="Jednostka / ranking"
                     value={massStartSummary(resultConfig)}
                   />
-                  <StatRow
-                    label="Rundy domyślne"
-                    value={`${resultConfig.massStartRoundsCount} • ${aggregationModeLabel(resultConfig.massStartAggregationMode)}`}
-                  />
+                  {resultConfig.stageStructureMode !== "MULTI_EVENT" && (
+                    <StatRow
+                      label="Rundy domyślne"
+                      value={`${resultConfig.massStartRoundsCount} • ${aggregationModeLabel(resultConfig.massStartAggregationMode)}`}
+                    />
+                  )}
                   <StatRow
                     label="Tryb struktury"
                     value={stageStructureModeLabel(
@@ -3755,7 +3766,7 @@ export function SummaryCard({
                       </div>
                       <div className="mt-1 text-xs leading-relaxed text-slate-300">
                         {resultConfig.stageStructureMode === "MULTI_EVENT"
-                          ? `grupy/serie: ${stage.groupsCount} • uczestnicy: ${stage.participantsCount ?? "-"} • próby: ${stage.roundsCount}`
+                          ? `grupy: ${stage.groupsCount} • próby: ${stage.roundsCount}`
                           : `grupy: ${stage.groupsCount} • uczestnicy: ${stage.participantsCount ?? "-"} • awans: ${stage.advanceCount ?? "-"} • rundy: ${stage.roundsCount}`}
                       </div>
                     </div>

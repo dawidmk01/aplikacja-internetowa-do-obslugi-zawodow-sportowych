@@ -823,6 +823,96 @@ class TournamentMassStartResultApiTests(TestCase):
         self.assertEqual(standings[0].get("team_id"), teams[1].id)
         self.assertEqual(standings[0].get("overall_display"), "45.00 pkt")
 
+    def test_multi_event_sum_results_ignores_invalid_attempt_when_valid_result_exists(self):
+        result_config = self._result_config(
+            stage_structure_mode=Tournament.RESULTCFG_STAGE_STRUCTURE_MULTI_EVENT,
+            multi_event_overall_mode=Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RESULTS,
+            rounds_count=3,
+            stages=[
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Przysiad",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 3,
+                },
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Wyciskanie leżąc",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 3,
+                },
+                {
+                    Tournament.RESULTCFG_STAGE_NAME_KEY: "Martwy ciąg",
+                    Tournament.RESULTCFG_STAGE_GROUPS_COUNT_KEY: 1,
+                    Tournament.RESULTCFG_STAGE_ROUNDS_COUNT_KEY: 3,
+                },
+            ],
+        )
+        result_config[Tournament.RESULTCFG_UNIT_PRESET_KEY] = Tournament.RESULTCFG_UNIT_PRESET_KILOGRAMS
+        result_config[Tournament.RESULTCFG_UNIT_KEY] = "kg"
+        result_config[Tournament.RESULTCFG_UNIT_LABEL_KEY] = "kg"
+
+        tournament, division, teams, stages = self._create_context(
+            name="Turniej MASS_START API trójbój",
+            teams_count=2,
+            result_config=result_config,
+            is_published=True,
+        )
+
+        self.client.force_authenticate(user=self.organizer)
+
+        payloads = [
+            (stages[0], teams[0], 1, {"numeric_value": "150"}),
+            (stages[0], teams[0], 2, {"numeric_value": "160"}),
+            (stages[0], teams[0], 3, {"numeric_value": "170"}),
+            (stages[1], teams[0], 1, {"numeric_value": "100"}),
+            (stages[1], teams[0], 2, {"numeric_value": "110"}),
+            (stages[1], teams[0], 3, {"numeric_value": "115"}),
+            (stages[2], teams[0], 1, {"numeric_value": "200"}),
+            (stages[2], teams[0], 2, {"numeric_value": "210"}),
+            (stages[2], teams[0], 3, {"numeric_value": "220"}),
+            (stages[0], teams[1], 1, {"numeric_value": "160"}),
+            (stages[0], teams[1], 2, {"numeric_value": "180"}),
+            (stages[0], teams[1], 3, {"result_status": "DSQ"}),
+            (stages[1], teams[1], 1, {"numeric_value": "100"}),
+            (stages[1], teams[1], 2, {"numeric_value": "110"}),
+            (stages[1], teams[1], 3, {"numeric_value": "117.5"}),
+            (stages[2], teams[1], 1, {"numeric_value": "190"}),
+            (stages[2], teams[1], 2, {"numeric_value": "210"}),
+            (stages[2], teams[1], 3, {"numeric_value": "220"}),
+        ]
+
+        for stage, team, round_number, result_payload in payloads:
+            response = self.client.post(
+                self._panel_url(tournament, division),
+                {
+                    "stage_id": stage.id,
+                    "group_id": self._first_group(stage).id,
+                    "team_id": team.id,
+                    "round_number": round_number,
+                    **result_payload,
+                },
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+
+        self.client.force_authenticate(user=None)
+        response = self.client.get(self._public_url(tournament, division))
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        standings = data.get("overall_standings") or []
+
+        self.assertEqual(data.get("overall_mode"), Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RESULTS)
+        self.assertEqual(standings[0].get("team_id"), teams[1].id)
+        self.assertEqual(standings[0].get("rank"), 1)
+        self.assertEqual(standings[0].get("overall_display"), "517.50 kg")
+        self.assertEqual(standings[0].get("special_statuses_count"), 0)
+        self.assertEqual(
+            standings[0].get("event_results", [])[0].get("overall_contribution_display"),
+            "180.00 kg",
+        )
+        self.assertEqual(standings[1].get("team_id"), teams[0].id)
+        self.assertEqual(standings[1].get("overall_display"), "505.00 kg")
+
     def test_time_mass_start_result_uses_time_ms_and_display_value(self):
         result_config = self._result_config(
             value_kind=Tournament.RESULTCFG_VALUE_KIND_TIME,

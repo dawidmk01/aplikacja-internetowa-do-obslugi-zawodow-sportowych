@@ -51,6 +51,25 @@ def _validate_code_or_400(tournament: Tournament, code: str) -> Optional[Respons
     return None
 
 
+def _registration_division_payload(division: Division) -> dict:
+    return {
+        "id": division.id,
+        "name": division.name,
+        "slug": division.slug or str(division.id),
+        "order": division.order,
+        "is_default": division.is_default,
+        "is_archived": division.is_archived,
+        "status": division.status,
+    }
+
+
+def _active_registration_divisions_payload(tournament: Tournament) -> list[dict]:
+    return [
+        _registration_division_payload(division)
+        for division in tournament.divisions.filter(is_archived=False).order_by("order", "id")
+    ]
+
+
 def _tournament_real_started(tournament: Tournament, division: Optional[Division]) -> bool:
     qs = Match.objects.filter(tournament=tournament).exclude(Q(home_team__name__iexact=BYE_TEAM_NAME) | Q(away_team__name__iexact=BYE_TEAM_NAME))
     if division is not None:
@@ -131,8 +150,21 @@ class TournamentRegistrationVerifyView(APIView):
         if denied:
             return denied
 
-        division = resolve_request_division(request, tournament)
-        return Response({"detail": "OK", "division_id": getattr(division, "id", None)}, status=status.HTTP_200_OK)
+        raw_division = request.query_params.get("division_id") or request.query_params.get("active_division_id")
+        division = resolve_request_division(request, tournament) if raw_division else tournament.get_default_division()
+        divisions = _active_registration_divisions_payload(tournament)
+        selected_division_id = getattr(division, "id", None)
+        if selected_division_id and not any(item["id"] == selected_division_id for item in divisions):
+            selected_division_id = divisions[0]["id"] if divisions else None
+
+        return Response(
+            {
+                "detail": "OK",
+                "division_id": selected_division_id,
+                "divisions": divisions,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class TournamentRegistrationJoinView(APIView):

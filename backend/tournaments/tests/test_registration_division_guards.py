@@ -104,6 +104,43 @@ class TournamentRegistrationDivisionGuardTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json().get("division_id"), self.second_division.id)
 
+    def test_verify_returns_all_non_archived_divisions_for_join_selector(self):
+        draft_division = Division.objects.create(
+            tournament=self.tournament,
+            name="Dywizja robocza",
+            competition_type=Tournament.CompetitionType.TEAM,
+            competition_model=Tournament.CompetitionModel.HEAD_TO_HEAD,
+            tournament_format=Tournament.TournamentFormat.LEAGUE,
+            result_mode=Tournament.ResultMode.SCORE,
+            status=Tournament.Status.DRAFT,
+        )
+        archived_division = Division.objects.create(
+            tournament=self.tournament,
+            name="Dywizja archiwalna",
+            competition_type=Tournament.CompetitionType.TEAM,
+            competition_model=Tournament.CompetitionModel.HEAD_TO_HEAD,
+            tournament_format=Tournament.TournamentFormat.LEAGUE,
+            result_mode=Tournament.ResultMode.SCORE,
+            status=Tournament.Status.CONFIGURED,
+            is_archived=True,
+        )
+
+        self.client.force_authenticate(user=self.participant)
+
+        response = self.client.post(
+            self._verify_url(self.default_division),
+            {"code": "JOIN123"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        division_ids = {item.get("id") for item in response.json().get("divisions", [])}
+        self.assertSetEqual(
+            division_ids,
+            {self.default_division.id, self.second_division.id, draft_division.id},
+        )
+        self.assertNotIn(archived_division.id, division_ids)
+
     def test_join_claims_slot_only_in_selected_division(self):
         response = self._join(
             self.participant,

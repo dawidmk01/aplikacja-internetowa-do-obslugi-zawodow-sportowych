@@ -48,11 +48,22 @@ export default function ForgotPassword() {
     setLoading(true);
 
     try {
-      await apiFetch("/api/auth/password-reset/", {
+      const res = await apiFetch("/api/auth/password-reset/", {
         method: "POST",
         body: JSON.stringify({ email: normalizedEmail }),
         toastOnError: false,
       });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        const detail =
+          typeof data?.detail === "string" && data.detail.trim()
+            ? data.detail
+            : "Nie udało się wysłać linku resetu hasła.";
+
+        setError(detail);
+        return;
+      }
 
       setMessage(SAFE_MSG);
       setEmail("");
@@ -104,7 +115,7 @@ export default function ForgotPassword() {
                 />
                 <Input
                   id="forgot_email"
-                  type="text"
+                  type="email"
                   inputMode="email"
                   className={cn(
                     "rounded-2xl bg-white/[0.04] py-2.5 pl-10 pr-3",
@@ -113,12 +124,15 @@ export default function ForgotPassword() {
                   value={email}
                   autoComplete="email"
                   placeholder="np. jan.kowalski@example.com"
+                  disabled={loading}
+                  aria-invalid={Boolean(error)}
                   onChange={(e) => setEmail(e.target.value)}
                 />
               </div>
             </div>
 
             <Button
+              type="submit"
               variant="secondary"
               className="w-full justify-center"
               disabled={loading}

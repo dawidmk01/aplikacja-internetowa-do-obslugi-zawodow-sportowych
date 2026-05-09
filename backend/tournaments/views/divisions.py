@@ -8,13 +8,12 @@ from django.shortcuts import get_object_or_404
 from django.utils.text import slugify
 
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from tournaments.access import can_edit_tournament_detail
-from tournaments.models import Division, Stage, Team, Tournament
-from tournaments.services.match_generation import BYE_TEAM_NAME, ensure_matches_generated
+from tournaments.models import Division, Team, Tournament
 
 
 def _division_payload(division: Division) -> dict:
@@ -33,40 +32,30 @@ def _all_divisions_payload(tournament: Tournament) -> list[dict]:
     return [_division_payload(item) for item in tournament.divisions.all().order_by("order", "id")]
 
 
-def _division_has_generated_structure(tournament: Tournament, division: Division) -> bool:
-    return Stage.objects.filter(tournament=tournament, division=division, is_archived=False).exists()
-
-
-def _active_participants_count(tournament: Tournament, division: Division) -> int:
-    return (
-        Team.objects.filter(tournament=tournament, division=division, is_active=True)
-        .exclude(name=BYE_TEAM_NAME)
-        .count()
-    )
-
-
-def _ensure_division_structure_if_ready(tournament: Tournament, division: Division | None) -> bool:
-    if division is None or division.is_archived or division.status == Tournament.Status.FINISHED:
-        return False
-
-    if not _division_has_generated_structure(tournament, division):
-        if _active_participants_count(tournament, division) < 2:
-            return False
-        ensure_matches_generated(tournament, division=division)
-
-    if _division_has_generated_structure(tournament, division):
-        if division.status == Tournament.Status.DRAFT:
-            division.status = Tournament.Status.CONFIGURED
-            division.save(update_fields=["status"])
-        return True
-
-    return False
-
-
 def _get_slot_prefix(competition_type: str | None) -> str:
     if competition_type == Tournament.CompetitionType.INDIVIDUAL:
         return "Zawodnik"
     return "Drużyna"
+
+
+def _to_positive_int(value: object, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+
+    if parsed <= 0:
+        return default
+
+    return parsed
+
+
+def _initial_slots_count(format_config: dict | None) -> int:
+    config = dict(format_config or {})
+    groups_count = _to_positive_int(config.get("groups_count"), 1)
+    participants_count = _to_positive_int(config.get("participants_count"), 0)
+
+    return max(2, participants_count, groups_count * 2)
 
 
 def _clone_division_config(source: Division | None, tournament: Tournament) -> dict:
@@ -122,7 +111,42 @@ def _sync_legacy_tournament_config(tournament: Tournament, division: Division) -
 
 
 class TournamentDivisionListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get(self, request, pk: int):
+        tournament = get_object_or_404(Tournament, pk=pk)
+
+        raw_join_code = (
+            request.query_params.get("join_code")
+            or request.query_params.get("registration_code")
+            or request.query_params.get("code")
+            or ""
+        ).strip()
+        join_code_matches = bool(
+            raw_join_code
+            and getattr(tournament, "registration_code", None)
+            and raw_join_code == str(tournament.registration_code).strip()
+        )
+        public_listing_allowed = bool(
+            getattr(tournament, "is_published", False)
+            or getattr(tournament, "join_enabled", False)
+            or join_code_matches
+        )
+        authenticated_listing_allowed = bool(
+            request.user
+            and request.user.is_authenticated
+            and can_edit_tournament_detail(request.user, tournament)
+        )
+
+        if not public_listing_allowed and not authenticated_listing_allowed:
+            return Response({"detail": "Brak dostępu do listy dywizji."}, status=status.HTTP_403_FORBIDDEN)
+
+        divisions = tournament.divisions.filter(is_archived=False).order_by("order", "id")
+        items = [_division_payload(division) for division in divisions]
+        return Response({"count": len(items), "results": items}, status=status.HTTP_200_OK)
 
     @transaction.atomic
     def post(self, request, pk: int):
@@ -168,8 +192,6 @@ class TournamentDivisionListCreateView(APIView):
         if source_division is None:
             source_division = tournament.get_default_division()
 
-        _ensure_division_structure_if_ready(tournament, source_division)
-
         next_order = (
             tournament.divisions.order_by("-order", "-id").first().order + 1
             if tournament.divisions.exists()
@@ -187,17 +209,21 @@ class TournamentDivisionListCreateView(APIView):
             **_clone_division_config(source_division, tournament),
         )
 
-        # Nowa dywizja dostaje minimalną obsadę roboczą, aby setup mógł od razu działać.
+        # Robocze sloty zapewniają możliwość wejścia w konfigurację bez generowania struktury rozgrywek.
         slot_prefix = _get_slot_prefix(division.competition_type)
+        initial_slots_count = _initial_slots_count(division.format_config)
+
         Team.objects.bulk_create(
             [
-                Team(tournament=tournament, division=division, name=f"{slot_prefix} 1", is_active=True),
-                Team(tournament=tournament, division=division, name=f"{slot_prefix} 2", is_active=True),
+                Team(
+                    tournament=tournament,
+                    division=division,
+                    name=f"{slot_prefix} {index}",
+                    is_active=True,
+                )
+                for index in range(1, initial_slots_count + 1)
             ]
         )
-
-        # Nowo utworzona dywizja jest od razu doprowadzana do spójnej struktury startowej.
-        _ensure_division_structure_if_ready(tournament, division)
 
         return Response(
             {

@@ -315,6 +315,7 @@ export async function apiFetch(path: string, init: ApiFetchInit = {}): Promise<R
     }
 
     return res;
+
   } catch {
     const message = "Brak połączenia z serwerem. Sprawdź internet i spróbuj ponownie.";
 

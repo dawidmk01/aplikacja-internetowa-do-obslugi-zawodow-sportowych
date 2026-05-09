@@ -705,8 +705,13 @@ export default function TournamentSchedule() {
   }, [tournament?.competition_model, tournament?.discipline]);
 
   const currentMeta = (tournamentAutosave.drafts["meta"] ?? toMetaDraft(tournament)) as TournamentMetaDraft | null;
+  const currentMetaRef = useRef<TournamentMetaDraft | null>(null);
   const metaStatus = tournamentAutosave.statuses["meta"] ?? "idle";
   const metaError = tournamentAutosave.errors["meta"] ?? null;
+
+  useEffect(() => {
+    currentMetaRef.current = currentMeta;
+  }, [currentMeta]);
 
   // -------------------------------------------------------------------------
   // Meta update helpers – każda z tych funkcji ustawia lastEditedEntity
@@ -714,18 +719,24 @@ export default function TournamentSchedule() {
 
   const updateMetaDraft = useCallback(
     (patch: Partial<TournamentMetaDraft>) => {
-      if (!currentMeta) return;
-      tournamentAutosave.update("meta", { ...currentMeta, ...patch });
+      const baseMeta = currentMetaRef.current ?? currentMeta;
+      if (!baseMeta) return;
+
+      const nextMeta = { ...baseMeta, ...patch };
+      currentMetaRef.current = nextMeta;
+      tournamentAutosave.update("meta", nextMeta);
     },
     [currentMeta, tournamentAutosave]
   );
 
   const updateStageSchedule = useCallback(
     (stageId: number, patch: Partial<ScheduleStageDTO>) => {
-      if (!currentMeta) return;
+      const baseMeta = currentMetaRef.current ?? currentMeta;
+      if (!baseMeta) return;
+
       setLastEditedEntity({ type: "stage", id: stageId });
       updateMetaDraft({
-        stage_schedule: currentMeta.stage_schedule.map((stage) =>
+        stage_schedule: baseMeta.stage_schedule.map((stage) =>
           stage.stage_id === stageId ? { ...stage, ...patch } : stage
         ),
       });
@@ -735,10 +746,12 @@ export default function TournamentSchedule() {
 
   const updateGroupSchedule = useCallback(
     (groupId: number, patch: Partial<ScheduleGroupDTO>) => {
-      if (!currentMeta) return;
+      const baseMeta = currentMetaRef.current ?? currentMeta;
+      if (!baseMeta) return;
+
       setLastEditedEntity({ type: "group", id: groupId });
       updateMetaDraft({
-        group_schedule: currentMeta.group_schedule.map((group) =>
+        group_schedule: baseMeta.group_schedule.map((group) =>
           group.group_id === groupId ? { ...group, ...patch } : group
         ),
       });
@@ -748,6 +761,7 @@ export default function TournamentSchedule() {
 
   const forceSaveMeta = useCallback(
     (nextMeta: TournamentMetaDraft) => {
+      currentMetaRef.current = nextMeta;
       tournamentAutosave.update("meta", nextMeta);
       void tournamentAutosave.forceSave("meta", nextMeta);
     },
@@ -799,8 +813,10 @@ export default function TournamentSchedule() {
   );
 
   const commitMeta = useCallback(() => {
-    if (!currentMeta) return;
-    void tournamentAutosave.forceSave("meta", currentMeta);
+    const latestMeta = currentMetaRef.current ?? currentMeta;
+    if (!latestMeta) return;
+
+    void tournamentAutosave.forceSave("meta", latestMeta);
   }, [currentMeta, tournamentAutosave]);
 
   // -------------------------------------------------------------------------

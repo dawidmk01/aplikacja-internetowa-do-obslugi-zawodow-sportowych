@@ -1684,13 +1684,13 @@ function BracketPremium({
       ref={hostRef}
       className={cn(
         "relative",
-        isFullscreen && "fixed inset-0 z-50 overflow-hidden bg-slate-950/95 backdrop-blur"
+        isFullscreen && "fixed inset-0 z-50 flex flex-col overflow-hidden bg-slate-950/95 backdrop-blur"
       )}
     >
       <div
         className={cn(
           "mb-3 flex flex-wrap items-center justify-between gap-3",
-          isFullscreen && "px-4 pt-4"
+          isFullscreen && "shrink-0 px-4 pt-4"
         )}
       >
         <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
@@ -1734,7 +1734,7 @@ function BracketPremium({
         className={cn(
           "relative overflow-auto rounded-2xl border border-white/10 bg-white/[0.03] transition-[height] duration-200",
           dragging ? "cursor-grabbing select-none" : "cursor-grab",
-          isFullscreen ? "h-[calc(100vh-110px)]" : "max-h-[620px] min-h-[320px]"
+          isFullscreen ? "min-h-0 flex-1" : "max-h-[620px] min-h-[320px]"
         )}
       >
         <div
@@ -1781,7 +1781,7 @@ function BracketPremium({
       </div>
 
       {data.third_place ? (
-        <div className={cn("mt-4", isFullscreen && "px-4 pb-4")}>
+        <div className={cn("mt-4", isFullscreen && "shrink-0 px-4 pb-4")}>
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
             Mecz o 3. miejsce
           </div>

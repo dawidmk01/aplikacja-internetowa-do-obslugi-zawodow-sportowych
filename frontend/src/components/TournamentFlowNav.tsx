@@ -246,7 +246,8 @@ export default function TournamentFlowNav({ getCreatedId, className, side = "bot
     (stepIndex: number) => {
       if (!resolvedId) return;
       const target = FLOW_STEPS[stepIndex];
-      navigate(`${target.path(resolvedId)}${buildNextSearch()}`);
+      const targetPath = target.path(resolvedId).split("?")[0];
+      navigate(`${targetPath}${buildNextSearch()}`);
       setMobileDivisionOpen(false);
     },
     [buildNextSearch, navigate, resolvedId]

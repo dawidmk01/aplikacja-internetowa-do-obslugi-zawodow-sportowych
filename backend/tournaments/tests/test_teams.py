@@ -322,6 +322,43 @@ class TournamentTeamSetupApiTests(TestCase):
         self.assertTrue(Stage.objects.filter(tournament=tournament, division=division).exists())
         self.assertTrue(Match.objects.filter(tournament=tournament, stage__division=division).exists())
 
+    def test_team_setup_regenerates_structure_when_only_archived_stage_exists(self):
+        from tournaments.models import Match, Stage
+
+        tournament, division = self._create_tournament_via_api()
+
+        Stage.objects.filter(tournament=tournament, division=division).update(is_archived=True)
+
+        self.assertTrue(Stage.objects.filter(tournament=tournament, division=division, is_archived=True).exists())
+        self.assertFalse(Stage.objects.filter(tournament=tournament, division=division, is_archived=False).exists())
+        self.assertFalse(
+            Match.objects.filter(
+                tournament=tournament,
+                stage__division=division,
+                stage__is_archived=False,
+            ).exists()
+        )
+
+        response = self.client.post(
+            f"/api/tournaments/{tournament.id}/teams/setup/?division_id={division.id}",
+            {"teams_count": 2},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json().get("upgraded"))
+
+        division.refresh_from_db()
+        self.assertEqual(division.status, Tournament.Status.CONFIGURED)
+        self.assertTrue(Stage.objects.filter(tournament=tournament, division=division, is_archived=False).exists())
+        self.assertTrue(
+            Match.objects.filter(
+                tournament=tournament,
+                stage__division=division,
+                stage__is_archived=False,
+            ).exists()
+        )
+
     def test_team_setup_updates_only_selected_division(self):
         tournament, default_division = self._create_tournament_via_api()
 

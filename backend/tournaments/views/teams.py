@@ -617,7 +617,11 @@ class TournamentTeamUpdateView(APIView):
             active_only=True,
             exclude_bye=True,
         ).count()
-        had_structure = Stage.objects.filter(tournament=tournament, division=division).exists()
+        had_structure = Stage.objects.filter(
+            tournament=tournament,
+            division=division,
+            is_archived=False,
+        ).exists()
 
         team.is_active = False
         team.save(update_fields=["is_active"])
@@ -808,7 +812,11 @@ class TournamentTeamSetupView(APIView):
             active_only=True,
             exclude_bye=True,
         ).count()
-        had_structure = Stage.objects.filter(tournament=tournament, division=division).exists()
+        had_structure = Stage.objects.filter(
+            tournament=tournament,
+            division=division,
+            is_archived=False,
+        ).exists()
         restore_archived_slots = _payload_bool(request.data, "restore_archived_slots", True)
 
         active_after = _sync_participant_slots(
@@ -1146,7 +1154,8 @@ class TournamentTeamNameChangeRequestListView(APIView):
 
     def get(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
-        division = _current_division(request, tournament)
+        raw_division_filter = request.query_params.get("division_id") or request.query_params.get("active_division_id")
+        division = _current_division(request, tournament) if raw_division_filter not in (None, "") else None
 
         status_q = _norm_name(str(request.query_params.get("status") or "")).upper() or None
         team_id_q = request.query_params.get("team_id")
@@ -1158,7 +1167,7 @@ class TournamentTeamNameChangeRequestListView(APIView):
         if can_approve_name_changes(request.user, tournament):
             qs = (
                 TeamNameChangeRequest.objects.filter(tournament=tournament)
-                .select_related("team", "requested_by")
+                .select_related("team", "team__division", "requested_by")
                 .order_by("-created_at")
             )
 
@@ -1180,6 +1189,8 @@ class TournamentTeamNameChangeRequestListView(APIView):
                     "old_name": req.old_name,
                     "requested_name": req.requested_name,
                     "requested_by_id": req.requested_by_id,
+                    "division_id": req.team.division_id if req.team_id else None,
+                    "division_name": req.team.division.name if req.team_id and req.team.division_id else None,
                     "created_at": req.created_at,
                     "status": req.status,
                 }
@@ -1509,7 +1520,8 @@ class TournamentDivisionChangeRequestListCreateView(APIView):
 
     def get(self, request, pk: int):
         tournament = get_object_or_404(Tournament, pk=pk)
-        division = _current_division(request, tournament)
+        raw_division_filter = request.query_params.get("division_id") or request.query_params.get("active_division_id")
+        division = _current_division(request, tournament) if raw_division_filter not in (None, "") else None
 
         status_q = _norm_name(str(request.query_params.get("status") or "")).upper() or None
 

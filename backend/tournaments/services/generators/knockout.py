@@ -217,7 +217,7 @@ def generate_next_knockout_stage(stage: Stage) -> Stage:
             tournament=tournament,
             division=division,
             losers_source_matches=matches,
-            order=next_stage.order,
+            order=next_stage.order + 1,
             cup_matches=cup_matches,
         )
 
@@ -253,7 +253,11 @@ def _maybe_create_third_place_stage(
     order: int,
     cup_matches: int,
 ) -> None:
-    stage_qs = Stage.objects.filter(tournament=tournament, stage_type=Stage.StageType.THIRD_PLACE)
+    stage_qs = Stage.objects.filter(
+        tournament=tournament,
+        stage_type=Stage.StageType.THIRD_PLACE,
+        is_archived=False,
+    )
     if division is not None:
         stage_qs = stage_qs.filter(division=division)
 

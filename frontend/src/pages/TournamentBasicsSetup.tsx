@@ -176,15 +176,132 @@ function parseTournamentFormat(value: unknown): TournamentFormat | null {
   return null;
 }
 
+function readPositiveInt(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.trunc(parsed);
+}
+
+function readMatchesPerPair(value: unknown): 1 | 2 {
+  return Number(value) === 2 ? 2 : 1;
+}
+
+function readFormatConfig(value: unknown): Record<string, any> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, any>;
+}
+
+function buildPreviewFromFormatConfig(
+  participants: number,
+  tournamentFormat: TournamentFormat | null,
+  formatConfig: unknown,
+  fallbackPreview: MatchesPreview,
+): MatchesPreview {
+  if (!tournamentFormat || participants < 2) return fallbackPreview;
+
+  const cfg = readFormatConfig(formatConfig);
+  const p = clampInt(participants, 2, 10_000);
+  const cupMatches = readMatchesPerPair(cfg.cup_matches);
+  const finalMatches = readMatchesPerPair(cfg.final_matches);
+  const thirdPlaceMatches = readMatchesPerPair(cfg.third_place_matches);
+  const thirdPlace = Boolean(cfg.third_place);
+
+  if (tournamentFormat === "LEAGUE") {
+    const leagueMatches = readMatchesPerPair(cfg.league_matches);
+    const groupTotal = roundRobinMatches(p, leagueMatches);
+
+    return {
+      total: groupTotal,
+      groupTotal,
+      koTotal: 0,
+      groups: 0,
+      advancing: 0,
+    };
+  }
+
+  if (tournamentFormat === "CUP") {
+    const koRoundsMatches = Math.max(0, (p - 2) * cupMatches);
+    const koTotal =
+      koRoundsMatches + finalMatches + (thirdPlace ? thirdPlaceMatches : 0);
+
+    return {
+      total: koTotal,
+      groupTotal: 0,
+      koTotal,
+      groups: 0,
+      advancing: 0,
+    };
+  }
+
+  const defaultGroups = defaultGroupsCountFor4PerGroup(p);
+  const maxGroups = Math.max(1, Math.floor(p / 2));
+  const safeGroups = clampInt(
+    readPositiveInt(cfg.groups_count, defaultGroups),
+    1,
+    maxGroups,
+  );
+  const sizes = splitIntoGroups(p, safeGroups);
+  const groupMatches = readMatchesPerPair(cfg.group_matches);
+  const groupTotal = sizes.reduce(
+    (sum, size) => sum + roundRobinMatches(size, groupMatches),
+    0,
+  );
+  const minSize = sizes.length ? Math.min(...sizes) : 2;
+  const advanceFromGroup = clampInt(
+    readPositiveInt(cfg.advance_from_group, 2),
+    1,
+    Math.max(1, minSize),
+  );
+  const advancing = sizes.length * advanceFromGroup;
+
+  if (advancing < 2) {
+    return {
+      total: groupTotal,
+      groupTotal,
+      koTotal: 0,
+      groups: sizes.length,
+      advancing,
+    };
+  }
+
+  const koRoundsMatches = Math.max(0, (advancing - 2) * cupMatches);
+  const koTotal =
+    koRoundsMatches + finalMatches + (thirdPlace ? thirdPlaceMatches : 0);
+
+  return {
+    total: groupTotal + koTotal,
+    groupTotal,
+    koTotal,
+    groups: sizes.length,
+    advancing,
+  };
+}
+
 function parseDivisionSummaryStats(
   teamsPayload: any,
   matchesPayload: any,
   tournamentPayload: any = null,
 ): SummaryScopeStats {
+  const participants = parseTeamCount(teamsPayload);
+  const tournamentFormat = parseTournamentFormat(
+    tournamentPayload?.tournament_format,
+  );
+  const matchesPreview = buildPreviewFromMatches(matchesPayload);
+  const isCustomMassStart =
+    tournamentPayload?.discipline === "custom" &&
+    tournamentPayload?.competition_model === "MASS_START";
+
   return {
-    participants: parseTeamCount(teamsPayload),
-    preview: buildPreviewFromMatches(matchesPayload),
-    tournamentFormat: parseTournamentFormat(tournamentPayload?.tournament_format),
+    participants,
+    preview: isCustomMassStart
+      ? matchesPreview
+      : buildPreviewFromFormatConfig(
+          participants,
+          tournamentFormat,
+          tournamentPayload?.format_config,
+          matchesPreview,
+        ),
+    tournamentFormat,
   };
 }
 
@@ -196,14 +313,20 @@ function mergeSummaryStats(items: SummaryScopeStats[]): SummaryScopeStats {
         total: acc.preview.total + item.preview.total,
         groupTotal: acc.preview.groupTotal + item.preview.groupTotal,
         koTotal: acc.preview.koTotal + item.preview.koTotal,
-        groups: 0,
-        advancing: 0,
+        groups: acc.preview.groups + item.preview.groups,
+        advancing: acc.preview.advancing + item.preview.advancing,
       },
       tournamentFormat: acc.tournamentFormat,
     }),
     {
       participants: 0,
-      preview: { total: 0, groupTotal: 0, koTotal: 0, groups: 0, advancing: 0 },
+      preview: {
+        total: 0,
+        groupTotal: 0,
+        koTotal: 0,
+        groups: 0,
+        advancing: 0,
+      },
       tournamentFormat: null,
     },
   );
@@ -213,7 +336,9 @@ function mergeSummaryStats(items: SummaryScopeStats[]): SummaryScopeStats {
     .filter((item): item is TournamentFormat => Boolean(item));
   const firstFormat = formats[0] ?? null;
   const sameFormat = Boolean(
-    firstFormat && formats.length === items.length && formats.every((item) => item === firstFormat),
+    firstFormat &&
+      formats.length === items.length &&
+      formats.every((item) => item === firstFormat),
   );
 
   return {
@@ -376,7 +501,8 @@ function serializeCustomStage(
     id: stage.id,
     name: stage.name,
     groups_count: stage.groupsCount,
-    participants_count: stage.participantsCount,
+    participants_count:
+      stageStructureMode === "MULTI_EVENT" ? null : stage.participantsCount,
     advance_count:
       stageStructureMode === "MULTI_EVENT" ? null : stage.advanceCount,
     rounds_count: stage.roundsCount,
@@ -1469,8 +1595,8 @@ export default function TournamentBasicsSetup() {
             return `${isMultiEvent ? "Konkurencja" : "Etap"} ${index + 1} musi mieć co najmniej 1 grupę.`;
           }
 
-          if (!stage.participantsCount || stage.participantsCount < 1) {
-            return `${isMultiEvent ? "Konkurencja" : "Etap"} ${index + 1} musi mieć liczbę uczestników.`;
+          if (!isMultiEvent && (!stage.participantsCount || stage.participantsCount < 1)) {
+            return `Etap ${index + 1} musi mieć liczbę uczestników.`;
           }
 
           if (
@@ -2988,10 +3114,43 @@ export default function TournamentBasicsSetup() {
                 });
                 return;
               }
+
+              if (
+                v === "NUMBER" &&
+                (resultConfig.massStartUnitPreset === "POINTS" ||
+                  resultConfig.massStartUnitPreset === "PLACE")
+              ) {
+                patchResultConfig({
+                  massStartValueKind: v,
+                  massStartUnitPreset: "KILOGRAMS",
+                  massStartUnitCustomLabel: "",
+                });
+                return;
+              }
+
               patchResultConfig({ massStartValueKind: v });
             }}
             onMassStartUnitPresetChange={(v: CustomUnitPreset) => {
-              patchResultConfig({ massStartUnitPreset: v });
+              if (v === "POINTS") {
+                patchResultConfig({
+                  massStartValueKind: "POINTS",
+                  massStartUnitPreset: "POINTS",
+                  massStartUnitCustomLabel: "pkt",
+                  massStartBetterResult: "HIGHER",
+                });
+                return;
+              }
+
+              patchResultConfig({
+                massStartValueKind:
+                  resultConfig.massStartValueKind === "POINTS" ||
+                  resultConfig.massStartValueKind === "PLACE"
+                    ? "NUMBER"
+                    : resultConfig.massStartValueKind,
+                massStartUnitPreset: v,
+                massStartUnitCustomLabel:
+                  v === "CUSTOM" ? resultConfig.massStartUnitCustomLabel : "",
+              });
             }}
             onMassStartUnitCustomLabelChange={(v) => {
               patchResultConfig({ massStartUnitCustomLabel: v });

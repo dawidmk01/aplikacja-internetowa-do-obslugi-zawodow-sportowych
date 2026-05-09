@@ -287,7 +287,10 @@ function eventContributionLabel(event?: MassStartOverallEventResultDTO) {
   return event.overall_contribution_display || event.aggregate_display || "-";
 }
 
-function eventDetailLabel(event?: MassStartOverallEventResultDTO) {
+function eventDetailLabel(
+  event?: MassStartOverallEventResultDTO,
+  mode?: MultiEventOverallMode | string | null,
+) {
   if (!event) return "Brak danych";
   const status = resultStatusLabel(event.result_status);
   if (status) return status;
@@ -295,7 +298,12 @@ function eventDetailLabel(event?: MassStartOverallEventResultDTO) {
   const fragments = [];
   if (typeof event.rank === "number") fragments.push(`miejsce ${event.rank}`);
   if (event.aggregate_display) fragments.push(`wynik ${event.aggregate_display}`);
-  if (Number.isFinite(Number(event.points))) fragments.push(`${event.points} pkt`);
+  if (
+    (!mode || mode === "POINTS_BY_RANK") &&
+    Number.isFinite(Number(event.points))
+  ) {
+    fragments.push(`${event.points} pkt`);
+  }
   return fragments.join(" • ") || "Brak wyniku";
 }
 
@@ -596,7 +604,7 @@ export default function PublicMassStartStandings({
                       return (
                         <td key={event.stage_id} className="border-t border-white/10 px-5 py-4 align-top">
                           <div className="font-semibold text-white">{eventContributionLabel(eventResult)}</div>
-                          <div className="mt-1 text-xs text-slate-400">{eventDetailLabel(eventResult)}</div>
+                          <div className="mt-1 text-xs text-slate-400">{eventDetailLabel(eventResult, overallMode)}</div>
                         </td>
                       );
                     })}
@@ -647,7 +655,7 @@ export default function PublicMassStartStandings({
                           <div className="text-xs font-semibold text-slate-300">{event.stage_name}</div>
                           <div className="text-xs font-bold text-white">{eventContributionLabel(eventResult)}</div>
                         </div>
-                        <div className="mt-1 text-[11px] text-slate-500">{eventDetailLabel(eventResult)}</div>
+                        <div className="mt-1 text-[11px] text-slate-500">{eventDetailLabel(eventResult, overallMode)}</div>
                       </div>
                     );
                   })}

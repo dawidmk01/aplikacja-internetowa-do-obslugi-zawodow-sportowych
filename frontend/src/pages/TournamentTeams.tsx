@@ -126,6 +126,8 @@ type NameChangeRequestItem = {
   old_name: string;
   requested_name: string;
   requested_by_id: number;
+  division_id?: number | null;
+  division_name?: string | null;
   created_at: string;
   status: "PENDING" | "APPROVED" | "REJECTED";
 };
@@ -726,7 +728,7 @@ export default function TournamentTeams() {
   }, []);
 
   const loadPendingQueue = useCallback(
-    async (divisionId: number | null | undefined) => {
+    async () => {
       if (!id) return;
 
       if (!canViewOrApproveQueue()) {
@@ -737,12 +739,7 @@ export default function TournamentTeams() {
 
       setQueueLoading(true);
       try {
-        const res = await apiFetch(
-          withDivisionQuery(
-            `/api/tournaments/${id}/teams/name-change-requests/`,
-            divisionId
-          )
-        );
+        const res = await apiFetch(`/api/tournaments/${id}/teams/name-change-requests/`);
         if (!res.ok) {
           setPendingRequests([]);
           return;
@@ -750,12 +747,7 @@ export default function TournamentTeams() {
         const data: NameChangeRequestListResponse = await res.json();
         setPendingRequests(Array.isArray(data?.results) ? data.results : []);
 
-        const divisionRes = await apiFetch(
-          withDivisionQuery(
-            `/api/tournaments/${id}/teams/division-change-requests/`,
-            divisionId
-          )
-        );
+        const divisionRes = await apiFetch(`/api/tournaments/${id}/teams/division-change-requests/`);
 
         if (divisionRes.ok) {
           const divisionData: DivisionChangeRequestListResponse = await divisionRes.json();
@@ -801,7 +793,7 @@ export default function TournamentTeams() {
         throw new Error(data?.detail || "Nie udało się zaakceptować prośby.");
       }
 
-      await loadPendingQueue(effectiveDivisionId);
+      await loadPendingQueue();
       await loadTeams(effectiveDivisionId).catch(() => null);
     } catch (e: any) {
       toast.error(e?.message || "Błąd akceptacji prośby.");
@@ -836,7 +828,7 @@ export default function TournamentTeams() {
         throw new Error(data?.detail || "Nie udało się odrzucić prośby.");
       }
 
-      await loadPendingQueue(effectiveDivisionId);
+      await loadPendingQueue();
     } catch (e: any) {
       toast.error(e?.message || "Błąd odrzucenia prośby.");
     } finally {
@@ -867,7 +859,7 @@ export default function TournamentTeams() {
         throw new Error(data?.detail || "Nie udało się zaakceptować prośby o zmianę dywizji.");
       }
 
-      await loadPendingQueue(effectiveDivisionId);
+      await loadPendingQueue();
       await loadTeams(effectiveDivisionId).catch(() => null);
     } catch (e: any) {
       toast.error(e?.message || "Błąd akceptacji prośby o zmianę dywizji.");
@@ -899,7 +891,7 @@ export default function TournamentTeams() {
         throw new Error(data?.detail || "Nie udało się odrzucić prośby o zmianę dywizji.");
       }
 
-      await loadPendingQueue(effectiveDivisionId);
+      await loadPendingQueue();
     } catch (e: any) {
       toast.error(e?.message || "Błąd odrzucenia prośby o zmianę dywizji.");
     } finally {
@@ -1061,7 +1053,7 @@ export default function TournamentTeams() {
           role === "ORGANIZER" ||
           (role === "ASSISTANT" && Boolean(perms?.name_change_approve));
         if (mounted && allowQueue) {
-          await loadPendingQueue(resolvedDivisionId);
+          await loadPendingQueue();
         }
         if (mounted && !allowQueue) {
           setPendingRequests([]);
@@ -1198,7 +1190,7 @@ export default function TournamentTeams() {
       });
 
       if (canManageQueue) {
-        await loadPendingQueue(effectiveDivisionId);
+        await loadPendingQueue();
       }
 
       const { role, perms } = getRoleAndPerms(resp.tournament);
@@ -1327,7 +1319,7 @@ export default function TournamentTeams() {
       }
 
       if (canManageQueue) {
-        await loadPendingQueue(effectiveDivisionId);
+        await loadPendingQueue();
       }
     } catch (e: any) {
       toast.error(e?.message || "Nie udało się usunąć uczestnika.");
@@ -1612,6 +1604,11 @@ export default function TournamentTeams() {
                         <div className="text-sm font-semibold text-slate-100">
                           {entityLabels.queueItemLabel} #{r.team_id}
                         </div>
+                        {r.division_name ? (
+                          <div className="mt-1 text-xs font-medium text-cyan-200">
+                            Dywizja: {r.division_name}
+                          </div>
+                        ) : null}
                         <div className="mt-1 break-words text-xs text-slate-300">
                           <div>
                             <span className="text-slate-400">Było:</span> {r.old_name}

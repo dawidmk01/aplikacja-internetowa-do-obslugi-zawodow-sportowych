@@ -1,10 +1,26 @@
 // frontend/src/pages/TournamentResults.tsx
 // Plik renderuje widok wyników turnieju i rozdziela prezentację meczów od rezultatów etapowych MASS_START.
 
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 
-import { Brackets, Calendar, ChevronLeft, ChevronRight, Clock, Gauge, TimerReset, X } from "lucide-react";
+import {
+  Brackets,
+  Calendar,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Gauge,
+  TimerReset,
+  X,
+} from "lucide-react";
 
 import { apiFetch } from "../api";
 import MassStartStageCard from "../components/MassStartStageCard";
@@ -12,7 +28,11 @@ import MatchRow from "../components/MatchRow";
 import { useAutosave, type AutosaveStatus } from "../hooks/useAutosave";
 import { useTournamentWs } from "../hooks/useTournamentWs";
 import { cn } from "../lib/cn";
-import { getLabel, RESULT_VALUE_KIND_LABELS, TIME_FORMAT_LABELS } from "../lib/sportLabels";
+import {
+  getLabel,
+  RESULT_VALUE_KIND_LABELS,
+  TIME_FORMAT_LABELS,
+} from "../lib/sportLabels";
 
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
@@ -87,7 +107,9 @@ function isStartedMatch(match: MatchLike): boolean {
   return status === "IN_PROGRESS" || status === "RUNNING";
 }
 
-function getResultConfig(tournament: TournamentDTO | null): TournamentResultConfigDTO {
+function getResultConfig(
+  tournament: TournamentDTO | null,
+): TournamentResultConfigDTO {
   if (!tournament?.result_config) return {};
   return tournament.result_config;
 }
@@ -96,9 +118,15 @@ function getCompetitionModel(tournament: TournamentDTO | null): string {
   return String(tournament?.competition_model ?? "").toUpperCase();
 }
 
-function getStageStructureMode(tournament: TournamentDTO | null): StageStructureMode {
-  const directValue = String((tournament as any)?.stage_structure_mode ?? "").toUpperCase();
-  const configValue = String((tournament as any)?.result_config?.stage_structure_mode ?? "").toUpperCase();
+function getStageStructureMode(
+  tournament: TournamentDTO | null,
+): StageStructureMode {
+  const directValue = String(
+    (tournament as any)?.stage_structure_mode ?? "",
+  ).toUpperCase();
+  const configValue = String(
+    (tournament as any)?.result_config?.stage_structure_mode ?? "",
+  ).toUpperCase();
   const resolvedValue = directValue || configValue;
 
   return resolvedValue === "MULTI_EVENT" ? "MULTI_EVENT" : "REDUCTION";
@@ -118,13 +146,71 @@ function sortStageOrder(value: number | null | undefined): number {
 
 function displayText(value: unknown, fallback = "-"): string {
   if (value === null || value === undefined || value === "") return fallback;
-  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (typeof value === "string" || typeof value === "number")
+    return String(value);
   return fallback;
 }
 
 function numericCount(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getResultDecimalPlaces(config: TournamentResultConfigDTO) {
+  const raw = Number(config.decimal_places ?? 0);
+  if (!Number.isFinite(raw)) return 0;
+  return Math.min(20, Math.max(0, Math.trunc(raw)));
+}
+
+function parseResultNumber(value: unknown): number | null {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : Number(String(value ?? "").replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatMassStartDraftValue(
+  value: unknown,
+  config: TournamentResultConfigDTO,
+) {
+  const valueKind = String(config.value_kind ?? "NUMBER").toUpperCase();
+  if (valueKind !== "NUMBER") return String(value ?? "");
+
+  const parsed = parseResultNumber(value);
+  if (parsed === null) return String(value ?? "");
+  return parsed.toFixed(getResultDecimalPlaces(config));
+}
+
+function formatMassStartMeasuredDisplay(
+  value: unknown,
+  config: TournamentResultConfigDTO,
+) {
+  const valueKind = String(config.value_kind ?? "NUMBER").toUpperCase();
+  if (valueKind !== "NUMBER") return displayText(value);
+
+  const parsed = parseResultNumber(value);
+  if (parsed === null) return displayText(value);
+
+  const unit = String(config.unit_label ?? config.unit ?? "").trim();
+  const formatted = parsed.toFixed(getResultDecimalPlaces(config));
+  return unit ? `${formatted} ${unit}` : formatted;
+}
+
+function formatMassStartDisplayText(
+  value: unknown,
+  config: TournamentResultConfigDTO,
+) {
+  const raw = displayText(value, "");
+  if (!raw) return "-";
+
+  const valueKind = String(config.value_kind ?? "NUMBER").toUpperCase();
+  if (valueKind !== "NUMBER") return raw;
+
+  const match = raw.match(/-?\d+(?:[.,]\d+)?/);
+  if (!match) return raw;
+
+  return formatMassStartMeasuredDisplay(match[0], config);
 }
 
 function getCustomResultHint(config: TournamentResultConfigDTO): string {
@@ -142,17 +228,27 @@ function getCustomResultHint(config: TournamentResultConfigDTO): string {
 
   const unit = String(config.unit_label ?? config.unit ?? "").trim();
   const better = String(config.better_result ?? "HIGHER").toUpperCase();
-  const decimals = typeof config.decimal_places === "number" ? config.decimal_places : 0;
+  const decimals =
+    typeof config.decimal_places === "number" ? config.decimal_places : 0;
   const betterLabel = better === "LOWER" ? "niższy lepszy" : "wyższy lepszy";
   const unitLabel = unit ? ` Jednostka: ${unit}.` : "";
-  const valueKindLabel = getLabel(RESULT_VALUE_KIND_LABELS, valueKind, "Wynik liczbowy").toLowerCase();
+  const valueKindLabel = getLabel(
+    RESULT_VALUE_KIND_LABELS,
+    valueKind,
+    "Wynik liczbowy",
+  ).toLowerCase();
 
   return `${valueKindLabel}, dokładność: ${decimals} miejsce po przecinku.${unitLabel} Zasada rankingu: ${betterLabel}.`;
 }
 
 // ===== Obsługa rezultatów MASS_START =====
 
-function draftKey(stageId: number, groupId: number | null, teamId: number, roundNumber: number) {
+function draftKey(
+  stageId: number,
+  groupId: number | null,
+  teamId: number,
+  roundNumber: number,
+) {
   return `${stageId}:${groupId ?? 0}:${teamId}:${roundNumber}`;
 }
 
@@ -167,15 +263,19 @@ function isStagePlanned(stage: MassStartStageDTO) {
 function hasIncompleteRounds(stage: MassStartStageDTO) {
   return stage.groups.some((group) =>
     group.entries.some((entry) =>
-      entry.rounds.some((round) => !round.display_value)
-    )
+      entry.rounds.some((round) => !round.display_value),
+    ),
   );
 }
 
-function getAdvanceCandidateStage(stages: MassStartStageDTO[] | undefined | null) {
+function getAdvanceCandidateStage(
+  stages: MassStartStageDTO[] | undefined | null,
+) {
   if (!Array.isArray(stages) || stages.length === 0) return null;
 
-  const ordered = [...stages].sort((a, b) => sortStageOrder(a.stage_order) - sortStageOrder(b.stage_order));
+  const ordered = [...stages].sort(
+    (a, b) => sortStageOrder(a.stage_order) - sortStageOrder(b.stage_order),
+  );
 
   for (let index = 0; index < ordered.length; index += 1) {
     const current = ordered[index];
@@ -194,11 +294,13 @@ function getAdvanceCandidateStage(stages: MassStartStageDTO[] | undefined | null
 
 function getVisibleMassStartStages(
   stages: MassStartStageDTO[] | undefined | null,
-  stageStructureMode: StageStructureMode
+  stageStructureMode: StageStructureMode,
 ) {
   if (!Array.isArray(stages)) return [];
 
-  const orderedStages = [...stages].sort((a, b) => sortStageOrder(a.stage_order) - sortStageOrder(b.stage_order));
+  const orderedStages = [...stages].sort(
+    (a, b) => sortStageOrder(a.stage_order) - sortStageOrder(b.stage_order),
+  );
 
   if (isMultiEventMode(stageStructureMode)) {
     // Konkurencje są równoległymi częściami wydarzenia, dlatego nie są ukrywane jako zaplanowane etapy awansu.
@@ -208,14 +310,89 @@ function getVisibleMassStartStages(
   return orderedStages.filter((stage) => !isStagePlanned(stage));
 }
 
-
 // ===== Widok rezultatów etapowych i konkurencji =====
 
-function overallSort(left: MassStartOverallStandingDTO, right: MassStartOverallStandingDTO) {
-  const leftRank = typeof left.rank === "number" ? left.rank : Number.MAX_SAFE_INTEGER;
-  const rightRank = typeof right.rank === "number" ? right.rank : Number.MAX_SAFE_INTEGER;
+function overallScoreValue(row: MassStartOverallStandingDTO): number | null {
+  const extendedRow = row as MassStartOverallStandingDTO & {
+    total_result_value?: unknown;
+  };
+
+  return parseResultNumber(
+    row.overall_score ?? extendedRow.total_result_value ?? row.overall_display,
+  );
+}
+
+function overallModeUsesLowerScore(
+  config: TournamentResultConfigDTO,
+  mode?: string | null,
+): boolean {
+  if (mode === "SUM_RANKS") return true;
+  if (mode !== "SUM_RESULTS") return false;
+
+  const valueKind = String(config.value_kind ?? "NUMBER").toUpperCase();
+  if (valueKind === "TIME" || valueKind === "PLACE") return true;
+
+  return String(config.better_result ?? "HIGHER").toUpperCase() === "LOWER";
+}
+
+function overallSort(
+  left: MassStartOverallStandingDTO,
+  right: MassStartOverallStandingDTO,
+  config: TournamentResultConfigDTO,
+  mode?: string | null,
+) {
+  if (mode === "SUM_RESULTS" || mode === "SUM_RANKS") {
+    const leftScore = overallScoreValue(left);
+    const rightScore = overallScoreValue(right);
+
+    if (leftScore === null && rightScore !== null) return 1;
+    if (leftScore !== null && rightScore === null) return -1;
+
+    if (leftScore !== null && rightScore !== null && leftScore !== rightScore) {
+      return overallModeUsesLowerScore(config, mode)
+        ? leftScore - rightScore
+        : rightScore - leftScore;
+    }
+  }
+
+  const leftRank =
+    typeof left.rank === "number" ? left.rank : Number.MAX_SAFE_INTEGER;
+  const rightRank =
+    typeof right.rank === "number" ? right.rank : Number.MAX_SAFE_INTEGER;
   if (leftRank !== rightRank) return leftRank - rightRank;
+
+  const leftCompleted = numericCount(left.completed_events_count);
+  const rightCompleted = numericCount(right.completed_events_count);
+  if (leftCompleted !== rightCompleted) return rightCompleted - leftCompleted;
+
   return left.team_name.localeCompare(right.team_name, "pl");
+}
+
+function normalizeOverallStandings(
+  rows: MassStartOverallStandingDTO[],
+  config: TournamentResultConfigDTO,
+  mode?: string | null,
+) {
+  const sorted = [...rows].sort((left, right) =>
+    overallSort(left, right, config, mode),
+  );
+
+  if (mode !== "SUM_RESULTS") return sorted;
+
+  let previousScore: string | null = null;
+  let previousRank: number | null = null;
+
+  return sorted.map((row, index) => {
+    const score = overallScoreValue(row);
+    if (score === null) return { ...row, rank: null };
+
+    const scoreKey = String(score);
+    const rank = previousScore === scoreKey ? previousRank : index + 1;
+    previousScore = scoreKey;
+    previousRank = rank;
+
+    return { ...row, rank };
+  });
 }
 
 function overallEventsLabel(row: MassStartOverallStandingDTO) {
@@ -234,8 +411,14 @@ function overallValueHeader(mode?: string | null) {
   return "Punkty";
 }
 
-function overallValue(row: MassStartOverallStandingDTO) {
-  return displayText(row.overall_display || row.overall_score || row.total_points);
+function overallValue(
+  row: MassStartOverallStandingDTO,
+  config: TournamentResultConfigDTO,
+  mode?: string | null,
+) {
+  const value = row.overall_display || row.overall_score || row.total_points;
+  if (mode === "SUM_RESULTS") return formatMassStartDisplayText(value, config);
+  return displayText(value);
 }
 
 function eventResultByStage(row: MassStartOverallStandingDTO, stageId: number) {
@@ -250,27 +433,47 @@ function resultStatusLabel(resultStatus?: MassStartResultStatus | null) {
   return resultStatus;
 }
 
-function eventContributionLabel(event?: MassStartOverallStandingDTO["event_results"][number]) {
+function eventContributionLabel(
+  event: MassStartOverallStandingDTO["event_results"][number] | undefined,
+  config: TournamentResultConfigDTO,
+  mode?: string | null,
+) {
   if (!event) return "-";
-  return displayText(event.overall_contribution_display || event.aggregate_display);
+  const value = event.overall_contribution_display || event.aggregate_display;
+  if (mode === "SUM_RESULTS") return formatMassStartDisplayText(value, config);
+  return displayText(value);
 }
 
-function eventDetailLabel(event?: MassStartOverallStandingDTO["event_results"][number]) {
+function eventDetailLabel(
+  event: MassStartOverallStandingDTO["event_results"][number] | undefined,
+  config: TournamentResultConfigDTO,
+  mode?: string | null,
+) {
   if (!event) return "Brak danych";
   const status = resultStatusLabel(event.result_status);
   if (status) return status;
 
   const fragments: string[] = [];
   if (typeof event.rank === "number") fragments.push(`miejsce ${event.rank}`);
-  if (event.aggregate_display) fragments.push(`wynik ${event.aggregate_display}`);
-  if (Number.isFinite(Number(event.points))) fragments.push(`${displayText(event.points)} pkt`);
+  if (event.aggregate_display) {
+    fragments.push(
+      `wynik ${formatMassStartDisplayText(event.aggregate_display, config)}`,
+    );
+  }
+  if (
+    (!mode || mode === "POINTS_BY_RANK") &&
+    Number.isFinite(Number(event.points))
+  ) {
+    fragments.push(`${displayText(event.points)} pkt`);
+  }
   return fragments.join(" • ") || "Brak wyniku";
 }
 
 function placeBadgeClass(rank: number | null | undefined) {
   if (rank === 1) return "border-amber-300/25 bg-amber-400/10 text-amber-100";
   if (rank === 2) return "border-slate-200/15 bg-white/[0.06] text-slate-100";
-  if (rank === 3) return "border-orange-300/20 bg-orange-400/10 text-orange-100";
+  if (rank === 3)
+    return "border-orange-300/20 bg-orange-400/10 text-orange-100";
   return "border-white/10 bg-white/[0.04] text-slate-200";
 }
 
@@ -307,30 +510,41 @@ function MassStartResultsView({
     groupId: number | null,
     entry: MassStartEntryDTO,
     round: MassStartEntryDTO["rounds"][number],
-    value: string
+    value: string,
   ) => void;
   onStatusDraftChange: (
     stage: MassStartStageDTO,
     groupId: number | null,
     entry: MassStartEntryDTO,
     round: MassStartEntryDTO["rounds"][number],
-    value: MassStartResultStatus
+    value: MassStartResultStatus,
   ) => void;
 }) {
   const visibleStages = useMemo(
     () => getVisibleMassStartStages(massStartData?.stages, stageStructureMode),
-    [massStartData, stageStructureMode]
+    [massStartData, stageStructureMode],
   );
+
+  const overallMode = massStartData?.overall_mode ?? "POINTS_BY_RANK";
 
   const overallStandings = useMemo(() => {
     return Array.isArray(massStartData?.overall_standings)
-      ? [...massStartData.overall_standings].sort(overallSort)
+      ? normalizeOverallStandings(
+          massStartData.overall_standings,
+          customResultConfig,
+          overallMode,
+        )
       : [];
-  }, [massStartData]);
+  }, [customResultConfig, massStartData, overallMode]);
 
   const overallEvents = useMemo<MassStartOverallEventDTO[]>(() => {
-    if (Array.isArray(massStartData?.overall_events) && massStartData.overall_events.length > 0) {
-      return [...massStartData.overall_events].sort((a, b) => sortStageOrder(a.stage_order) - sortStageOrder(b.stage_order));
+    if (
+      Array.isArray(massStartData?.overall_events) &&
+      massStartData.overall_events.length > 0
+    ) {
+      return [...massStartData.overall_events].sort(
+        (a, b) => sortStageOrder(a.stage_order) - sortStageOrder(b.stage_order),
+      );
     }
 
     const eventMap = new Map<number, MassStartOverallEventDTO>();
@@ -344,10 +558,10 @@ function MassStartResultsView({
       }
     }
 
-    return [...eventMap.values()].sort((a, b) => sortStageOrder(a.stage_order) - sortStageOrder(b.stage_order));
+    return [...eventMap.values()].sort(
+      (a, b) => sortStageOrder(a.stage_order) - sortStageOrder(b.stage_order),
+    );
   }, [massStartData, overallStandings]);
-
-  const overallMode = massStartData?.overall_mode ?? "POINTS_BY_RANK";
 
   const stageEntityLabel = getStageEntityLabel(stageStructureMode);
 
@@ -363,18 +577,26 @@ function MassStartResultsView({
       {customModeCard}
 
       {loading ? (
-        <Card className="p-6 text-slate-200">Ładowanie rezultatów {stageEntityLabel}...</Card>
+        <Card className="p-6 text-slate-200">
+          Ładowanie rezultatów {stageEntityLabel}...
+        </Card>
       ) : !massStartData || visibleStages.length === 0 ? (
-        <Card className="p-6 text-slate-200">Brak {stageEntityLabel} do wyświetlenia.</Card>
+        <Card className="p-6 text-slate-200">
+          Brak {stageEntityLabel} do wyświetlenia.
+        </Card>
       ) : (
         <div className="space-y-6">
-          {stageStructureMode === "MULTI_EVENT" && overallStandings.length > 0 ? (
+          {stageStructureMode === "MULTI_EVENT" &&
+          overallStandings.length > 0 ? (
             <Card className="border border-amber-300/15 bg-amber-400/[0.04] p-5">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <div className="text-lg font-extrabold text-white">Klasyfikacja łączna wieloboju</div>
+                  <div className="text-lg font-extrabold text-white">
+                    Klasyfikacja łączna wieloboju
+                  </div>
                   <div className="mt-1 text-sm text-slate-300">
-                    Metoda: {overallModeLabel(overallMode)}. Statusy DNS, DNF i DSQ nie zwiększają wyniku w danej konkurencji.
+                    Metoda: {overallModeLabel(overallMode)}. Statusy DNS, DNF i
+                    DSQ nie zwiększają wyniku w danej konkurencji.
                   </div>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-slate-300">
@@ -388,9 +610,14 @@ function MassStartResultsView({
                     <tr className="text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
                       <th className="px-4 py-3">Miejsce</th>
                       <th className="px-4 py-3">Uczestnik</th>
-                      <th className="px-4 py-3">{overallValueHeader(overallMode)}</th>
+                      <th className="px-4 py-3">
+                        {overallValueHeader(overallMode)}
+                      </th>
                       {overallEvents.map((event) => (
-                        <th key={event.stage_id} className="min-w-[140px] px-4 py-3">
+                        <th
+                          key={event.stage_id}
+                          className="min-w-[140px] px-4 py-3"
+                        >
                           {event.stage_name ?? `Konkurencja ${event.stage_id}`}
                         </th>
                       ))}
@@ -402,25 +629,56 @@ function MassStartResultsView({
                     {overallStandings.map((row) => (
                       <tr key={row.team_id} className="text-sm text-slate-100">
                         <td className="border-t border-white/10 px-4 py-3">
-                          <span className={cn("inline-flex min-w-[52px] justify-center rounded-full border px-3 py-1 text-xs font-semibold", placeBadgeClass(row.rank))}>
+                          <span
+                            className={cn(
+                              "inline-flex min-w-[52px] justify-center rounded-full border px-3 py-1 text-xs font-semibold",
+                              placeBadgeClass(row.rank),
+                            )}
+                          >
                             {row.rank ?? "-"}
                           </span>
                         </td>
-                        <td className="border-t border-white/10 px-4 py-3 font-semibold">{row.team_name}</td>
-                        <td className="border-t border-white/10 px-4 py-3 font-semibold text-white">{overallValue(row)}</td>
+                        <td className="border-t border-white/10 px-4 py-3 font-semibold">
+                          {row.team_name}
+                        </td>
+                        <td className="border-t border-white/10 px-4 py-3 font-semibold text-white">
+                          {overallValue(row, customResultConfig, overallMode)}
+                        </td>
                         {overallEvents.map((event) => {
-                          const eventResult = eventResultByStage(row, event.stage_id);
+                          const eventResult = eventResultByStage(
+                            row,
+                            event.stage_id,
+                          );
 
                           return (
-                            <td key={event.stage_id} className="border-t border-white/10 px-4 py-3 align-top">
-                              <div className="font-semibold text-white">{eventContributionLabel(eventResult)}</div>
-                              <div className="mt-1 text-xs text-slate-400">{eventDetailLabel(eventResult)}</div>
+                            <td
+                              key={event.stage_id}
+                              className="border-t border-white/10 px-4 py-3 align-top"
+                            >
+                              <div className="font-semibold text-white">
+                                {eventContributionLabel(
+                                  eventResult,
+                                  customResultConfig,
+                                  overallMode,
+                                )}
+                              </div>
+                              <div className="mt-1 text-xs text-slate-400">
+                                {eventDetailLabel(
+                                  eventResult,
+                                  customResultConfig,
+                                  overallMode,
+                                )}
+                              </div>
                             </td>
                           );
                         })}
-                        <td className="border-t border-white/10 px-4 py-3 text-slate-300">{overallEventsLabel(row)}</td>
                         <td className="border-t border-white/10 px-4 py-3 text-slate-300">
-                          {numericCount(row.special_statuses_count) > 0 ? numericCount(row.special_statuses_count) : "Brak"}
+                          {overallEventsLabel(row)}
+                        </td>
+                        <td className="border-t border-white/10 px-4 py-3 text-slate-300">
+                          {numericCount(row.special_statuses_count) > 0
+                            ? numericCount(row.special_statuses_count)
+                            : "Brak"}
                         </td>
                       </tr>
                     ))}
@@ -480,7 +738,8 @@ function MatchFullscreenOverlay({
   onReload,
   onToast,
 }: MatchFullscreenOverlayProps) {
-  const counterLabel = totalMatches > 0 ? `${activeIndex + 1}/${totalMatches}` : "0/0";
+  const counterLabel =
+    totalMatches > 0 ? `${activeIndex + 1}/${totalMatches}` : "0/0";
 
   return (
     <div className="fixed inset-0 z-[140] overflow-hidden bg-slate-950 text-white">
@@ -496,7 +755,7 @@ function MatchFullscreenOverlay({
           className={cn(
             "inline-flex h-8 items-center justify-center gap-1.5 rounded-full border border-white/10 bg-slate-950/80 px-3 text-xs font-semibold text-slate-200 shadow-xl shadow-black/20 backdrop-blur-xl transition",
             "hover:border-white/20 hover:bg-white/[0.10] hover:text-white",
-            "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15"
+            "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/15",
           )}
         >
           <X className="h-3.5 w-3.5 shrink-0" />
@@ -514,7 +773,7 @@ function MatchFullscreenOverlay({
             className={cn(
               "absolute left-3 top-1/2 z-20 hidden h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-slate-900/80 text-slate-100 shadow-2xl backdrop-blur transition xl:inline-flex",
               "hover:border-cyan-300/30 hover:bg-cyan-300/10",
-              "disabled:pointer-events-none disabled:opacity-30"
+              "disabled:pointer-events-none disabled:opacity-30",
             )}
           >
             <ChevronLeft className="h-6 w-6" />
@@ -528,7 +787,7 @@ function MatchFullscreenOverlay({
             className={cn(
               "absolute right-3 top-1/2 z-20 hidden h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-slate-900/80 text-slate-100 shadow-2xl backdrop-blur transition xl:inline-flex",
               "hover:border-cyan-300/30 hover:bg-cyan-300/10",
-              "disabled:pointer-events-none disabled:opacity-30"
+              "disabled:pointer-events-none disabled:opacity-30",
             )}
           >
             <ChevronRight className="h-6 w-6" />
@@ -563,17 +822,24 @@ export default function TournamentResults() {
   const mountedRef = useRef(true);
 
   const [tournament, setTournament] = useState<TournamentDTO | null>(null);
-  const [activeDivisionId, setActiveDivisionId] = useState<number | null>(requestedDivisionId);
+  const [activeDivisionId, setActiveDivisionId] = useState<number | null>(
+    requestedDivisionId,
+  );
 
   const effectiveDivisionId = requestedDivisionId ?? activeDivisionId;
 
   const [matches, setMatches] = useState<MatchLike[]>([]);
-  const [massStartData, setMassStartData] = useState<TournamentMassStartResultsResponseDTO | null>(null);
+  const [massStartData, setMassStartData] =
+    useState<TournamentMassStartResultsResponseDTO | null>(null);
   const [loading, setLoading] = useState(true);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [statusDrafts, setStatusDrafts] = useState<Record<string, MassStartResultStatus>>({});
+  const [statusDrafts, setStatusDrafts] = useState<
+    Record<string, MassStartResultStatus>
+  >({});
   const [advanceBusy, setAdvanceBusy] = useState(false);
-  const [fullscreenMatchId, setFullscreenMatchId] = useState<number | null>(null);
+  const [fullscreenMatchId, setFullscreenMatchId] = useState<number | null>(
+    null,
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -594,67 +860,105 @@ export default function TournamentResults() {
     toast.info(message);
   }, []);
 
-  const reloadAll = useCallback(async (options?: { silent?: boolean }) => {
-    if (!tournamentId) return;
+  const reloadAll = useCallback(
+    async (options?: { silent?: boolean }) => {
+      if (!tournamentId) return;
 
-    const silent = Boolean(options?.silent);
-    if (!silent && mountedRef.current) setLoading(true);
+      const silent = Boolean(options?.silent);
+      if (!silent && mountedRef.current) setLoading(true);
 
-    try {
-      const tRes = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/`, effectiveDivisionId));
-      if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
+      try {
+        const tRes = await apiFetch(
+          withDivisionQuery(
+            `/api/tournaments/${tournamentId}/`,
+            effectiveDivisionId,
+          ),
+        );
+        if (!tRes.ok) throw new Error("Nie udało się pobrać danych turnieju.");
 
-      const tData = (await tRes.json()) as TournamentDTO;
-      if (!mountedRef.current) return;
+        const tData = (await tRes.json()) as TournamentDTO;
+        if (!mountedRef.current) return;
 
-      setTournament(tData);
-      setActiveDivisionId((tData as any).active_division_id ?? effectiveDivisionId ?? null);
+        setTournament(tData);
+        setActiveDivisionId(
+          (tData as any).active_division_id ?? effectiveDivisionId ?? null,
+        );
 
-      const resolvedDivisionId = (tData as any).active_division_id ?? effectiveDivisionId ?? null;
-      if (
-        !requestedDivisionId &&
-        resolvedDivisionId &&
-        Array.isArray((tData as any).divisions) &&
-        ((tData as any).divisions as DivisionSummaryDTO[]).length > 1
-      ) {
-        const nextSearch = new URLSearchParams(window.location.search);
-        nextSearch.set("division_id", String(resolvedDivisionId));
-        setSearchParams(nextSearch, { replace: true });
-      }
-
-      const competitionModel = getCompetitionModel(tData);
-      const usesCustomResults = String((tData as any).result_mode ?? "SCORE").toUpperCase() === "CUSTOM";
-      const isMassStart = usesCustomResults && competitionModel === "MASS_START";
-
-      if (isMassStart) {
-        const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/mass-start-results/`, resolvedDivisionId), {
-          toastOnError: false,
-        } as any);
-        const data = await res.json().catch(() => null);
-        if (!res.ok) {
-          throw new Error(String(data?.detail || "Nie udało się pobrać rezultatów etapowych."));
+        const resolvedDivisionId =
+          (tData as any).active_division_id ?? effectiveDivisionId ?? null;
+        if (
+          !requestedDivisionId &&
+          resolvedDivisionId &&
+          Array.isArray((tData as any).divisions) &&
+          ((tData as any).divisions as DivisionSummaryDTO[]).length > 1
+        ) {
+          const nextSearch = new URLSearchParams(window.location.search);
+          nextSearch.set("division_id", String(resolvedDivisionId));
+          setSearchParams(nextSearch, { replace: true });
         }
 
-        if (!mountedRef.current) return;
-        setMassStartData(data as TournamentMassStartResultsResponseDTO);
-        setMatches([]);
-      } else {
-        const mRes = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/matches/`, resolvedDivisionId));
-        if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
+        const competitionModel = getCompetitionModel(tData);
+        const usesCustomResults =
+          String((tData as any).result_mode ?? "SCORE").toUpperCase() ===
+          "CUSTOM";
+        const isMassStart =
+          usesCustomResults && competitionModel === "MASS_START";
 
-        const raw = await mRes.json();
-        const list = normalizeMatchList(raw);
+        if (isMassStart) {
+          const res = await apiFetch(
+            withDivisionQuery(
+              `/api/tournaments/${tournamentId}/mass-start-results/`,
+              resolvedDivisionId,
+            ),
+            {
+              toastOnError: false,
+            } as any,
+          );
+          const data = await res.json().catch(() => null);
+          if (!res.ok) {
+            throw new Error(
+              String(
+                data?.detail || "Nie udało się pobrać rezultatów etapowych.",
+              ),
+            );
+          }
 
-        if (!mountedRef.current) return;
-        setMatches(list);
-        setMassStartData(null);
+          if (!mountedRef.current) return;
+          setMassStartData(data as TournamentMassStartResultsResponseDTO);
+          setMatches([]);
+        } else {
+          const mRes = await apiFetch(
+            withDivisionQuery(
+              `/api/tournaments/${tournamentId}/matches/`,
+              resolvedDivisionId,
+            ),
+          );
+          if (!mRes.ok) throw new Error("Nie udało się pobrać meczów.");
+
+          const raw = await mRes.json();
+          const list = normalizeMatchList(raw);
+
+          if (!mountedRef.current) return;
+          setMatches(list);
+          setMassStartData(null);
+        }
+      } catch (e) {
+        pushToast(
+          e instanceof Error ? e.message : "Wystąpił błąd podczas ładowania.",
+          "error",
+        );
+      } finally {
+        if (!silent && mountedRef.current) setLoading(false);
       }
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : "Wystąpił błąd podczas ładowania.", "error");
-    } finally {
-      if (!silent && mountedRef.current) setLoading(false);
-    }
-  }, [effectiveDivisionId, pushToast, requestedDivisionId, setSearchParams, tournamentId]);
+    },
+    [
+      effectiveDivisionId,
+      pushToast,
+      requestedDivisionId,
+      setSearchParams,
+      tournamentId,
+    ],
+  );
 
   const reloadAllSilent = useCallback(async () => {
     await reloadAll({ silent: true });
@@ -685,6 +989,11 @@ export default function TournamentResults() {
     };
   }, []);
 
+  const customResultConfig = useMemo(
+    () => getResultConfig(tournament),
+    [tournament],
+  );
+
   useEffect(() => {
     if (!massStartData) return;
 
@@ -695,15 +1004,30 @@ export default function TournamentResults() {
       for (const group of stage.groups) {
         for (const entry of group.entries) {
           for (const round of entry.rounds) {
-            const key = draftKey(stage.stage_id, group.group_id, entry.team_id, round.round_number);
-            const resultStatus = String(round.result_status ?? "OK").toUpperCase() as MassStartResultStatus;
-            nextStatusDrafts[key] = ["OK", "DNS", "DNF", "DSQ"].includes(resultStatus)
+            const key = draftKey(
+              stage.stage_id,
+              group.group_id,
+              entry.team_id,
+              round.round_number,
+            );
+            const resultStatus = String(
+              round.result_status ?? "OK",
+            ).toUpperCase() as MassStartResultStatus;
+            nextStatusDrafts[key] = ["OK", "DNS", "DNF", "DSQ"].includes(
+              resultStatus,
+            )
               ? resultStatus
               : "OK";
 
-            if (round.numeric_value != null) nextDrafts[key] = String(round.numeric_value);
-            else if (round.time_ms != null) nextDrafts[key] = String(round.time_ms);
-            else if (round.place_value != null) nextDrafts[key] = String(round.place_value);
+            if (round.numeric_value != null)
+              nextDrafts[key] = formatMassStartDraftValue(
+                round.numeric_value,
+                customResultConfig,
+              );
+            else if (round.time_ms != null)
+              nextDrafts[key] = String(round.time_ms);
+            else if (round.place_value != null)
+              nextDrafts[key] = String(round.place_value);
             else nextDrafts[key] = "";
           }
         }
@@ -712,7 +1036,7 @@ export default function TournamentResults() {
 
     setDrafts(nextDrafts);
     setStatusDrafts(nextStatusDrafts);
-  }, [massStartData]);
+  }, [customResultConfig, massStartData]);
 
   useTournamentWs({
     tournamentId,
@@ -720,13 +1044,19 @@ export default function TournamentResults() {
     onEvent: ({ event }) => {
       const normalized = String(event).replaceAll(".", "_");
 
-      if (normalized === "matches_changed" || normalized === "mass_start_results_changed") {
+      if (
+        normalized === "matches_changed" ||
+        normalized === "mass_start_results_changed"
+      ) {
         scheduleSilentReload();
       }
     },
   });
 
-  const tournamentFormat = useMemo(() => String((tournament as any)?.tournament_format ?? ""), [tournament]);
+  const tournamentFormat = useMemo(
+    () => String((tournament as any)?.tournament_format ?? ""),
+    [tournament],
+  );
 
   const canManageTournament = useMemo(() => {
     const role = String((tournament as any)?.my_role ?? "");
@@ -734,53 +1064,77 @@ export default function TournamentResults() {
   }, [tournament]);
 
   const usesCustomResults = useMemo(
-    () => String((tournament as any)?.result_mode ?? "SCORE").toUpperCase() === "CUSTOM",
-    [tournament]
+    () =>
+      String((tournament as any)?.result_mode ?? "SCORE").toUpperCase() ===
+      "CUSTOM",
+    [tournament],
   );
 
-  const competitionModel = useMemo(() => getCompetitionModel(tournament), [tournament]);
-  const stageStructureMode = useMemo(() => getStageStructureMode(tournament), [tournament]);
+  const competitionModel = useMemo(
+    () => getCompetitionModel(tournament),
+    [tournament],
+  );
+  const stageStructureMode = useMemo(
+    () => getStageStructureMode(tournament),
+    [tournament],
+  );
   const isMassStartMultiEvent = isMultiEventMode(stageStructureMode);
 
   const isCustomMassStartMode = useMemo(
     () => usesCustomResults && competitionModel === "MASS_START",
-    [competitionModel, usesCustomResults]
+    [competitionModel, usesCustomResults],
   );
   const isCustomHeadToHeadMode = useMemo(
     () => usesCustomResults && competitionModel !== "MASS_START",
-    [competitionModel, usesCustomResults]
+    [competitionModel, usesCustomResults],
   );
-
-  const customResultConfig = useMemo(() => getResultConfig(tournament), [tournament]);
-
   const customDisciplineLabel = useMemo(() => {
-    const customName = String((tournament as any)?.custom_discipline_name ?? "").trim();
+    const customName = String(
+      (tournament as any)?.custom_discipline_name ?? "",
+    ).trim();
     return customName || "Dyscyplina niestandardowa";
   }, [tournament]);
 
   const hasGroupStage = useMemo(
-    () => matches.some((m) => String((m as MatchDTO).stage_type ?? "").toUpperCase() === "GROUP"),
-    [matches]
+    () =>
+      matches.some(
+        (m) =>
+          String((m as MatchDTO).stage_type ?? "").toUpperCase() === "GROUP",
+      ),
+    [matches],
   );
 
   const hasKnockoutStage = useMemo(
-    () => matches.some((m) => String((m as MatchDTO).stage_type ?? "").toUpperCase() === "KNOCKOUT"),
-    [matches]
+    () =>
+      matches.some(
+        (m) =>
+          String((m as MatchDTO).stage_type ?? "").toUpperCase() === "KNOCKOUT",
+      ),
+    [matches],
   );
 
   const fullscreenMatch = useMemo(
-    () => matches.find((item) => Number((item as MatchDTO).id) === fullscreenMatchId) ?? null,
-    [fullscreenMatchId, matches]
+    () =>
+      matches.find(
+        (item) => Number((item as MatchDTO).id) === fullscreenMatchId,
+      ) ?? null,
+    [fullscreenMatchId, matches],
   );
 
   const startedMatches = useMemo(
     () => matches.filter((item) => isStartedMatch(item) && !isByeMatch(item)),
-    [matches]
+    [matches],
   );
 
   const fullscreenNavigationMatches = useMemo(() => {
     if (!fullscreenMatch) return startedMatches;
-    if (startedMatches.some((item) => Number((item as MatchDTO).id) === Number((fullscreenMatch as MatchDTO).id))) {
+    if (
+      startedMatches.some(
+        (item) =>
+          Number((item as MatchDTO).id) ===
+          Number((fullscreenMatch as MatchDTO).id),
+      )
+    ) {
       return startedMatches;
     }
     return [fullscreenMatch, ...startedMatches];
@@ -789,22 +1143,34 @@ export default function TournamentResults() {
   const fullscreenMatchIndex = useMemo(() => {
     if (!fullscreenMatch) return -1;
     return fullscreenNavigationMatches.findIndex(
-      (item) => Number((item as MatchDTO).id) === Number((fullscreenMatch as MatchDTO).id)
+      (item) =>
+        Number((item as MatchDTO).id) ===
+        Number((fullscreenMatch as MatchDTO).id),
     );
   }, [fullscreenMatch, fullscreenNavigationMatches]);
 
-  const canNavigateFullscreenMatches = fullscreenNavigationMatches.length > 1 && fullscreenMatchIndex >= 0;
+  const canNavigateFullscreenMatches =
+    fullscreenNavigationMatches.length > 1 && fullscreenMatchIndex >= 0;
 
   const switchFullscreenMatch = useCallback(
     (direction: -1 | 1) => {
       if (!canNavigateFullscreenMatches) return;
 
       const nextIndex =
-        (fullscreenMatchIndex + direction + fullscreenNavigationMatches.length) % fullscreenNavigationMatches.length;
-      const nextMatch = fullscreenNavigationMatches[nextIndex] as MatchDTO | undefined;
+        (fullscreenMatchIndex +
+          direction +
+          fullscreenNavigationMatches.length) %
+        fullscreenNavigationMatches.length;
+      const nextMatch = fullscreenNavigationMatches[nextIndex] as
+        | MatchDTO
+        | undefined;
       if (nextMatch?.id) setFullscreenMatchId(Number(nextMatch.id));
     },
-    [canNavigateFullscreenMatches, fullscreenMatchIndex, fullscreenNavigationMatches]
+    [
+      canNavigateFullscreenMatches,
+      fullscreenMatchIndex,
+      fullscreenNavigationMatches,
+    ],
   );
 
   useEffect(() => {
@@ -814,7 +1180,12 @@ export default function TournamentResults() {
   }, [fullscreenMatch, fullscreenMatchId]);
 
   useEffect(() => {
-    if (!fullscreenMatch || typeof window === "undefined" || typeof document === "undefined") return;
+    if (
+      !fullscreenMatch ||
+      typeof window === "undefined" ||
+      typeof document === "undefined"
+    )
+      return;
 
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -834,7 +1205,9 @@ export default function TournamentResults() {
   }, [fullscreenMatch, switchFullscreenMatch]);
 
   const groupsFinished = useMemo(() => {
-    const groupMatches = matches.filter((m) => String((m as MatchDTO).stage_type ?? "").toUpperCase() === "GROUP");
+    const groupMatches = matches.filter(
+      (m) => String((m as MatchDTO).stage_type ?? "").toUpperCase() === "GROUP",
+    );
     const relevant = groupMatches.filter((m) => !isByeMatch(m));
     if (!relevant.length) return false;
     return relevant.every((m) => String(m.status ?? "") === "FINISHED");
@@ -843,7 +1216,9 @@ export default function TournamentResults() {
   const showAdvanceFromGroups = useMemo(() => {
     const fmt = String(tournamentFormat ?? "").toUpperCase();
     const isMixed = fmt === "MIXED";
-    return canManageTournament && (isMixed || hasGroupStage) && !hasKnockoutStage;
+    return (
+      canManageTournament && (isMixed || hasGroupStage) && !hasKnockoutStage
+    );
   }, [canManageTournament, hasGroupStage, hasKnockoutStage, tournamentFormat]);
 
   const onAdvanceFromGroups = useCallback(async () => {
@@ -851,18 +1226,31 @@ export default function TournamentResults() {
 
     setAdvanceBusy(true);
     try {
-      const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/advance-from-groups/`, effectiveDivisionId), {
-        method: "POST",
-      });
+      const res = await apiFetch(
+        withDivisionQuery(
+          `/api/tournaments/${tournamentId}/advance-from-groups/`,
+          effectiveDivisionId,
+        ),
+        {
+          method: "POST",
+        },
+      );
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        throw new Error(String(data?.detail || "Nie udało się wygenerować następnego etapu."));
+        throw new Error(
+          String(data?.detail || "Nie udało się wygenerować następnego etapu."),
+        );
       }
 
       pushToast("Wygenerowano fazę pucharową.", "success");
       await reloadAll();
     } catch (e) {
-      pushToast(e instanceof Error ? e.message : "Wystąpił błąd podczas generowania etapu.", "error");
+      pushToast(
+        e instanceof Error
+          ? e.message
+          : "Wystąpił błąd podczas generowania etapu.",
+        "error",
+      );
     } finally {
       setAdvanceBusy(false);
     }
@@ -873,10 +1261,16 @@ export default function TournamentResults() {
 
     setAdvanceBusy(true);
     try {
-      const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/advance-mass-start-stage/`, effectiveDivisionId), {
-        method: "POST",
-        toastOnError: false,
-      } as any);
+      const res = await apiFetch(
+        withDivisionQuery(
+          `/api/tournaments/${tournamentId}/advance-mass-start-stage/`,
+          effectiveDivisionId,
+        ),
+        {
+          method: "POST",
+          toastOnError: false,
+        } as any,
+      );
 
       const data = (await res.json().catch(() => null)) as
         | AdvanceMassStartStageResponseDTO
@@ -884,15 +1278,19 @@ export default function TournamentResults() {
         | null;
 
       if (!res.ok) {
-        throw new Error(String(data?.detail || "Nie udało się wygenerować kolejnego etapu."));
+        throw new Error(
+          String(data?.detail || "Nie udało się wygenerować kolejnego etapu."),
+        );
       }
 
       pushToast(data?.detail || "Wygenerowano kolejny etap.", "success");
       return true;
     } catch (e) {
       pushToast(
-        e instanceof Error ? e.message : "Wystąpił błąd podczas generowania kolejnego etapu.",
-        "error"
+        e instanceof Error
+          ? e.message
+          : "Wystąpił błąd podczas generowania kolejnego etapu.",
+        "error",
       );
       return false;
     } finally {
@@ -918,7 +1316,9 @@ export default function TournamentResults() {
                 <Brackets className="h-4 w-4 text-slate-200" />
               </div>
               <div className="min-w-0">
-                <div className="text-sm font-semibold text-white">Następny etap</div>
+                <div className="text-sm font-semibold text-white">
+                  Następny etap
+                </div>
                 <div className="mt-1 text-xs text-slate-400">
                   Faza pucharowa po grupach - generowanie na podstawie tabel.
                 </div>
@@ -927,7 +1327,8 @@ export default function TournamentResults() {
 
             {!groupsFinished ? (
               <div className="mt-3 text-xs text-amber-200">
-                Aby wygenerować fazę pucharową, zakończ wszystkie mecze w fazie grupowej.
+                Aby wygenerować fazę pucharową, zakończ wszystkie mecze w fazie
+                grupowej.
               </div>
             ) : null}
           </div>
@@ -952,7 +1353,11 @@ export default function TournamentResults() {
     const valueKind = String(customResultConfig.value_kind ?? "").toUpperCase();
     const isTime = valueKind === "TIME";
     const isMultiEvent = isCustomMassStartMode && isMassStartMultiEvent;
-    const resultScopeLabel = isMultiEvent ? "konkurencji" : isCustomMassStartMode ? "etapowy" : "meczowy";
+    const resultScopeLabel = isMultiEvent
+      ? "konkurencji"
+      : isCustomMassStartMode
+        ? "etapowy"
+        : "meczowy";
     const modeTitle = isMultiEvent
       ? "Tryb wielu konkurencji"
       : isCustomMassStartMode
@@ -981,12 +1386,18 @@ export default function TournamentResults() {
                 )}
               </div>
               <div className="min-w-0">
-                <div className="text-sm font-semibold text-white">{modeTitle}</div>
-                <div className="mt-1 text-xs text-slate-400">{customDisciplineLabel}</div>
+                <div className="text-sm font-semibold text-white">
+                  {modeTitle}
+                </div>
+                <div className="mt-1 text-xs text-slate-400">
+                  {customDisciplineLabel}
+                </div>
               </div>
             </div>
 
-            <div className="mt-3 text-sm text-slate-300">{getCustomResultHint(customResultConfig)}</div>
+            <div className="mt-3 text-sm text-slate-300">
+              {getCustomResultHint(customResultConfig)}
+            </div>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-slate-300">
@@ -995,15 +1406,22 @@ export default function TournamentResults() {
         </div>
       </Card>
     );
-  }, [customDisciplineLabel, customResultConfig, isCustomMassStartMode, isMassStartMultiEvent, usesCustomResults]);
+  }, [
+    customDisciplineLabel,
+    customResultConfig,
+    isCustomMassStartMode,
+    isMassStartMultiEvent,
+    usesCustomResults,
+  ]);
 
-  const pageTitle = isCustomMassStartMode && isMassStartMultiEvent
-    ? "Rezultaty konkurencji"
-    : isCustomHeadToHeadMode
-      ? "Wyniki"
-      : usesCustomResults
-        ? "Rezultaty"
-        : "Wyniki";
+  const pageTitle =
+    isCustomMassStartMode && isMassStartMultiEvent
+      ? "Rezultaty konkurencji"
+      : isCustomHeadToHeadMode
+        ? "Wyniki"
+        : usesCustomResults
+          ? "Rezultaty"
+          : "Wyniki";
   const pageDescription = isCustomMassStartMode
     ? isMassStartMultiEvent
       ? "Wprowadzaj rezultaty uczestników w kilku konkurencjach bez wymuszania przechodzenia etap po etapie."
@@ -1017,7 +1435,11 @@ export default function TournamentResults() {
       if (!tournamentId) return;
 
       // Zapis automatyczny zachowuje pojedynczy rezultat jako atomową jednostkę synchronizacji z backendem.
-      if (!isMassStartMultiEvent && draft.stageStatus && draft.stageStatus !== "OPEN") {
+      if (
+        !isMassStartMultiEvent &&
+        draft.stageStatus &&
+        draft.stageStatus !== "OPEN"
+      ) {
         throw new Error("Ten etap nie jest otwarty do zapisu rezultatów.");
       }
 
@@ -1033,20 +1455,30 @@ export default function TournamentResults() {
       };
 
       if (draft.resultStatus === "OK") {
-        const valueKind = String(customResultConfig.value_kind ?? "NUMBER").toUpperCase();
+        const valueKind = String(
+          customResultConfig.value_kind ?? "NUMBER",
+        ).toUpperCase();
         if (valueKind === "TIME") payload.time_ms = Number(rawValue);
         else if (valueKind === "PLACE") payload.place_value = Number(rawValue);
-        else payload.numeric_value = rawValue;
+        else payload.numeric_value = rawValue.replace(",", ".");
       }
 
-      const res = await apiFetch(withDivisionQuery(`/api/tournaments/${tournamentId}/mass-start-results/`, effectiveDivisionId), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        toastOnError: false,
-      } as any);
+      const res = await apiFetch(
+        withDivisionQuery(
+          `/api/tournaments/${tournamentId}/mass-start-results/`,
+          effectiveDivisionId,
+        ),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          toastOnError: false,
+        } as any,
+      );
 
-      const data = (await res.json().catch(() => null)) as MassStartResultSaveResponseDTO | null;
+      const data = (await res
+        .json()
+        .catch(() => null)) as MassStartResultSaveResponseDTO | null;
       if (!res.ok) {
         const fallbackMessage = isMassStartMultiEvent
           ? "Nie udało się zapisać wyniku konkurencji."
@@ -1058,9 +1490,10 @@ export default function TournamentResults() {
         setMassStartData(data.payload);
       }
 
-      const autoAdvanceStage = !isMassStartMultiEvent && data?.payload
-        ? getAdvanceCandidateStage(data.payload.stages)
-        : null;
+      const autoAdvanceStage =
+        !isMassStartMultiEvent && data?.payload
+          ? getAdvanceCandidateStage(data.payload.stages)
+          : null;
       if (canManageTournament && autoAdvanceStage?.stage_id === draft.stageId) {
         const advanced = await advanceMassStartStage();
         if (advanced) await reloadAllSilent();
@@ -1074,7 +1507,7 @@ export default function TournamentResults() {
       isMassStartMultiEvent,
       reloadAllSilent,
       tournamentId,
-    ]
+    ],
   );
 
   const {
@@ -1084,11 +1517,13 @@ export default function TournamentResults() {
     clearDraft: clearAutosaveDraft,
   } = useAutosave<MassStartAutosavePayload>({
     onSave: saveMassStartAutosave,
-    debounceMs: 900,
+    debounceMs: 3000,
     successResetMs: 1800,
     toastOnError: true,
     getErrorMessage: (error) =>
-      error instanceof Error ? error.message : "Nie udało się zapisać rezultatu automatycznie.",
+      error instanceof Error
+        ? error.message
+        : "Nie udało się zapisać rezultatu automatycznie.",
   });
 
   const queueMassStartAutosave = useCallback(
@@ -1098,11 +1533,23 @@ export default function TournamentResults() {
       entry: MassStartEntryDTO,
       round: MassStartEntryDTO["rounds"][number],
       resultStatus: MassStartResultStatus,
-      rawValue: string
+      rawValue: string,
     ) => {
-      const key = draftKey(stage.stage_id, groupId, entry.team_id, round.round_number);
-      const normalizedStatus = String(resultStatus ?? "OK").toUpperCase() as MassStartResultStatus;
-      const safeStatus: MassStartResultStatus = ["OK", "DNS", "DNF", "DSQ"].includes(normalizedStatus)
+      const key = draftKey(
+        stage.stage_id,
+        groupId,
+        entry.team_id,
+        round.round_number,
+      );
+      const normalizedStatus = String(
+        resultStatus ?? "OK",
+      ).toUpperCase() as MassStartResultStatus;
+      const safeStatus: MassStartResultStatus = [
+        "OK",
+        "DNS",
+        "DNF",
+        "DSQ",
+      ].includes(normalizedStatus)
         ? normalizedStatus
         : "OK";
       const normalizedValue = safeStatus === "OK" ? rawValue : "";
@@ -1123,7 +1570,7 @@ export default function TournamentResults() {
         stageStatus: String(stage.stage_status ?? "").toUpperCase(),
       });
     },
-    [clearAutosaveDraft, updateAutosave]
+    [clearAutosaveDraft, updateAutosave],
   );
 
   const onDraftChange = useCallback(
@@ -1132,15 +1579,20 @@ export default function TournamentResults() {
       groupId: number | null,
       entry: MassStartEntryDTO,
       round: MassStartEntryDTO["rounds"][number],
-      value: string
+      value: string,
     ) => {
-      const key = draftKey(stage.stage_id, groupId, entry.team_id, round.round_number);
+      const key = draftKey(
+        stage.stage_id,
+        groupId,
+        entry.team_id,
+        round.round_number,
+      );
       setDrafts((prev) => ({ ...prev, [key]: value }));
 
       const resultStatus = statusDrafts[key] ?? round.result_status ?? "OK";
       queueMassStartAutosave(stage, groupId, entry, round, resultStatus, value);
     },
-    [queueMassStartAutosave, statusDrafts]
+    [queueMassStartAutosave, statusDrafts],
   );
 
   const onStatusDraftChange = useCallback(
@@ -1149,10 +1601,15 @@ export default function TournamentResults() {
       groupId: number | null,
       entry: MassStartEntryDTO,
       round: MassStartEntryDTO["rounds"][number],
-      value: MassStartResultStatus
+      value: MassStartResultStatus,
     ) => {
-      const key = draftKey(stage.stage_id, groupId, entry.team_id, round.round_number);
-      const nextValue = value === "OK" ? drafts[key] ?? "" : "";
+      const key = draftKey(
+        stage.stage_id,
+        groupId,
+        entry.team_id,
+        round.round_number,
+      );
+      const nextValue = value === "OK" ? (drafts[key] ?? "") : "";
 
       setStatusDrafts((prev) => ({ ...prev, [key]: value }));
 
@@ -1162,7 +1619,7 @@ export default function TournamentResults() {
 
       queueMassStartAutosave(stage, groupId, entry, round, value, nextValue);
     },
-    [drafts, queueMassStartAutosave]
+    [drafts, queueMassStartAutosave],
   );
 
   const renderMatch = useCallback(
@@ -1196,13 +1653,17 @@ export default function TournamentResults() {
             tournament={tournament as TournamentDTO}
             match={m as unknown as MatchDTO}
             onReload={reloadAllSilent}
-            onToast={(text, kind) => pushToast(text, (kind ?? "info") as ToastKind)}
-            onOpenFullscreen={() => setFullscreenMatchId(Number((m as MatchDTO).id))}
+            onToast={(text, kind) =>
+              pushToast(text, (kind ?? "info") as ToastKind)
+            }
+            onOpenFullscreen={() =>
+              setFullscreenMatchId(Number((m as MatchDTO).id))
+            }
           />
         </div>
       );
     },
-    [pushToast, reloadAllSilent, tournament, tournamentId]
+    [pushToast, reloadAllSilent, tournament, tournamentId],
   );
   if (!tournamentId) {
     return (
@@ -1273,10 +1734,11 @@ export default function TournamentResults() {
           onPrevious={() => switchFullscreenMatch(-1)}
           onNext={() => switchFullscreenMatch(1)}
           onReload={reloadAllSilent}
-          onToast={(text, kind) => pushToast(text, (kind ?? "info") as ToastKind)}
+          onToast={(text, kind) =>
+            pushToast(text, (kind ?? "info") as ToastKind)
+          }
         />
       ) : null}
     </>
   );
 }
-

@@ -1,6 +1,8 @@
 // frontend/src/components/MassStartStageCard.tsx
 // Komponent renderuje pojedynczy etap lub konkurencję MASS_START w widoku wprowadzania rezultatów.
 
+import { useState } from "react";
+
 import { Trophy } from "lucide-react";
 
 import type { AutosaveStatus } from "../hooks/useAutosave";
@@ -35,18 +37,21 @@ type Props = {
     groupId: number | null,
     entry: MassStartEntryDTO,
     round: MassStartEntryDTO["rounds"][number],
-    value: string
+    value: string,
   ) => void;
   onStatusDraftChange: (
     stage: MassStartStageDTO,
     groupId: number | null,
     entry: MassStartEntryDTO,
     round: MassStartEntryDTO["rounds"][number],
-    value: MassStartResultStatus
+    value: MassStartResultStatus,
   ) => void;
 };
 
-const RESULT_STATUS_OPTIONS: Array<{ value: MassStartResultStatus; label: string }> = [
+const RESULT_STATUS_OPTIONS: Array<{
+  value: MassStartResultStatus;
+  label: string;
+}> = [
   { value: "OK", label: "Wynik" },
   { value: "DNS", label: "DNS - nie wystartował" },
   { value: "DNF", label: "DNF - nie ukończył" },
@@ -55,7 +60,12 @@ const RESULT_STATUS_OPTIONS: Array<{ value: MassStartResultStatus; label: string
 
 // ===== Identyfikacja wpisów wynikowych =====
 
-function draftKey(stageId: number, groupId: number | null, teamId: number, roundNumber: number) {
+function draftKey(
+  stageId: number,
+  groupId: number | null,
+  teamId: number,
+  roundNumber: number,
+) {
   return `${stageId}:${groupId ?? 0}:${teamId}:${roundNumber}`;
 }
 
@@ -70,25 +80,37 @@ function getRoundLabel(stageStructureMode: StageStructureMode) {
 }
 
 function getAggregateLabel(stageStructureMode: StageStructureMode) {
-  return isMultiEventMode(stageStructureMode) ? "Wynik konkurencji" : "Suma / wynik";
+  return isMultiEventMode(stageStructureMode)
+    ? "Wynik konkurencji"
+    : "Suma / wynik";
 }
 
-function stageSummary(stage: MassStartStageDTO, stageStructureMode: StageStructureMode) {
+function stageSummary(
+  stage: MassStartStageDTO,
+  stageStructureMode: StageStructureMode,
+) {
   const roundsLabel = isMultiEventMode(stageStructureMode) ? "próby" : "rundy";
   const parts = [
     `grupy: ${stage.groups_count}`,
-    `uczestnicy: ${stage.participants_count ?? "-"}`,
     `${roundsLabel}: ${stage.rounds_count}`,
   ];
 
   if (!isMultiEventMode(stageStructureMode)) {
-    parts.splice(2, 0, `awans: ${stage.advance_count ?? "-"}`);
+    parts.splice(
+      1,
+      0,
+      `uczestnicy: ${stage.participants_count ?? "-"}`,
+      `awans: ${stage.advance_count ?? "-"}`,
+    );
   }
 
   return parts.join(" • ");
 }
 
-function getStageStatusLabel(stage: MassStartStageDTO, stageStructureMode: StageStructureMode) {
+function getStageStatusLabel(
+  stage: MassStartStageDTO,
+  stageStructureMode: StageStructureMode,
+) {
   const status = String(stage.stage_status ?? "").toUpperCase();
 
   if (isMultiEventMode(stageStructureMode)) {
@@ -107,23 +129,28 @@ function getStageStatusLabel(stage: MassStartStageDTO, stageStructureMode: Stage
 function isStageEditable(
   stage: MassStartStageDTO,
   canManageTournament: boolean,
-  stageStructureMode: StageStructureMode
+  stageStructureMode: StageStructureMode,
+  forceEditClosed: boolean,
 ) {
   if (!canManageTournament) return false;
 
   const status = String(stage.stage_status ?? "").toUpperCase();
 
   if (isMultiEventMode(stageStructureMode)) {
-    // Konkurencje w wieloboju nie są kolejnymi szczeblami awansu, dlatego status PLANNED nie blokuje edycji wyników.
-    return status !== "CLOSED";
+    // W wieloboju konkurencje są niezależne, dlatego zamkniętą konkurencję można otworzyć lokalnie do korekty wyników.
+    return status !== "CLOSED" || forceEditClosed;
   }
 
   return status === "" || status === "OPEN";
 }
 
-function getStageTone(stage: MassStartStageDTO, stageStructureMode: StageStructureMode) {
+function getStageTone(
+  stage: MassStartStageDTO,
+  stageStructureMode: StageStructureMode,
+) {
   const status = String(stage.stage_status ?? "").toUpperCase();
-  const editableLike = isMultiEventMode(stageStructureMode) && status !== "CLOSED";
+  const editableLike =
+    isMultiEventMode(stageStructureMode) && status !== "CLOSED";
 
   if (status === "OPEN" || editableLike) {
     return {
@@ -148,7 +175,10 @@ function getStageTone(stage: MassStartStageDTO, stageStructureMode: StageStructu
   };
 }
 
-function getLockedMessage(stage: MassStartStageDTO, stageStructureMode: StageStructureMode) {
+function getLockedMessage(
+  stage: MassStartStageDTO,
+  stageStructureMode: StageStructureMode,
+) {
   const status = String(stage.stage_status ?? "").toUpperCase();
 
   if (isMultiEventMode(stageStructureMode)) {
@@ -173,7 +203,8 @@ function getValueMeta(config: TournamentResultConfigDTO) {
   const unitLabel = String(config.unit_label ?? config.unit ?? "").trim();
 
   const inputType: ValueInputKind = "text";
-  const inputMode: ValueInputMode = valueKind === "TIME" ? "numeric" : "decimal";
+  const inputMode: ValueInputMode =
+    valueKind === "TIME" ? "numeric" : "decimal";
 
   const placeholder =
     valueKind === "TIME"
@@ -193,11 +224,90 @@ function getValueMeta(config: TournamentResultConfigDTO) {
   };
 }
 
+function getDecimalPlaces(config: TournamentResultConfigDTO) {
+  const raw = Number(config.decimal_places ?? 0);
+  if (!Number.isFinite(raw)) return 0;
+  return Math.min(20, Math.max(0, Math.trunc(raw)));
+}
+
+function formatNumberWithConfig(
+  value: unknown,
+  config: TournamentResultConfigDTO,
+) {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : Number(String(value ?? "").replace(",", "."));
+  if (!Number.isFinite(parsed)) return "";
+  return parsed.toFixed(getDecimalPlaces(config));
+}
+
+function formatMeasuredValue(
+  value: unknown,
+  config: TournamentResultConfigDTO,
+) {
+  const formatted = formatNumberWithConfig(value, config);
+  if (!formatted) return "";
+  const unitLabel = String(config.unit_label ?? config.unit ?? "").trim();
+  return unitLabel ? `${formatted} ${unitLabel}` : formatted;
+}
+
+function formatAggregateDisplay(
+  entry: MassStartEntryDTO,
+  config: TournamentResultConfigDTO,
+) {
+  const valueKind = String(config.value_kind ?? "NUMBER").toUpperCase();
+  if (valueKind !== "NUMBER") return entry.aggregate_display ?? "-";
+
+  const directValue =
+    (
+      entry as unknown as {
+        aggregate_value?: unknown;
+        aggregate_numeric_value?: unknown;
+      }
+    ).aggregate_value ??
+    (entry as unknown as { aggregate_numeric_value?: unknown })
+      .aggregate_numeric_value;
+  const directDisplay = formatMeasuredValue(directValue, config);
+  if (directDisplay) return directDisplay;
+
+  const rawDisplay = String(entry.aggregate_display ?? "").trim();
+  const numericMatch = rawDisplay.match(/-?\d+(?:[.,]\d+)?/);
+  if (!numericMatch) return rawDisplay || "-";
+
+  return formatMeasuredValue(numericMatch[0], config);
+}
+
+function normalizeNumericDraftInput(
+  value: string,
+  config: TournamentResultConfigDTO,
+) {
+  const valueKind = String(config.value_kind ?? "NUMBER").toUpperCase();
+  if (valueKind === "TIME") return value.replace(/[^0-9]/g, "");
+  if (valueKind === "PLACE") return value.replace(/[^0-9]/g, "");
+  if (valueKind !== "NUMBER") return value;
+
+  const decimalPlaces = getDecimalPlaces(config);
+  let next = value.replace(",", ".").replace(/[^0-9.-]/g, "");
+  const isNegative = next.startsWith("-");
+  next = next.replace(/-/g, "");
+  const parts = next.split(".");
+  const integerPart = parts[0] ?? "";
+  const decimalPart = parts.slice(1).join("").slice(0, decimalPlaces);
+
+  if (decimalPlaces === 0) return `${isNegative ? "-" : ""}${integerPart}`;
+  if (value.endsWith(".") && parts.length > 1)
+    return `${isNegative ? "-" : ""}${integerPart}.`;
+  if (parts.length > 1)
+    return `${isNegative ? "-" : ""}${integerPart}.${decimalPart}`;
+  return `${isNegative ? "-" : ""}${integerPart}`;
+}
+
 function getEntryAutosaveStatus(
   statuses: Record<string, AutosaveStatus | undefined>,
   stageId: number,
   groupId: number | null,
-  teamId: number
+  teamId: number,
 ): AutosaveStatus | null {
   const prefix = `${stageId}:${groupId ?? 0}:${teamId}:`;
   const values = Object.entries(statuses)
@@ -216,10 +326,12 @@ function getEntryAutosaveError(
   errors: Record<string, string | undefined>,
   stageId: number,
   groupId: number | null,
-  teamId: number
+  teamId: number,
 ): string {
   const prefix = `${stageId}:${groupId ?? 0}:${teamId}:`;
-  const found = Object.entries(errors).find(([key, value]) => key.startsWith(prefix) && value);
+  const found = Object.entries(errors).find(
+    ([key, value]) => key.startsWith(prefix) && value,
+  );
   return String(found?.[1] ?? "");
 }
 
@@ -230,14 +342,14 @@ function hasAnySavedResult(entry: MassStartEntryDTO) {
       round.display_value ||
       round.numeric_value != null ||
       round.time_ms != null ||
-      round.place_value != null
+      round.place_value != null,
   );
 }
 
 function getEntryTone(
   stageEditable: boolean,
   entry: MassStartEntryDTO,
-  autosaveStatus: AutosaveStatus | null
+  autosaveStatus: AutosaveStatus | null,
 ) {
   if (autosaveStatus === "error") {
     return {
@@ -288,17 +400,32 @@ function getEntryTone(
 
 function getStatusDisplay(resultStatus?: MassStartResultStatus | null) {
   if (!resultStatus || resultStatus === "OK") return "";
-  return RESULT_STATUS_OPTIONS.find((option) => option.value === resultStatus)?.label ?? resultStatus;
+  return (
+    RESULT_STATUS_OPTIONS.find((option) => option.value === resultStatus)
+      ?.label ?? resultStatus
+  );
 }
 
 function getRoundSavedLabel(
   round: MassStartEntryDTO["rounds"][number],
   valueKind: string,
-  unitLabel: string
+  unitLabel: string,
+  config: TournamentResultConfigDTO,
 ) {
   const statusDisplay = getStatusDisplay(round.result_status);
   if (statusDisplay) return `Zapisano: ${statusDisplay}`;
-  if (round.display_value) return `Zapisano: ${round.display_value}`;
+  if (valueKind === "NUMBER" && round.numeric_value != null) {
+    return `Zapisano: ${formatMeasuredValue(round.numeric_value, config)}`;
+  }
+  if (round.display_value) {
+    if (valueKind === "NUMBER") {
+      const numericMatch = String(round.display_value).match(/-?\d+(?:[.,]\d+)?/);
+      if (numericMatch) {
+        return `Zapisano: ${formatMeasuredValue(numericMatch[0], config)}`;
+      }
+    }
+    return `Zapisano: ${round.display_value}`;
+  }
   if (valueKind === "TIME") return "Brak czasu";
   if (valueKind === "PLACE") return "Brak miejsca";
   return unitLabel ? `Brak wyniku (${unitLabel})` : "Brak wyniku";
@@ -318,7 +445,17 @@ export default function MassStartStageCard({
   onDraftChange,
   onStatusDraftChange,
 }: Props) {
-  const stageEditable = isStageEditable(stage, canManageTournament, stageStructureMode);
+  const isMultiEvent = isMultiEventMode(stageStructureMode);
+  const stageStatus = String(stage.stage_status ?? "").toUpperCase();
+  const [forceEditClosed, setForceEditClosed] = useState(false);
+  const canReopenForCorrection =
+    canManageTournament && isMultiEvent && stageStatus === "CLOSED";
+  const stageEditable = isStageEditable(
+    stage,
+    canManageTournament,
+    stageStructureMode,
+    forceEditClosed,
+  );
   const stageStatusLabel = getStageStatusLabel(stage, stageStructureMode);
   const tone = getStageTone(stage, stageStructureMode);
   const roundLabel = getRoundLabel(stageStructureMode);
@@ -333,7 +470,7 @@ export default function MassStartStageCard({
     "disabled:opacity-60",
     "appearance-none [color-scheme:dark]",
     "[&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
-    "[-moz-appearance:textfield]"
+    "[-moz-appearance:textfield]",
   );
 
   const selectClass = cn(
@@ -342,33 +479,57 @@ export default function MassStartStageCard({
     "disabled:opacity-60",
     "appearance-none [color-scheme:dark]",
     "[&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
-    "[-moz-appearance:textfield]"
+    "[-moz-appearance:textfield]",
   );
 
   return (
     <Card className={cn("mb-4 border p-4 sm:p-5", tone.card)}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <div className="text-lg font-extrabold text-white">{stage.stage_name}</div>
+          <div className="text-lg font-extrabold text-white">
+            {stage.stage_name}
+          </div>
           <div className="mt-1 text-xs text-slate-400">
             {stageSummary(stage, stageStructureMode)}
           </div>
         </div>
 
-        <div
-          className={cn(
-            "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs",
-            tone.badge
-          )}
-        >
-          <span className={cn("h-2 w-2 rounded-full", tone.dot)} />
-          {stageStatusLabel}
+        <div className="flex flex-wrap items-center gap-2">
+          {canReopenForCorrection ? (
+            <button
+              type="button"
+              onClick={() => setForceEditClosed((current) => !current)}
+              className={cn(
+                "rounded-full border px-3 py-1 text-xs font-semibold transition",
+                forceEditClosed
+                  ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
+                  : "border-amber-400/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/15",
+              )}
+            >
+              {forceEditClosed ? "Zakończ poprawki" : "Popraw konkurencję"}
+            </button>
+          ) : null}
+
+          <div
+            className={cn(
+              "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs",
+              tone.badge,
+            )}
+          >
+            <span className={cn("h-2 w-2 rounded-full", tone.dot)} />
+            {forceEditClosed ? "Korekta wyników" : stageStatusLabel}
+          </div>
         </div>
       </div>
 
       {!stageEditable ? (
         <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
           {getLockedMessage(stage, stageStructureMode)}
+        </div>
+      ) : forceEditClosed ? (
+        <div className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+          Tryb korekty jest aktywny. Zmienione wartości zostaną zapisane
+          automatycznie.
         </div>
       ) : null}
 
@@ -379,12 +540,18 @@ export default function MassStartStageCard({
             className="rounded-2xl border border-white/10 bg-white/[0.03] p-4"
           >
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="text-sm font-extrabold text-white">{group.group_name}</div>
-              <div className="text-xs text-slate-400">{group.entries.length} uczestników</div>
+              <div className="text-sm font-extrabold text-white">
+                {group.group_name}
+              </div>
+              <div className="text-xs text-slate-400">
+                {group.entries.length} uczestników
+              </div>
             </div>
 
             {group.entries.length === 0 ? (
-              <div className="mt-4 text-sm text-slate-300">Brak uczestników w tej grupie.</div>
+              <div className="mt-4 text-sm text-slate-300">
+                Brak uczestników w tej grupie.
+              </div>
             ) : (
               <div className="mt-4 space-y-3">
                 {group.entries.map((entry) => {
@@ -392,33 +559,44 @@ export default function MassStartStageCard({
                     autosaveStatuses,
                     stage.stage_id,
                     group.group_id,
-                    entry.team_id
+                    entry.team_id,
                   );
                   const autosaveError = getEntryAutosaveError(
                     autosaveErrors,
                     stage.stage_id,
                     group.group_id,
-                    entry.team_id
+                    entry.team_id,
                   );
-                  const entryTone = getEntryTone(stageEditable, entry, autosaveStatus);
+                  const entryTone = getEntryTone(
+                    stageEditable,
+                    entry,
+                    autosaveStatus,
+                  );
 
                   return (
                     <div
                       key={entry.team_id}
                       className={cn(
                         "rounded-2xl border p-3 transition-colors",
-                        entryTone.wrapper
+                        entryTone.wrapper,
                       )}
                     >
                       <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                         <div className="min-w-0 xl:max-w-[17rem]">
                           <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                            <span className="min-w-0 break-words">{entry.team_name}</span>
-                            <AutosaveIndicator status={autosaveStatus ?? "idle"} error={autosaveError || undefined} />
+                            <span className="min-w-0 break-words">
+                              {entry.team_name}
+                            </span>
+                            <AutosaveIndicator
+                              status={autosaveStatus ?? "idle"}
+                              error={autosaveError || undefined}
+                            />
                           </div>
 
                           {autosaveError ? (
-                            <div className="mt-1 text-xs text-rose-300">{autosaveError}</div>
+                            <div className="mt-1 text-xs text-rose-300">
+                              {autosaveError}
+                            </div>
                           ) : null}
 
                           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
@@ -427,7 +605,11 @@ export default function MassStartStageCard({
                               Miejsce: {entry.rank ?? "-"}
                             </span>
                             <span>
-                              {aggregateLabel}: {entry.aggregate_display ?? "-"}
+                              {aggregateLabel}:{" "}
+                              {formatAggregateDisplay(
+                                entry,
+                                customResultConfig,
+                              )}
                             </span>
                           </div>
                         </div>
@@ -438,14 +620,23 @@ export default function MassStartStageCard({
                               stage.stage_id,
                               group.group_id,
                               entry.team_id,
-                              round.round_number
+                              round.round_number,
                             );
                             const value = drafts[key] ?? "";
-                            const selectedStatus = statusDrafts[key] ?? round.result_status ?? "OK";
-                            const valueInputDisabled = !stageEditable || selectedStatus !== "OK";
+                            const normalizedValue = normalizeNumericDraftInput(
+                              value,
+                              customResultConfig,
+                            );
+                            const selectedStatus =
+                              statusDrafts[key] ?? round.result_status ?? "OK";
+                            const valueInputDisabled =
+                              !stageEditable || selectedStatus !== "OK";
 
                             return (
-                              <label key={key} className="grid gap-1 text-xs text-slate-300">
+                              <label
+                                key={key}
+                                className="grid gap-1 text-xs text-slate-300"
+                              >
                                 {roundLabel} {round.round_number}
                                 <select
                                   value={selectedStatus}
@@ -455,22 +646,35 @@ export default function MassStartStageCard({
                                       group.group_id,
                                       entry,
                                       round,
-                                      event.target.value as MassStartResultStatus
+                                      event.target
+                                        .value as MassStartResultStatus,
                                     )
                                   }
                                   disabled={!stageEditable}
                                   className={selectClass}
                                 >
                                   {RESULT_STATUS_OPTIONS.map((option) => (
-                                    <option key={option.value} value={option.value}>
+                                    <option
+                                      key={option.value}
+                                      value={option.value}
+                                    >
                                       {option.label}
                                     </option>
                                   ))}
                                 </select>
                                 <Input
-                                  value={value}
+                                  value={normalizedValue}
                                   onChange={(e) =>
-                                    onDraftChange(stage, group.group_id, entry, round, e.target.value)
+                                    onDraftChange(
+                                      stage,
+                                      group.group_id,
+                                      entry,
+                                      round,
+                                      normalizeNumericDraftInput(
+                                        e.target.value,
+                                        customResultConfig,
+                                      ),
+                                    )
                                   }
                                   type={inputType}
                                   inputMode={inputMode}
@@ -479,7 +683,12 @@ export default function MassStartStageCard({
                                   className={inputClass}
                                 />
                                 <span className="text-[11px] text-slate-500">
-                                  {getRoundSavedLabel(round, valueKind, unitLabel)}
+                                  {getRoundSavedLabel(
+                                    round,
+                                    valueKind,
+                                    unitLabel,
+                                    customResultConfig,
+                                  )}
                                 </span>
                               </label>
                             );

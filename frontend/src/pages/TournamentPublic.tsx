@@ -158,6 +158,54 @@ function appendQueryParams(
   return `${base}${query ? `?${query}` : ""}${hash}`;
 }
 
+function normalizeDivisionPayload(payload: unknown): DivisionSwitcherItem[] {
+  const source = Array.isArray(payload)
+    ? payload
+    : Array.isArray((payload as any)?.results)
+      ? (payload as any).results
+      : Array.isArray((payload as any)?.divisions)
+        ? (payload as any).divisions
+        : [];
+
+  const seen = new Set<number>();
+
+  return source
+    .map((item: any) => ({
+      id: parseDivisionId(String(item?.id ?? "")) ?? 0,
+      name: String(item?.name ?? "").trim(),
+      slug: typeof item?.slug === "string" && item.slug.trim() ? item.slug : String(item?.id ?? ""),
+      order: typeof item?.order === "number" ? item.order : undefined,
+      is_default: Boolean(item?.is_default),
+      is_archived: Boolean(item?.is_archived),
+      status: typeof item?.status === "string" ? item.status : undefined,
+    }))
+    .filter((item: DivisionSwitcherItem) => {
+      if (!item.id || !item.name || seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+}
+
+function buildDivisionFallback(tournament: TournamentPublicDTO, fallback: DivisionSwitcherItem[] = []): DivisionSwitcherItem[] {
+  const normalized = normalizeDivisionPayload(fallback);
+  if (normalized.length > 0) return normalized;
+
+  const activeId = parseDivisionId(String(tournament.active_division_id ?? ""));
+  if (!activeId) return [];
+
+  return [
+    {
+      id: activeId,
+      name: tournament.active_division_name?.trim() || "Dywizja główna",
+      slug: String(activeId),
+      order: 0,
+      is_default: true,
+      is_archived: false,
+      status: undefined,
+    },
+  ];
+}
+
 function formatDateRange(start: string | null, end: string | null) {
   if (!start && !end) return null;
   if (start && end) return `${start} - ${end}`;
@@ -692,6 +740,8 @@ export default function TournamentPublic({
   const [pendingDivisionReq, setPendingDivisionReq] =
     useState<DivisionChangeRequestDTO | null>(null);
   const [targetDivisionId, setTargetDivisionId] = useState<number | null>(null);
+  const [joinDivisionId, setJoinDivisionId] = useState<number | null>(requestedDivisionId);
+  const [joinDivisions, setJoinDivisions] = useState<DivisionSwitcherItem[]>([]);
 
   const [selectedMatchId, setSelectedMatchId] = useState<number | null>(null);
   const [selectedSection, setSelectedSection] = useState<string | null>(null);
@@ -726,6 +776,7 @@ export default function TournamentPublic({
 
   useEffect(() => {
     setVerified(false);
+    setJoinDivisions([]);
     setRegInfo(null);
     setRegError(null);
     setJoinDisabledByServer(false);
@@ -761,6 +812,33 @@ export default function TournamentPublic({
     [code, effectiveDivisionId]
   );
 
+
+  const loadPublicDivisions = useCallback(
+    async (fallback: DivisionSwitcherItem[] = []) => {
+      if (!id) return fallback;
+
+      try {
+        const res = await apiFetch(
+          appendQueryParams(`/api/tournaments/${id}/divisions/`, {
+            code: code.trim() || undefined,
+          }),
+          { toastOnError: false }
+        );
+
+        if (!res.ok) return normalizeDivisionPayload(fallback);
+
+        const payload = await res.json().catch(() => null);
+        const publicDivisions = normalizeDivisionPayload(payload);
+        const fallbackDivisions = normalizeDivisionPayload(fallback);
+
+        return publicDivisions.length >= fallbackDivisions.length ? publicDivisions : fallbackDivisions;
+      } catch {
+        return normalizeDivisionPayload(fallback);
+      }
+    },
+    [code, id]
+  );
+
   const publicMatches = useMemo(() => matches.filter((m) => !isByePublic(m)), [matches]);
   const customMode = useMemo(() => usesCustomResults(tournament), [tournament]);
   const competitionModel = useMemo(() => getCompetitionModel(tournament), [tournament]);
@@ -793,9 +871,49 @@ export default function TournamentPublic({
   const currentDivisionValue =
     effectiveDivisionId ?? activeDivisionOptions[0]?.value ?? 0;
 
+  const registrationDivisionOptions = useMemo<SelectOption<number>[]>(() => {
+    return joinDivisions
+      .filter((division) => !(division as any).is_archived)
+      .sort((left, right) => {
+        const orderDiff = ((left as any).order ?? 0) - ((right as any).order ?? 0);
+        if (orderDiff !== 0) return orderDiff;
+        return left.id - right.id;
+      })
+      .map((division) => ({
+        value: division.id,
+        label: division.name,
+      }));
+  }, [joinDivisions]);
+
+  const joinDivisionOptions = verified && registrationDivisionOptions.length > 0
+    ? registrationDivisionOptions
+    : activeDivisionOptions;
+  const selectedJoinDivisionId =
+    joinDivisionId ?? joinDivisionOptions[0]?.value ?? null;
+  const selectedJoinDivisionName = useMemo(() => {
+    return joinDivisionOptions.find((option) => option.value === selectedJoinDivisionId)?.label ?? null;
+  }, [joinDivisionOptions, selectedJoinDivisionId]);
+
+  const currentParticipantDivisionValue = regMe?.division_id ?? currentDivisionValue;
+
   const targetDivisionOptions = useMemo<SelectOption<number>[]>(() => {
-    return activeDivisionOptions.filter((option) => option.value !== currentDivisionValue);
-  }, [activeDivisionOptions, currentDivisionValue]);
+    return activeDivisionOptions.filter((option) => option.value !== currentParticipantDivisionValue);
+  }, [activeDivisionOptions, currentParticipantDivisionValue]);
+
+  useEffect(() => {
+    if (joinDivisionOptions.length === 0) {
+      setJoinDivisionId(null);
+      return;
+    }
+
+    setJoinDivisionId((current) => {
+      if (current && joinDivisionOptions.some((option) => option.value === current)) return current;
+      if (effectiveDivisionId && joinDivisionOptions.some((option) => option.value === effectiveDivisionId)) {
+        return effectiveDivisionId;
+      }
+      return joinDivisionOptions[0]?.value ?? null;
+    });
+  }, [effectiveDivisionId, joinDivisionOptions]);
 
   useEffect(() => {
     if (targetDivisionOptions.length === 0) {
@@ -831,7 +949,7 @@ export default function TournamentPublic({
 
   const heroJoinLabel = useMemo(() => {
     if (joinIsDisabledKnown) return "Dołączanie wyłączone";
-    if (regMe) return "Mój udział";
+    if (regMe) return "Zarządzaj swoją rejestracją";
     if (showParticipantJoin) return "Dołącz do wydarzenia";
     return "Publiczny podgląd";
   }, [joinIsDisabledKnown, regMe, showParticipantJoin]);
@@ -1102,7 +1220,7 @@ export default function TournamentPublic({
   }, [effectiveDivisionId, id, isCustomMassStartMode, isLogged]);
 
   const loadMyPendingNameChange = useCallback(
-    async (teamId: number | null) => {
+    async (teamId: number | null, divisionId?: number | null) => {
       if (!id || !teamId) {
         setPendingNameReq(null);
         return;
@@ -1113,7 +1231,7 @@ export default function TournamentPublic({
           appendQueryParams(`/api/tournaments/${id}/teams/name-change-requests/`, {
             status: "PENDING",
             team_id: teamId,
-            division_id: effectiveDivisionId ?? undefined,
+            division_id: divisionId ?? effectiveDivisionId ?? undefined,
           }),
           { toastOnError: false }
         );
@@ -1141,7 +1259,7 @@ export default function TournamentPublic({
     [effectiveDivisionId, id]
   );
 
-  const loadMyPendingDivisionChange = useCallback(async () => {
+  const loadMyPendingDivisionChange = useCallback(async (divisionId?: number | null) => {
     if (!id) {
       setPendingDivisionReq(null);
       return;
@@ -1151,7 +1269,7 @@ export default function TournamentPublic({
       const res = await apiFetch(
         appendQueryParams(`/api/tournaments/${id}/teams/division-change-requests/`, {
           status: "PENDING",
-          division_id: effectiveDivisionId ?? undefined,
+          division_id: divisionId ?? effectiveDivisionId ?? undefined,
         }),
         { toastOnError: false }
       );
@@ -1275,13 +1393,21 @@ export default function TournamentPublic({
             : undefined,
       };
 
-      setTournament(t);
-      setDivisions(Array.isArray(t.divisions) ? t.divisions : []);
+      const fallbackDivisions = buildDivisionFallback(t, Array.isArray(t.divisions) ? t.divisions : []);
+      const divisionsPayload = await loadPublicDivisions(fallbackDivisions);
+      const safeDivisionsPayload = divisionsPayload.length > 0 ? divisionsPayload : fallbackDivisions;
+      const tournamentWithDivisions: TournamentPublicDTO = {
+        ...t,
+        divisions: safeDivisionsPayload,
+      };
+
+      setTournament(tournamentWithDivisions);
+      setDivisions(safeDivisionsPayload);
       setActiveDivisionId(t.active_division_id ?? effectiveDivisionId ?? null);
       setActiveDivisionName(t.active_division_name ?? null);
       setTournamentLoaded(true);
 
-      if (!requestedDivisionId && t.active_division_id && (t.divisions?.length ?? 0) > 1) {
+      if (!requestedDivisionId && t.active_division_id && divisionsPayload.length > 1) {
         const next = new URLSearchParams(searchParamsKey);
         next.set("division_id", String(t.active_division_id));
         setSearchParams(next, { replace: true });
@@ -1332,12 +1458,22 @@ export default function TournamentPublic({
     } finally {
       setLoadingGate(false);
     }
-  }, [code, effectiveDivisionId, id, requestedDivisionId, searchParamsKey, setSearchParams, withPublicContext]);
+  }, [
+    code,
+    effectiveDivisionId,
+    id,
+    loadPublicDivisions,
+    requestedDivisionId,
+    searchParamsKey,
+    setSearchParams,
+    withPublicContext,
+  ]);
 
   const loadRegistrationMe = useCallback(async () => {
     if (!id || !isLogged) {
       setRegMe(null);
       setPendingNameReq(null);
+      setPendingDivisionReq(null);
       return;
     }
 
@@ -1345,39 +1481,85 @@ export default function TournamentPublic({
     if (!showParticipantJoin && !joinFlag) {
       setRegMe(null);
       setPendingNameReq(null);
+      setPendingDivisionReq(null);
       return;
     }
 
-    const res = await apiFetch(
-      appendQueryParams(`/api/tournaments/${id}/registrations/me/`, {
-        division_id: effectiveDivisionId ?? undefined,
-      }),
-      { toastOnError: false }
+    const candidateDivisionIds = Array.from(
+      new Set(
+        [
+          effectiveDivisionId,
+          requestedDivisionId,
+          activeDivisionId,
+          ...divisions.map((division) => division.id),
+          null,
+        ].filter((divisionId): divisionId is number | null =>
+          divisionId === null || (Number.isInteger(divisionId) && divisionId > 0)
+        )
+      )
     );
 
-    if (res.status === 404 || !res.ok) {
-      setRegMe(null);
-      setPendingNameReq(null);
-      return;
-    }
+    for (const candidateDivisionId of candidateDivisionIds) {
+      const res = await apiFetch(
+        appendQueryParams(`/api/tournaments/${id}/registrations/me/`, {
+          division_id: candidateDivisionId ?? undefined,
+        }),
+        { toastOnError: false }
+      );
 
-    const data = (await res.json().catch(() => null)) as RegistrationMeDTO | null;
-    if (data?.display_name) {
+      if (res.status === 404 || !res.ok) continue;
+
+      const data = (await res.json().catch(() => null)) as RegistrationMeDTO | null;
+      if (!data?.display_name) continue;
+
+      const resolvedDivisionId = data.division_id ?? candidateDivisionId ?? effectiveDivisionId ?? null;
+      const resolvedDivisionName =
+        data.division_name ??
+        divisions.find((division) => division.id === resolvedDivisionId)?.name ??
+        activeDivisionName ??
+        null;
+
       setRegMe({
         display_name: data.display_name,
         team_id: data.team_id ?? null,
-        division_id: data.division_id ?? effectiveDivisionId ?? null,
-        division_name: data.division_name ?? activeDivisionName ?? null,
+        division_id: resolvedDivisionId,
+        division_name: resolvedDivisionName,
       });
       setDisplayName(data.display_name);
-      loadMyMatches();
-      await loadMyPendingNameChange(data.team_id ?? null);
-      await loadMyPendingDivisionChange();
-    } else {
-      setRegMe(null);
-      setPendingNameReq(null);
+      await loadMyPendingNameChange(data.team_id ?? null, resolvedDivisionId);
+      await loadMyPendingDivisionChange(resolvedDivisionId);
+
+      if (resolvedDivisionId && resolvedDivisionId !== effectiveDivisionId) {
+        const next = new URLSearchParams(searchParamsKey);
+        next.set("division_id", String(resolvedDivisionId));
+        setSearchParams(next, { replace: true });
+      } else {
+        loadMyMatches();
+      }
+
+      return;
     }
-  }, [effectiveDivisionId, id, isLogged, joinFlag, loadMyMatches, loadMyPendingNameChange, showParticipantJoin, tournamentLoaded]);
+
+    setRegMe(null);
+    setPendingNameReq(null);
+    setPendingDivisionReq(null);
+  }, [
+    activeDivisionId,
+    activeDivisionName,
+    divisions,
+    effectiveDivisionId,
+    id,
+    isLogged,
+    joinFlag,
+    loadMyMatches,
+    loadMyPendingDivisionChange,
+    loadMyPendingNameChange,
+    requestedDivisionId,
+    searchParamsKey,
+    setSearchParams,
+    showParticipantJoin,
+    tournamentLoaded,
+  ]);
 
   useEffect(() => {
     loadTournamentAndMatches().catch((e: any) => setError(e.message));
@@ -1471,17 +1653,12 @@ export default function TournamentPublic({
     setRegInfo(null);
 
     try {
-      const res = await apiFetch(
-        appendQueryParams(`/api/tournaments/${id}/registrations/verify/`, {
-          division_id: effectiveDivisionId ?? undefined,
-        }),
-        {
-          toastOnError: false,
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code: c }),
-        }
-      );
+      const res = await apiFetch(`/api/tournaments/${id}/registrations/verify/`, {
+        toastOnError: false,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: c }),
+      });
 
       const data = await res.json().catch(() => null);
       if (!res.ok) {
@@ -1491,8 +1668,32 @@ export default function TournamentPublic({
         return;
       }
 
+      const verifiedDivisions = normalizeDivisionPayload(data?.divisions);
+      if (verifiedDivisions.length === 0) {
+        setVerified(false);
+        setJoinDivisions([]);
+        setRegError("Brak dywizji dostępnych do dołączenia.");
+        return;
+      }
+
+      setDivisions(verifiedDivisions);
+      setJoinDivisions(verifiedDivisions);
+      setTournament((current) => (current ? { ...current, divisions: verifiedDivisions } : current));
+      setJoinDivisionId((current) => {
+        if (current && verifiedDivisions.some((division) => division.id === current)) return current;
+        const verifiedDivisionId = parseDivisionId(String(data?.division_id ?? ""));
+        if (verifiedDivisionId && verifiedDivisions.some((division) => division.id === verifiedDivisionId)) {
+          return verifiedDivisionId;
+        }
+        return verifiedDivisions[0]?.id ?? null;
+      });
+
       setVerified(true);
-      setRegInfo("Kod poprawny. Uzupełnij nazwę i dołącz.");
+      setRegInfo(
+        verifiedDivisions.length > 1
+          ? "Kod poprawny. Wybierz dywizję, uzupełnij nazwę i dołącz."
+          : "Kod poprawny. Uzupełnij nazwę i dołącz."
+      );
     } catch (e: any) {
       setRegError(e?.message ?? "Błąd weryfikacji kodu.");
     } finally {
@@ -1514,6 +1715,16 @@ export default function TournamentPublic({
       return;
     }
 
+    const divisionIdForJoin = selectedJoinDivisionId;
+    if (!verified) {
+      setRegError("Najpierw sprawdź kod dołączania.");
+      return;
+    }
+    if (!divisionIdForJoin) {
+      setRegError("Wybierz dywizję.");
+      return;
+    }
+
     setRegBusy(true);
     setRegError(null);
     setRegInfo(null);
@@ -1521,7 +1732,7 @@ export default function TournamentPublic({
     try {
       const res = await apiFetch(
         appendQueryParams(`/api/tournaments/${id}/registrations/join/`, {
-          division_id: effectiveDivisionId ?? undefined,
+          division_id: divisionIdForJoin ?? undefined,
         }),
         {
           toastOnError: false,
@@ -1539,15 +1750,31 @@ export default function TournamentPublic({
         return;
       }
 
+      const joinedDivisionId =
+        parseDivisionId(String(data?.division_id ?? "")) ?? divisionIdForJoin ?? null;
+      const joinedDivisionName =
+        joinDivisionOptions.find((option) => option.value === joinedDivisionId)?.label ??
+        selectedJoinDivisionName ??
+        activeDivisionName ??
+        null;
+
       setRegInfo("Dołączono do turnieju.");
       setVerified(false);
+      setJoinDivisions([]);
       setJoinDisabledByServer(false);
+      setRegMe({
+        display_name: data?.display_name ?? dn,
+        team_id: data?.team_id ?? null,
+        division_id: joinedDivisionId,
+        division_name: joinedDivisionName,
+      });
+      setDisplayName(data?.display_name ?? dn);
 
-      const keepAccess = code.trim() ? `?code=${encodeURIComponent(code.trim())}` : "";
-      navigate(location.pathname + keepAccess, { replace: true });
-
-      await loadTournamentAndMatches();
-      await loadRegistrationMe();
+      const next = new URLSearchParams();
+      if (code.trim()) next.set("code", code.trim());
+      if (joinedDivisionId) next.set("division_id", String(joinedDivisionId));
+      const nextQuery = next.toString();
+      navigate(`${location.pathname}${nextQuery ? `?${nextQuery}` : ""}`, { replace: true });
     } catch (e: any) {
       setRegError(e?.message ?? "Błąd dołączania.");
     } finally {
@@ -1582,7 +1809,7 @@ export default function TournamentPublic({
 
     const res = await apiFetch(
       appendQueryParams(`/api/tournaments/${id}/teams/name-change-requests/`, {
-        division_id: effectiveDivisionId ?? undefined,
+        division_id: regMe?.division_id ?? effectiveDivisionId ?? undefined,
       }),
       {
         toastOnError: false,
@@ -1596,7 +1823,7 @@ export default function TournamentPublic({
     if (!res.ok) throw new Error(data?.detail ?? "Nie udało się wysłać prośby.");
 
     setRegInfo("Wysłano prośbę o zmianę nazwy.");
-    await loadMyPendingNameChange(regMe?.team_id ?? null);
+    await loadMyPendingNameChange(regMe?.team_id ?? null, regMe?.division_id ?? effectiveDivisionId ?? null);
   };
 
   const requestDivisionChange = async () => {
@@ -1619,7 +1846,7 @@ export default function TournamentPublic({
     try {
       const res = await apiFetch(
         appendQueryParams(`/api/tournaments/${id}/teams/division-change-requests/`, {
-          division_id: effectiveDivisionId ?? undefined,
+          division_id: regMe?.division_id ?? effectiveDivisionId ?? undefined,
         }),
         {
           toastOnError: false,
@@ -1906,10 +2133,10 @@ export default function TournamentPublic({
       <DrawerPanel
         open={participantPanelOpen}
         onClose={() => setParticipantPanelOpen(false)}
-        title={regMe ? "Twój udział w wydarzeniu" : "Dołącz do wydarzenia"}
+        title={regMe ? "Zarządzaj swoją rejestracją" : "Dołącz do wydarzenia"}
         subtitle={
           regMe
-            ? "Tutaj sprawdzisz swój status, zmienisz nazwę i zobaczysz skrót własnych spotkań."
+            ? "Tutaj sprawdzisz swój status, poprawisz nazwę, zmienisz dywizję i zobaczysz skrót własnych spotkań."
             : "Cała logika dołączania zostaje zachowana, ale nie dominuje głównego widoku dla widza."
         }
       >
@@ -2004,7 +2231,7 @@ export default function TournamentPublic({
               <Card className="bg-white/[0.04] p-4">
                 <div className="text-sm font-semibold text-slate-100">Zmiana dywizji</div>
                 <div className="mt-1 text-xs leading-relaxed text-slate-400">
-                  Obecna dywizja: {activeDivisionName ?? regMe.division_name ?? "aktywna dywizja"}.
+                  Obecna dywizja: {regMe.division_name ?? activeDivisionName ?? "aktywna dywizja"}.
                 </div>
 
                 {pendingDivisionReq?.status === "PENDING" ? (
@@ -2071,8 +2298,58 @@ export default function TournamentPublic({
               </Button>
             </div>
 
-            {verified || joinFlag ? (
+            {verified ? (
               <div className="grid gap-2">
+                {joinDivisionOptions.length > 0 ? (
+                  <div className="grid gap-2">
+                    <div className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
+                      Dywizja
+                    </div>
+                    {joinDivisionOptions.length > 1 ? (
+                      <div className="max-h-64 space-y-2 overflow-y-auto rounded-2xl border border-white/10 bg-white/[0.04] p-2">
+                        {joinDivisionOptions.map((option) => {
+                          const isSelected = option.value === selectedJoinDivisionId;
+
+                          return (
+                            <button
+                              key={option.value}
+                              type="button"
+                              onClick={() => setJoinDivisionId(option.value)}
+                              disabled={regBusy}
+                              aria-pressed={isSelected}
+                              className={cn(
+                                "flex w-full items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left text-sm transition focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10",
+                                isSelected
+                                  ? "border-cyan-400/50 bg-cyan-400/10 text-white"
+                                  : "border-white/10 bg-white/[0.04] text-slate-200 hover:border-white/20 hover:bg-white/[0.07]",
+                                regBusy ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+                              )}
+                            >
+                              <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                              {isSelected ? (
+                                <span className="shrink-0 rounded-full bg-cyan-400/15 px-2 py-0.5 text-xs font-semibold text-cyan-200">
+                                  Wybrano
+                                </span>
+                              ) : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="rounded-2xl border border-white/10 bg-white/[0.06] px-3 py-3 text-sm font-semibold text-slate-100">
+                        {joinDivisionOptions[0]?.label}
+                      </div>
+                    )}
+                    <div className="text-xs leading-relaxed text-slate-400">
+                      {joinDivisionOptions.length > 1
+                        ? "Wybierz dywizję, do której chcesz dołączyć."
+                        : "Dostępna jest jedna dywizja do dołączenia."}
+                    </div>
+                  </div>
+                ) : (
+                  <InlineAlert variant="info">Brak dywizji dostępnych do dołączenia.</InlineAlert>
+                )}
+
                 <Input
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
@@ -2082,11 +2359,19 @@ export default function TournamentPublic({
                       : "Nazwa drużyny / imię i nazwisko"
                   }
                 />
-                <Button type="button" onClick={joinTournament} disabled={regBusy}>
+                <Button
+                  type="button"
+                  onClick={joinTournament}
+                  disabled={regBusy || !selectedJoinDivisionId}
+                >
                   {regBusy ? "Dołączanie..." : "Dołącz do wydarzenia"}
                 </Button>
               </div>
-            ) : null}
+            ) : (
+              <InlineAlert variant="info">
+                Wpisz kod i kliknij „Sprawdź kod”, aby pobrać listę wszystkich dywizji dostępnych do dołączenia.
+              </InlineAlert>
+            )}
           </div>
         )}
 

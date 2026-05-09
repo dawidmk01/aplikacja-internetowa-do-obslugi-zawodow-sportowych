@@ -181,6 +181,50 @@ def _aggregate_round_values(
     return min(only_values) if lower_is_better else max(only_values)
 
 
+def _result_unit_label(context_obj) -> str:
+    cfg = context_obj.get_result_config() if hasattr(context_obj, "get_result_config") else {}
+
+    direct = str(
+        cfg.get(getattr(Tournament, "RESULTCFG_UNIT_LABEL_KEY", "unit_label"))
+        or cfg.get("unit_label")
+        or cfg.get(getattr(Tournament, "RESULTCFG_UNIT_KEY", "unit"))
+        or cfg.get("unit")
+        or ""
+    ).strip()
+
+    preset_labels = {
+        "POINTS": "pkt",
+        "PUNKT": "pkt",
+        "PUNKTY": "pkt",
+        "KILOGRAMS": "kg",
+        "KILOGRAM": "kg",
+        "KG": "kg",
+        "GRAMS": "g",
+        "GRAM": "g",
+        "G": "g",
+        "METERS": "m",
+        "METER": "m",
+        "M": "m",
+        "CENTIMETERS": "cm",
+        "CENTIMETER": "cm",
+        "CM": "cm",
+        "SECONDS": "s",
+        "SECOND": "s",
+        "S": "s",
+    }
+
+    if direct:
+        return preset_labels.get(direct.upper(), direct)
+
+    preset = str(
+        cfg.get(getattr(Tournament, "RESULTCFG_UNIT_PRESET_KEY", "unit_preset"))
+        or cfg.get("unit_preset")
+        or cfg.get("unitPreset")
+        or ""
+    ).strip().upper()
+
+    return preset_labels.get(preset, "")
+
 def _format_aggregate_display(context_obj, value) -> str:
     if value is None:
         return "-"
@@ -211,11 +255,7 @@ def _format_aggregate_display(context_obj, value) -> str:
         return str(int(Decimal(value)))
 
     decimal_places = int(cfg.get(Tournament.RESULTCFG_DECIMAL_PLACES_KEY, 0) or 0)
-    unit_label = str(
-        cfg.get(Tournament.RESULTCFG_UNIT_LABEL_KEY)
-        or cfg.get(Tournament.RESULTCFG_UNIT_KEY)
-        or ""
-    ).strip()
+    unit_label = _result_unit_label(context_obj)
     numeric = Decimal(value)
     exponent = Decimal("1").scaleb(-decimal_places)
     quantized = numeric.quantize(exponent)
@@ -462,7 +502,12 @@ def _compute_stage_event_rankings(stage: Stage) -> dict[int, dict[str, Any]]:
             aggregation_mode,
             lower_is_better,
         )
-        result_status = _team_result_status(team_results)
+        raw_result_status = _team_result_status(team_results)
+        result_status = (
+            StageMassStartResult.ResultStatus.OK
+            if aggregate_value is not None
+            else raw_result_status
+        )
         ranking_rows.append(
             {
                 "team_id": team_id,
@@ -473,7 +518,7 @@ def _compute_stage_event_rankings(stage: Stage) -> dict[int, dict[str, Any]]:
                     else status_display or "-"
                 ),
                 "result_status": result_status,
-                "result_status_display": status_display or "",
+                "result_status_display": "" if aggregate_value is not None else status_display or "",
                 "has_rankable_result": aggregate_value is not None,
             }
         )
@@ -716,6 +761,23 @@ def _build_multi_event_overall_standings(
 
         score_key = normalized_score if lower_score_is_better else -normalized_score
 
+        if overall_mode == Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RESULTS:
+            if lower_score_is_better:
+                return (
+                    -completed,
+                    score_key,
+                    special,
+                    str(row["team_name"]).lower(),
+                    int(row["team_id"]),
+                )
+            return (
+                score_key,
+                -completed,
+                special,
+                str(row["team_name"]).lower(),
+                int(row["team_id"]),
+            )
+
         return (
             -completed,
             special,
@@ -731,11 +793,14 @@ def _build_multi_event_overall_standings(
     for index, row in enumerate(standings, start=1):
         score = row.get("overall_score")
         score_key = None if score is None else str(score)
-        current_key = (
-            row["completed_events_count"],
-            row["special_statuses_count"],
-            score_key,
-        )
+        if overall_mode == Tournament.RESULTCFG_MULTI_EVENT_OVERALL_SUM_RESULTS:
+            current_key = (score_key,)
+        else:
+            current_key = (
+                row["completed_events_count"],
+                row["special_statuses_count"],
+                score_key,
+            )
         if previous_key is not None and current_key == previous_key:
             row["rank"] = previous_rank
         else:
@@ -788,7 +853,13 @@ def _group_payload(stage: Stage, group: Group) -> dict[str, Any]:
                         if result and result.place_value is not None
                         else None
                     ),
-                    "display_value": result.display_value if result else None,
+                    "display_value": (
+                        _format_aggregate_display(context_obj, result.numeric_value)
+                        if result
+                        and result.result_status == StageMassStartResult.ResultStatus.OK
+                        and result.numeric_value is not None
+                        else result.display_value if result else None
+                    ),
                     "result_status": (
                         result.result_status
                         if result
@@ -887,11 +958,7 @@ def _build_response_payload(tournament: Tournament, division: Division | None) -
         "competition_model": context_obj.competition_model,
         "stage_structure_mode": stage_structure_mode,
         "value_kind": context_obj.get_result_value_kind(),
-        "unit_label": str(
-            context_obj.get_result_config().get(Tournament.RESULTCFG_UNIT_LABEL_KEY)
-            or context_obj.get_result_config().get(Tournament.RESULTCFG_UNIT_KEY)
-            or ""
-        ).strip(),
+        "unit_label": _result_unit_label(context_obj),
         "allow_ties": bool(
             context_obj.get_result_config().get(Tournament.RESULTCFG_ALLOW_TIES_KEY, True)
         ),

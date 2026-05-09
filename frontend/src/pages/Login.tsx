@@ -320,7 +320,7 @@ export default function Login({ onLogin }: Props) {
   const passwordRules = getPasswordRules(password, normalizedEmail);
 
   return (
-    <div className="mx-auto max-w-md py-8 sm:py-10">
+    <div className={cn("mx-auto py-8 sm:py-10", mode === "register" ? "max-w-2xl" : "max-w-md")}>
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -410,42 +410,87 @@ export default function Login({ onLogin }: Props) {
               </div>
             </div>
 
-            <div>
-              <label htmlFor="login_password" className="text-sm font-medium text-slate-200">
-                Hasło
-              </label>
-              <div className="relative mt-2">
-                <Lock
-                  className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
-                  aria-hidden="true"
-                />
-                <Input
-                  id="login_password"
-                  type={showPassword ? "text" : "password"}
-                  className={cn(inputBase, "pr-10")}
-                  value={password}
-                  autoComplete={mode === "login" ? "current-password" : "new-password"}
-                  placeholder="••••••••"
-                  onChange={(e) => setPassword(e.target.value)}
-                />
+            <div
+              className={cn(
+                mode === "register" ? "md:grid md:grid-cols-[minmax(0,1fr)_minmax(220px,0.9fr)] md:gap-4" : ""
+              )}
+            >
+              <div className="space-y-4">
+                <div>
+                  <label htmlFor="login_password" className="text-sm font-medium text-slate-200">
+                    Hasło
+                  </label>
+                  <div className="relative mt-2">
+                    <Lock
+                      className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                      aria-hidden="true"
+                    />
+                    <Input
+                      id="login_password"
+                      type={showPassword ? "text" : "password"}
+                      className={cn(inputBase, "pr-10")}
+                      value={password}
+                      autoComplete={mode === "login" ? "current-password" : "new-password"}
+                      placeholder="••••••••"
+                      onChange={(e) => setPassword(e.target.value)}
+                    />
 
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowPassword((v) => !v)}
-                  className={cn(
-                    "absolute right-2 top-1/2 h-8 min-h-0 -translate-y-1/2 rounded-xl p-2",
-                    "text-slate-300 hover:bg-white/5 hover:text-white"
-                  )}
-                  aria-label={showPassword ? "Ukryj hasło" : "Pokaż hasło"}
-                >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setShowPassword((v) => !v)}
+                      className={cn(
+                        "absolute right-2 top-1/2 h-8 min-h-0 -translate-y-1/2 rounded-xl p-2",
+                        "text-slate-300 hover:bg-white/5 hover:text-white"
+                      )}
+                      aria-label={showPassword ? "Ukryj hasło" : "Pokaż hasło"}
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                  </div>
+                </div>
+
+                {mode === "register" ? (
+                  <div>
+                    <label htmlFor="login_password_confirm" className="text-sm font-medium text-slate-200">
+                      Powtórz hasło
+                    </label>
+                    <div className="relative mt-2">
+                      <Lock
+                        className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                        aria-hidden="true"
+                      />
+                      <Input
+                        id="login_password_confirm"
+                        type={showPasswordConfirm ? "text" : "password"}
+                        className={cn(inputBase, "pr-10")}
+                        value={passwordConfirm}
+                        autoComplete="new-password"
+                        placeholder="••••••••"
+                        onChange={(e) => setPasswordConfirm(e.target.value)}
+                      />
+
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setShowPasswordConfirm((v) => !v)}
+                        className={cn(
+                          "absolute right-2 top-1/2 h-8 min-h-0 -translate-y-1/2 rounded-xl p-2",
+                          "text-slate-300 hover:bg-white/5 hover:text-white"
+                        )}
+                        aria-label={showPasswordConfirm ? "Ukryj powtórzone hasło" : "Pokaż powtórzone hasło"}
+                      >
+                        {showPasswordConfirm ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               {mode === "register" ? (
-                <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+                <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.03] p-3 md:mt-0">
                   <div className="text-xs font-medium text-slate-300">Wymagania hasła</div>
                   <div className="mt-2 space-y-1.5">
                     {passwordRules.map((rule) => (
@@ -468,43 +513,6 @@ export default function Login({ onLogin }: Props) {
                 </div>
               ) : null}
             </div>
-
-            {mode === "register" ? (
-              <div>
-                <label htmlFor="login_password_confirm" className="text-sm font-medium text-slate-200">
-                  Powtórz hasło
-                </label>
-                <div className="relative mt-2">
-                  <Lock
-                    className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
-                    aria-hidden="true"
-                  />
-                  <Input
-                    id="login_password_confirm"
-                    type={showPasswordConfirm ? "text" : "password"}
-                    className={cn(inputBase, "pr-10")}
-                    value={passwordConfirm}
-                    autoComplete="new-password"
-                    placeholder="••••••••"
-                    onChange={(e) => setPasswordConfirm(e.target.value)}
-                  />
-
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setShowPasswordConfirm((v) => !v)}
-                    className={cn(
-                      "absolute right-2 top-1/2 h-8 min-h-0 -translate-y-1/2 rounded-xl p-2",
-                      "text-slate-300 hover:bg-white/5 hover:text-white"
-                    )}
-                    aria-label={showPasswordConfirm ? "Ukryj powtórzone hasło" : "Pokaż powtórzone hasło"}
-                  >
-                    {showPasswordConfirm ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </Button>
-                </div>
-              </div>
-            ) : null}
 
             <div className="pt-2">
               <Button
