@@ -10,7 +10,7 @@ from tournaments.services.standings.types import StandingRow
 
 
 class StandingsRuleset(Protocol):
-    # Protokół wymusza spójny interfejs dla wszystkich implementacji reguł dyscyplin.
+    # Protokół określa wspólny interfejs dla implementacji reguł dyscyplin.
     def sort_rows(
         self,
         rows: Iterable[StandingRow],
@@ -18,3 +18,4 @@ class StandingsRuleset(Protocol):
         all_stage_matches: List[Match],
     ) -> List[StandingRow]:
         ...
+
