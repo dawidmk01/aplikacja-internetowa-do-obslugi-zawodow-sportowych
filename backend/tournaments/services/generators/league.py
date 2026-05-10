@@ -192,7 +192,7 @@ def _round_robin_schedule(teams: List[Team]) -> List[List[Tuple[Team, Team]]]:
 
         schedule.append(round_matches)
 
-        # Rotacja Bergera utrzymuje poprawny układ par bez naruszania pierwszej pozycji.
+        # Metoda kołowa utrzymuje poprawny układ par bez naruszania pierwszej pozycji.
         arr = [arr[0]] + [arr[-1]] + arr[1:-1]
 
     return schedule
