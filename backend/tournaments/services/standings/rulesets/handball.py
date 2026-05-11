@@ -141,5 +141,3 @@ def _compute_h2h_stats(
 
     return points, goal_diff, goals_for
 
-
-HandballSuperligaRuleset = HandballRuleset

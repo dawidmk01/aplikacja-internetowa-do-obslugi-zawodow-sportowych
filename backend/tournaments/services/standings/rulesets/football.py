@@ -11,7 +11,7 @@ from tournaments.services.standings.rulesets.base import StandingsRuleset
 from tournaments.services.standings.types import StandingRow
 
 
-class FootballPZPNRuleset(StandingsRuleset):
+class FootballRuleset(StandingsRuleset):
     """
     Klasa odwzorowuje kolejność sortowania tabeli zgodną z zasadami PZPN.
 

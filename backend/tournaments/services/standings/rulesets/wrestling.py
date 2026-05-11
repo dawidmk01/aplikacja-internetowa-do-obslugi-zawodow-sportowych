@@ -10,7 +10,7 @@ from tournaments.services.standings.rulesets.base import StandingsRuleset
 from tournaments.services.standings.types import StandingRow
 
 
-class WrestlingPZZRuleset(StandingsRuleset):
+class WrestlingRuleset(StandingsRuleset):
     """
     Klasa porządkuje klasyfikację dla zapasów w wariantach grupowych i Nordic.
 

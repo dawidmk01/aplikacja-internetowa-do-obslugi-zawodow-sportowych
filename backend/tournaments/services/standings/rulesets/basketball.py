@@ -11,7 +11,7 @@ from tournaments.services.standings.rulesets.base import StandingsRuleset
 from tournaments.services.standings.types import StandingRow
 
 
-class BasketballFibaRuleset(StandingsRuleset):
+class BasketballRuleset(StandingsRuleset):
     def sort_rows(
         self,
         rows: Iterable[StandingRow],

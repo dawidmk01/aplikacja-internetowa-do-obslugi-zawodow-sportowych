@@ -9,11 +9,11 @@ from typing import Any, Literal, Tuple
 from tournaments.models import Group, Match, MatchCustomResult, Stage, Team, Tournament
 from tournaments.services.match_outcome import final_score
 from tournaments.services.standings.rulesets.base import StandingsRuleset
-from tournaments.services.standings.rulesets.basketball import BasketballFibaRuleset
-from tournaments.services.standings.rulesets.football import FootballPZPNRuleset
-from tournaments.services.standings.rulesets.handball import HandballSuperligaRuleset
+from tournaments.services.standings.rulesets.basketball import BasketballRuleset
+from tournaments.services.standings.rulesets.football import FootballRuleset
+from tournaments.services.standings.rulesets.handball import HandballRuleset
 from tournaments.services.standings.rulesets.tennis import TennisRuleset
-from tournaments.services.standings.rulesets.wrestling import WrestlingPZZRuleset
+from tournaments.services.standings.rulesets.wrestling import WrestlingRuleset
 from tournaments.services.standings.types import StandingRow
 
 BYE_TEAM_NAME = "__SYSTEM_BYE__"
@@ -87,13 +87,13 @@ def _get_ruleset(context) -> StandingsRuleset:
     discipline = _context_discipline(context)
 
     if discipline in (Tournament.Discipline.FOOTBALL, "football", "FOOTBALL"):
-        return FootballPZPNRuleset()
+        return FootballRuleset()
 
     if discipline in (Tournament.Discipline.HANDBALL, "handball", "HANDBALL"):
-        return HandballSuperligaRuleset()
+        return HandballRuleset()
 
     if discipline in (Tournament.Discipline.BASKETBALL, "basketball", "BASKETBALL"):
-        return BasketballFibaRuleset()
+        return BasketballRuleset()
 
     if discipline in (Tournament.Discipline.TENNIS, "tennis", "TENNIS"):
         cfg = _context_format_config(context)
@@ -101,9 +101,9 @@ def _get_ruleset(context) -> StandingsRuleset:
         return TennisRuleset(points_mode="PLT" if mode == "PLT" else "NONE")
 
     if discipline in (Tournament.Discipline.WRESTLING, "wrestling", "WRESTLING"):
-        return WrestlingPZZRuleset()
+        return WrestlingRuleset()
 
-    return FootballPZPNRuleset()
+    return FootballRuleset()
 
 
 def _custom_mode(context) -> str:
