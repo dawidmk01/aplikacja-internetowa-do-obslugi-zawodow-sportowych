@@ -27,7 +27,7 @@ function isPublicTournamentPath(pathname: string): boolean {
   if (x === "/tournaments/new") return false;
   if (x.includes("/detail")) return false;
 
-  return /^\/tournaments\/[^/]+(\/standings)?$/.test(x);
+  return /^\/tournaments\/[^/]+$/.test(x);
 }
 
 /** Definiuje ścieżki kroków panelu. Parametry aktywnej dywizji są dokładane w komponencie nawigacji. */

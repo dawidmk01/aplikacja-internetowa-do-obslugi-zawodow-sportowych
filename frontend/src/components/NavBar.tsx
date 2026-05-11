@@ -62,7 +62,7 @@ export default function NavBar({ userEmail, onLogout }: Props) {
   const isAuthenticated = Boolean(userEmail);
   const accountLabel = getAccountEmailLabel(userEmail);
   const accountInitial = (accountLabel || "?").slice(0, 1).toUpperCase();
-  const isPublicTournamentPage = /^\/tournaments\/[^/]+(?:\/standings)?$/.test(location.pathname);
+  const isPublicTournamentPage = /^\/tournaments\/[^/]+$/.test(location.pathname);
   const usesWideShell = location.pathname === "/" || isPublicTournamentPage;
   const shellMaxWidthClassName = usesWideShell
     ? "max-w-7xl 2xl:max-w-[96rem] [min-width:1920px]:max-w-[110rem] [min-width:2560px]:max-w-[128rem]"
