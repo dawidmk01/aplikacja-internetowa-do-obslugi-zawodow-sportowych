@@ -265,17 +265,6 @@ const tournamentExamples: TournamentExample[] = [
     icon: <Layers3 className="h-5 w-5" />,
   },
   {
-    name: "Amatorski turniej siatkówki",
-    group: "Kluby, firmy i grupy rekreacyjne",
-    discipline: "Siatkówka",
-    format: "Grupy + puchar",
-    model: "Pojedynki drużynowe",
-    desc:
-      "Zespoły mogą zostać podzielone na grupy, a następnie przejść do fazy finałowej. System porządkuje listę drużyn, mecze, wyniki i końcową klasyfikację.",
-    items: ["zespoły", "grupy", "faza finałowa", "pojedynki", "klasyfikacja"],
-    icon: <Brackets className="h-5 w-5" />,
-  },
-  {
     name: "Miejskie mistrzostwa w tenisie",
     group: "Ośrodki sportowe i turnieje open",
     discipline: "Tenis",
@@ -427,13 +416,6 @@ export default function Home() {
         "Model oparty na spotkaniach, w których remis po czasie podstawowym jest rozstrzygany dogrywką.",
       items: ["mecze", "dogrywka", "bez remisu", "tabela", "puchar"],
       icon: <Target className="h-5 w-5" />,
-    },
-    {
-      title: "Siatkówka",
-      desc:
-        "Dyscyplina turniejowa dla rozgrywek zespołowych prowadzonych w lidze, pucharze albo grupach.",
-      items: ["zespoły", "pojedynki", "grupy", "tabela", "finały"],
-      icon: <Brackets className="h-5 w-5" />,
     },
     {
       title: "Tenis",

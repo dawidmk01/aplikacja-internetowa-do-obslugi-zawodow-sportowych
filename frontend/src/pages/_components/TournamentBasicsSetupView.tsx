@@ -49,7 +49,6 @@ const WRESTLING_COMPETITION_MODE_OPTIONS = [
 
 export type Discipline =
   | "football"
-  | "volleyball"
   | "basketball"
   | "handball"
   | "tennis"
@@ -214,7 +213,6 @@ export const DISCIPLINE_OPTIONS: SelectOption<Discipline>[] = [
   { value: "football", label: "Piłka nożna" },
   { value: "handball", label: "Piłka ręczna" },
   { value: "basketball", label: "Koszykówka" },
-  { value: "volleyball", label: "Siatkówka" },
   { value: "tennis", label: "Tenis" },
   {
     value: "wrestling",

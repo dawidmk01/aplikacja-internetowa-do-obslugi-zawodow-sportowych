@@ -192,7 +192,6 @@ function formatStatusLabel(status: string | null | undefined): string {
 
 function formatDisciplineLabel(discipline: string | null | undefined): string {
   if (discipline === "football") return "Piłka nożna";
-  if (discipline === "volleyball") return "Siatkówka";
   if (discipline === "basketball") return "Koszykówka";
   if (discipline === "handball") return "Piłka ręczna";
   if (discipline === "tennis") return "Tenis";

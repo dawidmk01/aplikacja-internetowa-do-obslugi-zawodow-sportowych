@@ -3,7 +3,6 @@
 
 export const DISCIPLINE_LABELS = {
   football: "Piłka nożna",
-  volleyball: "Siatkówka",
   basketball: "Koszykówka",
   handball: "Piłka ręczna",
   tennis: "Tenis",

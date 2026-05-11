@@ -17,7 +17,6 @@ from django.utils.text import slugify
 class Tournament(models.Model):
     class Discipline(models.TextChoices):
         FOOTBALL = "football", "Piłka nożna"
-        VOLLEYBALL = "volleyball", "Siatkówka"
         BASKETBALL = "basketball", "Koszykówka"
         HANDBALL = "handball", "Piłka ręczna"
         TENNIS = "tennis", "Tenis"

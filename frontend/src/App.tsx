@@ -111,10 +111,6 @@ export default function App() {
               <Route path="/find-tournament" element={<FindTournament />} />
 
               <Route path="/tournaments/:id" element={<TournamentPublic />} />
-              <Route
-                path="/tournaments/:id/standings"
-                element={<TournamentPublic initialView="STANDINGS" />}
-              />
 
               <Route
                 path="/my-tournaments"
