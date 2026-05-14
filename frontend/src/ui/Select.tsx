@@ -45,6 +45,8 @@ type Props<T extends string | number = string> = {
 
 type Placement = "bottom" | "top";
 
+const MIN_READABLE_MENU_WIDTH = 280;
+
 function norm(s: string) {
   return (s || "").toLowerCase().trim();
 }
@@ -112,7 +114,8 @@ export function Select<T extends string | number = string>({
     const margin = 12;
     const offset = 8;
 
-    const width = Math.min(rect.width, Math.max(0, vw - margin * 2));
+    const availableViewportWidth = Math.max(0, vw - margin * 2);
+    const width = Math.min(Math.max(rect.width, MIN_READABLE_MENU_WIDTH), availableViewportWidth);
     const rawLeft = align === "end" ? rect.right - width : rect.left;
     const left = Math.max(margin, Math.min(rawLeft, vw - width - margin));
 
@@ -277,6 +280,7 @@ export function Select<T extends string | number = string>({
         onClick={() => (open ? close() : openMenu())}
         onKeyDown={onTriggerKeyDown}
         disabled={disabled}
+        title={selected ? selected.label : placeholder}
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -364,6 +368,7 @@ export function Select<T extends string | number = string>({
                           role="option"
                           aria-selected={isSelected}
                           disabled={!!o.disabled}
+                          title={o.label}
                           className={cn(
                             "w-full text-left rounded-xl px-3 py-2",
                             "text-sm text-slate-100",
@@ -392,12 +397,16 @@ export function Select<T extends string | number = string>({
                           </div>
 
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="truncate">{o.label}</div>
-                              {isSelected && o.leftIcon ? <Check className="h-4 w-4 text-white/90" /> : null}
+                            <div className="flex min-w-0 items-start justify-between gap-2">
+                              <div className="min-w-0 flex-1 whitespace-normal break-words leading-snug">
+                                {o.label}
+                              </div>
+                              {isSelected && o.leftIcon ? <Check className="h-4 w-4 shrink-0 text-white/90" /> : null}
                             </div>
                             {o.description ? (
-                              <div className="mt-0.5 text-xs text-slate-300/90">{o.description}</div>
+                              <div className="mt-0.5 whitespace-normal break-words text-xs leading-snug text-slate-300/90">
+                                {o.description}
+                              </div>
                             ) : null}
                           </div>
                         </button>
