@@ -1,3 +1,6 @@
+/* frontend/src/index.css */
+/* Plik definiuje globalne podstawy stylowania aplikacji oraz włącza Tailwind CSS. */
+
 @import "tailwindcss";
 
 html,

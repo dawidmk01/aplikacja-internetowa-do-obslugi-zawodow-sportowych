@@ -1,5 +1,6 @@
 // frontend/src/pages/_shared/TournamentMatchesScaffold.tsx
 // Komponent udostępnia wspólny szkielet widoku meczów z filtrami, sekcjami i trwałym stanem UI.
+
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 

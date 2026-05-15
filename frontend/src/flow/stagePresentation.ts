@@ -1,3 +1,6 @@
+// frontend/src/flow/stagePresentation.ts
+// Moduł przygotowuje dane etapów i meczów do spójnej prezentacji w widokach turnieju.
+
 export type StageType = "LEAGUE" | "KNOCKOUT" | "GROUP" | "THIRD_PLACE";
 
 export type StageMatchLike = {

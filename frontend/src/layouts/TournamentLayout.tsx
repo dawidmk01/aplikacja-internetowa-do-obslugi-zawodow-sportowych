@@ -1,3 +1,6 @@
+// frontend/src/layouts/TournamentLayout.tsx
+// Układ panelu turnieju zapewnia wspólną nawigację, kontrolę dostępu oraz kontekst zapisu dla widoków zarządzania turniejem.
+
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";

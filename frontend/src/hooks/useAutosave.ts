@@ -1,3 +1,6 @@
+// frontend/src/hooks/useAutosave.ts
+// Hook udostępnia mechanizm automatycznego zapisu zmian z kontrolą stanu, kolejką zapisu oraz obsługą błędów.
+
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { toast } from "../ui/Toast";

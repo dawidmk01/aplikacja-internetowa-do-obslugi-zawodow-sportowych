@@ -1,3 +1,6 @@
+// frontend/src/components/PublicMatchesBar.tsx
+// Komponent prezentuje przyklejony pasek skrótów do meczów LIVE i najbliższych spotkań w publicznym widoku turnieju.
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { CalendarClock, Radio } from "lucide-react";
@@ -15,24 +18,24 @@ type Props = {
   matches: MatchPublicDTO[];
   className?: string;
 
-  // Gdy pasek ma być pod TournamentFlowNav (dla organizatora/asystenta).
+  // Wartość pozwala zachować poprawny odstęp, gdy pasek jest wyświetlany pod nawigacją TournamentFlowNav.
   underFlowNav?: boolean;
 
-  // Domyślnie: top. Dla publicznej strony to najczytelniejsze.
+  // Ustawienie określa krawędź ekranu, przy której pasek pozostaje przyklejony.
   side?: "top" | "bottom";
 
-  // ID sekcji w PublicMatchesPanel
+  // Identyfikatory wskazują sekcje docelowe przewijania w PublicMatchesPanel.
   liveTargetId?: string;
   upcomingTargetId?: string;
 
-  // Dla top: dodatkowa przerwa pod NavBarem.
+  // Wartość kompensuje dodatkową przerwę pod głównym paskiem nawigacyjnym.
   topGapPx?: number;
 
-  // Spacer w DOM, żeby fixed bar nie przykrywał treści.
+  // Klasa spaceru chroni treść strony przed przykryciem przez pasek o stałej pozycji.
   spacerHeightClassName?: string;
 };
 
-// Odczyt CSS var z fallbackiem, bezpieczny dla środowisk bez DOM.
+// Funkcja odczytuje zmienne CSS potrzebne do obliczenia bezpiecznego przesunięcia widoku.
 function readCssVarPx(name: string, fallbackPx: number): number {
   if (typeof window === "undefined" || typeof document === "undefined") return fallbackPx;
 
@@ -41,7 +44,7 @@ function readCssVarPx(name: string, fallbackPx: number): number {
     const n = Number.parseFloat(raw);
     if (Number.isFinite(n)) return n;
   } catch {
-    // brak
+    // Brak dostępnej wartości powoduje użycie wartości domyślnej.
   }
 
   return fallbackPx;
@@ -79,7 +82,7 @@ export default function PublicMatchesBar({
   }, [underFlowNav]);
 
   useEffect(() => {
-    // Preferuj "Na żywo" jeśli są mecze w trakcie, w przeciwnym razie "Najbliższe" jeśli istnieją.
+    // Priorytet aktywnej zakładki odzwierciedla dostępność meczów LIVE i najbliższych spotkań.
     setActive((prev) => {
       if (prev === "live" && liveCount === 0 && upcomingCount > 0) return "upcoming";
       if (prev === "upcoming" && upcomingCount === 0 && liveCount > 0) return "live";

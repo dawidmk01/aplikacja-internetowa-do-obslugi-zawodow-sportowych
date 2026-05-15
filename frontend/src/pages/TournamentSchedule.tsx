@@ -1,5 +1,6 @@
 // frontend/src/pages/TournamentSchedule.tsx
 // Strona obsługuje harmonogram turnieju dla meczów par oraz harmonogram etapów i grup w trybie MASS_START.
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 
@@ -31,9 +32,7 @@ import {
   type MassStartViewMode,
 } from "./_shared/TournamentMassStartScheduleScaffold";
 
-// ---------------------------------------------------------------------------
-// DTO types
-// ---------------------------------------------------------------------------
+// ===== Typy DTO =====
 
 type DivisionStatus = "DRAFT" | "CONFIGURED" | "RUNNING" | "FINISHED";
 type DivisionSummaryDTO = { id: number; name?: string; status?: DivisionStatus };
@@ -106,17 +105,13 @@ type TournamentMetaDraft = {
   group_schedule: ScheduleGroupDTO[];
 };
 
-// ---------------------------------------------------------------------------
-// Typ: która encja była ostatnio edytowana (na potrzeby wskaźnika autosave)
-// ---------------------------------------------------------------------------
+// ===== Stan autosave =====
 type LastEditedEntity =
   | { type: "tournament" }
   | { type: "stage"; id: number }
   | { type: "group"; id: number };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// ===== Funkcje pomocnicze harmonogramu =====
 
 function parseDivisionId(value: string | null | undefined): number | null {
   if (!value) return null;
@@ -189,10 +184,8 @@ function massStartItemTitle(stageStructureMode: MassStartStageStructureMode) {
   return isMultiEventStructure(stageStructureMode) ? "Konkurencja" : "Etap";
 }
 
-// ---------------------------------------------------------------------------
-// MassStartStageBlock – oddzielny komponent dla etapu (zwijalne grupy + autosave)
-// Dzięki osobnemu komponentowi każdy etap ma własny stan zwinięcia grup.
-// ---------------------------------------------------------------------------
+// ===== Blok etapu MASS_START =====
+// Komponent utrzymuje lokalny stan zwijania grup dla pojedynczego etapu.
 
 type MassStartStageBlockProps = {
   stage: ScheduleStageDTO;
@@ -466,9 +459,7 @@ function MassStartStageBlock({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
+// ===== Komponent strony =====
 
 export default function TournamentSchedule() {
   const { id } = useParams<{ id: string }>();
@@ -492,14 +483,10 @@ export default function TournamentSchedule() {
   const [matches, setMatches] = useState<MatchScheduleDTO[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // -------------------------------------------------------------------------
-  // Śledzenie ostatnio edytowanej encji – osobna kropka zapisu dla każdej
-  // -------------------------------------------------------------------------
+  // ===== Stan edytowanej encji =====
   const [lastEditedEntity, setLastEditedEntity] = useState<LastEditedEntity | null>(null);
 
-  // -------------------------------------------------------------------------
-  // Autosave – mecze
-  // -------------------------------------------------------------------------
+  // ===== Autosave meczów =====
 
   const matchAutosave = useAutosave<MatchDraft>({
     onSave: async (matchId, data) => {
@@ -517,9 +504,7 @@ export default function TournamentSchedule() {
     },
   });
 
-  // -------------------------------------------------------------------------
-  // Autosave – meta turnieju (daty + harmonogram etapów/grup)
-  // -------------------------------------------------------------------------
+  // ===== Autosave danych turnieju =====
 
   const tournamentAutosave = useAutosave<TournamentMetaDraft>({
     onSave: async (_key, data) => {
@@ -590,9 +575,7 @@ export default function TournamentSchedule() {
     setLastEditedEntity(null);
   }, []);
 
-  // -------------------------------------------------------------------------
-  // Data loading
-  // -------------------------------------------------------------------------
+  // ===== Ładowanie danych =====
 
   useEffect(() => {
     if (!tournamentId) return;
@@ -641,9 +624,7 @@ export default function TournamentSchedule() {
     };
   }, [tournamentId, requestedDivisionId, resetDivisionScopedAutosave, setSearchParams]);
 
-  // -------------------------------------------------------------------------
-  // WebSocket reload
-  // -------------------------------------------------------------------------
+  // ===== Odświeżanie przez WebSocket =====
 
   const reloadMatches = useCallback(async () => {
     if (!tournamentId) return;
@@ -685,9 +666,7 @@ export default function TournamentSchedule() {
       }
     },
   });
-  // -------------------------------------------------------------------------
-  // Derived state
-  // -------------------------------------------------------------------------
+  // ===== Stan pochodny widoku =====
 
   const tournamentFormat = useMemo(
     () => String(tournament?.tournament_format ?? ""),
@@ -713,9 +692,7 @@ export default function TournamentSchedule() {
     currentMetaRef.current = currentMeta;
   }, [currentMeta]);
 
-  // -------------------------------------------------------------------------
-  // Meta update helpers – każda z tych funkcji ustawia lastEditedEntity
-  // -------------------------------------------------------------------------
+  // ===== Aktualizacja danych harmonogramu =====
 
   const updateMetaDraft = useCallback(
     (patch: Partial<TournamentMetaDraft>) => {
@@ -819,9 +796,7 @@ export default function TournamentSchedule() {
     void tournamentAutosave.forceSave("meta", latestMeta);
   }, [currentMeta, tournamentAutosave]);
 
-  // -------------------------------------------------------------------------
-  // Shared field styles
-  // -------------------------------------------------------------------------
+  // ===== Style pól harmonogramu =====
 
   const fieldWrap =
     "relative flex min-w-0 items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-3 h-10";
@@ -831,12 +806,10 @@ export default function TournamentSchedule() {
     "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/10"
   );
 
-  // -------------------------------------------------------------------------
-  // Tournament meta card (wspólna dla obu trybów)
-  // Wskaźnik autosave w karcie turnieju reaguje tylko na edycję danych turnieju.
-  // -------------------------------------------------------------------------
+  // ===== Karta danych turnieju =====
+  // Wskaźnik autosave w karcie reaguje wyłącznie na edycję danych turnieju.
 
-  // Status kroopki dla karty turnieju
+  // Wskaźnik karty turnieju nie przejmuje stanu zapisu etapów ani grup.
   const tournamentIndicatorStatus = (
     lastEditedEntity?.type === "tournament" ? metaStatus : "idle"
   ) as any;
@@ -945,9 +918,7 @@ export default function TournamentSchedule() {
 
   const headerSlot = tournamentMetaCard;
 
-  // -------------------------------------------------------------------------
-  // Match mode helpers
-  // -------------------------------------------------------------------------
+  // ===== Prezentacja meczów =====
 
   const cardShellForMatch = (bucket: MatchStatusBucket, isOutOfRange: boolean) => {
     const base = sectionCardClasses(bucket);
@@ -1074,11 +1045,8 @@ export default function TournamentSchedule() {
     );
   };
 
-  // -------------------------------------------------------------------------
-  // Mass-start: renderStageBlock – zwraca osobny komponent MassStartStageBlock
-  // Dzięki użyciu komponentu (a nie funkcji render) React zachowuje stan
-  // zwinięcia grup między re-renderami, o ile key się nie zmienia.
-  // -------------------------------------------------------------------------
+  // ===== Renderowanie etapów MASS_START =====
+  // Osobny komponent zachowuje stan zwinięcia grup między kolejnymi renderowaniami.
 
   const renderStageBlock = useCallback(
     (
@@ -1130,9 +1098,7 @@ export default function TournamentSchedule() {
     ]
   );
 
-  // -------------------------------------------------------------------------
-  // Guard renders
-  // -------------------------------------------------------------------------
+  // ===== Warunki brzegowe widoku =====
 
   if (!tournamentId) {
     return (
@@ -1150,10 +1116,7 @@ export default function TournamentSchedule() {
     );
   }
 
-  // -------------------------------------------------------------------------
-  // Mass-start mode → scaffold
-  // Tytuł i opis ujednolicone ze standardowym harmonogramem.
-  // -------------------------------------------------------------------------
+  // ===== Harmonogram MASS_START =====
 
   if (isMassStartScheduleMode) {
     return (
@@ -1176,9 +1139,7 @@ export default function TournamentSchedule() {
     );
   }
 
-  // -------------------------------------------------------------------------
-  // Standard matches mode → TournamentMatchesScaffold
-  // -------------------------------------------------------------------------
+  // ===== Harmonogram meczów =====
 
   return (
     <TournamentMatchesScaffold

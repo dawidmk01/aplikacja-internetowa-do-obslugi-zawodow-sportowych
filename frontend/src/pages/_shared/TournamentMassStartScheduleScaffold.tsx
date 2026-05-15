@@ -1,6 +1,6 @@
 // frontend/src/pages/_shared/TournamentMassStartScheduleScaffold.tsx
 // Komponent udostępnia wspólny szkielet widoku harmonogramu etapów i grup dla trybu wszyscy razem.
-// Wizualnie i strukturalnie maksymalnie zbliżony do TournamentMatchesScaffold.
+
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 

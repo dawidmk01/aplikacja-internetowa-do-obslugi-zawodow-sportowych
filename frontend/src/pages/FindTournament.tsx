@@ -1,3 +1,6 @@
+// frontend/src/pages/FindTournament.tsx
+// Plik renderuje widok wyszukiwania turnieju i normalizuje ID lub link do wewnętrznej ścieżki aplikacji.
+
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Link as LinkIcon, Search } from "lucide-react";

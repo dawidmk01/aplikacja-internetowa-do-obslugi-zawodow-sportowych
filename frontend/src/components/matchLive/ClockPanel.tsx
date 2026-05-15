@@ -1,3 +1,6 @@
+// frontend/src/components/matchLive/ClockPanel.tsx
+// Komponent obsługuje zegar meczu LIVE oraz synchronizację jego stanu z backendem.
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { apiFetch } from "../../api";

@@ -1,7 +1,8 @@
+// frontend/src/components/AutosaveIndicator.tsx
+// Komponent prezentuje stan automatycznego zapisu i udostępnia komunikat dostępnościowy dla zmian formularza.
+
 import { cn } from "../lib/cn";
 import type { AutosaveStatus } from "../hooks/useAutosave";
-
-// Kontrakt: wizualny wskaźnik stanu autosave (kropka) z opisem dla A11Y.
 
 type Props = {
   status: AutosaveStatus;

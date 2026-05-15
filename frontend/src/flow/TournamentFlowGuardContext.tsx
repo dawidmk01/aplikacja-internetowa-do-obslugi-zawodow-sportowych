@@ -1,3 +1,6 @@
+// frontend/src/flow/TournamentFlowGuardContext.tsx
+// Kontekst zarządza stanem niezapisanych zmian oraz wspólnym mechanizmem zapisu w przepływie konfiguracji turnieju.
+
 import type { ReactNode } from "react";
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 

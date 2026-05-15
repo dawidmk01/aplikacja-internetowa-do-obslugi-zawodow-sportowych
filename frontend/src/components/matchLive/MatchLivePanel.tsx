@@ -1,4 +1,6 @@
 // frontend/src/components/matchLive/MatchLivePanel.tsx
+// Komponent agreguje panele obsługi meczu LIVE i udostępnia organizatorowi wspólny widok sterowania spotkaniem.
+
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { cn } from "../../lib/cn";
 import type { MatchStatus } from "./matchLive.utils";
